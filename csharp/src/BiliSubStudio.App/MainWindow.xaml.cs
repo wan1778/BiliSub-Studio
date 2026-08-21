@@ -26,7 +26,25 @@ public sealed partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        _buildTag = ResolveBuildTag();
+        _buildTag = "dev";
+        try
+        {
+            var identityPath = Path.Combine(AppContext.BaseDirectory, "BUILD_IDENTITY.json");
+            if (File.Exists(identityPath))
+            {
+                using var document = JsonDocument.Parse(File.ReadAllText(identityPath));
+                if (document.RootElement.TryGetProperty("source_revision", out var revisionElement))
+                {
+                    var revision = revisionElement.GetString()?.Trim();
+                    if (!string.IsNullOrWhiteSpace(revision))
+                        _buildTag = revision[..Math.Min(7, revision.Length)];
+                }
+            }
+        }
+        catch
+        {
+            _buildTag = "dev";
+        }
         Title = $"BiliSub Studio · build {_buildTag}";
         var paths = AppPaths.FromExecutableDirectory();
         _application = new BiliSubApplication(paths);
@@ -54,24 +72,6 @@ public sealed partial class MainWindow : Window
     }
 
     internal Task Initialization => _initialization.Task;
-
-    private static string ResolveBuildTag()
-    {
-        try
-        {
-            var identityPath = Path.Combine(AppContext.BaseDirectory, "BUILD_IDENTITY.json");
-            if (!File.Exists(identityPath)) return "dev";
-            using var document = JsonDocument.Parse(File.ReadAllText(identityPath));
-            if (!document.RootElement.TryGetProperty("source_revision", out var revisionElement)) return "dev";
-            var revision = revisionElement.GetString()?.Trim();
-            if (string.IsNullOrWhiteSpace(revision)) return "dev";
-            return revision[..Math.Min(7, revision.Length)];
-        }
-        catch
-        {
-            return "dev";
-        }
-    }
 
     internal async Task RunLayoutSmokeAsync()
     {
