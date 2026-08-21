@@ -27,6 +27,27 @@ public sealed class SettingsApplicationService(
         }
 
         Directory.CreateDirectory(path);
+        var probe = Path.Combine(path, $".bilisub-write-probe-{Guid.NewGuid():N}.tmp");
+        try
+        {
+            await File.WriteAllTextAsync(probe, "BiliSub Studio output write probe", cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception error) when (error is UnauthorizedAccessException or IOException)
+        {
+            throw new IOException("Thư mục đã chọn không cho phép BiliSub Studio ghi tệp.", error);
+        }
+        finally
+        {
+            try
+            {
+                if (File.Exists(probe)) File.Delete(probe);
+            }
+            catch
+            {
+                // A failed cleanup must not turn a successful write-access probe into a settings failure.
+            }
+        }
+
         await configStore.UpdateAsync(
             config => config with { OutputDirectory = path },
             cancellationToken).ConfigureAwait(false);
