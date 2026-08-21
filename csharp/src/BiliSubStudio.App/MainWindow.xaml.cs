@@ -55,7 +55,7 @@ public sealed partial class MainWindow : Window
         _settingsPage.ThemeRequested += ApplyTheme;
         _pages = new Dictionary<string, UIElement>(StringComparer.Ordinal)
         {
-            ["video"] = new VideoPage(_application),
+            ["video"] = new VideoPage(_application, folderPicker),
             ["ocr"] = new OcrPage(_application, filePicker),
             ["editor"] = new EditorPage(_application, filePicker),
             ["hardware"] = new HardwarePage(_application),
