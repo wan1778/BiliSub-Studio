@@ -158,24 +158,51 @@ public sealed class SubtitleService
 
     private async Task<byte[]> FetchAsync(string url, string? cookie, CancellationToken token)
     {
+        const long maxSubtitleBytes = 128L * 1024 * 1024;
         if (url.StartsWith("//", StringComparison.Ordinal)) url = "https:" + url;
-        using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        request.Headers.Referrer = new Uri("https://www.bilibili.com/");
-        request.Headers.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) BiliSubStudio/4");
-        if (!string.IsNullOrWhiteSpace(cookie)) request.Headers.TryAddWithoutValidation("Cookie", cookie);
-        using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token);
-        response.EnsureSuccessStatusCode();
-        if (response.Content.Headers.ContentLength is > 32 * 1024 * 1024) throw new InvalidDataException("Phụ đề vượt giới hạn 32 MiB.");
-        await using var source = await response.Content.ReadAsStreamAsync(token);
-        await using var target = new MemoryStream();
-        var buffer = new byte[64 * 1024];
-        while (target.Length <= 32 * 1024 * 1024)
+        Exception? last = null;
+        for (var attempt = 1; attempt <= 4; attempt++)
         {
-            var read = await source.ReadAsync(buffer, token);
-            if (read == 0) return target.ToArray();
-            await target.WriteAsync(buffer.AsMemory(0, read), token);
+            token.ThrowIfCancellationRequested();
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, url);
+                request.Headers.Referrer = new Uri("https://www.bilibili.com/");
+                request.Headers.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) BiliSubStudio/4");
+                if (!string.IsNullOrWhiteSpace(cookie)) request.Headers.TryAddWithoutValidation("Cookie", cookie);
+                using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token);
+                response.EnsureSuccessStatusCode();
+                if (response.Content.Headers.ContentLength is > maxSubtitleBytes) throw new InvalidDataException("Phụ đề vượt giới hạn 128 MiB.");
+                await using var source = await response.Content.ReadAsStreamAsync(token);
+                await using var target = new MemoryStream();
+                var buffer = new byte[64 * 1024];
+                while (target.Length <= maxSubtitleBytes)
+                {
+                    var read = await source.ReadAsync(buffer, token);
+                    if (read == 0) return target.ToArray();
+                    await target.WriteAsync(buffer.AsMemory(0, read), token);
+                }
+                throw new InvalidDataException("Phụ đề vượt giới hạn 128 MiB.");
+            }
+            catch (OperationCanceledException error) when (!token.IsCancellationRequested)
+            {
+                last = error;
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception error) when (error is HttpRequestException or IOException)
+            {
+                last = error;
+            }
+
+            if (attempt < 4)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(300 * attempt * attempt), token);
+            }
         }
-        throw new InvalidDataException("Phụ đề vượt giới hạn 32 MiB.");
+        throw new HttpRequestException("Tải phụ đề thất bại sau 4 lần thử.", last);
     }
 
     private static IReadOnlyList<SubtitleCue> Normalize(IEnumerable<SubtitleCue> source)
