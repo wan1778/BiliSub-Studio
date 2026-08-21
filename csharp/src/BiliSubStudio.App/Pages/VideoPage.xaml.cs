@@ -82,8 +82,10 @@ public sealed partial class VideoPage : Page
                 for (var index = 0; index < metadata.Subtitles.Count; index++)
                 {
                     var track = metadata.Subtitles[index];
-                    var chinese = track.Language.StartsWith("zh", StringComparison.OrdinalIgnoreCase)
-                        || track.Language.Contains("chi", StringComparison.OrdinalIgnoreCase);
+                    var separator = track.Language.IndexOf(':');
+                    var language = separator >= 0 ? track.Language[(separator + 1)..] : track.Language;
+                    var chinese = language.StartsWith("zh", StringComparison.OrdinalIgnoreCase)
+                        || language.Contains("chi", StringComparison.OrdinalIgnoreCase);
                     var rank = track.Official && chinese ? 0 : chinese ? 1 : track.Official ? 2 : 3;
                     if (rank < bestRank)
                     {
