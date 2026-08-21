@@ -24,7 +24,7 @@ permissions:
 
 concurrency:
   group: csharp-p5-windows-x64-installer-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   build-candidate:
@@ -73,6 +73,9 @@ jobs:
           $iscc = Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 7\ISCC.exe"
           if (-not (Test-Path $iscc -PathType Leaf)) { throw "ISCC.exe not found after verified install" }
           "INNO_SETUP_ISCC=$iscc" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Verify long-media bundle contracts
+        run: python csharp/scripts/verify_media_bundle_contract.py
 
       - name: Verify Windows WinUI build
         id: verify
