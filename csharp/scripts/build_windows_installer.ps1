@@ -92,6 +92,72 @@ if (-not (Test-Path $installer -PathType Leaf)) { throw "installer output missin
 Assert-Pe32PlusX64 $installer
 $installerHash = Get-Sha256 $installer
 $signature = Get-AuthenticodeSignature $installer
+$installerInstallSmoke = $false
+$installerSmokeLogName = "INSTALLER_STARTUP_SMOKE_LOG.txt"
+
+if ($env:GITHUB_ACTIONS -eq "true") {
+    $installRoot = Join-Path $env:LOCALAPPDATA "Programs\BiliSub Studio"
+    if (Test-Path $installRoot) {
+        throw "installer smoke requires a clean per-user install root: $installRoot"
+    }
+
+    $installLog = Join-Path $outputFull "INNO_INSTALL_SMOKE_LOG.txt"
+    $installProcess = Start-Process -FilePath $installer -ArgumentList @(
+        "/VERYSILENT",
+        "/SUPPRESSMSGBOXES",
+        "/NORESTART",
+        "/SP-",
+        "/CURRENTUSER",
+        "/LOG=`"$installLog`""
+    ) -Wait -PassThru
+    if ($installProcess.ExitCode -ne 0) {
+        throw "silent per-user installer smoke failed with exit code $($installProcess.ExitCode)"
+    }
+
+    $installedExe = Join-Path $installRoot "BiliSubStudio.exe"
+    if (-not (Test-Path $installedExe -PathType Leaf)) {
+        throw "installer smoke did not create the expected application executable"
+    }
+    if ((Get-Sha256 $installedExe) -ne [string]$identity.exe_sha256) {
+        throw "installed application executable differs from the verified publish"
+    }
+
+    $startupLog = Join-Path $env:LOCALAPPDATA "BiliSub Studio\Logs\startup.log"
+    if (Test-Path $startupLog) { Remove-Item $startupLog -Force }
+    $smokeSentinel = Join-Path $env:RUNNER_TEMP "bilisub-installed-startup-smoke.txt"
+    if (Test-Path $smokeSentinel) { Remove-Item $smokeSentinel -Force }
+    $appProcess = Start-Process -FilePath $installedExe -ArgumentList "--startup-smoke-test=`"$smokeSentinel`"" -PassThru
+    if (-not $appProcess.WaitForExit(30000)) {
+        Stop-Process -Id $appProcess.Id -Force -ErrorAction SilentlyContinue
+        throw "installed WinUI startup smoke timed out"
+    }
+    if ($appProcess.ExitCode -ne 0 -or -not (Test-Path $smokeSentinel -PathType Leaf)) {
+        throw "installed WinUI startup smoke failed with exit code $($appProcess.ExitCode)"
+    }
+    if (-not (Test-Path $startupLog -PathType Leaf)) {
+        throw "installed WinUI startup smoke did not produce a persistent startup log"
+    }
+    Copy-Item $startupLog (Join-Path $outputFull $installerSmokeLogName) -Force
+
+    $uninstaller = Get-ChildItem $installRoot -File -Filter "unins*.exe" | Select-Object -First 1
+    if ($null -eq $uninstaller) { throw "installer smoke could not find the uninstaller" }
+    $uninstallLog = Join-Path $outputFull "INNO_UNINSTALL_SMOKE_LOG.txt"
+    $uninstallProcess = Start-Process -FilePath $uninstaller.FullName -ArgumentList @(
+        "/VERYSILENT",
+        "/SUPPRESSMSGBOXES",
+        "/NORESTART",
+        "/LOG=`"$uninstallLog`""
+    ) -Wait -PassThru
+    if ($uninstallProcess.ExitCode -ne 0 -or (Test-Path $installedExe -PathType Leaf)) {
+        throw "silent uninstaller smoke failed"
+    }
+    foreach ($protectedRoot in @("Data", "Tools", "Temp", "Cache", "Downloads")) {
+        if (-not (Test-Path (Join-Path $installRoot $protectedRoot) -PathType Container)) {
+            throw "uninstaller removed protected root: $protectedRoot"
+        }
+    }
+    $installerInstallSmoke = $true
+}
 
 $statusPath = Join-Path $outputFull "INSTALLER_GATE_STATUS.json"
 [ordered]@{
@@ -106,6 +172,8 @@ $statusPath = Join-Path $outputFull "INSTALLER_GATE_STATUS.json"
     install_root = "%LOCALAPPDATA%\Programs\BiliSub Studio"
     install_directory_user_selectable = $false
     winui_startup_smoke = [bool]$identity.winui_startup_smoke
+    installer_install_smoke = $installerInstallSmoke
+    installer_startup_smoke_log = $installerSmokeLogName
     startup_failure_visible = $true
     protected_roots_preserved = @("Data", "Tools", "Temp", "Cache", "Downloads")
     authenticode_status = [string]$signature.Status

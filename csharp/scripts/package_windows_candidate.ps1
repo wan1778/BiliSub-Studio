@@ -126,7 +126,11 @@ $installerName = "BiliSubStudio_Setup_v4.0.0-beta.12-csharp-p5_x64.exe"
 $installerPath = Join-Path $outputFull $installerName
 $installerStatusName = "INSTALLER_GATE_STATUS.json"
 $installerStatusPath = Join-Path $outputFull $installerStatusName
-if (-not (Test-Path $installerPath -PathType Leaf) -or -not (Test-Path $installerStatusPath -PathType Leaf)) {
+$installerSmokeLogName = "INSTALLER_STARTUP_SMOKE_LOG.txt"
+$installerSmokeLogPath = Join-Path $outputFull $installerSmokeLogName
+if (-not (Test-Path $installerPath -PathType Leaf) -or
+    -not (Test-Path $installerStatusPath -PathType Leaf) -or
+    -not (Test-Path $installerSmokeLogPath -PathType Leaf)) {
     throw "one-file installer evidence is missing"
 }
 $installerHash = Get-Sha256 $installerPath
@@ -161,6 +165,8 @@ $gateStatus = [ordered]@{
     primary_user_artifact = $installerName
     installer_sha256 = $installerHash
     installer_status = "installer_built_field_qa_pending"
+    installer_install_smoke = $true
+    installer_startup_smoke_log = $installerSmokeLogName
 }
 $gateStatus | ConvertTo-Json -Depth 4 | Set-Content $gateStatusPath -Encoding UTF8
 
@@ -173,7 +179,8 @@ $artifactNames = @(
     $publishSumsEvidenceName,
     $sourceSumsEvidenceName,
     $installerName,
-    $installerStatusName
+    $installerStatusName,
+    $installerSmokeLogName
 )
 if ($sourceArchiveName) { $artifactNames += $sourceArchiveName }
 $artifactNames = $artifactNames | Sort-Object

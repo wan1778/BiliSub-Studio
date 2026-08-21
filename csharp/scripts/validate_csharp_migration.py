@@ -159,6 +159,8 @@ for marker in (
     "WINDOWS_FIELD_CHECKLIST_CSHARP_P5.md",
     "build_windows_installer.ps1",
     "primary_user_artifact",
+    "INSTALLER_STARTUP_SMOKE_LOG.txt",
+    "installer_install_smoke = $true",
 ):
     if marker not in package_script:
         fail(f"Windows candidate packaging gate missing {marker}")
@@ -185,6 +187,11 @@ for marker in (
     'requires_admin = $false',
     'release_candidate = $false',
     "INSTALLER_GATE_STATUS.json",
+    'if ($env:GITHUB_ACTIONS -eq "true")',
+    "bilisub-installed-startup-smoke.txt",
+    "installed WinUI startup smoke failed",
+    "installer_install_smoke = $installerInstallSmoke",
+    'foreach ($protectedRoot in @("Data", "Tools", "Temp", "Cache", "Downloads"))',
 ):
     if marker not in installer_script:
         fail(f"one-file installer gate missing {marker}")
