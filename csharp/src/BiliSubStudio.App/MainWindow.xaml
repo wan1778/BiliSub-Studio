@@ -19,51 +19,17 @@
             IsSettingsVisible="False"
             OpenPaneLength="216"
             PaneDisplayMode="Left"
-            AutomationProperties.Name="Điều hướng chính"
             SelectionChanged="Navigation_SelectionChanged">
-            <NavigationView.PaneHeader>
-                <Grid Height="64" Padding="16,8">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="36" />
-                        <ColumnDefinition Width="*" />
-                    </Grid.ColumnDefinitions>
-                    <Border Width="36" Height="36" Background="{ThemeResource AccentPrimaryBrush}" CornerRadius="10">
-                        <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" FontWeight="Bold" Foreground="White" Text="B" />
-                    </Border>
-                    <StackPanel Grid.Column="1" Margin="12,0,0,0" VerticalAlignment="Center">
-                        <TextBlock FontSize="14" FontWeight="SemiBold" Foreground="{ThemeResource PrimaryTextBrush}" Text="BiliSub Studio" />
-                        <TextBlock FontSize="10" Foreground="{ThemeResource MutedTextBrush}" Text="C# · .NET 10 · WinUI 3" />
-                    </StackPanel>
-                </Grid>
-            </NavigationView.PaneHeader>
             <NavigationView.MenuItems>
-                <NavigationViewItem AccessKey="P" Content="Phụ đề" Tag="subtitle" ToolTipService.ToolTip="Phụ đề Bilibili">
-                    <NavigationViewItem.Icon><FontIcon FontFamily="Segoe MDL2 Assets" Glyph="&#xE8F2;" /></NavigationViewItem.Icon>
-                </NavigationViewItem>
-                <NavigationViewItem AccessKey="V" Content="Tải video" Tag="video" ToolTipService.ToolTip="Tải video Bilibili">
-                    <NavigationViewItem.Icon><FontIcon FontFamily="Segoe MDL2 Assets" Glyph="&#xE714;" /></NavigationViewItem.Icon>
-                </NavigationViewItem>
-                <NavigationViewItem AccessKey="O" Content="OCR phụ đề" Tag="ocr" ToolTipService.ToolTip="OCR phụ đề cứng">
-                    <NavigationViewItem.Icon><FontIcon FontFamily="Segoe MDL2 Assets" Glyph="&#xE7C3;" /></NavigationViewItem.Icon>
-                </NavigationViewItem>
-                <NavigationViewItem AccessKey="E" Content="Chỉnh video" Tag="editor" ToolTipService.ToolTip="Chỉnh video">
-                    <NavigationViewItem.Icon><FontIcon FontFamily="Segoe MDL2 Assets" Glyph="&#xE70F;" /></NavigationViewItem.Icon>
-                </NavigationViewItem>
-                <NavigationViewItem AccessKey="H" Content="Hiệu năng" Tag="hardware" ToolTipService.ToolTip="Phần cứng và benchmark">
-                    <NavigationViewItem.Icon><FontIcon FontFamily="Segoe MDL2 Assets" Glyph="&#xE950;" /></NavigationViewItem.Icon>
-                </NavigationViewItem>
+                <NavigationViewItem Content="Phụ đề" Tag="subtitle" />
+                <NavigationViewItem Content="Tải video" Tag="video" />
+                <NavigationViewItem Content="OCR phụ đề" Tag="ocr" />
+                <NavigationViewItem Content="Chỉnh video" Tag="editor" />
+                <NavigationViewItem Content="Hiệu năng" Tag="hardware" />
+                <NavigationViewItem Content="Đăng nhập" Tag="account" />
+                <NavigationViewItem Content="Cập nhật &amp; hỗ trợ" Tag="support" />
+                <NavigationViewItem Content="Cài đặt" Tag="settings" />
             </NavigationView.MenuItems>
-            <NavigationView.FooterMenuItems>
-                <NavigationViewItem AccessKey="A" Content="Đăng nhập" Tag="account" ToolTipService.ToolTip="Tài khoản Bilibili">
-                    <NavigationViewItem.Icon><FontIcon FontFamily="Segoe MDL2 Assets" Glyph="&#xE77B;" /></NavigationViewItem.Icon>
-                </NavigationViewItem>
-                <NavigationViewItem AccessKey="U" Content="Cập nhật &amp; hỗ trợ" Tag="support" ToolTipService.ToolTip="Cập nhật và gửi báo lỗi">
-                    <NavigationViewItem.Icon><FontIcon FontFamily="Segoe MDL2 Assets" Glyph="&#xE946;" /></NavigationViewItem.Icon>
-                </NavigationViewItem>
-                <NavigationViewItem x:Name="SettingsNavItem" AccessKey="S" Content="Cài đặt" Tag="settings" ToolTipService.ToolTip="Cài đặt ứng dụng">
-                    <NavigationViewItem.Icon><FontIcon FontFamily="Segoe MDL2 Assets" Glyph="&#xE713;" /></NavigationViewItem.Icon>
-                </NavigationViewItem>
-            </NavigationView.FooterMenuItems>
             <Frame x:Name="ContentFrame" Background="{ThemeResource CanvasBrush}" />
         </NavigationView>
 
@@ -80,12 +46,11 @@
                     Grid.Column="1"
                     Margin="24,0"
                     VerticalAlignment="Center"
-                    AutomationProperties.LiveSetting="Polite"
                     FontSize="10"
                     Foreground="{ThemeResource MutedTextBrush}"
-                    Text="Đang khởi tạo C# application boundary..."
+                    Text="Đang khởi tạo ứng dụng..."
                     TextTrimming="CharacterEllipsis" />
-                <TextBlock Grid.Column="2" VerticalAlignment="Center" FontSize="10" Foreground="{ThemeResource MutedTextBrush}" Text="Windows x64" />
+                <TextBlock Grid.Column="2" VerticalAlignment="Center" FontSize="10" Foreground="{ThemeResource MutedTextBrush}" Text="C# · .NET 10 · WinUI 3" />
             </Grid>
         </Border>
     </Grid>
