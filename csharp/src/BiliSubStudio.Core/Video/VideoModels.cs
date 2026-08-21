@@ -32,7 +32,9 @@ public sealed record VideoDownloadRequest(
     string Mode,
     string Speed,
     string OutputDirectory,
-    string? CookieFile = null);
+    string? CookieFile = null,
+    string BundleSubtitleFormat = "",
+    string BundleSubtitleTrack = "");
 
 public sealed record VideoDownloadResult(string OutputPath, long Size, bool UsedRange, int PeakConnections);
 

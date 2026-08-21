@@ -87,7 +87,8 @@ public sealed class BiliSubApplication : IAsyncDisposable
 
     public string StartVideo(VideoDownloadRequest request)
     {
-        var job = Jobs.Create("video");
+        var bundledSubtitle = !string.IsNullOrWhiteSpace(request.BundleSubtitleTrack);
+        var job = Jobs.Create(bundledSubtitle ? "media" : "video");
         _ = RunJobAsync(job, async () =>
         {
             await _configStore.UpdateAsync(config => config with
@@ -95,14 +96,99 @@ public sealed class BiliSubApplication : IAsyncDisposable
                 VideoSpeed = request.Speed,
                 VideoContainer = request.Container,
                 VideoMode = request.Mode,
+                SubtitleFormat = bundledSubtitle && !string.IsNullOrWhiteSpace(request.BundleSubtitleFormat)
+                    ? request.BundleSubtitleFormat
+                    : config.SubtitleFormat,
             }, job.CancellationToken);
+
+            var outputDirectory = string.IsNullOrWhiteSpace(request.OutputDirectory)
+                ? Config.OutputDirectory
+                : request.OutputDirectory;
             var cookie = await Sessions.WriteNetscapeFileAsync(job.CancellationToken);
-            var result = await _video.RunAsync(job, request with
+
+            if (!bundledSubtitle)
             {
-                OutputDirectory = string.IsNullOrWhiteSpace(request.OutputDirectory) ? Config.OutputDirectory : request.OutputDirectory,
-                CookieFile = cookie,
-            });
-            job.Finish(null, "Đã tải: " + result.OutputPath, result);
+                var result = await _video.RunAsync(job, request with
+                {
+                    OutputDirectory = outputDirectory,
+                    CookieFile = cookie,
+                });
+                job.Finish(null, "Đã tải: " + result.OutputPath, result);
+                return;
+            }
+
+            async Task<T> RunPhaseAsync<T>(
+                string phase,
+                string label,
+                double start,
+                double span,
+                Func<AppJob, Task<T>> action)
+            {
+                using var child = new AppJob($"{job.Id}:{phase}", phase);
+                using var registration = job.CancellationToken.Register(child.Cancel);
+                var task = action(child);
+                var logOffset = 0;
+
+                void Publish(JobSnapshot snapshot, bool completed = false)
+                {
+                    logOffset = snapshot.LogNext;
+                    foreach (var line in snapshot.Logs) job.Log($"{label} · {line}");
+                    var mapped = completed
+                        ? start + span
+                        : start + Math.Clamp(snapshot.Progress, 0, 100) * span / 100d;
+                    job.Set(phase, mapped, $"{label}: {snapshot.Message}");
+                    job.SetTransport(snapshot.BytesPerSecond, snapshot.ActiveConnections, snapshot.RangeSupported);
+                }
+
+                try
+                {
+                    while (!task.IsCompleted)
+                    {
+                        Publish(child.Snapshot(logOffset));
+                        await Task.WhenAny(task, Task.Delay(250, job.CancellationToken));
+                        job.CancellationToken.ThrowIfCancellationRequested();
+                    }
+
+                    Publish(child.Snapshot(logOffset), completed: true);
+                    return await task;
+                }
+                catch (OperationCanceledException)
+                {
+                    child.Cancel();
+                    try { await task; } catch { }
+                    throw;
+                }
+            }
+
+            var video = await RunPhaseAsync(
+                "bundle-video",
+                "Video",
+                0,
+                85,
+                child => _video.RunAsync(child, request with
+                {
+                    OutputDirectory = outputDirectory,
+                    CookieFile = cookie,
+                }));
+
+            job.SetTransport(0, 0, null);
+
+            var subtitle = await RunPhaseAsync(
+                "bundle-subtitle",
+                "Phụ đề",
+                85,
+                15,
+                child => _subtitle.RunAsync(child, new SubtitleRequest(
+                    request.Url,
+                    string.IsNullOrWhiteSpace(request.BundleSubtitleFormat) ? Config.SubtitleFormat : request.BundleSubtitleFormat,
+                    request.BundleSubtitleTrack,
+                    outputDirectory,
+                    cookie,
+                    Sessions.Cookie)));
+
+            job.Log($"Video hoàn tất: {video.OutputPath}");
+            job.Log($"Phụ đề hoàn tất: {subtitle.OutputPath}");
+            job.Finish(null, $"Hoàn tất media · video + phụ đề: {outputDirectory}", video);
         });
         return job.Id;
     }

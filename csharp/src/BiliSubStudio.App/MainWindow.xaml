@@ -21,8 +21,7 @@
             PaneDisplayMode="Left"
             SelectionChanged="Navigation_SelectionChanged">
             <NavigationView.MenuItems>
-                <NavigationViewItem Content="Phụ đề" Tag="subtitle" />
-                <NavigationViewItem Content="Tải video" Tag="video" />
+                <NavigationViewItem Content="Tải media" Tag="video" />
                 <NavigationViewItem Content="OCR phụ đề" Tag="ocr" />
                 <NavigationViewItem Content="Chỉnh video" Tag="editor" />
                 <NavigationViewItem Content="Hiệu năng" Tag="hardware" />

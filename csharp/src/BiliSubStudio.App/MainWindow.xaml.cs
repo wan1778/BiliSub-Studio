@@ -34,7 +34,6 @@ public sealed partial class MainWindow : Window
         _settingsPage.ThemeRequested += ApplyTheme;
         _pages = new Dictionary<string, UIElement>(StringComparer.Ordinal)
         {
-            ["subtitle"] = new SubtitlePage(_application),
             ["video"] = new VideoPage(_application),
             ["ocr"] = new OcrPage(_application, filePicker),
             ["editor"] = new EditorPage(_application, filePicker),
@@ -48,11 +47,10 @@ public sealed partial class MainWindow : Window
         Closed += OnClosed;
         AppWindow.Closing += OnAppWindowClosing;
         Navigation.SelectedItem = Navigation.MenuItems[0];
-        ContentFrame.Content = _pages["subtitle"];
+        ContentFrame.Content = _pages["video"];
     }
 
     internal Task Initialization => _initialization.Task;
-
 
     internal async Task RunLayoutSmokeAsync()
     {
@@ -73,7 +71,7 @@ public sealed partial class MainWindow : Window
                 await Task.Delay(120);
             }
         }
-        ContentFrame.Content = _pages["subtitle"];
+        ContentFrame.Content = _pages["video"];
         StartupDiagnostics.Write("layout-smoke-pass");
     }
 
@@ -86,7 +84,6 @@ public sealed partial class MainWindow : Window
             ResizeInitialWindow();
             await _application.InitializeAsync();
             ((VideoPage)_pages["video"]).ApplyConfiguration();
-            ((SubtitlePage)_pages["subtitle"]).ApplyConfiguration();
             ((OcrPage)_pages["ocr"]).ApplyConfiguration();
             var snapshot = await _settingsPage.InitializeAsync();
             ApplyTheme(snapshot.Config.Theme);
