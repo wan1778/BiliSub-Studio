@@ -94,10 +94,27 @@
                             </ComboBox>
                         </StackPanel>
 
-                        <StackPanel Grid.Row="3" Grid.ColumnSpan="2" Spacing="4">
-                            <TextBlock Style="{StaticResource MutedTextStyle}" Text="Thư mục lưu chung"/>
-                            <TextBlock x:Name="OutputText" Style="{StaticResource BodyTextStyle}" TextWrapping="Wrap"/>
-                            <TextBlock Style="{StaticResource MutedTextStyle}" Text="Đổi thư mục mặc định trong Cài đặt nếu cần."/>
+                        <StackPanel Grid.Row="3" Grid.ColumnSpan="2" Spacing="5">
+                            <TextBlock Style="{StaticResource MutedTextStyle}" Text="Thư mục lưu video + phụ đề"/>
+                            <Grid ColumnSpacing="10">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBox
+                                    x:Name="OutputPathBox"
+                                    Style="{StaticResource InputTextBoxStyle}"
+                                    IsReadOnly="True"
+                                    PlaceholderText="Chưa chọn thư mục lưu"/>
+                                <Button
+                                    x:Name="ChooseOutputButton"
+                                    Grid.Column="1"
+                                    Click="Start_Click"
+                                    Content="Chọn thư mục…"/>
+                            </Grid>
+                            <TextBlock
+                                Style="{StaticResource MutedTextStyle}"
+                                Text="Bắt buộc chọn trước khi tải. Video và phụ đề của tác vụ này sẽ dùng cùng thư mục; lựa chọn được ghi nhớ cho lần sau."/>
                         </StackPanel>
                     </Grid>
 
