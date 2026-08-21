@@ -55,7 +55,7 @@ internal static class StartupDiagnostics
         }
     }
 
-    public static void WriteException(string stage, Exception error) => Write(stage, error.ToString());
+    public static void WriteException(string stage, Exception error) => Write(stage, DescribeException(error));
 
     public static void ShowFatalError(string stage, Exception error)
     {
@@ -93,6 +93,36 @@ internal static class StartupDiagnostics
         var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         var root = string.IsNullOrWhiteSpace(local) ? Path.GetTempPath() : local;
         return Path.Combine(root, "BiliSub Studio", "Logs", "startup.log");
+    }
+
+    private static string DescribeException(Exception error)
+    {
+        var detail = new StringBuilder(error.ToString());
+        detail.Append(" | HRESULT=0x").Append(error.HResult.ToString("X8"));
+        try
+        {
+            foreach (var property in error.GetType().GetProperties().Where(candidate =>
+                         candidate.GetIndexParameters().Length == 0
+                         && candidate.Name is not nameof(Exception.Message)
+                         && candidate.Name is not nameof(Exception.StackTrace)
+                         && candidate.Name is not nameof(Exception.Source)
+                         && candidate.Name is not nameof(Exception.InnerException)
+                         && candidate.Name is not nameof(Exception.Data)
+                         && candidate.Name is not nameof(Exception.TargetSite)
+                         && candidate.Name is not nameof(Exception.HResult)))
+            {
+                var value = property.GetValue(error);
+                if (value is not null)
+                {
+                    detail.Append(" | ").Append(property.Name).Append('=').Append(value);
+                }
+            }
+        }
+        catch
+        {
+            // Reflection metadata is best-effort diagnostics only.
+        }
+        return detail.ToString();
     }
 
     private static string? ResolveSmokeSentinel(IEnumerable<string> args)
