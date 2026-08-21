@@ -15,7 +15,7 @@
                 <TextBlock Style="{StaticResource PageTitleStyle}" Text="Tải media Bilibili"/>
                 <TextBlock
                     Style="{StaticResource BodyTextStyle}"
-                    Text="Một liên kết → video + phụ đề trong cùng một tác vụ. Đổi URL sẽ xóa metadata, quality và track cũ ngay."/>
+                    Text="Một liên kết → video chất lượng đã chọn + thumbnail + phụ đề nếu nguồn có. Đổi URL sẽ xóa metadata, quality và track cũ ngay."/>
             </StackPanel>
 
             <Border Grid.Row="1" Margin="0,22,0,0" Style="{StaticResource CardBorderStyle}">
@@ -82,7 +82,7 @@
                         </StackPanel>
 
                         <StackPanel Grid.Row="2">
-                            <TextBlock Style="{StaticResource MutedTextStyle}" Text="Track phụ đề"/>
+                            <TextBlock Style="{StaticResource MutedTextStyle}" Text="Track phụ đề (nếu có)"/>
                             <ComboBox x:Name="TrackBox" DisplayMemberPath="DisplayName"/>
                         </StackPanel>
                         <StackPanel Grid.Row="2" Grid.Column="1">
@@ -95,7 +95,7 @@
                         </StackPanel>
 
                         <StackPanel Grid.Row="3" Grid.ColumnSpan="2" Spacing="5">
-                            <TextBlock Style="{StaticResource MutedTextStyle}" Text="Thư mục lưu video + phụ đề"/>
+                            <TextBlock Style="{StaticResource MutedTextStyle}" Text="Thư mục lưu video + thumbnail + phụ đề"/>
                             <Grid ColumnSpacing="10">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*"/>
@@ -114,7 +114,7 @@
                             </Grid>
                             <TextBlock
                                 Style="{StaticResource MutedTextStyle}"
-                                Text="Bắt buộc chọn trước khi tải. Video và phụ đề của tác vụ này sẽ dùng cùng thư mục; lựa chọn được ghi nhớ cho lần sau."/>
+                                Text="Bắt buộc chọn trước khi tải. File tạm/resume của video dài cũng nằm trên ổ đã chọn; lựa chọn được ghi nhớ cho lần sau."/>
                         </StackPanel>
                     </Grid>
 
@@ -122,7 +122,7 @@
                         <Button
                             x:Name="StartButton"
                             Click="Start_Click"
-                            Content="Tải video + phụ đề"
+                            Content="Tải media"
                             IsEnabled="False"/>
                         <Button
                             x:Name="CancelButton"
