@@ -87,8 +87,9 @@ public sealed class BiliSubApplication : IAsyncDisposable
 
     public string StartVideo(VideoDownloadRequest request)
     {
-        var bundledSubtitle = !string.IsNullOrWhiteSpace(request.BundleSubtitleTrack);
-        var job = Jobs.Create(bundledSubtitle ? "media" : "video");
+        var bundledSubtitle = request.BundleSubtitleIfAvailable || !string.IsNullOrWhiteSpace(request.BundleSubtitleTrack);
+        var bundledMedia = request.BundleThumbnail || bundledSubtitle;
+        var job = Jobs.Create(bundledMedia ? "media" : "video");
         _ = RunJobAsync(job, async () =>
         {
             await _configStore.UpdateAsync(config => config with
@@ -103,10 +104,11 @@ public sealed class BiliSubApplication : IAsyncDisposable
 
             var outputDirectory = string.IsNullOrWhiteSpace(request.OutputDirectory)
                 ? Config.OutputDirectory
-                : request.OutputDirectory;
+                : Path.GetFullPath(request.OutputDirectory.Trim());
+            Directory.CreateDirectory(outputDirectory);
             var cookie = await Sessions.WriteNetscapeFileAsync(job.CancellationToken);
 
-            if (!bundledSubtitle)
+            if (!bundledMedia)
             {
                 var result = await _video.RunAsync(job, request with
                 {
@@ -115,6 +117,23 @@ public sealed class BiliSubApplication : IAsyncDisposable
                 });
                 job.Finish(null, "Đã tải: " + result.OutputPath, result);
                 return;
+            }
+
+            var metadata = await Resolver.GetMetadataAsync(request.Url, cookie, job.CancellationToken);
+            var subtitleTrack = string.IsNullOrWhiteSpace(request.BundleSubtitleTrack)
+                ? null
+                : metadata.Subtitles.FirstOrDefault(x => string.Equals(x.Language, request.BundleSubtitleTrack, StringComparison.Ordinal));
+            if (bundledSubtitle && subtitleTrack is null && metadata.Subtitles.Count > 0)
+            {
+                subtitleTrack = metadata.Subtitles
+                    .OrderBy(track =>
+                    {
+                        var chinese = track.Language.StartsWith("zh", StringComparison.OrdinalIgnoreCase)
+                            || track.Language.Contains("chi", StringComparison.OrdinalIgnoreCase);
+                        return track.Official && chinese ? 0 : chinese ? 1 : track.Official ? 2 : 3;
+                    })
+                    .ThenBy(track => track.DisplayName, StringComparer.OrdinalIgnoreCase)
+                    .First();
             }
 
             async Task<T> RunPhaseAsync<T>(
@@ -160,11 +179,121 @@ public sealed class BiliSubApplication : IAsyncDisposable
                 }
             }
 
+            string? thumbnailPath = null;
+            string? thumbnailWarning = null;
+            if (request.BundleThumbnail)
+            {
+                if (string.IsNullOrWhiteSpace(metadata.ThumbnailUrl))
+                {
+                    job.Log("Thumbnail · nguồn không cung cấp thumbnail; bỏ qua.");
+                }
+                else
+                {
+                    try
+                    {
+                        thumbnailPath = await RunPhaseAsync(
+                            "bundle-thumbnail",
+                            "Thumbnail",
+                            0,
+                            5,
+                            async child =>
+                            {
+                                var url = metadata.ThumbnailUrl.StartsWith("//", StringComparison.Ordinal)
+                                    ? "https:" + metadata.ThumbnailUrl
+                                    : metadata.ThumbnailUrl;
+                                Exception? last = null;
+                                for (var attempt = 1; attempt <= 4; attempt++)
+                                {
+                                    child.CancellationToken.ThrowIfCancellationRequested();
+                                    try
+                                    {
+                                        child.Set("downloading", 10, $"Đang tải thumbnail · lần {attempt}/4...");
+                                        using var message = new HttpRequestMessage(HttpMethod.Get, url);
+                                        message.Headers.Referrer = new Uri("https://www.bilibili.com/");
+                                        message.Headers.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) BiliSubStudio/4");
+                                        if (!string.IsNullOrWhiteSpace(Sessions.Cookie)) message.Headers.TryAddWithoutValidation("Cookie", Sessions.Cookie);
+                                        using var response = await _http.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, child.CancellationToken);
+                                        response.EnsureSuccessStatusCode();
+                                        const long maxThumbnailBytes = 32L * 1024 * 1024;
+                                        if (response.Content.Headers.ContentLength is > maxThumbnailBytes)
+                                            throw new InvalidDataException("Thumbnail vượt giới hạn 32 MiB.");
+
+                                        var extension = response.Content.Headers.ContentType?.MediaType?.ToLowerInvariant() switch
+                                        {
+                                            "image/png" => ".png",
+                                            "image/webp" => ".webp",
+                                            "image/avif" => ".avif",
+                                            _ => ".jpg",
+                                        };
+                                        var baseName = FileNamePolicy.Sanitize(metadata.Title, FileNamePolicy.Sanitize(metadata.Id, "BiliSub_Video"));
+                                        var path = FileNamePolicy.UniquePath(Path.Combine(outputDirectory, baseName + " [thumbnail]" + extension));
+                                        var temporary = path + ".tmp";
+                                        try
+                                        {
+                                            await using var source = await response.Content.ReadAsStreamAsync(child.CancellationToken);
+                                            await using var target = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None, 128 * 1024, FileOptions.Asynchronous | FileOptions.WriteThrough);
+                                            var buffer = new byte[128 * 1024];
+                                            long total = 0;
+                                            var expected = response.Content.Headers.ContentLength.GetValueOrDefault();
+                                            while (true)
+                                            {
+                                                var read = await source.ReadAsync(buffer, child.CancellationToken);
+                                                if (read == 0) break;
+                                                total += read;
+                                                if (total > maxThumbnailBytes) throw new InvalidDataException("Thumbnail vượt giới hạn 32 MiB.");
+                                                await target.WriteAsync(buffer.AsMemory(0, read), child.CancellationToken);
+                                                if (expected > 0) child.Set("downloading", Math.Min(95, 10 + total * 85d / expected), "Đang tải thumbnail...");
+                                            }
+                                            await target.FlushAsync(child.CancellationToken);
+                                            target.Flush(flushToDisk: true);
+                                            target.Close();
+                                            File.Move(temporary, path);
+                                            child.Log($"Đã lưu: {path}");
+                                            child.Set("done", 100, path);
+                                            return path;
+                                        }
+                                        finally
+                                        {
+                                            try { File.Delete(temporary); } catch { }
+                                        }
+                                    }
+                                    catch (OperationCanceledException error) when (!child.CancellationToken.IsCancellationRequested)
+                                    {
+                                        last = error;
+                                    }
+                                    catch (OperationCanceledException)
+                                    {
+                                        throw;
+                                    }
+                                    catch (Exception error) when (error is HttpRequestException or IOException)
+                                    {
+                                        last = error;
+                                    }
+
+                                    if (attempt < 4) await Task.Delay(TimeSpan.FromMilliseconds(300 * attempt * attempt), child.CancellationToken);
+                                }
+                                throw new HttpRequestException("Tải thumbnail thất bại sau 4 lần thử.", last);
+                            });
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
+                    catch (Exception error)
+                    {
+                        thumbnailWarning = error.Message;
+                        job.Log("Thumbnail · cảnh báo: " + error.Message);
+                    }
+                }
+            }
+
+            var videoStart = request.BundleThumbnail ? 5d : 0d;
+            var videoEnd = subtitleTrack is null ? 100d : 90d;
             var video = await RunPhaseAsync(
                 "bundle-video",
                 "Video",
-                0,
-                85,
+                videoStart,
+                Math.Max(1, videoEnd - videoStart),
                 child => _video.RunAsync(child, request with
                 {
                     OutputDirectory = outputDirectory,
@@ -173,22 +302,53 @@ public sealed class BiliSubApplication : IAsyncDisposable
 
             job.SetTransport(0, 0, null);
 
-            var subtitle = await RunPhaseAsync(
-                "bundle-subtitle",
-                "Phụ đề",
-                85,
-                15,
-                child => _subtitle.RunAsync(child, new SubtitleRequest(
-                    request.Url,
-                    string.IsNullOrWhiteSpace(request.BundleSubtitleFormat) ? Config.SubtitleFormat : request.BundleSubtitleFormat,
-                    request.BundleSubtitleTrack,
-                    outputDirectory,
-                    cookie,
-                    Sessions.Cookie)));
+            SubtitleResult? subtitle = null;
+            string? subtitleWarning = null;
+            if (subtitleTrack is null)
+            {
+                job.Log("Phụ đề · nguồn không có track phù hợp; video vẫn hoàn tất bình thường.");
+            }
+            else
+            {
+                try
+                {
+                    subtitle = await RunPhaseAsync(
+                        "bundle-subtitle",
+                        "Phụ đề",
+                        90,
+                        10,
+                        child => _subtitle.RunAsync(child, new SubtitleRequest(
+                            request.Url,
+                            string.IsNullOrWhiteSpace(request.BundleSubtitleFormat) ? Config.SubtitleFormat : request.BundleSubtitleFormat,
+                            subtitleTrack.Language,
+                            outputDirectory,
+                            cookie,
+                            Sessions.Cookie)));
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception error)
+                {
+                    subtitleWarning = error.Message;
+                    job.Log("Phụ đề · cảnh báo: " + error.Message);
+                }
+            }
 
             job.Log($"Video hoàn tất: {video.OutputPath}");
-            job.Log($"Phụ đề hoàn tất: {subtitle.OutputPath}");
-            job.Finish(null, $"Hoàn tất media · video + phụ đề: {outputDirectory}", video);
+            if (thumbnailPath is not null) job.Log($"Thumbnail hoàn tất: {thumbnailPath}");
+            if (subtitle is not null) job.Log($"Phụ đề hoàn tất: {subtitle.OutputPath}");
+            if (thumbnailWarning is not null || subtitleWarning is not null)
+                job.Set("bundle-complete", 100, "Video đã hoàn tất; media phụ có cảnh báo, xem nhật ký.");
+            else
+                job.Set("bundle-complete", 100, "Video và media đi kèm đã hoàn tất.");
+
+            var completed = new List<string> { "video" };
+            if (thumbnailPath is not null) completed.Add("thumbnail");
+            if (subtitle is not null) completed.Add("phụ đề");
+            var warningSuffix = thumbnailWarning is not null || subtitleWarning is not null ? " · có cảnh báo" : string.Empty;
+            job.Finish(null, $"Hoàn tất media · {string.Join(" + ", completed)}{warningSuffix}: {outputDirectory}", video);
         });
         return job.Id;
     }
