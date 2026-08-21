@@ -60,8 +60,9 @@ public sealed partial class VideoPage : Page
         try
         {
             LoadMetadataButton.IsEnabled = false;
-            StatusText.Text = "Đang đọc thông tin video và phụ đề...";
-            var metadata = await _application.GetMetadataAsync(url, CancellationToken.None);
+            StatusText.Text = "Đang đọc video, thumbnail và phụ đề...";
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+            var metadata = await _application.GetMetadataAsync(url, timeout.Token);
 
             if (!string.Equals(UrlBox.Text.Trim(), url, StringComparison.Ordinal))
             {
@@ -94,15 +95,21 @@ public sealed partial class VideoPage : Page
             }
 
             _metadataUrl = url;
-            MetadataText.Text = $"{metadata.Title} · {QualityBox.Items.Count} mức chất lượng · {TrackBox.Items.Count} track phụ đề";
             var hasTrack = TrackBox.SelectedIndex >= 0;
+            var hasThumbnail = !string.IsNullOrWhiteSpace(metadata.ThumbnailUrl);
             var hasOutput = !string.IsNullOrWhiteSpace(OutputPathBox.Text);
-            StartButton.IsEnabled = hasTrack && hasOutput;
-            StatusText.Text = !hasTrack
-                ? "Nguồn không có track phụ đề; chưa thể chạy tác vụ media chung."
-                : !hasOutput
-                    ? "Nguồn hợp lệ. Hãy chọn thư mục lưu trước khi tải."
-                    : "Nguồn hợp lệ. Sẵn sàng tải video + phụ đề vào thư mục đã chọn.";
+            MetadataText.Text = $"{metadata.Title} · {QualityBox.Items.Count} mức chất lượng · thumbnail {(hasThumbnail ? "có" : "không")} · {TrackBox.Items.Count} track phụ đề";
+            StartButton.IsEnabled = QualityBox.SelectedItem is not null && hasOutput;
+            StatusText.Text = !hasOutput
+                ? "Nguồn hợp lệ. Hãy chọn thư mục lưu trước khi tải."
+                : hasTrack
+                    ? "Nguồn hợp lệ. Sẵn sàng tải video + thumbnail + phụ đề."
+                    : "Nguồn hợp lệ. Không có phụ đề; vẫn tải video + thumbnail nếu nguồn có.";
+        }
+        catch (OperationCanceledException)
+        {
+            MetadataText.Text = "Kiểm tra metadata quá thời gian; quality/track cũ đã bị xóa.";
+            StatusText.Text = "Không nhận được metadata trong 90 giây. Hãy thử lại.";
         }
         catch (Exception error)
         {
@@ -123,7 +130,7 @@ public sealed partial class VideoPage : Page
             StartButton.IsEnabled = false;
             QualityBox.Items.Clear();
             TrackBox.Items.Clear();
-            MetadataText.Text = "URL đã đổi; cần Kiểm tra lại video + phụ đề.";
+            MetadataText.Text = "URL đã đổi; cần Kiểm tra lại video + thumbnail + phụ đề.";
         }
     }
 
@@ -143,11 +150,9 @@ public sealed partial class VideoPage : Page
 
                 var snapshot = await _application.Settings.SetOutputDirectoryAsync(selected);
                 OutputPathBox.Text = snapshot.Config.OutputDirectory;
-                StartButton.IsEnabled = _metadataUrl is not null
-                    && QualityBox.SelectedItem is not null
-                    && TrackBox.SelectedItem is SubtitleTrack;
+                StartButton.IsEnabled = _metadataUrl is not null && QualityBox.SelectedItem is not null;
                 StatusText.Text = StartButton.IsEnabled
-                    ? "Đã chọn thư mục lưu. Sẵn sàng tải video + phụ đề."
+                    ? "Đã chọn thư mục lưu. Sẵn sàng tải media."
                     : "Đã chọn thư mục lưu. Hãy Kiểm tra nguồn trước khi tải.";
             }
             catch (Exception error)
@@ -163,9 +168,9 @@ public sealed partial class VideoPage : Page
         }
 
         if (_metadataUrl is null || !string.Equals(_metadataUrl, UrlBox.Text.Trim(), StringComparison.Ordinal)) return;
-        if (QualityBox.SelectedItem is null || TrackBox.SelectedItem is not SubtitleTrack track)
+        if (QualityBox.SelectedItem is null)
         {
-            StatusText.Text = "Cần quality video và track phụ đề hợp lệ.";
+            StatusText.Text = "Cần một mức chất lượng video hợp lệ.";
             return;
         }
 
@@ -190,6 +195,7 @@ public sealed partial class VideoPage : Page
             return;
         }
 
+        var track = TrackBox.SelectedItem as SubtitleTrack;
         _logOffset = 0;
         LogBox.Text = string.Empty;
         Progress.Value = 0;
@@ -203,7 +209,9 @@ public sealed partial class VideoPage : Page
             SpeedBox.SelectedItem?.ToString() ?? "fast",
             outputDirectory,
             BundleSubtitleFormat: FormatBox.SelectedItem?.ToString() ?? "srt",
-            BundleSubtitleTrack: track.Language));
+            BundleSubtitleTrack: track?.Language ?? string.Empty,
+            BundleSubtitleIfAvailable: true,
+            BundleThumbnail: true));
 
         StartButton.IsEnabled = false;
         LoadMetadataButton.IsEnabled = false;
@@ -242,7 +250,6 @@ public sealed partial class VideoPage : Page
                 ChooseOutputButton.IsEnabled = true;
                 StartButton.IsEnabled = _metadataUrl is not null
                     && QualityBox.SelectedItem is not null
-                    && TrackBox.SelectedItem is SubtitleTrack
                     && !string.IsNullOrWhiteSpace(OutputPathBox.Text);
                 _jobId = null;
                 return;
