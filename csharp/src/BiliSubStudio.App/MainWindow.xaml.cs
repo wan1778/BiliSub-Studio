@@ -53,6 +53,30 @@ public sealed partial class MainWindow : Window
 
     internal Task Initialization => _initialization.Task;
 
+
+    internal async Task RunLayoutSmokeAsync()
+    {
+        StartupDiagnostics.Write("layout-smoke-start");
+        var sizes = new[]
+        {
+            new SizeInt32(800, 600),
+            new SizeInt32(1_000, 700),
+            new SizeInt32(1_500, 900),
+        };
+        foreach (var requested in sizes)
+        {
+            AppWindow.Resize(requested);
+            foreach (var (tag, page) in _pages)
+            {
+                ContentFrame.Content = page;
+                StartupDiagnostics.Write("layout-smoke-page", $"{tag}; {requested.Width}x{requested.Height}");
+                await Task.Delay(120);
+            }
+        }
+        ContentFrame.Content = _pages["subtitle"];
+        StartupDiagnostics.Write("layout-smoke-pass");
+    }
+
     private async void OnLoaded(object sender, RoutedEventArgs e)
     {
         if (_initialized) return;
@@ -118,17 +142,6 @@ public sealed partial class MainWindow : Window
                 return;
             }
         }
-    }
-
-    private void RootGrid_SizeChanged(object sender, SizeChangedEventArgs e)
-    {
-        var compact = e.NewSize.Width < 1_000;
-        Navigation.PaneDisplayMode = compact
-            ? Microsoft.UI.Xaml.Controls.NavigationViewPaneDisplayMode.LeftCompact
-            : Microsoft.UI.Xaml.Controls.NavigationViewPaneDisplayMode.Left;
-        Navigation.IsPaneToggleButtonVisible = compact;
-        Navigation.IsPaneOpen = !compact;
-        Navigation.CompactPaneLength = 48;
     }
 
     private void ApplyTheme(string theme)

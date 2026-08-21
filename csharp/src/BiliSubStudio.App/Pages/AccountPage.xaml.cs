@@ -65,16 +65,4 @@ public sealed partial class AccountPage : Page
         DeleteButton.IsEnabled = !busy;
         SaveCookieButton.IsEnabled = !busy && !string.IsNullOrWhiteSpace(CookieBox.Password);
     }
-
-    private void Page_SizeChanged(object sender, SizeChangedEventArgs e)
-    {
-        var narrow = e.NewSize.Width > 0 && e.NewSize.Width < 720;
-        PageRoot.Padding = narrow ? new Thickness(16) : new Thickness(28);
-        ContentGrid.ColumnDefinitions[0].Width = narrow ? new GridLength(1, GridUnitType.Star) : new GridLength(320);
-        ContentGrid.ColumnDefinitions[1].Width = narrow ? new GridLength(0) : new GridLength(1, GridUnitType.Star);
-        ContentGrid.RowDefinitions[0].Height = GridLength.Auto;
-        ContentGrid.RowDefinitions[1].Height = narrow ? GridLength.Auto : new GridLength(0);
-        Grid.SetColumn(AccountInspector, narrow ? 0 : 1);
-        Grid.SetRow(AccountInspector, narrow ? 1 : 0);
-    }
 }

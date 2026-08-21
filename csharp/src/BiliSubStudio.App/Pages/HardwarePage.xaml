@@ -4,7 +4,7 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     AutomationProperties.Name="Phần cứng và benchmark">
     <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
-        <Grid x:Name="PageRoot" Padding="28" MaxWidth="1050" HorizontalAlignment="Left" SizeChanged="Page_SizeChanged">
+        <Grid x:Name="PageRoot" Padding="28" MaxWidth="1050" HorizontalAlignment="Left">
             <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
             <StackPanel Spacing="5">
                 <TextBlock Style="{StaticResource PageTitleStyle}" Text="Phần cứng &amp; Benchmark" />

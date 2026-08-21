@@ -35,21 +35,6 @@ public sealed partial class EditorPage : Page
         Unloaded += (_, _) => _player?.Pause();
     }
 
-    private void Page_SizeChanged(object sender, SizeChangedEventArgs e)
-    {
-        var narrow = e.NewSize.Width > 0 && e.NewSize.Width < 900;
-        PageRoot.Padding = narrow ? new Thickness(16) : new Thickness(24);
-        WorkspaceGrid.Height = narrow ? 1_100 : 600;
-        WorkspaceGrid.ColumnDefinitions[0].Width = narrow ? new GridLength(1, GridUnitType.Star) : new GridLength(2.2, GridUnitType.Star);
-        WorkspaceGrid.ColumnDefinitions[1].Width = narrow ? new GridLength(0) : new GridLength(1.1, GridUnitType.Star);
-        WorkspaceGrid.RowDefinitions[0].Height = narrow ? new GridLength(520) : new GridLength(1, GridUnitType.Star);
-        WorkspaceGrid.RowDefinitions[1].Height = narrow ? new GridLength(580) : new GridLength(0);
-        Grid.SetColumn(InspectorScroll, narrow ? 0 : 1);
-        Grid.SetRow(InspectorScroll, narrow ? 1 : 0);
-        InspectorScroll.Margin = narrow ? new Thickness(0, 14, 0, 0) : new Thickness(0);
-        ApplyPendingVisual();
-    }
-
     private async void Pick_Click(object sender, RoutedEventArgs e)
     {
         var path = await _picker.PickVideoAsync(); if (path is null) return;

@@ -7,6 +7,8 @@ Status starts as **BLOCKED**. Record one exact source revision, app EXE SHA-256 
 - 2026-08-21: installer SHA-256 `b7d0f438280c6461f6d82f9ec1c0ea9de48a4df3c3afdb764a3097823dd81883` failed on Wan's Windows machine.
 - Setup exposed the self-contained runtime tree in a user-selected directory and `BiliSubStudio.exe` showed a busy cursor, then exited with no visible error.
 - This exact binary is rejected permanently. A replacement must have merged WinUI control resources, persistent startup diagnostics, a visible fatal-startup dialog, a real Destination Location page that keeps runtime files inside a `BiliSub Studio` product folder, and a published-EXE startup smoke sentinel before field testing.
+- 2026-08-22: installer SHA-256 `d2c3db9c00dd613696fc7077db30dd2a2f902d6bde288af79dcc008c7e03e361` reached the native window on Wan's machine but crashed with WinUI `Layout cycle detected` while rendering Settings.
+- This second exact binary is also rejected permanently. Its `SizeChanged` handlers rewrote Grid/NavigationView measurements during layout; the replacement must pass an all-page 800×600, 1000×700 and 1500×900 startup layout smoke before packaging.
 
 ## Build and installer identity
 

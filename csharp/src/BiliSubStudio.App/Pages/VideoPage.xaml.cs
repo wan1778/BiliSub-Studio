@@ -103,17 +103,4 @@ public sealed partial class VideoPage : Page
             await Task.Delay(350);
         }
     }
-
-    private void Page_SizeChanged(object sender, SizeChangedEventArgs e)
-    {
-        var narrow = e.NewSize.Width > 0 && e.NewSize.Width < 760;
-        PageRoot.Padding = narrow ? new Thickness(16) : new Thickness(28);
-        OptionsGrid.ColumnDefinitions[0].Width = new GridLength(1, GridUnitType.Star);
-        OptionsGrid.ColumnDefinitions[1].Width = new GridLength(1, GridUnitType.Star);
-        OptionsGrid.ColumnDefinitions[2].Width = narrow ? new GridLength(0) : new GridLength(1, GridUnitType.Star);
-        OptionsGrid.ColumnDefinitions[3].Width = narrow ? new GridLength(0) : new GridLength(1, GridUnitType.Star);
-        OptionsGrid.RowDefinitions[1].Height = narrow ? GridLength.Auto : new GridLength(0);
-        Grid.SetColumn(SpeedPanel, narrow ? 0 : 2); Grid.SetRow(SpeedPanel, narrow ? 1 : 0);
-        Grid.SetColumn(ContainerPanel, narrow ? 1 : 3); Grid.SetRow(ContainerPanel, narrow ? 1 : 0);
-    }
 }

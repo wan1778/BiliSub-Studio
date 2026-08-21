@@ -233,6 +233,8 @@ if 'Link="Assets\\worker.py"' not in app_project or "internal\\ocr\\worker.py" n
     fail("app project must package the exact frozen OCR worker asset")
 
 app_sources = "\n".join(path.read_text(encoding="utf-8") for path in (CSHARP / "src/BiliSubStudio.App").rglob("*.*") if path.suffix in {".cs", ".xaml"})
+if 'SizeChanged="' in app_sources or re.search(r"\b(?:Page|RootGrid)_SizeChanged\b", app_sources):
+    fail("layout must not mutate Grid or NavigationView from SizeChanged; use stable XAML/visual states")
 for marker in FORBIDDEN_APP_MARKERS:
     if marker in app_sources:
         fail(f"production C# UI contains forbidden marker {marker}")
@@ -269,9 +271,9 @@ for owner, source in (("OCR", ocr_xaml + ocr_code), ("Editor", editor_xaml + edi
     for marker in ("MediaPlayerElement", 'AreTransportControlsEnabled="True"', "IsFullWindow", "MediaSource.CreateFromStorageFile", "PositionChanged"):
         if marker not in source:
             fail(f"{owner} native playback/fullscreen contract missing {marker}")
-    for marker in ('SizeChanged="Page_SizeChanged"', "WorkspaceGrid", "Grid.SetRow(InspectorScroll", "1_100"):
+    for marker in ("WorkspaceGrid", 'Grid.Column="1"', 'Height="600"'):
         if marker not in source:
-            fail(f"{owner} narrow/DPI layout contract missing {marker}")
+            fail(f"{owner} stable desktop layout contract missing {marker}")
 for marker in ('SelectionChanged="CueList_SelectionChanged"', "SyncCueSelection", "PlaybackSession.Position"):
     if marker not in ocr_xaml + ocr_code:
         fail(f"OCR cue/timeline synchronization missing {marker}")
@@ -309,9 +311,12 @@ main_code = (CSHARP / "src/BiliSubStudio.App/MainWindow.xaml.cs").read_text(enco
 for marker in ("Config.CheckUpdates", "CheckForUpdatesOnLaunchAsync", "ApplyUpdateInfo"):
     if marker not in main_code:
         fail(f"automatic update-check setting has no startup owner: {marker}")
-for marker in ('SizeChanged="RootGrid_SizeChanged"', "NavigationViewPaneDisplayMode.LeftCompact", "CompactPaneLength"):
-    if marker not in main_xaml + main_code:
-        fail(f"adaptive navigation contract missing {marker}")
+for marker in ('IsPaneToggleButtonVisible="True"', 'PaneDisplayMode="Left"', 'OpenPaneLength="216"'):
+    if marker not in main_xaml:
+        fail(f"stable navigation contract missing {marker}")
+for marker in ("RunLayoutSmokeAsync", "layout-smoke-page", "new SizeInt32(800, 600)", "new SizeInt32(1_500, 900)"):
+    if marker not in main_code:
+        fail(f"multi-viewport layout smoke contract missing {marker}")
 for tag in re.findall(r'Tag="([^"]+)"', main_xaml):
     if f'["{tag}"]' not in main_code:
         fail(f"navigation tag has no native page owner: {tag}")
@@ -327,7 +332,7 @@ app_code = (CSHARP / "src/BiliSubStudio.App/App.xaml.cs").read_text(encoding="ut
 for marker in ("startup.log", "MessageBoxW", "startup-smoke-test", "WriteSmokeSentinelAsync"):
     if marker not in startup_diagnostics:
         fail(f"visible startup diagnostic contract missing {marker}")
-for marker in ("StartupDiagnostics.Initialize", "ShowFatalError", "MainWindow.Initialization"):
+for marker in ("StartupDiagnostics.Initialize", "ShowFatalError", "MainWindow.Initialization", "RunLayoutSmokeAsync"):
     if marker not in app_code:
         fail(f"app startup owner missing {marker}")
 

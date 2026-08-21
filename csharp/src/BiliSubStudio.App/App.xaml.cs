@@ -43,6 +43,7 @@ public partial class App : Microsoft.UI.Xaml.Application
             if (StartupDiagnostics.IsSmokeTest)
             {
                 await MainWindow.Initialization.WaitAsync(TimeSpan.FromSeconds(20));
+                await MainWindow.RunLayoutSmokeAsync();
                 await StartupDiagnostics.WriteSmokeSentinelAsync();
                 Exit();
             }

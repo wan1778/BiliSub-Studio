@@ -3,7 +3,7 @@
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     AutomationProperties.Name="Phụ đề Bilibili">
-    <ScrollViewer><Grid x:Name="PageRoot" Padding="28" MaxWidth="1100" HorizontalAlignment="Left" SizeChanged="Page_SizeChanged">
+    <ScrollViewer><Grid x:Name="PageRoot" Padding="28" MaxWidth="1100" HorizontalAlignment="Left">
         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
         <StackPanel Spacing="5"><TextBlock Style="{StaticResource PageTitleStyle}" Text="Phụ đề Bilibili"/><TextBlock Style="{StaticResource BodyTextStyle}" Text="Lấy track chính thức hoặc AI và xuất SRT, TXT hay JSON."/></StackPanel>
         <Border Grid.Row="1" Margin="0,22,0,0" Style="{StaticResource CardBorderStyle}"><StackPanel Spacing="14">

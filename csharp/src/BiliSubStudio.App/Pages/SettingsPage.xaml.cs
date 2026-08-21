@@ -26,7 +26,6 @@ public sealed partial class SettingsPage : Page
     {
         var snapshot = await ViewModel.InitializeAsync();
         SyncControlsFromViewModel();
-        UpdateLayoutMode(ActualWidth);
         return snapshot;
     }
 
@@ -71,7 +70,6 @@ public sealed partial class SettingsPage : Page
         }
     }
 
-    private void Page_SizeChanged(object sender, SizeChangedEventArgs e) => UpdateLayoutMode(e.NewSize.Width);
 
     private void LoginTab_Click(object sender, RoutedEventArgs e) => NavigateRequested?.Invoke("account");
     private void SupportTab_Click(object sender, RoutedEventArgs e) => NavigateRequested?.Invoke("support");
@@ -104,15 +102,4 @@ public sealed partial class SettingsPage : Page
     }
 
     private async Task ShowErrorAsync(string message) => await new ContentDialog { XamlRoot = XamlRoot, Title = "Không thể thực hiện", Content = message, CloseButtonText = "Đóng" }.ShowAsync();
-
-    private void UpdateLayoutMode(double width)
-    {
-        var narrow = width > 0 && width < 940;
-        SettingsGrid.ColumnDefinitions[0].Width = new GridLength(1, GridUnitType.Star);
-        SettingsGrid.ColumnDefinitions[1].Width = narrow ? new GridLength(0) : new GridLength(1, GridUnitType.Star);
-        Grid.SetColumn(RightColumn, narrow ? 0 : 1);
-        Grid.SetRow(RightColumn, narrow ? 1 : 0);
-        Grid.SetColumnSpan(RightColumn, narrow ? 2 : 1);
-        RightColumn.Margin = narrow ? new Thickness(0, 2, 0, 0) : new Thickness(0);
-    }
 }

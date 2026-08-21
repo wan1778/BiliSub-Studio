@@ -2,7 +2,7 @@
     x:Class="BiliSubStudio.App.MainWindow"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
-    <Grid x:Name="RootGrid" Background="{ThemeResource CanvasBrush}" SizeChanged="RootGrid_SizeChanged">
+    <Grid x:Name="RootGrid" Background="{ThemeResource CanvasBrush}">
         <Grid.RowDefinitions>
             <RowDefinition Height="*" />
             <RowDefinition Height="40" />
@@ -15,7 +15,7 @@
             Background="{ThemeResource CanvasBrush}"
             IsBackButtonVisible="Collapsed"
             IsPaneOpen="True"
-            IsPaneToggleButtonVisible="False"
+            IsPaneToggleButtonVisible="True"
             IsSettingsVisible="False"
             OpenPaneLength="216"
             PaneDisplayMode="Left"
