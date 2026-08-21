@@ -42,7 +42,7 @@ P5 remains non-promotable. No merge, GitHub Release or update-channel publicatio
 - Installer SHA-256: `2a37143e1b5777741e50b84e6df52f3b524ce1a2f81cd203532ff42ecc4722b5`.
 - Run 16 passed compile/contracts, publish/layout smoke, custom-directory install, installed-EXE startup, uninstall and artifact upload.
 
-This installer is now superseded for further QA because the updater source has subsequently moved from Drive to GitHub. A new exact installer SHA from the latest GitHub head is required before field testing continues.
+This installer is superseded for further QA because the updater source has subsequently moved from Drive to GitHub. A new exact installer SHA from the latest GitHub head is required before field testing continues.
 
 ## Gate
 
