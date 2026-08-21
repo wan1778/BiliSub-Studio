@@ -70,7 +70,7 @@ public sealed class YtDlpResolver
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             AddTracks(info.Subtitles, official: true, ai: false, tracks, seen);
             AddTracks(info.AutomaticCaptions, official: false, ai: true, tracks, seen);
-            return new VideoMetadata(info.Title, info.Id, qualities, tracks);
+            return new VideoMetadata(info.Title, info.Id, qualities, tracks, info.Thumbnail);
         }
         finally
         {
@@ -143,8 +143,10 @@ public sealed class YtDlpResolver
         }
         return candidates
             .OrderByDescending(x => x.Height.GetValueOrDefault())
-            .ThenBy(x => preferAvc ? CodecRank(x.VideoCodec) : 0)
+            .ThenByDescending(x => x.Fps.GetValueOrDefault())
+            .ThenByDescending(x => x.Quality.GetValueOrDefault())
             .ThenByDescending(x => x.TotalBitrate.GetValueOrDefault())
+            .ThenBy(x => preferAvc ? CodecRank(x.VideoCodec) : 0)
             .FirstOrDefault();
     }
 
@@ -218,6 +220,7 @@ public sealed class YtDlpResolver
     {
         [JsonPropertyName("id")] public string Id { get; init; } = string.Empty;
         [JsonPropertyName("title")] public string Title { get; init; } = string.Empty;
+        [JsonPropertyName("thumbnail")] public string Thumbnail { get; init; } = string.Empty;
         [JsonPropertyName("formats")] public List<YtDlpFormat> Formats { get; init; } = [];
         [JsonPropertyName("subtitles")] public Dictionary<string, List<YtDlpSubtitle>> Subtitles { get; init; } = [];
         [JsonPropertyName("automatic_captions")] public Dictionary<string, List<YtDlpSubtitle>> AutomaticCaptions { get; init; } = [];
@@ -231,6 +234,8 @@ public sealed class YtDlpResolver
         [JsonPropertyName("vcodec")] public string VideoCodec { get; init; } = string.Empty;
         [JsonPropertyName("acodec")] public string AudioCodec { get; init; } = string.Empty;
         [JsonPropertyName("height")] public double? Height { get; init; }
+        [JsonPropertyName("fps")] public double? Fps { get; init; }
+        [JsonPropertyName("quality")] public double? Quality { get; init; }
         [JsonPropertyName("filesize")] public double? FileSize { get; init; }
         [JsonPropertyName("filesize_approx")] public double? ApproximateFileSize { get; init; }
         [JsonPropertyName("http_headers")] public Dictionary<string, string> HttpHeaders { get; init; } = [];
