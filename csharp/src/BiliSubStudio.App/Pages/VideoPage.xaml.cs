@@ -1,3 +1,4 @@
+using BiliSubStudio.App.Services;
 using BiliSubStudio.Core.Application;
 using BiliSubStudio.Core.Video;
 using Microsoft.UI.Xaml;
@@ -8,13 +9,15 @@ namespace BiliSubStudio.App.Pages;
 public sealed partial class VideoPage : Page
 {
     private readonly BiliSubApplication _application;
+    private readonly IFolderPickerService _folderPicker;
     private string? _metadataUrl;
     private string? _jobId;
     private int _logOffset;
 
-    public VideoPage(BiliSubApplication application)
+    public VideoPage(BiliSubApplication application, IFolderPickerService folderPicker)
     {
         _application = application;
+        _folderPicker = folderPicker;
         InitializeComponent();
     }
 
@@ -24,7 +27,13 @@ public sealed partial class VideoPage : Page
         Select(ContainerBox, _application.Config.VideoContainer);
         Select(ModeBox, _application.Config.VideoMode);
         Select(FormatBox, _application.Config.SubtitleFormat);
-        OutputText.Text = _application.Config.OutputDirectory;
+        OutputPathBox.Text = string.Equals(
+            _application.Config.OutputDirectory,
+            _application.Paths.DefaultDownloads,
+            StringComparison.OrdinalIgnoreCase)
+            ? string.Empty
+            : _application.Config.OutputDirectory;
+        StartButton.IsEnabled = false;
     }
 
     private static void Select(ComboBox box, string value)
@@ -86,10 +95,14 @@ public sealed partial class VideoPage : Page
 
             _metadataUrl = url;
             MetadataText.Text = $"{metadata.Title} · {QualityBox.Items.Count} mức chất lượng · {TrackBox.Items.Count} track phụ đề";
-            StartButton.IsEnabled = TrackBox.SelectedIndex >= 0;
-            StatusText.Text = StartButton.IsEnabled
-                ? "Nguồn hợp lệ. Sẵn sàng tải video + phụ đề trong cùng một tác vụ."
-                : "Nguồn không có track phụ đề; chưa thể chạy tác vụ media chung.";
+            var hasTrack = TrackBox.SelectedIndex >= 0;
+            var hasOutput = !string.IsNullOrWhiteSpace(OutputPathBox.Text);
+            StartButton.IsEnabled = hasTrack && hasOutput;
+            StatusText.Text = !hasTrack
+                ? "Nguồn không có track phụ đề; chưa thể chạy tác vụ media chung."
+                : !hasOutput
+                    ? "Nguồn hợp lệ. Hãy chọn thư mục lưu trước khi tải."
+                    : "Nguồn hợp lệ. Sẵn sàng tải video + phụ đề vào thư mục đã chọn.";
         }
         catch (Exception error)
         {
@@ -116,10 +129,64 @@ public sealed partial class VideoPage : Page
 
     private async void Start_Click(object sender, RoutedEventArgs e)
     {
+        if (ReferenceEquals(sender, ChooseOutputButton))
+        {
+            try
+            {
+                ChooseOutputButton.IsEnabled = false;
+                var selected = await _folderPicker.PickFolderAsync(OutputPathBox.Text.Trim());
+                if (string.IsNullOrWhiteSpace(selected))
+                {
+                    StatusText.Text = "Đã hủy chọn thư mục; chưa thay đổi nơi lưu.";
+                    return;
+                }
+
+                var snapshot = await _application.Settings.SetOutputDirectoryAsync(selected);
+                OutputPathBox.Text = snapshot.Config.OutputDirectory;
+                StartButton.IsEnabled = _metadataUrl is not null
+                    && QualityBox.SelectedItem is not null
+                    && TrackBox.SelectedItem is SubtitleTrack;
+                StatusText.Text = StartButton.IsEnabled
+                    ? "Đã chọn thư mục lưu. Sẵn sàng tải video + phụ đề."
+                    : "Đã chọn thư mục lưu. Hãy Kiểm tra nguồn trước khi tải.";
+            }
+            catch (Exception error)
+            {
+                StatusText.Text = "Không dùng được thư mục đã chọn: " + error.Message;
+                StartButton.IsEnabled = false;
+            }
+            finally
+            {
+                ChooseOutputButton.IsEnabled = _jobId is null;
+            }
+            return;
+        }
+
         if (_metadataUrl is null || !string.Equals(_metadataUrl, UrlBox.Text.Trim(), StringComparison.Ordinal)) return;
         if (QualityBox.SelectedItem is null || TrackBox.SelectedItem is not SubtitleTrack track)
         {
             StatusText.Text = "Cần quality video và track phụ đề hợp lệ.";
+            return;
+        }
+
+        var outputDirectory = OutputPathBox.Text.Trim();
+        if (string.IsNullOrWhiteSpace(outputDirectory))
+        {
+            StatusText.Text = "Hãy chọn thư mục lưu trước khi tải.";
+            StartButton.IsEnabled = false;
+            return;
+        }
+
+        try
+        {
+            var snapshot = await _application.Settings.SetOutputDirectoryAsync(outputDirectory);
+            outputDirectory = snapshot.Config.OutputDirectory;
+            OutputPathBox.Text = outputDirectory;
+        }
+        catch (Exception error)
+        {
+            StatusText.Text = "Thư mục lưu không dùng được: " + error.Message;
+            StartButton.IsEnabled = false;
             return;
         }
 
@@ -134,12 +201,13 @@ public sealed partial class VideoPage : Page
             ContainerBox.SelectedItem?.ToString() ?? "mp4",
             ModeBox.SelectedItem?.ToString() ?? "video+audio",
             SpeedBox.SelectedItem?.ToString() ?? "fast",
-            _application.Config.OutputDirectory,
+            outputDirectory,
             BundleSubtitleFormat: FormatBox.SelectedItem?.ToString() ?? "srt",
             BundleSubtitleTrack: track.Language));
 
         StartButton.IsEnabled = false;
         LoadMetadataButton.IsEnabled = false;
+        ChooseOutputButton.IsEnabled = false;
         CancelButton.IsEnabled = true;
         await MonitorJobAsync();
     }
@@ -171,9 +239,11 @@ public sealed partial class VideoPage : Page
             {
                 CancelButton.IsEnabled = false;
                 LoadMetadataButton.IsEnabled = true;
+                ChooseOutputButton.IsEnabled = true;
                 StartButton.IsEnabled = _metadataUrl is not null
                     && QualityBox.SelectedItem is not null
-                    && TrackBox.SelectedItem is SubtitleTrack;
+                    && TrackBox.SelectedItem is SubtitleTrack
+                    && !string.IsNullOrWhiteSpace(OutputPathBox.Text);
                 _jobId = null;
                 return;
             }
