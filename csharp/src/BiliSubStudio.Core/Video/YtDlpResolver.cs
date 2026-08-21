@@ -58,7 +58,7 @@ public sealed class YtDlpResolver
             var info = await LoadInfoAsync(url, cookieFile, cancellationToken);
             var qualities = info.Formats
                 .Where(IsVideo)
-                .Select(x => x.Height)
+                .Select(x => x.Height is > 0 and <= int.MaxValue ? (int)Math.Round(x.Height.Value) : 0)
                 .Where(x => x > 0)
                 .Distinct()
                 .OrderDescending()
@@ -135,22 +135,22 @@ public sealed class YtDlpResolver
     private static YtDlpFormat? ChooseVideo(IReadOnlyList<YtDlpFormat> formats, int requestedHeight, bool preferAvc)
     {
         var candidates = formats.Where(IsVideo)
-            .Where(x => requestedHeight <= 0 || x.Height <= requestedHeight)
+            .Where(x => requestedHeight <= 0 || x.Height.GetValueOrDefault() <= requestedHeight)
             .ToList();
         if (candidates.Count == 0 && requestedHeight > 0)
         {
             candidates = formats.Where(IsVideo).ToList();
         }
         return candidates
-            .OrderByDescending(x => x.Height)
+            .OrderByDescending(x => x.Height.GetValueOrDefault())
             .ThenBy(x => preferAvc ? CodecRank(x.VideoCodec) : 0)
-            .ThenByDescending(x => x.TotalBitrate)
+            .ThenByDescending(x => x.TotalBitrate.GetValueOrDefault())
             .FirstOrDefault();
     }
 
     private static YtDlpFormat? ChooseAudio(IReadOnlyList<YtDlpFormat> formats) => formats
         .Where(x => !string.IsNullOrWhiteSpace(x.Url) && HasCodec(x.AudioCodec) && !HasCodec(x.VideoCodec))
-        .OrderByDescending(x => x.AudioBitrate > 0 ? x.AudioBitrate : x.TotalBitrate)
+        .OrderByDescending(x => x.AudioBitrate.GetValueOrDefault() > 0 ? x.AudioBitrate.GetValueOrDefault() : x.TotalBitrate.GetValueOrDefault())
         .FirstOrDefault();
 
     private static bool IsVideo(YtDlpFormat x) =>
@@ -167,15 +167,26 @@ public sealed class YtDlpResolver
         return 3;
     }
 
-    private static ResolvedStream ToStream(StreamKind kind, YtDlpFormat format, long generation) => new(
-        kind,
-        format.FormatId,
-        format.Url,
-        new Dictionary<string, string>(format.HttpHeaders, StringComparer.OrdinalIgnoreCase),
-        format.FileSize > 0 ? format.FileSize : format.ApproximateFileSize,
-        format.Height,
-        format.Extension,
-        generation);
+    private static ResolvedStream ToStream(StreamKind kind, YtDlpFormat format, long generation)
+    {
+        var rawSize = format.FileSize is > 0 ? format.FileSize.Value : format.ApproximateFileSize.GetValueOrDefault();
+        var size = double.IsFinite(rawSize) && rawSize > 0 && rawSize <= long.MaxValue
+            ? (long)Math.Floor(rawSize)
+            : 0L;
+        var rawHeight = format.Height.GetValueOrDefault();
+        var height = double.IsFinite(rawHeight) && rawHeight > 0 && rawHeight <= int.MaxValue
+            ? (int)Math.Round(rawHeight)
+            : 0;
+        return new ResolvedStream(
+            kind,
+            format.FormatId,
+            format.Url,
+            new Dictionary<string, string>(format.HttpHeaders, StringComparer.OrdinalIgnoreCase),
+            size,
+            height,
+            format.Extension,
+            generation);
+    }
 
     private static int ParseQuality(string quality)
     {
@@ -200,6 +211,7 @@ public sealed class YtDlpResolver
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true,
+        NumberHandling = JsonNumberHandling.AllowReadingFromString,
     };
 
     private sealed record YtDlpInfo
@@ -218,12 +230,12 @@ public sealed class YtDlpResolver
         [JsonPropertyName("ext")] public string Extension { get; init; } = string.Empty;
         [JsonPropertyName("vcodec")] public string VideoCodec { get; init; } = string.Empty;
         [JsonPropertyName("acodec")] public string AudioCodec { get; init; } = string.Empty;
-        [JsonPropertyName("height")] public int Height { get; init; }
-        [JsonPropertyName("filesize")] public long FileSize { get; init; }
-        [JsonPropertyName("filesize_approx")] public long ApproximateFileSize { get; init; }
+        [JsonPropertyName("height")] public double? Height { get; init; }
+        [JsonPropertyName("filesize")] public double? FileSize { get; init; }
+        [JsonPropertyName("filesize_approx")] public double? ApproximateFileSize { get; init; }
         [JsonPropertyName("http_headers")] public Dictionary<string, string> HttpHeaders { get; init; } = [];
-        [JsonPropertyName("tbr")] public double TotalBitrate { get; init; }
-        [JsonPropertyName("abr")] public double AudioBitrate { get; init; }
+        [JsonPropertyName("tbr")] public double? TotalBitrate { get; init; }
+        [JsonPropertyName("abr")] public double? AudioBitrate { get; init; }
     }
 
     private sealed record YtDlpSubtitle
