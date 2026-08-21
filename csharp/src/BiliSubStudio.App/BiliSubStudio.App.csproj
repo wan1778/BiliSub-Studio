@@ -27,4 +27,15 @@
   <ItemGroup>
     <Content Include="..\..\..\internal\ocr\worker.py" Link="Assets\worker.py" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
+  <Target Name="CopyCompiledXamlResourcesToPublish" AfterTargets="Publish" Condition="'$(WindowsPackageType)' == 'None'">
+    <ItemGroup>
+      <_CompiledXamlResource Include="$(OutputPath)**\*.xbf" />
+      <_CompiledXamlResource Include="$(OutputPath)$(AssemblyName).pri" Condition="Exists('$(OutputPath)$(AssemblyName).pri')" />
+      <_CompiledXamlResource Include="$(OutputPath)resources.pri" Condition="Exists('$(OutputPath)resources.pri')" />
+    </ItemGroup>
+    <Copy
+      SourceFiles="@(_CompiledXamlResource)"
+      DestinationFiles="@(_CompiledXamlResource->'$(PublishDir)%(RecursiveDir)%(Filename)%(Extension)')"
+      SkipUnchangedFiles="true" />
+  </Target>
 </Project>

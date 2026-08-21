@@ -142,6 +142,18 @@ if ((Get-Sha256 $worker) -ne (Get-Sha256 $sourceWorker)) {
 
 Assert-Pe32PlusX64 $exe
 
+$publishedXbf = @(Get-ChildItem $publish -Recurse -File -Filter "*.xbf")
+if ($publishedXbf.Count -lt 2) {
+    throw "publish is missing compiled WinUI XBF resources"
+}
+$publishedPri = @(
+    (Join-Path $publish "BiliSubStudio.pri"),
+    (Join-Path $publish "resources.pri")
+) | Where-Object { Test-Path $_ -PathType Leaf }
+if ($publishedPri.Count -eq 0) {
+    throw "publish is missing the WinUI package resource index"
+}
+
 # A successful compile is not proof that WinUI resources can initialize. Launch the
 # exact published executable and require its Loaded path to write a sentinel.
 $smokeSentinel = Join-Path $env:RUNNER_TEMP "bilisub-winui-startup-smoke.txt"
@@ -185,6 +197,8 @@ $identity = [ordered]@{
     self_contained = $true
     winui_startup_smoke = $true
     startup_smoke_log = "STARTUP_SMOKE_LOG.txt"
+    xbf_resource_count = $publishedXbf.Count
+    pri_resource = [System.IO.Path]::GetFileName($publishedPri[0])
     exe_sha256 = $exeHash
     worker_sha256 = $workerHash
     frozen_go_source = "9be4abd8184d2d7d24159dd736b6accfbe1cda90"

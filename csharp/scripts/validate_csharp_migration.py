@@ -142,6 +142,8 @@ for marker in (
     "WinUI startup smoke test failed",
     "STARTUP_SMOKE_LOG.txt",
     'winui_startup_smoke = $true',
+    "publish is missing compiled WinUI XBF resources",
+    "publish is missing the WinUI package resource index",
 ):
     if marker not in verify_script:
         fail(f"Windows verification gate missing {marker}")
@@ -207,6 +209,9 @@ for marker in (
     "<RuntimeIdentifier>win-x64</RuntimeIdentifier>",
     "<ApplicationIcon>Assets\\BiliSubStudio.ico</ApplicationIcon>",
     "<SatelliteResourceLanguages>en-US;vi-VN</SatelliteResourceLanguages>",
+    "CopyCompiledXamlResourcesToPublish",
+    "$(OutputPath)**\\*.xbf",
+    "$(AssemblyName).pri",
 ):
     if marker not in app_project:
         fail(f"app project missing {marker}")
