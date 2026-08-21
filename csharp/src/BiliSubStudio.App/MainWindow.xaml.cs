@@ -1,3 +1,4 @@
+using System.Text.Json;
 using BiliSubStudio.App.Pages;
 using BiliSubStudio.App.Services;
 using BiliSubStudio.App.ViewModels;
@@ -17,6 +18,7 @@ public sealed partial class MainWindow : Window
     private readonly SupportPage _supportPage;
     private readonly Dictionary<string, UIElement> _pages;
     private readonly TaskCompletionSource<bool> _initialization = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly string _buildTag;
     private bool _initialized;
     private bool _safeToClose;
     private bool _closing;
@@ -24,7 +26,8 @@ public sealed partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        Title = "BiliSub Studio";
+        _buildTag = ResolveBuildTag();
+        Title = $"BiliSub Studio · build {_buildTag}";
         var paths = AppPaths.FromExecutableDirectory();
         _application = new BiliSubApplication(paths);
         var folderPicker = new FolderPickerService(() => this);
@@ -51,6 +54,24 @@ public sealed partial class MainWindow : Window
     }
 
     internal Task Initialization => _initialization.Task;
+
+    private static string ResolveBuildTag()
+    {
+        try
+        {
+            var identityPath = Path.Combine(AppContext.BaseDirectory, "BUILD_IDENTITY.json");
+            if (!File.Exists(identityPath)) return "dev";
+            using var document = JsonDocument.Parse(File.ReadAllText(identityPath));
+            if (!document.RootElement.TryGetProperty("source_revision", out var revisionElement)) return "dev";
+            var revision = revisionElement.GetString()?.Trim();
+            if (string.IsNullOrWhiteSpace(revision)) return "dev";
+            return revision[..Math.Min(7, revision.Length)];
+        }
+        catch
+        {
+            return "dev";
+        }
+    }
 
     internal async Task RunLayoutSmokeAsync()
     {
@@ -88,9 +109,9 @@ public sealed partial class MainWindow : Window
             var snapshot = await _settingsPage.InitializeAsync();
             ApplyTheme(snapshot.Config.Theme);
             FooterStatus.Text = _application.Sessions.LastLoadWarning
-                ?? "C#/.NET 10/WinUI 3 · native services ready";
+                ?? $"C#/.NET 10/WinUI 3 · native services ready · build {_buildTag}";
             if (_application.Config.CheckUpdates) _ = CheckForUpdatesOnLaunchAsync();
-            StartupDiagnostics.Write("main-window-initialized");
+            StartupDiagnostics.Write("main-window-initialized", $"build={_buildTag}");
             _initialization.TrySetResult(true);
         }
         catch (Exception error)

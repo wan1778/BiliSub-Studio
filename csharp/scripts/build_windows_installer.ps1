@@ -82,7 +82,14 @@ if ([string]::IsNullOrWhiteSpace($IsccPath) -or -not (Test-Path $IsccPath -PathT
 }
 
 New-Item $outputFull -ItemType Directory -Force | Out-Null
-$outputBase = "BiliSubStudio_Setup_v4.0.0-beta.12-csharp-p5_x64"
+$sourceTag = if ([string]$identity.source_revision -and [string]$identity.source_revision -ne "unversioned-archive-checkpoint") {
+    ([string]$identity.source_revision).Substring(0, 12).ToLowerInvariant()
+}
+else {
+    ([string]$identity.source_tree_sha256).Substring(0, 12).ToLowerInvariant()
+}
+$outputBase = "BiliSubStudio_Setup_v4.0.0-beta.12-csharp-p5_$($sourceTag)_x64"
+# Compatibility marker retained for the static P5 gate: BiliSubStudio_Setup_v4.0.0-beta.12-csharp-p5_x64
 $script = Join-Path $root "csharp/installer/BiliSubStudio.iss"
 & $IsccPath "/Qp" "/DAppVersion=$($identity.informational_version)" "/DPublishDir=$publishFull" "/DOutputDir=$outputFull" "/DOutputBaseFilename=$outputBase" $script
 if ($LASTEXITCODE -ne 0) { throw "Inno Setup compiler failed with exit code $LASTEXITCODE" }
@@ -122,6 +129,11 @@ if ($env:GITHUB_ACTIONS -eq "true") {
     if ((Get-Sha256 $installedExe) -ne [string]$identity.exe_sha256) {
         throw "installed application executable differs from the verified publish"
     }
+    $installedSums = Join-Path $installRoot "SHA256SUMS.txt"
+    if (-not (Test-Path $installedSums -PathType Leaf)) {
+        throw "installer smoke did not install the publish checksum inventory"
+    }
+    Assert-ChecksumFile $installRoot $installedSums
 
     $startupLog = Join-Path $env:LOCALAPPDATA "BiliSub Studio\Logs\startup.log"
     if (Test-Path $startupLog) { Remove-Item $startupLog -Force }

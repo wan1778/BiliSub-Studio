@@ -105,10 +105,10 @@ foreach ($line in Get-Content $sourceInventoryPath) {
     Copy-Item $sourcePath $destination
 }
 $sourceTag = if ([string]$identity.source_revision -ne "unversioned-archive-checkpoint") {
-    ([string]$identity.source_revision).Substring(0, 12)
+    ([string]$identity.source_revision).Substring(0, 12).ToLowerInvariant()
 }
 else {
-    ([string]$identity.source_tree_sha256).Substring(0, 12)
+    ([string]$identity.source_tree_sha256).Substring(0, 12).ToLowerInvariant()
 }
 $sourceArchiveName = "BiliSubStudio_v4.0.0-beta.12-csharp-p5-source-$sourceTag.zip"
 $sourceArchive = Join-Path $outputFull $sourceArchiveName
@@ -122,16 +122,22 @@ Remove-Item $stagingRoot -Recurse -Force
 Remove-Item $readbackRoot -Recurse -Force
 
 & "$PSScriptRoot/build_windows_installer.ps1" -PublishDirectory $publishFull -OutputDirectory $outputFull
-$installerName = "BiliSubStudio_Setup_v4.0.0-beta.12-csharp-p5_x64.exe"
-$installerPath = Join-Path $outputFull $installerName
 $installerStatusName = "INSTALLER_GATE_STATUS.json"
 $installerStatusPath = Join-Path $outputFull $installerStatusName
 $installerSmokeLogName = "INSTALLER_STARTUP_SMOKE_LOG.txt"
 $installerSmokeLogPath = Join-Path $outputFull $installerSmokeLogName
-if (-not (Test-Path $installerPath -PathType Leaf) -or
-    -not (Test-Path $installerStatusPath -PathType Leaf) -or
+if (-not (Test-Path $installerStatusPath -PathType Leaf) -or
     -not (Test-Path $installerSmokeLogPath -PathType Leaf)) {
     throw "one-file installer evidence is missing"
+}
+$installerStatus = Get-Content $installerStatusPath -Raw | ConvertFrom-Json
+$installerName = [string]$installerStatus.primary_user_artifact
+if ([string]::IsNullOrWhiteSpace($installerName) -or $installerName -notlike "BiliSubStudio_Setup_v4.0.0-beta.12-csharp-p5_$($sourceTag)_x64.exe") {
+    throw "installer artifact name does not identify the exact source revision: $installerName"
+}
+$installerPath = Join-Path $outputFull $installerName
+if (-not (Test-Path $installerPath -PathType Leaf)) {
+    throw "one-file installer artifact is missing: $installerName"
 }
 $installerHash = Get-Sha256 $installerPath
 
