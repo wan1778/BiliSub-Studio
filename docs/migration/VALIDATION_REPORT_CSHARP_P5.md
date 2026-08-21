@@ -34,3 +34,9 @@ P5 replaces the older “portable-only/no-installer” delivery decision. The ap
 The installer cannot be compiled truthfully on Linux. Run `.github/workflows/csharp-p5-windows-x64-installer.yml` or execute `verify.ps1` followed by `package_windows_candidate.ps1` on Windows. The pipeline verifies the official Inno Setup release before compiling the installer.
 
 Complete `docs/migration/WINDOWS_FIELD_CHECKLIST_CSHARP_P5.md` for the exact installer SHA-256. A source ZIP or an untested Setup EXE is not the final release.
+
+## Live Windows CI findings
+
+- Run 1 exposed that `gh release verify-asset` defaults to the latest release. The workflow now supplies the pinned `is-7_0_2` tag explicitly while retaining release-attestation and Authenticode checks.
+- Run 2 exposed that the generated C# code map could include local `bin`/`obj` compiler output. The generator now excludes those directories so a clean Windows checkout and the Linux authoring tree produce the same map.
+- These pipeline fixes do not promote a candidate. The Windows compile, package, installer and field-QA gates remain mandatory for the exact resulting SHA-256.
