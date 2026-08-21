@@ -16,7 +16,12 @@ public sealed record StreamSelection(string Title, string Id, ResolvedStream? Vi
 
 public sealed record SubtitleTrack(string Language, string DisplayName, bool Official, bool Ai, string Url, string Extension);
 
-public sealed record VideoMetadata(string Title, string Id, IReadOnlyList<string> Qualities, IReadOnlyList<SubtitleTrack> Subtitles);
+public sealed record VideoMetadata(
+    string Title,
+    string Id,
+    IReadOnlyList<string> Qualities,
+    IReadOnlyList<SubtitleTrack> Subtitles,
+    string ThumbnailUrl = "");
 
 public sealed record VideoResolveRequest(
     string Url,
@@ -34,7 +39,9 @@ public sealed record VideoDownloadRequest(
     string OutputDirectory,
     string? CookieFile = null,
     string BundleSubtitleFormat = "",
-    string BundleSubtitleTrack = "");
+    string BundleSubtitleTrack = "",
+    bool BundleSubtitleIfAvailable = false,
+    bool BundleThumbnail = false);
 
 public sealed record VideoDownloadResult(string OutputPath, long Size, bool UsedRange, int PeakConnections);
 
