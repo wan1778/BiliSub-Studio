@@ -1,0 +1,11 @@
+{
+  "version": "4.0.0",
+  "channel_ready": false,
+  "download_url": "",
+  "sha256": "",
+  "size": 0,
+  "payload_kind": "winui3-portable-zip",
+  "notes": [
+    "Kênh stable trên GitHub chưa được công bố. Không có payload nào được phép tải trong giai đoạn field QA."
+  ]
+}

@@ -44,6 +44,18 @@ A replacement candidate must have a different SHA-256 and must restore the unifi
 - [ ] Cancel during subtitle phase also finishes as cancelled without a hanging parent job.
 - [ ] Invalid link/network error clears stale metadata and reports a visible error.
 
+## GitHub update channel — BLOCKER
+
+- [ ] No production update request uses Google Drive or a Drive file ID.
+- [ ] Beta build reads `update/beta.json` from the repository `main` branch; stable build reads `update/stable.json`.
+- [ ] While `channel_ready=false`, update check reports the GitHub channel as unpublished and Prepare/Update cannot download anything.
+- [ ] Before promotion, test a temporary QA manifest with `channel_ready=true` pointing to an exact GitHub Release asset from `wan1778/BiliSub-Studio`.
+- [ ] A non-GitHub Release URL is rejected before download.
+- [ ] Wrong `payload_kind`, size or SHA-256 is rejected without replacing runtime.
+- [ ] A valid GitHub Release payload stages, verifies PE32+ x64 and applies transactionally while preserving `Data/Tools/Temp/Cache/Downloads`.
+- [ ] Forced apply failure restores the previous runtime and the previous app can relaunch.
+- [ ] No GitHub Release or channel manifest is promoted automatically by CI.
+
 ## Player / OCR / editor — BLOCKER
 
 - [ ] H.264/HEVC plus fallback preview, play/pause/mute/seek/fullscreen.

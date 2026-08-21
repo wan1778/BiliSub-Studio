@@ -51,8 +51,6 @@ The existing JSON schema remains unchanged.
 
 ## Unified Bilibili media workflow
 
-Production ownership is one visible page and one user action:
-
 ```text
 VideoPage.LoadMetadata_Click
   -> BiliSubApplication.GetMetadataAsync
@@ -62,57 +60,19 @@ VideoPage.LoadMetadata_Click
   -> ProcessRunner -> app-owned yt-dlp.exe -J
   -> one VideoMetadata result containing BOTH qualities and subtitle tracks
   -> VideoPage populates QualityBox + TrackBox
-```
 
-Rules enforced in `VideoPage`:
-
-- one Bilibili URL owns both video quality and subtitle track state;
-- editing the URL immediately clears both quality and subtitle selections and disables Start;
-- a metadata response is discarded if the URL changed while it was in flight;
-- preferred default subtitle is official Chinese first, then another Chinese track, then other official/available tracks;
-- one output directory and one progress/log surface are used for the bundle;
-- the primary CTA is `Tải video + phụ đề`.
-
-Start call path:
-
-```text
 VideoPage.Start_Click
-  -> VideoDownloadRequest
-       BundleSubtitleFormat = selected SRT/TXT/JSON
-       BundleSubtitleTrack  = selected subtitle language identity
+  -> VideoDownloadRequest(BundleSubtitleFormat, BundleSubtitleTrack)
   -> BiliSubApplication.StartVideo
-       if BundleSubtitleTrack is empty:
-           legacy/single-video compatibility path remains unchanged
-       else:
-           JobManager.Create("media")
-           persist video + subtitle preferences
-           write one temporary Netscape cookie owner
-
-           phase bundle-video (0..85%)
-             -> child AppJob linked to parent cancellation
-             -> VideoDownloadService.RunAsync
-                 -> YtDlpResolver.ResolveAsync
-                 -> RangeDownloader.DownloadAsync per selected DASH stream
-                 -> Stable 1 / Fast 8 / Turbo 16 connection budget
-                 -> strict Range validation + resume manifest
-                 -> bounded URL refresh / yt-dlp fallback
-                 -> FFmpeg stream-copy remux
-
-           phase bundle-subtitle (85..100%)
-             -> child AppJob linked to the same parent cancellation
-             -> SubtitleService.RunAsync
-                 -> selected subtitle track
-                 -> JSON/json3/WebVTT/SRT parsing
-                 -> normalized SRT/TXT/JSON
-                 -> atomic output write
-
-           -> parent AppJob logs both final paths
-           -> parent Finish once
+  -> one parent JobManager job kind `media`
+       -> bundle-video child phase 0..85%
+          -> VideoDownloadService -> RangeDownloader -> fallback/remux
+       -> bundle-subtitle child phase 85..100%
+          -> SubtitleService -> selected track -> normalized output
+  -> one parent Finish / Cancel owner
 ```
 
-`Cancel` targets the single parent media Job. Parent cancellation is registered into the currently active child phase, so HTTP workers/yt-dlp/FFmpeg/subtitle fetch stop through their existing cancellation paths. Video Range/retry/remux algorithms and subtitle parsing algorithms are not modified by the bundling layer.
-
-`BiliSubApplication.StartSubtitle` remains as a low-level compatibility entry point but is not exposed as a separate production navigation tab.
+URL edits invalidate both quality and subtitle state. Parent cancellation is linked to whichever child phase is currently active. Video transport and subtitle normalization retain separate service ownership.
 
 ## Authentication
 
@@ -122,8 +82,6 @@ AccountPage
   -> QrMatrixEncoder -> native Canvas
   -> SessionStore -> Windows DPAPI -> Data/session.bin
 ```
-
-No browser/WebView is required for QR presentation.
 
 ## Native media preview
 
@@ -146,10 +104,8 @@ OCRPage.Prepare
 OCRPage.Scan
   -> BiliSubApplication.StartOcrScan
   -> OcrScanner.RunAsync
-  -> Auto/1/2/4/8/16 deterministic lane topology
-  -> shared PaddleOCR worker pool
-  -> lane-local SubtitleTracker
-  -> ChineseSubtitleNormalizer
+  -> deterministic lane topology + shared PaddleOCR pool
+  -> SubtitleTracker + ChineseSubtitleNormalizer
   -> schema-4 safe pause/resume checkpoint
   -> ExportOcrAsync -> SRT
 ```
@@ -165,16 +121,45 @@ EditorPage
   -> temporary render -> non-empty verification -> atomic final output
 ```
 
-Editor code does not own or alter downloader concurrency/resume state.
+## GitHub update channel
 
-## Hardware, update and report
+Google Drive is no longer in the production update call path.
 
 ```text
-HardwarePage -> HardwareService (CPU/RAM + NVIDIA Driver API/NVML)
-SupportPage.Check -> UpdateService.CheckAsync
-SupportPage.Prepare -> SHA-256 verified WinUI portable payload staging
-SupportPage.Report -> BugReportService.Sanitize -> bounded POST
+SupportPage.Check / startup auto-check
+  -> UpdateService.CheckAsync
+  -> CurrentVersion contains '-' ? beta : stable
+  -> HTTPS raw GitHub manifest on main
+       stable -> raw.githubusercontent.com/wan1778/BiliSub-Studio/main/update/stable.json
+       beta   -> raw.githubusercontent.com/wan1778/BiliSub-Studio/main/update/beta.json
+  -> channel_ready=false => report unpublished channel; download disabled
+  -> channel_ready=true
+       -> require payload_kind=winui3-portable-zip
+       -> require exact version / size / 64-hex SHA-256
+       -> require download_url host/path:
+          https://github.com/wan1778/BiliSub-Studio/releases/download/...
+
+SupportPage.Prepare
+  -> UpdateService.PrepareAsync
+  -> download exact GitHub Release asset
+  -> verify byte size + SHA-256 while streaming
+  -> safe ZIP extraction
+  -> reject protected Data/Tools/Temp/Cache/Downloads roots
+  -> validate root BiliSubStudio.exe as PE x86-64 / PE32+
+  -> copy current runtime to breakaway updater staging
+
+App close after prepared update
+  -> BreakawayLauncher (CREATE_BREAKAWAY_FROM_JOB)
+  -> wait old PID
+  -> ApplyPayloadTransactionalAsync
+       -> backup unprotected runtime entries
+       -> durable copy new payload
+       -> revalidate PE
+       -> delete backup on success
+       -> restore backup + relaunch old app on failure
 ```
+
+Channel publication policy is documented in `docs/migration/GITHUB_UPDATE_CHANNEL.md`. During field QA both repository manifests remain `channel_ready=false`; no GitHub Release is created automatically.
 
 ## Publish, installer and startup gates
 
@@ -202,4 +187,4 @@ package_windows_candidate.ps1
 - WinUI pages do not spawn FFmpeg/Python/yt-dlp directly.
 - No localhost production server, `/api` UI adapter, WebView/WebView2 or `BiliSubStudioCore.exe` exists in the C# production path.
 - Go production directories are not imported or invoked by the C# application.
-- The unified media change is orchestration/UI only; `RangeDownloader`, `VideoDownloadService` transport behavior and `SubtitleService` normalization behavior remain separate owners.
+- Update discovery and payload hosting are GitHub-only; transactional update safety remains owned by `UpdateService`.

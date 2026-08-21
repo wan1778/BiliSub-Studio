@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO.Compression;
+using System.Net;
 using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 using System.Reflection;
@@ -18,8 +19,9 @@ public sealed record PreparedUpdate(string Version, string PayloadDirectory, str
 
 public sealed class UpdateService
 {
-    private const string StableManifestId = "1wpVgh6urUJYhX-b6nqAj3TOJ6wyaoB0C";
-    private const string BetaManifestId = "18gW_x8Y_jD-PMyk5kv7tXYF--qzsQDiT";
+    private const string StableManifestUrl = "https://raw.githubusercontent.com/wan1778/BiliSub-Studio/main/update/stable.json";
+    private const string BetaManifestUrl = "https://raw.githubusercontent.com/wan1778/BiliSub-Studio/main/update/beta.json";
+    private const string GitHubReleasePathPrefix = "/wan1778/BiliSub-Studio/releases/download/";
     private const string RequiredPayloadKind = "winui3-portable-zip";
     private static readonly HashSet<string> PreservedRootDirectories = new(
         ["Data", "Tools", "Temp", "Cache", "Downloads"],
@@ -41,19 +43,23 @@ public sealed class UpdateService
     {
         var manifest = await FetchManifestAsync(cancellationToken);
         var notes = manifest.Notes ?? [];
+        if (!manifest.ChannelReady)
+            return new UpdateInfo(CurrentVersion, manifest.Version, false, notes, false, "Kênh cập nhật GitHub chưa được công bố.");
         if (!string.Equals(manifest.PayloadKind, RequiredPayloadKind, StringComparison.Ordinal))
             return new UpdateInfo(CurrentVersion, manifest.Version, false, notes, false, "Kênh hiện tại chưa có payload C# WinUI 3; không tải nhầm payload không tương thích.");
         ValidateManifest(manifest);
-        return new UpdateInfo(CurrentVersion, manifest.Version, IsNewerVersion(CurrentVersion, manifest.Version), notes, true,
-            IsNewerVersion(CurrentVersion, manifest.Version) ? "Có bản WinUI 3 mới." : "Đang dùng bản mới nhất.");
+        var available = IsNewerVersion(CurrentVersion, manifest.Version);
+        return new UpdateInfo(CurrentVersion, manifest.Version, available, notes, true,
+            available ? "Có bản WinUI 3 mới trên GitHub." : "Đang dùng bản mới nhất.");
     }
 
     public async Task<PreparedUpdate> PrepareAsync(CancellationToken cancellationToken)
     {
         if (_jobs.HasActiveJobs) throw new InvalidOperationException("Đang có tác vụ; hãy hoàn tất hoặc hủy trước khi cập nhật.");
         var manifest = await FetchManifestAsync(cancellationToken);
-        ValidateManifest(manifest);
+        if (!manifest.ChannelReady) throw new InvalidOperationException("Kênh cập nhật GitHub chưa được công bố.");
         if (!string.Equals(manifest.PayloadKind, RequiredPayloadKind, StringComparison.Ordinal)) throw new InvalidOperationException("Manifest không phải payload WinUI 3 portable zip.");
+        ValidateManifest(manifest);
         if (!IsNewerVersion(CurrentVersion, manifest.Version)) throw new InvalidOperationException("BiliSub Studio đã là phiên bản mới nhất.");
         var updateRoot = Path.Combine(_paths.Temp, "Update", SafeName(manifest.Version));
         var archive = Path.Combine(updateRoot, "payload.zip");
@@ -102,8 +108,6 @@ public sealed class UpdateService
         }
         catch
         {
-            // The transactional routine restores the previous runtime. Relaunch that
-            // restored copy so a failed update does not strand the user without an app.
             TryStartPortable(target);
             throw;
         }
@@ -113,18 +117,24 @@ public sealed class UpdateService
 
     private async Task<UpdateManifest> FetchManifestAsync(CancellationToken cancellationToken)
     {
-        var id = CurrentVersion.Contains('-', StringComparison.Ordinal) ? BetaManifestId : StableManifestId;
-        var endpoint = "https://drive.google.com/uc?export=download&id=" + Uri.EscapeDataString(id);
+        var endpoint = CurrentVersion.Contains('-', StringComparison.Ordinal) ? BetaManifestUrl : StableManifestUrl;
         using var response = await _http.GetAsync(endpoint, cancellationToken);
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            return new UpdateManifest(CurrentVersion, string.Empty, string.Empty, 0, RequiredPayloadKind,
+                ["Kênh cập nhật GitHub chưa được công bố."], false);
+        }
         response.EnsureSuccessStatusCode();
         return JsonSerializer.Deserialize<UpdateManifest>(await response.Content.ReadAsByteArrayAsync(cancellationToken))
-            ?? throw new InvalidDataException("Manifest update rỗng.");
+            ?? throw new InvalidDataException("Manifest update GitHub rỗng.");
     }
 
     private static void ValidateManifest(UpdateManifest manifest)
     {
-        if (string.IsNullOrWhiteSpace(manifest.Version) || string.IsNullOrWhiteSpace(manifest.DownloadUrl) || manifest.Size <= 0 || string.IsNullOrWhiteSpace(manifest.Sha256) || manifest.Sha256.Length != 64)
+        if (string.IsNullOrWhiteSpace(manifest.Version) || string.IsNullOrWhiteSpace(manifest.DownloadUrl) || manifest.Size <= 0 ||
+            string.IsNullOrWhiteSpace(manifest.Sha256) || !Regex.IsMatch(manifest.Sha256, "^[0-9a-fA-F]{64}$"))
             throw new InvalidDataException("Manifest update không hợp lệ.");
+        _ = NormalizeDownloadUrl(manifest.DownloadUrl);
     }
 
     private async Task DownloadVerifiedAsync(string url, string path, long expectedSize, string expectedSha256, CancellationToken cancellationToken)
@@ -299,8 +309,12 @@ public sealed class UpdateService
     private static string NormalizeDownloadUrl(string value)
     {
         value = value.Trim();
-        if (!value.Contains('/', StringComparison.Ordinal)) return "https://drive.google.com/uc?export=download&id=" + Uri.EscapeDataString(value);
-        return Uri.TryCreate(value, UriKind.Absolute, out var uri) && uri.Scheme == "https" ? uri.ToString() : throw new InvalidDataException("download_url update không hợp lệ.");
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps)
+            throw new InvalidDataException("download_url update không hợp lệ.");
+        if (!string.Equals(uri.Host, "github.com", StringComparison.OrdinalIgnoreCase) ||
+            !uri.AbsolutePath.StartsWith(GitHubReleasePathPrefix, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("Payload update phải là GitHub Release asset của wan1778/BiliSub-Studio.");
+        return uri.ToString();
     }
 
     private static void ValidatePe(string path)
@@ -381,7 +395,8 @@ public sealed class UpdateService
         [property: JsonPropertyName("sha256")] string Sha256,
         [property: JsonPropertyName("size")] long Size,
         [property: JsonPropertyName("payload_kind")] string PayloadKind,
-        [property: JsonPropertyName("notes")] string[]? Notes);
+        [property: JsonPropertyName("notes")] string[]? Notes,
+        [property: JsonPropertyName("channel_ready")] bool ChannelReady);
 
     private static class BreakawayLauncher
     {
