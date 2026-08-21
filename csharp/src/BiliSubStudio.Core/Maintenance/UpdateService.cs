@@ -42,7 +42,7 @@ public sealed class UpdateService
         var manifest = await FetchManifestAsync(cancellationToken);
         var notes = manifest.Notes ?? [];
         if (!string.Equals(manifest.PayloadKind, RequiredPayloadKind, StringComparison.Ordinal))
-            return new UpdateInfo(CurrentVersion, manifest.Version, false, notes, false, "Kênh hiện tại chưa có payload C# WinUI 3; không tải nhầm candidate Go.");
+            return new UpdateInfo(CurrentVersion, manifest.Version, false, notes, false, "Kênh hiện tại chưa có payload C# WinUI 3; không tải nhầm payload không tương thích.");
         ValidateManifest(manifest);
         return new UpdateInfo(CurrentVersion, manifest.Version, IsNewerVersion(CurrentVersion, manifest.Version), notes, true,
             IsNewerVersion(CurrentVersion, manifest.Version) ? "Có bản WinUI 3 mới." : "Đang dùng bản mới nhất.");

@@ -2,6 +2,12 @@
 
 Status starts as **BLOCKED**. Record one exact source revision, app EXE SHA-256 and installer SHA-256.
 
+## Failed field candidate — do not reuse
+
+- 2026-08-21: installer SHA-256 `b7d0f438280c6461f6d82f9ec1c0ea9de48a4df3c3afdb764a3097823dd81883` failed on Wan's Windows machine.
+- Setup exposed the self-contained runtime tree in a user-selected directory and `BiliSubStudio.exe` showed a busy cursor, then exited with no visible error.
+- This exact binary is rejected permanently. A replacement must have merged WinUI control resources, persistent startup diagnostics, a visible fatal-startup dialog, locked per-user install location and a real published-EXE startup smoke sentinel before field testing.
+
 ## Build and installer identity
 
 - [ ] Run `.github/workflows/csharp-p5-windows-x64-installer.yml` or matching local scripts with SDK `10.0.400` and verified Inno Setup 7.0.2 x64.
@@ -14,6 +20,8 @@ Status starts as **BLOCKED**. Record one exact source revision, app EXE SHA-256 
 - [ ] Install as a standard user with no UAC/admin prompt.
 - [ ] Confirm default path `%LOCALAPPDATA%\Programs\BiliSub Studio` and Start-menu shortcut; test optional desktop shortcut.
 - [ ] Confirm the app launches without separately installing .NET, Python, FFmpeg, yt-dlp or PaddleOCR.
+- [ ] Confirm Setup does not ask the user to choose a raw runtime directory and the normal flow uses shortcuts rather than exposing dependency files.
+- [ ] Confirm startup failures show a visible Vietnamese dialog and create `%LOCALAPPDATA%\BiliSub Studio\Logs\startup.log` instead of exiting silently.
 - [ ] Confirm `Data/Tools/Temp/Cache/Downloads` are created beside the installed EXE and are writable.
 - [ ] Verify Add/Remove Programs entry, icon, displayed version and uninstaller.
 

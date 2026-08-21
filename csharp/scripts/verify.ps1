@@ -142,6 +142,26 @@ if ((Get-Sha256 $worker) -ne (Get-Sha256 $sourceWorker)) {
 
 Assert-Pe32PlusX64 $exe
 
+# A successful compile is not proof that WinUI resources can initialize. Launch the
+# exact published executable and require its Loaded path to write a sentinel.
+$smokeSentinel = Join-Path $env:RUNNER_TEMP "bilisub-winui-startup-smoke.txt"
+if (Test-Path $smokeSentinel) { Remove-Item $smokeSentinel -Force }
+$startupLog = Join-Path $env:LOCALAPPDATA "BiliSub Studio\Logs\startup.log"
+if (Test-Path $startupLog) { Remove-Item $startupLog -Force }
+$smokeProcess = Start-Process $exe -ArgumentList "--startup-smoke-test=$smokeSentinel" -PassThru
+if (-not $smokeProcess.WaitForExit(30000)) {
+    Stop-Process -Id $smokeProcess.Id -Force -ErrorAction SilentlyContinue
+    throw "WinUI startup smoke test timed out"
+}
+if (-not (Test-Path $smokeSentinel -PathType Leaf) -or (Get-Content $smokeSentinel -Raw).Trim() -ne "PASS") {
+    $diagnostic = if (Test-Path $startupLog) { Get-Content $startupLog -Raw } else { "startup log was not created" }
+    throw "WinUI startup smoke test failed. Diagnostic: $diagnostic"
+}
+if (-not (Test-Path $startupLog -PathType Leaf)) {
+    throw "WinUI startup smoke passed without the required persistent startup log"
+}
+Copy-Item $startupLog (Join-Path $publish "STARTUP_SMOKE_LOG.txt") -Force
+
 $exeHash = Get-Sha256 $exe
 $workerHash = Get-Sha256 $worker
 $sourceIdentity.Inventory | Set-Content "$publish/SOURCE_SHA256SUMS.txt" -Encoding UTF8
@@ -163,6 +183,8 @@ $identity = [ordered]@{
     windows_app_sdk = "2.4.0"
     target = "net10.0-windows10.0.26100.0/win-x64"
     self_contained = $true
+    winui_startup_smoke = $true
+    startup_smoke_log = "STARTUP_SMOKE_LOG.txt"
     exe_sha256 = $exeHash
     worker_sha256 = $workerHash
     frozen_go_source = "9be4abd8184d2d7d24159dd736b6accfbe1cda90"
@@ -201,6 +223,6 @@ if ($env:GITHUB_OUTPUT) {
     "source_tree_sha256=$($sourceIdentity.Hash)" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
 }
 
-Write-Host "PASS: Windows C# compile, contract runner, self-contained WinUI publish, worker identity, PE32+ x64 and checksum readback"
+Write-Host "PASS: Windows C# compile, contract runner, self-contained WinUI publish, real startup smoke, worker identity, PE32+ x64 and checksum readback"
 Write-Host "BiliSubStudio.exe SHA-256: $exeHash"
 Write-Host "Source tree SHA-256: $($sourceIdentity.Hash)"

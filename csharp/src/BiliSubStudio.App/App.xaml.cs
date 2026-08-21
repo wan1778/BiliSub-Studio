@@ -1,5 +1,6 @@
 using Microsoft.UI.Xaml;
 using BiliSubStudio.Core.Maintenance;
+using BiliSubStudio.App.Services;
 
 namespace BiliSubStudio.App;
 
@@ -7,7 +8,17 @@ public partial class App : Microsoft.UI.Xaml.Application
 {
     public App()
     {
-        InitializeComponent();
+        StartupDiagnostics.Initialize();
+        try
+        {
+            InitializeComponent();
+            StartupDiagnostics.Write("app-xaml-ready");
+        }
+        catch (Exception error)
+        {
+            StartupDiagnostics.ShowFatalError("app-xaml-failed", error);
+            throw;
+        }
         UnhandledException += OnUnhandledException;
     }
 
@@ -15,17 +26,38 @@ public partial class App : Microsoft.UI.Xaml.Application
 
     protected override async void OnLaunched(LaunchActivatedEventArgs args)
     {
-        if (await UpdateService.TryApplyFromCommandLineAsync(Environment.GetCommandLineArgs(), CancellationToken.None))
+        try
         {
-            Exit();
-            return;
+            StartupDiagnostics.Write("launch-enter");
+            if (await UpdateService.TryApplyFromCommandLineAsync(Environment.GetCommandLineArgs(), CancellationToken.None))
+            {
+                StartupDiagnostics.Write("update-handoff-complete");
+                Exit();
+                return;
+            }
+            MainWindow = new MainWindow();
+            StartupDiagnostics.Write("main-window-constructed");
+            MainWindow.Activate();
+            StartupDiagnostics.Write("main-window-activated");
+
+            if (StartupDiagnostics.IsSmokeTest)
+            {
+                await MainWindow.Initialization.WaitAsync(TimeSpan.FromSeconds(20));
+                await StartupDiagnostics.WriteSmokeSentinelAsync();
+                Exit();
+            }
         }
-        MainWindow = new MainWindow();
-        MainWindow.Activate();
+        catch (Exception error)
+        {
+            StartupDiagnostics.ShowFatalError("launch-failed", error);
+            Exit();
+        }
     }
 
-    private static void OnUnhandledException(object sender, Microsoft.UI.Xaml.UnhandledExceptionEventArgs args)
+    private void OnUnhandledException(object sender, Microsoft.UI.Xaml.UnhandledExceptionEventArgs args)
     {
-        System.Diagnostics.Debug.WriteLine(args.Exception);
+        args.Handled = true;
+        StartupDiagnostics.ShowFatalError("winui-unhandled", args.Exception);
+        Exit();
     }
 }

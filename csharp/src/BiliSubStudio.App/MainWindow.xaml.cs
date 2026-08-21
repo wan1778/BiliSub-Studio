@@ -16,6 +16,7 @@ public sealed partial class MainWindow : Window
     private readonly SettingsPage _settingsPage;
     private readonly SupportPage _supportPage;
     private readonly Dictionary<string, UIElement> _pages;
+    private readonly TaskCompletionSource<bool> _initialization = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private bool _initialized;
     private bool _safeToClose;
     private bool _closing;
@@ -50,6 +51,8 @@ public sealed partial class MainWindow : Window
         ContentFrame.Content = _pages["subtitle"];
     }
 
+    internal Task Initialization => _initialization.Task;
+
     private async void OnLoaded(object sender, RoutedEventArgs e)
     {
         if (_initialized) return;
@@ -66,10 +69,14 @@ public sealed partial class MainWindow : Window
             FooterStatus.Text = _application.Sessions.LastLoadWarning
                 ?? "C#/.NET 10/WinUI 3 · native services ready";
             if (_application.Config.CheckUpdates) _ = CheckForUpdatesOnLaunchAsync();
+            StartupDiagnostics.Write("main-window-initialized");
+            _initialization.TrySetResult(true);
         }
         catch (Exception error)
         {
             FooterStatus.Text = "Khởi tạo lỗi: " + error.Message;
+            StartupDiagnostics.WriteException("main-window-initialize-failed", error);
+            _initialization.TrySetException(error);
         }
     }
 

@@ -1,12 +1,12 @@
-# BiliSub Studio v4 native Windows app
+# BiliSub Studio — C# / .NET 10 / WinUI 3
 
-This is the actual Go source for the native Windows x64 BiliSub Studio app, not a binary patch/recovery package. Production opens a Win32 window directly and does not use an external browser, localhost UI, WebView or WebView2.
+The current application lane is the native Windows x64 C# project under [`csharp/`](csharp/README.md). It uses .NET 10 and WinUI 3 directly, with no external browser, localhost UI, WebView or second BiliSub backend.
 
 Start with [`ARCHITECTURE.md`](ARCHITECTURE.md). It records which component owns every part of the app and the exact video/OCR call graph so future fixes do not patch the wrong layer.
 
 Current beta: `4.0.0-beta.12`.
 
-The frozen Go + Win32 tree remains the current executable reference. The C#/.NET 10 + WinUI 3 lane under [`csharp/`](csharp/README.md) is source-complete for the planned production owners, but it is not a release replacement until the exact Windows build, runtime parity, visual QA and field matrix pass.
+The root `cmd/`, `internal/`, `web/` and Go module files are a frozen legacy reference while migration parity is being verified. They are not compiled into or called by the C# installer. After one exact C# installer passes the Windows runtime, visual and field matrix, that reference is moved to a frozen legacy tag/branch and removed from the production branch.
 
 Validation details: see [`TEST_REPORT.md`](TEST_REPORT.md).
 

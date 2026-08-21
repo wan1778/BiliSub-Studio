@@ -138,6 +138,10 @@ for marker in (
     "CSharp-P5-WindowsBuildCandidate",
     "4.0.0-beta.12-csharp-p5",
     "WINDOWS_FIELD_CHECKLIST_CSHARP_P5.md",
+    "startup-smoke-test",
+    "WinUI startup smoke test failed",
+    "STARTUP_SMOKE_LOG.txt",
+    'winui_startup_smoke = $true',
 ):
     if marker not in verify_script:
         fail(f"Windows verification gate missing {marker}")
@@ -189,6 +193,8 @@ for marker in (
     "{localappdata}\\Programs\\BiliSub Studio",
     "uninsneveruninstall",
     "BiliSubStudio.exe",
+    "DisableDirPage=yes",
+    "UsePreviousAppDir=no",
 ):
     if marker not in inno_script:
         fail(f"Inno Setup contract missing {marker}")
@@ -200,6 +206,7 @@ for marker in (
     "<WindowsPackageType>None</WindowsPackageType>",
     "<RuntimeIdentifier>win-x64</RuntimeIdentifier>",
     "<ApplicationIcon>Assets\\BiliSubStudio.ico</ApplicationIcon>",
+    "<SatelliteResourceLanguages>en-US;vi-VN</SatelliteResourceLanguages>",
 ):
     if marker not in app_project:
         fail(f"app project missing {marker}")
@@ -226,7 +233,7 @@ for marker in ("Cleanup_Click", "ResetTools_Click", "RemoveOcr_Click", "ConfirmA
     if marker not in settings_xaml + settings_code:
         fail(f"migrated maintenance action lost owner/confirmation: {marker}")
 update_source = (CSHARP / "src/BiliSubStudio.Core/Maintenance/UpdateService.cs").read_text(encoding="utf-8")
-for marker in ("winui3-portable-zip", "không tải nhầm candidate Go", "SHA-256 bản cập nhật không khớp", "BreakawayLauncher", "ValidatePayloadLayout", "PreservedRootDirectories", "0x00004550", "0x8664", "0x020B", "ApplyPayloadTransactionalAsync"):
+for marker in ("winui3-portable-zip", "không tải nhầm payload không tương thích", "SHA-256 bản cập nhật không khớp", "BreakawayLauncher", "ValidatePayloadLayout", "PreservedRootDirectories", "0x00004550", "0x8664", "0x020B", "ApplyPayloadTransactionalAsync"):
     if marker not in update_source:
         fail(f"safe WinUI update gate missing {marker}")
 
@@ -293,6 +300,17 @@ for tag in re.findall(r'Tag="([^"]+)"', main_xaml):
 app_xaml = (CSHARP / "src/BiliSubStudio.App/App.xaml").read_text(encoding="utf-8")
 if "ResourceDictionary.ThemeDictionaries" not in app_xaml or 'x:Key="Light"' not in app_xaml:
     fail("theme setting must update real dark/light resource dictionaries")
+if "XamlControlsResources" not in app_xaml:
+    fail("WinUI app resources must merge XamlControlsResources before constructing controls")
+
+startup_diagnostics = (CSHARP / "src/BiliSubStudio.App/Services/StartupDiagnostics.cs").read_text(encoding="utf-8")
+app_code = (CSHARP / "src/BiliSubStudio.App/App.xaml.cs").read_text(encoding="utf-8")
+for marker in ("startup.log", "MessageBoxW", "startup-smoke-test", "WriteSmokeSentinelAsync"):
+    if marker not in startup_diagnostics:
+        fail(f"visible startup diagnostic contract missing {marker}")
+for marker in ("StartupDiagnostics.Initialize", "ShowFatalError", "MainWindow.Initialization"):
+    if marker not in app_code:
+        fail(f"app startup owner missing {marker}")
 
 ledger = (ROOT / "docs/migration/MIGRATION_LEDGER.md").read_text(encoding="utf-8")
 if "9be4abd8184d2d7d24159dd736b6accfbe1cda90" not in ledger:

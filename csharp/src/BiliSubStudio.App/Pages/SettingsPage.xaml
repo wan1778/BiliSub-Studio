@@ -72,7 +72,7 @@
                         <StackPanel Spacing="13">
                             <StackPanel Spacing="2">
                                 <TextBlock Style="{StaticResource CardTitleStyle}" Text="Giao diện" />
-                                <TextBlock Style="{StaticResource MutedTextStyle}" Text="Theme áp dụng cho toàn bộ cây WinUI; JSON vẫn tương thích bản Go." />
+                                <TextBlock Style="{StaticResource MutedTextStyle}" Text="Theme áp dụng cho toàn bộ cây WinUI; cấu hình được giữ tương thích khi nâng cấp." />
                             </StackPanel>
                             <TextBlock FontSize="12" FontWeight="SemiBold" Foreground="{ThemeResource SecondaryTextBrush}" Text="Theme" />
                             <Grid ColumnSpacing="8">

@@ -22,7 +22,7 @@
                             <Button x:Name="PrepareButton" Click="PrepareUpdate_Click" Content="Tải và chuẩn bị" IsEnabled="False" />
                         </StackPanel>
                         <ProgressBar x:Name="UpdateProgress" AutomationProperties.Name="Tiến độ kiểm tra hoặc chuẩn bị cập nhật" />
-                        <TextBlock Style="{StaticResource MutedTextStyle}" Text="Nếu kênh Drive vẫn là candidate Go, ứng dụng sẽ từ chối tải." />
+                        <TextBlock Style="{StaticResource MutedTextStyle}" Text="Ứng dụng chỉ nhận đúng gói cập nhật WinUI 3 đã xác minh." />
                     </StackPanel>
                 </Border>
                 <Border x:Name="ReportCard" Grid.Column="1" Style="{StaticResource CardBorderStyle}">
