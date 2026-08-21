@@ -1,0 +1,95 @@
+name: C# P5 Windows x64 installer candidate
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/csharp-p5-windows-x64-installer.yml"
+      - "global.json"
+      - "csharp/**"
+      - "internal/ocr/worker.py"
+      - "docs/migration/**"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/csharp-p5-windows-x64-installer.yml"
+      - "global.json"
+      - "csharp/**"
+      - "internal/ocr/worker.py"
+      - "docs/migration/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: csharp-p5-windows-x64-installer-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-candidate:
+    name: Compile, test, publish and package
+    runs-on: windows-2025
+    timeout-minutes: 60
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1"
+      DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE: "1"
+      NUGET_XMLDOC_MODE: skip
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Check out exact source revision
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install exact .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.400"
+
+      - name: Install verified Inno Setup 7 compiler
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $download = Join-Path $env:RUNNER_TEMP "innosetup-7.0.2-x64.exe"
+          Invoke-WebRequest "https://github.com/jrsoftware/issrc/releases/download/is-7_0_2/innosetup-7.0.2-x64.exe" -OutFile $download
+          gh release verify-asset $download --repo jrsoftware/issrc
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup release attestation failed" }
+          $signature = Get-AuthenticodeSignature $download
+          if ($signature.Status -ne "Valid" -or $signature.SignerCertificate.Subject -notmatch "Pyrsys B\.V\.") {
+            throw "Inno Setup Authenticode signature is not the reviewed publisher"
+          }
+          $process = Start-Process $download -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-", "/CURRENTUSER" -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Inno Setup install failed: $($process.ExitCode)" }
+          $iscc = Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 7\ISCC.exe"
+          if (-not (Test-Path $iscc -PathType Leaf)) { throw "ISCC.exe not found after verified install" }
+          "INNO_SETUP_ISCC=$iscc" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Verify Windows WinUI build
+        id: verify
+        run: ./csharp/scripts/verify.ps1
+
+      - name: Package non-promotable build candidate
+        id: package
+        run: ./csharp/scripts/package_windows_candidate.ps1
+
+      - name: Upload build candidate and evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: BiliSubStudio-CSharp-P5-Installer-${{ github.run_id }}-${{ github.run_attempt }}
+          path: csharp/artifacts/windows-x64/*
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+# This workflow deliberately has no GitHub Release, deployment, Drive upload or update-channel step.
+# Its artifact remains blocked until the exact executable hash passes the Windows field checklist.

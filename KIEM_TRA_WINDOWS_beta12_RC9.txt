@@ -1,0 +1,138 @@
+BILISUB STUDIO beta.12 RC9 - KIEM TRA WINDOWS GPU/CPU/HYBRID
+============================================================
+
+BAN TEST:
+BiliSubStudio_v4.0.0-beta.12-RC9-WindowsTest.exe
+
+MUC TIEU RC9
+- Van chi co MOT muc OCR duy nhat.
+- PaddleOCR 3.7.0 + PP-OCRv6 Small giu nguyen.
+- Them lua chon thiet bi: Tu dong / GPU / CPU / CPU + GPU.
+- CPU va GPU dung runtime rieng trong Tools/OCR, nguoi dung KHONG cai Python/pip/CUDA/PATH thu cong.
+- CPU + GPU xu ly song song nhung subtitle van phai dung thu tu timestamp.
+- Day la Windows Test, CHUA cap nhat Google Drive.
+
+QUAN TRONG
+Neu mot muc FAIL, dung o muc do va gui anh + dong loi/log nguyen van. Khong can tiep tuc de tranh lam mat dau vet.
+
+0. NEN TEST SACH
+----------------
+- Nen dat EXE RC9 trong mot thu muc BiliSub rieng.
+- Neu muon test dung first-install: khong chep Tools/OCR tu RC8 sang.
+- Khong cai Python, pip, CUDA toolkit, cuDNN hay sua PATH de "giup" app.
+
+1. KIEM TRA DANH SACH THIET BI OCR
+----------------------------------
+Vao OCR phu de -> xem muc "Thiet bi OCR".
+
+May KHONG co NVIDIA GPU:
+- CPU phai dung duoc.
+- GPU va CPU + GPU phai bi khoa/khong cho chon.
+- Tu dong phai chay CPU.
+
+May CO NVIDIA GPU tuong thich:
+- Phai thay: Tu dong / GPU / CPU / CPU + GPU.
+- Dong thong tin phai hien ten NVIDIA GPU + driver.
+- GPU va CPU + GPU phai cho chon.
+
+FAIL neu app bao co GPU gia, khong nhan GPU dang co, hoac UI cho chon GPU tren may khong co GPU tuong thich.
+
+2. CPU - CAI VA DOC THU
+-----------------------
+1) Chon CPU.
+2) Bam "Chuan bi bo nhan dien" neu app chua san sang.
+3) Lan dau app tu cai runtime vao Tools/OCR/runtime/cpu.
+4) Ket qua phai la "Bo nhan dien da san sang".
+5) Chon video Trung, dat ROI vao subtitle, bam "Doc thu khung hien tai".
+6) Phai co text + confidence.
+
+FAIL neu hien CMD/PowerShell lung tung, bat cai Python/pip thu cong, hoac bao Ready gia ma Doc thu khong chay.
+
+3. GPU - BAT BUOC NEU MAY CO NVIDIA
+-----------------------------------
+1) Chon GPU.
+2) App tu cai Tools/OCR/runtime/gpu, khong yeu cau cai CUDA/Python bang tay.
+3) Cho den khi hien bo nhan dien san sang va dong trang thai "Dang dung GPU".
+4) Doc thu 2-3 frame co subtitle Trung.
+5) Mo Task Manager (Performance -> GPU) hoac cong cu NVIDIA de xem luc OCR co GPU activity.
+6) CPU van co the dung mot phan cho FFmpeg/scan/UI; dieu can kiem tra la phan PaddleOCR inference da chay GPU.
+
+FAIL neu:
+- chon GPU nhung thuc te chi an CPU;
+- bao Ready nhung GPU worker khong khoi tao;
+- yeu cau cai Python/CUDA/PATH thu cong;
+- app treo/crash khi chuyen CPU <-> GPU.
+
+4. TU DONG
+----------
+May co NVIDIA GPU khoe:
+- Chon Tu dong -> ky vong "Dang dung GPU".
+
+May khong co GPU/driver khong dung duoc:
+- Tu dong phai chay CPU va neu co fallback thi thong tin phai noi ro ly do.
+
+Luu y: Auto duoc phep fallback CPU. Che do GPU cuong che thi KHONG duoc gia vo GPU da chay.
+
+5. CPU + GPU - SONG SONG
+------------------------
+Chi test neu GPU mode o muc 3 da DONE.
+
+1) Chon "CPU + GPU".
+2) Cho bo nhan dien san sang.
+3) Bat dau quet chinh xac mot doan video co nhieu subtitle va co khoang trong.
+4) Theo doi CPU va GPU: ca hai nen co activity khi co nhieu OCR work.
+5) Preview/list subtitle phai cap nhat binh thuong.
+6) Khong duoc co cue dao timestamp, cue am, cue end < start, hoac subtitle bi dao thu tu.
+7) So sanh nhanh 1 doan voi GPU-only/CPU-only: noi dung khong duoc vo ly chi vi chay Hybrid.
+
+FAIL neu Hybrid lam app dung/treo, chi co mot worker hoat dong, hoac subtitle bi dao thu tu/timestamp.
+
+6. FRAME KHONG CO SUBTITLE
+--------------------------
+Trong CPU, GPU hoac Hybrid:
+- Tua den 2-3 frame khong co subtitle.
+- Bam Doc thu.
+- Khong nen sinh rac ro rang kieu A / W / OV.
+Neu co, chup dung frame + ROI + text/confidence gui lai.
+
+7. QUET FULL + XUAT SRT
+-----------------------
+1) Chon mot device mode da pass o tren.
+2) Bam Bat dau quet chinh xac.
+3) Preview phai tien theo backend scan.
+4) Danh sach subtitle cap nhat dan.
+5) Khong treo UI/backend.
+6) Quet xong, Xuat SRT phai bat.
+7) Mo SRT: text + timestamp phai hop ly va tang dan.
+
+8. DUNG / TIEP TUC / CHECKPOINT
+-------------------------------
+1) Cho quet mot luc.
+2) Bam Dung quet.
+3) Dong/mo app hoac bat dau lai dung video + ROI + scan mode.
+4) Phai resume tu checkpoint hop le, khong tu 00:00 neu identity van khop.
+5) Viec doi CPU/GPU/Hybrid KHONG duoc lam mat checkpoint cua cung video/ROI/scan mode.
+
+9. REGRESSION CAC PHAN CU
+-------------------------
+- OCR -> Chon video: native dialog mo/cancel/chon dung.
+- Chinh video -> Chon video: dung.
+- Codec kho: OCR va Chinh video deu co preview/fallback.
+- Settings -> thu muc luu: Chon/Mo dung.
+- Sidebar hien version + o dia.
+- De app yen 10-15 phut roi quay lai: backend khong tu dung.
+- Video download/editor khong duoc thay doi hanh vi do RC9 chi sua OCR device scheduling.
+
+BAO CAO NGAN
+------------
+1. Danh sach device: DONE / FAIL
+2. CPU: DONE / FAIL
+3. GPU (neu co NVIDIA): DONE / FAIL / KHONG CO NVIDIA
+4. Auto: DONE / FAIL
+5. CPU + GPU: DONE / FAIL / KHONG CO NVIDIA
+6. Frame trong co rac: CO / KHONG
+7. Quet full + SRT: DONE / FAIL
+8. Dung/tiep tuc checkpoint: DONE / FAIL
+9. Regression: DONE / FAIL
+
+Neu FAIL: gui anh + dong bao loi nguyen van + device mode dang chon.

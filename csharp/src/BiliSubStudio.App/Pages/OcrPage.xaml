@@ -1,0 +1,143 @@
+<Page
+    x:Class="BiliSubStudio.App.Pages.OcrPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:shapes="using:Microsoft.UI.Xaml.Shapes"
+    AutomationProperties.Name="OCR phụ đề cứng">
+    <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+        <Grid x:Name="PageRoot" Padding="24" RowSpacing="14" SizeChanged="Page_SizeChanged">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <Grid ColumnSpacing="10">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel>
+                    <TextBlock Style="{StaticResource PageTitleStyle}" Text="OCR phụ đề cứng" />
+                    <TextBlock Style="{StaticResource MutedTextStyle}" Text="PP-OCRv6 Small · CPU/GPU/Hybrid · topology 1/2/4/8/16 · checkpoint schema 4" />
+                </StackPanel>
+                <Button Grid.Column="1" AccessKey="O" Click="PickVideo_Click" Content="Chọn video" />
+            </Grid>
+
+            <Grid x:Name="WorkspaceGrid" Grid.Row="1" Height="600" ColumnSpacing="14">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="2.2*" />
+                    <ColumnDefinition Width="1.1*" />
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="0" />
+                </Grid.RowDefinitions>
+
+                <Grid x:Name="PreviewPane" RowSpacing="8">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <Border Background="Black" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="1" CornerRadius="10">
+                        <Grid x:Name="PreviewHost" AutomationProperties.Name="Khung xem trước video và vùng OCR">
+                            <MediaPlayerElement x:Name="PreviewPlayer" AreTransportControlsEnabled="True" AutoPlay="False" Stretch="Uniform" Visibility="Collapsed" AutomationProperties.Name="Trình phát video OCR" />
+                            <Image x:Name="PreviewImage" Stretch="Uniform" AutomationProperties.Name="Frame xem trước bằng FFmpeg" />
+                            <Canvas
+                                x:Name="PreviewCanvas"
+                                Background="Transparent"
+                                IsHitTestVisible="False"
+                                PointerPressed="PreviewCanvas_PointerPressed"
+                                PointerMoved="PreviewCanvas_PointerMoved"
+                                PointerReleased="PreviewCanvas_PointerReleased"
+                                AutomationProperties.Name="Vùng kéo chọn OCR">
+                                <shapes:Rectangle x:Name="RoiRectangle" Stroke="#42CC96" StrokeThickness="2" Fill="#3042CC96" />
+                            </Canvas>
+                        </Grid>
+                    </Border>
+                    <StackPanel Grid.Row="1" Spacing="6">
+                        <Slider x:Name="Timeline" Minimum="0" IsEnabled="False" ValueChanged="Timeline_ValueChanged" AutomationProperties.Name="Vị trí video OCR" />
+                        <Grid ColumnSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock x:Name="ClockText" VerticalAlignment="Center" Style="{StaticResource MutedTextStyle}" Text="00:00 / 00:00" />
+                            <Button Grid.Column="1" x:Name="PlaybackButton" AccessKey="P" Click="Playback_Click" Content="Phát video" IsEnabled="False" />
+                            <Button Grid.Column="2" x:Name="FullscreenButton" AccessKey="F" Click="Fullscreen_Click" Content="Toàn màn hình" IsEnabled="False" />
+                            <ToggleSwitch Grid.Column="3" x:Name="SelectRegionButton" AccessKey="R" Toggled="SelectRegion_Toggled" OnContent="Đang khoanh ROI" OffContent="Khoanh ROI" IsEnabled="False" />
+                            <Button Grid.Column="4" x:Name="RefreshFrameButton" Click="RefreshFrame_Click" Content="Cập nhật frame" IsEnabled="False" />
+                        </Grid>
+                    </StackPanel>
+                </Grid>
+
+                <ScrollViewer x:Name="InspectorScroll" Grid.Column="1" HorizontalScrollBarVisibility="Disabled">
+                    <StackPanel Spacing="12">
+                        <Border Style="{StaticResource CardBorderStyle}">
+                            <StackPanel Spacing="9">
+                                <TextBlock Style="{StaticResource CardTitleStyle}" Text="Video" />
+                                <TextBlock x:Name="PathText" Style="{StaticResource MutedTextStyle}" Text="Chưa chọn video." TextTrimming="CharacterEllipsis" />
+                                <TextBlock x:Name="MediaText" Style="{StaticResource MutedTextStyle}" />
+                            </StackPanel>
+                        </Border>
+                        <Border Style="{StaticResource CardBorderStyle}">
+                            <StackPanel Spacing="10">
+                                <TextBlock Style="{StaticResource CardTitleStyle}" Text="Vùng nhận diện (%)" />
+                                <TextBlock Style="{StaticResource MutedTextStyle}" Text="Nhập bằng bàn phím hoặc bật Khoanh ROI rồi kéo trực tiếp trên frame." />
+                                <Grid ColumnSpacing="6">
+                                    <Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
+                                    <TextBox x:Name="LeftBox" Header="Trái" Text="5" TextChanged="RegionBox_TextChanged" />
+                                    <TextBox Grid.Column="1" x:Name="TopBox" Header="Trên" Text="65" TextChanged="RegionBox_TextChanged" />
+                                    <TextBox Grid.Column="2" x:Name="RightBox" Header="Phải" Text="95" TextChanged="RegionBox_TextChanged" />
+                                    <TextBox Grid.Column="3" x:Name="BottomBox" Header="Dưới" Text="94" TextChanged="RegionBox_TextChanged" />
+                                </Grid>
+                                <TextBlock x:Name="RegionValidationText" Style="{StaticResource MutedTextStyle}" Text="Chọn video để áp dụng vùng." AutomationProperties.LiveSetting="Polite" />
+                                <Button x:Name="ApplyRegionButton" Click="ApplyRegion_Click" Content="Áp dụng vùng" IsEnabled="False" />
+                            </StackPanel>
+                        </Border>
+                        <Border Style="{StaticResource CardBorderStyle}">
+                            <StackPanel Spacing="10">
+                                <TextBlock Style="{StaticResource CardTitleStyle}" Text="Engine và scan" />
+                                <Grid ColumnSpacing="7">
+                                    <Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
+                                    <ComboBox x:Name="DeviceBox" Header="Thiết bị" SelectedIndex="0"><x:String>auto</x:String><x:String>cpu</x:String><x:String>gpu</x:String><x:String>hybrid</x:String></ComboBox>
+                                    <ComboBox Grid.Column="1" x:Name="ScanModeBox" Header="Chế độ" SelectedIndex="0"><x:String>balanced</x:String><x:String>accurate</x:String><x:String>fast</x:String></ComboBox>
+                                    <ComboBox Grid.Column="2" x:Name="LanesBox" Header="Lanes" SelectedIndex="0"><x:String>auto</x:String><x:String>1</x:String><x:String>2</x:String><x:String>4</x:String><x:String>8</x:String><x:String>16</x:String></ComboBox>
+                                </Grid>
+                                <StackPanel Orientation="Horizontal" Spacing="7">
+                                    <Button Click="Prepare_Click" Content="Chuẩn bị OCR" />
+                                    <Button x:Name="TestFrameButton" Click="TestFrame_Click" Content="Test frame" IsEnabled="False" />
+                                </StackPanel>
+                                <TextBlock x:Name="OcrResultText" Style="{StaticResource BodyTextStyle}" AutomationProperties.LiveSetting="Polite" />
+                            </StackPanel>
+                        </Border>
+                        <Border Style="{StaticResource CardBorderStyle}">
+                            <StackPanel Spacing="8">
+                                <TextBlock Style="{StaticResource CardTitleStyle}" Text="Quét toàn video" />
+                                <StackPanel Orientation="Horizontal" Spacing="7">
+                                    <Button x:Name="ScanButton" Click="Scan_Click" Content="Quét / Tiếp tục" IsEnabled="False" />
+                                    <Button x:Name="PauseButton" Click="Pause_Click" Content="Tạm dừng" IsEnabled="False" />
+                                    <Button x:Name="CancelButton" Click="Cancel_Click" Content="Hủy" IsEnabled="False" Style="{StaticResource DangerButtonStyle}" />
+                                </StackPanel>
+                                <ProgressBar x:Name="Progress" Minimum="0" Maximum="100" AutomationProperties.Name="Tiến độ OCR" />
+                                <TextBlock x:Name="StatusText" Style="{StaticResource MutedTextStyle}" Text="Sẵn sàng." AutomationProperties.LiveSetting="Polite" />
+                                <Button x:Name="ExportButton" Click="Export_Click" Content="Xuất SRT tiếng Trung" IsEnabled="False" />
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+            </Grid>
+
+            <Border Grid.Row="2" MinHeight="105" Style="{StaticResource CardBorderStyle}">
+                <Grid ColumnSpacing="12">
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="2*" /></Grid.ColumnDefinitions>
+                    <TextBlock x:Name="TelemetryText" Style="{StaticResource MutedTextStyle}" Text="Chưa có telemetry." AutomationProperties.LiveSetting="Polite" />
+                    <ListView Grid.Column="1" x:Name="CueList" MinHeight="72" SelectionChanged="CueList_SelectionChanged" AutomationProperties.Name="Danh sách câu phụ đề OCR" />
+                </Grid>
+            </Border>
+        </Grid>
+    </ScrollViewer>
+</Page>

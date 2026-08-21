@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>BiliSubStudio.Core.ContractTests</RootNamespace>
+    <AssemblyName>BiliSubStudio.Core.ContractTests</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\BiliSubStudio.Core\BiliSubStudio.Core.csproj" />
+  </ItemGroup>
+</Project>

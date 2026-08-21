@@ -1,0 +1,30 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 18
+VisualStudioVersion = 18.0.0.0
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "BiliSubStudio.Core", "src\BiliSubStudio.Core\BiliSubStudio.Core.csproj", "{D62A91D7-A0B2-438B-BA12-FB8D70FA381A}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "BiliSubStudio.App", "src\BiliSubStudio.App\BiliSubStudio.App.csproj", "{437CD6B0-B75D-46DE-BA99-8FC8EB2C514A}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "BiliSubStudio.Core.ContractTests", "tests\BiliSubStudio.Core.ContractTests\BiliSubStudio.Core.ContractTests.csproj", "{341EA9DD-1811-4016-9C44-86D695522BF6}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Release|x64 = Release|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{D62A91D7-A0B2-438B-BA12-FB8D70FA381A}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{D62A91D7-A0B2-438B-BA12-FB8D70FA381A}.Debug|x64.Build.0 = Debug|Any CPU
+		{D62A91D7-A0B2-438B-BA12-FB8D70FA381A}.Release|x64.ActiveCfg = Release|Any CPU
+		{D62A91D7-A0B2-438B-BA12-FB8D70FA381A}.Release|x64.Build.0 = Release|Any CPU
+		{437CD6B0-B75D-46DE-BA99-8FC8EB2C514A}.Debug|x64.ActiveCfg = Debug|x64
+		{437CD6B0-B75D-46DE-BA99-8FC8EB2C514A}.Debug|x64.Build.0 = Debug|x64
+		{437CD6B0-B75D-46DE-BA99-8FC8EB2C514A}.Release|x64.ActiveCfg = Release|x64
+		{437CD6B0-B75D-46DE-BA99-8FC8EB2C514A}.Release|x64.Build.0 = Release|x64
+		{341EA9DD-1811-4016-9C44-86D695522BF6}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{341EA9DD-1811-4016-9C44-86D695522BF6}.Debug|x64.Build.0 = Debug|Any CPU
+		{341EA9DD-1811-4016-9C44-86D695522BF6}.Release|x64.ActiveCfg = Release|Any CPU
+		{341EA9DD-1811-4016-9C44-86D695522BF6}.Release|x64.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal

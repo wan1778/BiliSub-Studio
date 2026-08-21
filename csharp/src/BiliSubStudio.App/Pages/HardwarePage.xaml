@@ -1,0 +1,49 @@
+<Page
+    x:Class="BiliSubStudio.App.Pages.HardwarePage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    AutomationProperties.Name="Phần cứng và benchmark">
+    <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+        <Grid x:Name="PageRoot" Padding="28" MaxWidth="1050" HorizontalAlignment="Left" SizeChanged="Page_SizeChanged">
+            <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+            <StackPanel Spacing="5">
+                <TextBlock Style="{StaticResource PageTitleStyle}" Text="Phần cứng &amp; Benchmark" />
+                <TextBlock Style="{StaticResource BodyTextStyle}" Text="Probe native CPU/RAM/NVIDIA CUDA; không gọi nvidia-smi hay PowerShell." />
+            </StackPanel>
+            <Grid x:Name="HardwareGrid" Grid.Row="1" Margin="0,22,0,0" ColumnSpacing="14" RowSpacing="14">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="0" /></Grid.RowDefinitions>
+                <Border Style="{StaticResource CardBorderStyle}">
+                    <StackPanel Spacing="10">
+                        <TextBlock Style="{StaticResource CardTitleStyle}" Text="Máy hiện tại" />
+                        <TextBlock x:Name="CpuText" Style="{StaticResource BodyTextStyle}" />
+                        <TextBlock x:Name="MemoryText" Style="{StaticResource BodyTextStyle}" />
+                        <TextBlock x:Name="GpuText" Style="{StaticResource BodyTextStyle}" />
+                        <Button x:Name="RefreshButton" Click="Refresh_Click" Content="Probe lại" />
+                    </StackPanel>
+                </Border>
+                <Border x:Name="ToolsCard" Grid.Column="1" Style="{StaticResource CardBorderStyle}">
+                    <StackPanel Spacing="10">
+                        <TextBlock Style="{StaticResource CardTitleStyle}" Text="Công cụ portable" />
+                        <TextBlock x:Name="ToolsText" Style="{StaticResource BodyTextStyle}" />
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Button x:Name="PrepareToolsButton" Click="PrepareTools_Click" Content="Chuẩn bị FFmpeg + yt-dlp" />
+                            <Button x:Name="PrepareOcrButton" Click="PrepareOcr_Click" Content="Chuẩn bị OCR" />
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+            </Grid>
+            <Border Grid.Row="2" Margin="0,14,0,0" Style="{StaticResource CardBorderStyle}">
+                <StackPanel Spacing="10">
+                    <Grid>
+                        <TextBlock Style="{StaticResource CardTitleStyle}" Text="Benchmark" />
+                        <Button x:Name="BenchmarkButton" HorizontalAlignment="Right" Click="Benchmark_Click" Content="Chạy benchmark" />
+                    </Grid>
+                    <ProgressBar x:Name="Progress" IsIndeterminate="False" AutomationProperties.Name="Tiến độ chuẩn bị hoặc benchmark" />
+                    <TextBlock x:Name="ResultText" Style="{StaticResource BodyTextStyle}" Text="Chưa chạy." AutomationProperties.LiveSetting="Polite" />
+                    <TextBlock Style="{StaticResource MutedTextStyle}" Text="Kết quả là một tín hiệu cho OCR Auto Predict; Probe video thật vẫn quyết định topology trước khi Commit." />
+                </StackPanel>
+            </Border>
+        </Grid>
+    </ScrollViewer>
+</Page>

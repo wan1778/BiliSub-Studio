@@ -1,0 +1,166 @@
+BILISUB STUDIO v4.0.0-beta.12 — NATIVE WINDOWS x64 FINAL FIELD TEST
+===================================================================
+
+QUY TAC
+-------
+- Chỉ test đúng EXE/SHA-256 được ghi trong gói candidate cuối.
+- Không dùng Chrome/Edge/WebView để chạy BiliSub.
+- Nếu bất kỳ mục BLOCKER nào FAIL: không promote Google Drive, không coi release PASS.
+- Chụp ảnh các màn chính: Phụ đề, Video, OCR đang quét, OCR Pause/checkpoint, Editor nhiều vùng, Settings/QR.
+
+A. KHỞI ĐỘNG / NATIVE UI / DPI / KEYBOARD (BLOCKER)
+---------------------------------------------------
+1. Double-click EXE: chỉ mở cửa sổ BiliSub Studio riêng.
+2. Không tự mở Chrome/Edge; không có localhost UI.
+3. Kiểm tra Task Manager/netstat: production UI không listen localhost.
+4. 5 tab phải rõ ràng: Phụ đề / Video / OCR phụ đề / Chỉnh video / Cài đặt.
+5. Mỗi tab có tiêu đề + hướng dẫn đầu trang; label/control không chồng lấn, không bị cắt chữ.
+6. Resize ở kích thước nhỏ nhất, 1400x840, 1600x900 và maximize.
+7. Windows Scale: 100%, 125%, 150%, nếu có thể 200%. Font Segoe UI phải đọc được, control không đè nhau.
+8. Tab/Shift+Tab đi qua control hợp lý. Ctrl+1..5 chuyển tab. F1 hiện hướng dẫn. Esc thoát fullscreen.
+9. Disabled button phải đúng lý do; không có nút cần thao tác nhưng bị block vô cớ.
+
+B. PHỤ ĐỀ BILIBILI END-TO-END (BLOCKER)
+---------------------------------------
+1. Nhập link A. Trước Kiểm tra: Tải phụ đề phải disabled.
+2. Bấm Kiểm tra: thấy loading/status/progress; sau thành công có title + danh sách track.
+3. Đổi link A -> link B: metadata/track A phải bị xóa NGAY, UI báo cần Kiểm tra lại; Tải phụ đề disabled.
+4. Kiểm tra link B; chọn track, SRT/TXT/JSON, output; Tải phụ đề enabled.
+5. Tải thật; progress/log/status completion rõ ràng; Mở output xem được file.
+6. Hủy khi đang tải: status phải chuyển Đang hủy -> Đã hủy, không để job treo.
+7. Link sai/mạng lỗi: hiện error rõ ràng, không giữ track cũ.
+
+C. VIDEO DOWNLOAD END-TO-END (BLOCKER)
+--------------------------------------
+1. Nhập link A -> Kiểm tra -> có title/chất lượng.
+2. Đổi sang link B: quality/metadata A bị invalidate ngay; Tải video disabled tới khi Kiểm tra B.
+3. Test quality, Video+Audio / Video only / Audio only, Stable/Fast/Turbo, MP4/MKV.
+4. Output picker/open, progress/log/success phải rõ.
+5. Cancel giữa chừng không orphan ffmpeg/yt-dlp.
+6. Test ít nhất một video cần đăng nhập và một video public nếu có.
+
+D. NATIVE VIDEO PLAYER / CODEC / AUDIO (BLOCKER)
+------------------------------------------------
+Test local source nếu có: H.264 MP4, HEVC/H.265 MP4/MKV, AV1, VP9/WebM.
+- Chọn video -> preview xuất hiện trong app native.
+- Phát/Tạm dừng thật.
+- Seek timeline nhiều vị trí xa.
+- Bật/Tắt tiếng thật.
+- Không có thông báo "trình duyệt không giải mã".
+- Fullscreen native; Esc khôi phục đúng layout.
+- Không crash sau seek liên tục.
+
+E. OCR INPUT + STRICT LIVE VALIDATION (BLOCKER)
+----------------------------------------------
+1. Chọn video OCR.
+2. ROI hợp lệ ví dụ Trên=65, Dưới=94, Trái=5, Phải=95: Test/Start có thể enabled khi các điều kiện khác đủ.
+3. Nhập Dưới <= Trên: UI phải báo Sai ROI; Test/Start disabled.
+4. Nhập Phải <= Trái: tương tự.
+5. Nhập chữ/NaN/out-of-range: báo lỗi rõ; không silently clamp.
+6. Sửa lại hợp lệ: lỗi biến mất và Test/Start mở lại.
+7. Kéo ROI trên preview: số cập nhật và vùng vẽ đúng.
+8. Preset Vùng phụ đề: ROI hợp lệ.
+
+F. OCR AUTO / 1 / 2 / 4 / 8 (BLOCKER)
+-------------------------------------
+Cùng video/ROI, GPU NVIDIA nếu có:
+- Auto: resource preflight trước khi spawn mức tiếp theo; không treo.
+- Manual 1, 2, 4, 8: số lane hoạt động đúng lựa chọn.
+- 16 chỉ test nếu máy đủ headroom; lỗi unsafe phải rõ ràng.
+- Ghi CPU/GPU/RAM/VRAM, selected/active/completed lanes, decoder, realtime speed.
+- Full telemetry phải cập nhật: OCR images, inference, OCR/cue, visual skip/confirm, retry, frame/visual/encode/OCR times, boundary merges.
+
+G. OCR PAUSE / CHECKPOINT / RESUME (BLOCKER)
+-------------------------------------------
+1. Trong scan parallel bấm Tạm dừng.
+2. Chỉ báo Paused sau safe boundary + fsync.
+3. Sau Pause: active lanes = 0; progress là tổng công việc; mốc liên tục hiển thị riêng.
+4. Recent cue phải gần mốc preview an toàn.
+5. Export SRT phải disabled khi còn checkpoint Pause.
+6. Resume: giữ topology, cue count/progress/timestamps, không benchmark Auto lại.
+7. Pause -> đóng app: app phải chờ checkpoint an toàn rồi mới đóng.
+8. Mở lại cùng video/ROI/config -> nhận checkpoint -> Tiếp tục.
+9. Quét lại từ đầu -> confirmation -> xóa checkpoint đúng cấu hình -> scan sạch.
+
+H. OCR CUE ↔ TIMELINE / SRT CORRECTNESS (BLOCKER)
+-------------------------------------------------
+- Khi scan hoàn tất: danh sách hiển thị toàn bộ cue, ví dụ N/N, không chỉ 100-120.
+- Kéo timeline -> highlight/scroll cue gần timestamp.
+- Click cue -> video seek tới start cue.
+- SRT cuối: không standalone/foreign garbage như A, N, W, OV, ILLC, AIYI, "铺 U 碎", "2/".
+- Chinese-only cue hợp lệ như 第3集, 2026年 vẫn giữ.
+- Không duplicate/mất cue tại segment boundary.
+- Không timestamp end<=start hoặc chạy ngược.
+
+I. EDITOR MULTI-REGION END-TO-END (BLOCKER)
+------------------------------------------
+1. Chọn local video; preview/play/mute/seek/fullscreen hoạt động.
+2. Kéo tạo ít nhất 2 vùng; thêm preset Vùng phụ đề + Vùng watermark.
+3. Chọn từng vùng trong list; X/Y/Rộng/Cao khớp vùng.
+4. Validation bắt buộc:
+   - X/Y trong 0..100.
+   - Rộng/Cao >0.
+   - X + Rộng <= 100.
+   - Y + Cao <= 100.
+   - Độ mạnh 2..40.
+   - Time range: end > start và không vượt duration.
+5. Khi sai: Export disabled + status giải thích; KHÔNG silently clamp dữ liệu sai.
+6. Áp dụng toàn video: Start/End + nút Lấy hiện tại phải disabled.
+7. Bỏ Toàn video: Start/End enabled; Lấy hiện tại hoạt động.
+8. Test Blur/Mosaic/Cover và preview tương ứng.
+9. Delete/Undo hoạt động đúng với nhiều vùng.
+10. Export -> progress/log -> completion; Cancel giữa chừng hoạt động.
+11. Mở file xuất kiểm tra tất cả vùng/effect/time scope thật.
+
+J. QR LOGIN / COOKIE (BLOCKER)
+------------------------------
+- Cookie/SESSDATA field: nhập text -> Lưu và kiểm tra enabled; lưu bằng DPAPI.
+- Xóa đăng nhập có confirmation và cập nhật state.
+- QR: bấm -> QR render trong native app; nút/state đổi sang đang chờ/Hủy QR.
+- Quét bằng Bilibili -> success state; expired/error phải rõ và có thể tạo lại.
+- Không mở browser để hiển thị QR.
+
+K. SETTINGS / UPDATE / BUG REPORT (BLOCKER)
+------------------------------------------
+- Dark/Light lưu qua restart.
+- Default output Chọn/Mở; các workflow nhận default mới.
+- Storage hiển thị Data/Tools/OCR/Temp/Cache.
+- Cleanup Temp/Cache; Reset Tools; Xóa OCR có trạng thái/confirmation phù hợp.
+- Check update: loading -> no-update/update-available/error rõ.
+- Cập nhật ngay chỉ enabled khi có bản mới đã xác nhận; test self-swap nếu server test có manifest.
+- Bug report: ô mô tả trống -> Gửi disabled; nhập -> enabled; loading -> success/error + bug ID.
+
+L. PROCESS / DEPENDENCY CLEANUP (BLOCKER)
+----------------------------------------
+Máy không cần cài system Python/ffmpeg/yt-dlp.
+- BiliSub dùng Tools/runtime riêng.
+- Không dùng nvidia-smi CLI/PowerShell cho GPU telemetry.
+- Khi scan/download/export: child process nằm dưới lifecycle BiliSub.
+- Sau Cancel/Finish/Exit/crash test: không orphan ffmpeg.exe/python.exe/yt-dlp.exe do BiliSub tạo.
+- Updater là ngoại lệ breakaway có chủ đích và phải tự kết thúc sau swap.
+
+M. SAFE CLOSE / STABILITY (BLOCKER)
+-----------------------------------
+- Close idle: thoát ngay, sạch process.
+- Close khi Subtitle/Video/Editor job chạy: app xử lý lifecycle rõ, không corrupt output.
+- Close khi OCR scan: phải Pause/checkpoint an toàn trước khi destroy window; nếu checkpoint fail thì không được giả vờ đóng an toàn.
+- Minimize/restore, Alt+Tab, sleep/wake nếu có thể.
+- Unicode/tiếng Việt/path có khoảng trắng cho source/output.
+
+KẾT QUẢ FIELD TEST
+------------------
+Native UI/DPI/keyboard: PASS / FAIL
+Subtitle E2E: PASS / FAIL
+Video E2E: PASS / FAIL
+Player/codecs/audio: PASS / FAIL
+OCR validation/Auto/manual: PASS / FAIL
+OCR Pause/Resume/checkpoint: PASS / FAIL
+Cue/timeline/SRT: PASS / FAIL
+Editor multi-region: PASS / FAIL
+QR/Cookie: PASS / FAIL
+Settings/Update/Bug: PASS / FAIL
+Process/dependency/safe-close: PASS / FAIL
+
+PROMOTION
+---------
+Chỉ promote Google Drive khi tất cả mục BLOCKER trên exact EXE/SHA-256 đều PASS.
