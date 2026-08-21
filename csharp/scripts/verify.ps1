@@ -147,9 +147,11 @@ if ($publishedXbf.Count -lt 2) {
     throw "publish is missing compiled WinUI XBF resources"
 }
 $publishedPri = @(
-    (Join-Path $publish "BiliSubStudio.pri"),
-    (Join-Path $publish "resources.pri")
-) | Where-Object { Test-Path $_ -PathType Leaf }
+    @(
+        (Join-Path $publish "BiliSubStudio.pri"),
+        (Join-Path $publish "resources.pri")
+    ) | Where-Object { Test-Path $_ -PathType Leaf }
+)
 if ($publishedPri.Count -eq 0) {
     throw "publish is missing the WinUI package resource index"
 }
