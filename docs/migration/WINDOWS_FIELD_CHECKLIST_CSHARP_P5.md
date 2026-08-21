@@ -20,7 +20,7 @@ Status starts as **BLOCKED**. Record one exact source revision, app EXE SHA-256 
 - [ ] Install as a standard user with no UAC/admin prompt.
 - [ ] Confirm default path `%LOCALAPPDATA%\Programs\BiliSub Studio` and Start-menu shortcut; test optional desktop shortcut.
 - [ ] Confirm the app launches without separately installing .NET, Python, FFmpeg, yt-dlp or PaddleOCR.
-- [ ] Confirm Setup does not ask the user to choose a raw runtime directory and the normal flow uses shortcuts rather than exposing dependency files.
+- [ ] Confirm Setup does not ask the user to choose a raw runtime directory or a Start-menu group; the normal flow creates the `BiliSub Studio` Start-menu shortcut automatically rather than exposing dependency files.
 - [ ] Confirm startup failures show a visible Vietnamese dialog and create `%LOCALAPPDATA%\BiliSub Studio\Logs\startup.log` instead of exiting silently.
 - [ ] Confirm `Data/Tools/Temp/Cache/Downloads` are created beside the installed EXE and are writable.
 - [ ] Verify Add/Remove Programs entry, icon, displayed version and uninstaller.

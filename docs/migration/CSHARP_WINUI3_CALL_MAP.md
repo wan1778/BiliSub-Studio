@@ -234,6 +234,32 @@ SupportPage.Report
   -> bounded report POST
 ```
 
+## Publish, installer and startup gate
+
+```text
+dotnet publish (win-x64, self-contained)
+  -> CopyCompiledXamlResourcesToPublish
+      -> copy App/MainWindow/Page XBF files
+      -> copy BiliSubStudio.pri
+  -> verify.ps1
+      -> require XBF + PRI
+      -> launch exact published BiliSubStudio.exe
+      -> MainWindow.Initialization -> startup sentinel
+
+package_windows_candidate.ps1
+  -> build_windows_installer.ps1
+      -> Inno Setup single EXE, current-user scope
+      -> fixed %LOCALAPPDATA%\Programs\BiliSub Studio runtime root
+      -> fixed BiliSub Studio Start-menu group; no directory/group browser
+      -> optional desktop shortcut only
+  -> Windows CI installer smoke
+      -> silent install
+      -> installed EXE hash equality
+      -> installed MainWindow startup sentinel
+      -> silent uninstall
+      -> preserve Data/Tools/Temp/Cache/Downloads
+```
+
 ## Ownership exclusions
 
 - `BiliSubStudio.Core` has no `Microsoft.UI` or `Windows.Storage` reference.

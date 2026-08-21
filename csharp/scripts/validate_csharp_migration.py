@@ -202,7 +202,9 @@ for marker in (
     "{localappdata}\\Programs\\BiliSub Studio",
     "uninsneveruninstall",
     "BiliSubStudio.exe",
+    "DisableProgramGroupPage=yes",
     "DisableDirPage=yes",
+    "AllowNoIcons=no",
     "UsePreviousAppDir=no",
 ):
     if marker not in inno_script:
