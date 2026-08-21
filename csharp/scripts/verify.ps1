@@ -119,7 +119,7 @@ Invoke-Checked dotnet @("restore", "csharp/BiliSubStudio.sln", "-p:Platform=x64"
 Invoke-Checked dotnet @("build", "csharp/BiliSubStudio.sln", "-c", "Release", "-p:Platform=x64", "-p:UseSharedCompilation=false", "-p:ContinuousIntegrationBuild=true", "--no-restore")
 Invoke-Checked dotnet @("run", "--project", "csharp/tests/BiliSubStudio.Core.ContractTests/BiliSubStudio.Core.ContractTests.csproj", "-c", "Release", "--no-build", "--no-restore")
 
-$publish = "csharp/src/BiliSubStudio.App/bin/Release/net10.0-windows10.0.26100.0/win-x64/publish"
+$publish = "csharp/src/BiliSubStudio.App/bin/x64/Release/net10.0-windows10.0.26100.0/win-x64/publish"
 if (Test-Path $publish) { Remove-Item $publish -Recurse -Force }
 Invoke-Checked dotnet @(
     "publish", "csharp/src/BiliSubStudio.App/BiliSubStudio.App.csproj",

@@ -39,4 +39,5 @@ Complete `docs/migration/WINDOWS_FIELD_CHECKLIST_CSHARP_P5.md` for the exact ins
 
 - Run 1 exposed that `gh release verify-asset` defaults to the latest release. The workflow now supplies the pinned `is-7_0_2` tag explicitly while retaining release-attestation and Authenticode checks.
 - Run 2 exposed that the generated C# code map could include local `bin`/`obj` compiler output. The generator now excludes those directories so a clean Windows checkout and the Linux authoring tree produce the same map.
+- Run 4 completed the real WinUI build with 0 warnings/errors and passed 32/32 contracts, then exposed an x64 publish-path mismatch. Verification, packaging and installer scripts now use the actual `bin/x64/Release/.../publish` path produced by `Platform=x64`.
 - These pipeline fixes do not promote a candidate. The Windows compile, package, installer and field-QA gates remain mandatory for the exact resulting SHA-256.

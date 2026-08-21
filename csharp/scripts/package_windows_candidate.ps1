@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$PublishDirectory = "csharp/src/BiliSubStudio.App/bin/Release/net10.0-windows10.0.26100.0/win-x64/publish",
+    [string]$PublishDirectory = "csharp/src/BiliSubStudio.App/bin/x64/Release/net10.0-windows10.0.26100.0/win-x64/publish",
     [string]$OutputDirectory = "csharp/artifacts/windows-x64"
 )
 
