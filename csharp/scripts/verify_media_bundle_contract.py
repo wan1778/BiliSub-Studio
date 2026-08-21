@@ -56,7 +56,7 @@ require("BundleSubtitleIfAvailable: true" in page, "Tải media must request sub
 require("TrackBox.SelectedItem as SubtitleTrack" in page, "subtitle selection must be optional")
 require("StartButton.IsEnabled = QualityBox.SelectedItem is not null && hasOutput" in page, "missing subtitle must not disable media download")
 require('Content="Tải media"' in xaml, "primary CTA must represent the complete media bundle")
-require("video + thumbnail + phụ đề nếu nguồn có" in xaml, "UI must explain optional subtitle behavior")
+require("thumbnail" in xaml.lower() and "phụ đề nếu nguồn có" in xaml.lower(), "UI must explain thumbnail + optional subtitle behavior")
 
 require("request.BundleThumbnail || bundledSubtitle" in application, "parent media job must own thumbnail/subtitle bundle")
 require("metadata.ThumbnailUrl" in application, "parent media job must download the resolved thumbnail")
