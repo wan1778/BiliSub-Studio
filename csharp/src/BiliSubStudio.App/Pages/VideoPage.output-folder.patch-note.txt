@@ -1,1 +1,0 @@
-This temporary checkpoint file should not ship; it only reserves the next source patch.
