@@ -9,6 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE_ROOTS = [ROOT / "csharp/src/BiliSubStudio.Core", ROOT / "csharp/src/BiliSubStudio.App"]
 OUTPUT = ROOT / "docs/migration/CSHARP_CODE_MAP.generated.md"
+IGNORED_SOURCE_DIRECTORIES = {"bin", "obj"}
 
 TYPE_RE = re.compile(r"\b(?:public|internal|private|protected)?\s*(?:sealed\s+|static\s+|partial\s+|abstract\s+)*(?:class|record|struct|interface|enum)\s+([A-Za-z_]\w*)")
 METHOD_RE = re.compile(
@@ -23,6 +24,9 @@ def generate() -> str:
     rows: list[tuple[str, str, list[str]]] = []
     for source_root in SOURCE_ROOTS:
         for path in sorted(source_root.rglob("*.cs")):
+            relative_source_path = path.relative_to(source_root)
+            if any(part in IGNORED_SOURCE_DIRECTORIES for part in relative_source_path.parts):
+                continue
             text = path.read_text(encoding="utf-8")
             namespace = (NAMESPACE_RE.search(text).group(1) if NAMESPACE_RE.search(text) else "")
             types = TYPE_RE.findall(text)
