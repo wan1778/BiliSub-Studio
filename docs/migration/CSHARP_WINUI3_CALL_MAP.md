@@ -1,6 +1,6 @@
 # C# + WinUI 3 production call map
 
-Baseline: Go source identity `9be4abd8184d2d7d24159dd736b6accfbe1cda90`. The Go production tree is unchanged and remains the behavioral oracle until the exact C# publish passes Windows field gates.
+Baseline Go source identity: `9be4abd8184d2d7d24159dd736b6accfbe1cda90`. Go remains a frozen behavioral reference only; the C# application does not compile or invoke the Go UI/backend.
 
 ## Composition and lifecycle
 
@@ -13,17 +13,21 @@ App.OnLaunched
           -> WindowsProcessContainment (KILL_ON_JOB_CLOSE + updater BREAKAWAY_OK)
           -> one JobManager / ToolManager / ProcessRunner / HttpClient
           -> Settings, Auth, Media, Video, Subtitle, Hardware, OCR, Editor, Update, Report owners
-      -> native WinUI pages (no HTTP adapter/WebView)
+      -> seven routed native WinUI pages
+           Tải media / OCR phụ đề / Chỉnh video / Hiệu năng / Đăng nhập / Cập nhật & hỗ trợ / Cài đặt
+```
 
+`MainWindow` no longer routes or constructs a separate subtitle page. `SubtitlePage.xaml(.cs)` is retained only as an unrouted migration/reference source at this checkpoint; production navigation has one Bilibili download workflow.
+
+```text
 AppWindow.Closing
   -> BiliSubApplication.PrepareShutdownAsync
       -> PauseJobAsync for every pausable OCR job
-      -> OcrScanner reaches safe tracker boundary
-      -> OcrCheckpointStore.SaveAsync + Flush(flushToDisk: true) + atomic move
+      -> safe OCR checkpoint + fsync
       -> cancel remaining jobs
       -> OcrManager.StopAsync
-      -> SessionStore.DeleteTemporaryAsync (remove plaintext Netscape cookie)
-  -> UpdateService.LaunchPrepared (only when a verified update is pending)
+      -> SessionStore.DeleteTemporaryAsync
+  -> UpdateService.LaunchPrepared (verified update only)
   -> Window.Close
 ```
 
@@ -37,118 +41,98 @@ SettingsPage / SettingsViewModel
           -> AtomicJsonFile
           -> Data/config.json
 
-VideoPage / SubtitlePage / OCRPage
-  -> BiliSubApplication job or ROI owner
+VideoPage (Tải media) / OCRPage
+  -> BiliSubApplication owner
   -> JsonConfigStore.UpdateAsync
   -> persist video speed/container/mode, subtitle format, OCR device/ROI
 ```
 
-The twelve legacy JSON fields and one-sided ROI normalization rules remain unchanged. Maintenance buttons call `BiliSubApplication` owners only after a native confirmation dialog and are rejected while jobs are active.
+The existing JSON schema remains unchanged.
 
-## Bilibili auth
+## Unified Bilibili media workflow
+
+Production ownership is one visible page and one user action:
+
+```text
+VideoPage.LoadMetadata_Click
+  -> BiliSubApplication.GetMetadataAsync
+  -> SessionStore.WriteNetscapeFileAsync
+  -> YtDlpResolver.GetMetadataAsync
+  -> ToolManager.EnsureYtDlpAsync
+  -> ProcessRunner -> app-owned yt-dlp.exe -J
+  -> one VideoMetadata result containing BOTH qualities and subtitle tracks
+  -> VideoPage populates QualityBox + TrackBox
+```
+
+Rules enforced in `VideoPage`:
+
+- one Bilibili URL owns both video quality and subtitle track state;
+- editing the URL immediately clears both quality and subtitle selections and disables Start;
+- a metadata response is discarded if the URL changed while it was in flight;
+- preferred default subtitle is official Chinese first, then another Chinese track, then other official/available tracks;
+- one output directory and one progress/log surface are used for the bundle;
+- the primary CTA is `Tải video + phụ đề`.
+
+Start call path:
+
+```text
+VideoPage.Start_Click
+  -> VideoDownloadRequest
+       BundleSubtitleFormat = selected SRT/TXT/JSON
+       BundleSubtitleTrack  = selected subtitle language identity
+  -> BiliSubApplication.StartVideo
+       if BundleSubtitleTrack is empty:
+           legacy/single-video compatibility path remains unchanged
+       else:
+           JobManager.Create("media")
+           persist video + subtitle preferences
+           write one temporary Netscape cookie owner
+
+           phase bundle-video (0..85%)
+             -> child AppJob linked to parent cancellation
+             -> VideoDownloadService.RunAsync
+                 -> YtDlpResolver.ResolveAsync
+                 -> RangeDownloader.DownloadAsync per selected DASH stream
+                 -> Stable 1 / Fast 8 / Turbo 16 connection budget
+                 -> strict Range validation + resume manifest
+                 -> bounded URL refresh / yt-dlp fallback
+                 -> FFmpeg stream-copy remux
+
+           phase bundle-subtitle (85..100%)
+             -> child AppJob linked to the same parent cancellation
+             -> SubtitleService.RunAsync
+                 -> selected subtitle track
+                 -> JSON/json3/WebVTT/SRT parsing
+                 -> normalized SRT/TXT/JSON
+                 -> atomic output write
+
+           -> parent AppJob logs both final paths
+           -> parent Finish once
+```
+
+`Cancel` targets the single parent media Job. Parent cancellation is registered into the currently active child phase, so HTTP workers/yt-dlp/FFmpeg/subtitle fetch stop through their existing cancellation paths. Video Range/retry/remux algorithms and subtitle parsing algorithms are not modified by the bundling layer.
+
+`BiliSubApplication.StartSubtitle` remains as a low-level compatibility entry point but is not exposed as a separate production navigation tab.
+
+## Authentication
 
 ```text
 AccountPage
-  -> BilibiliAuthService.StartQrAsync
-      -> Bilibili QR endpoint
-      -> QrMatrixEncoder (fixed native QR v10-L matrix)
-      -> AccountPage Canvas render
-  -> BilibiliAuthService.PollQrAsync
-      -> collect callback/Set-Cookie values
-      -> nav validation
-      -> SessionStore.SetCookieAsync
-          -> Windows DPAPI CryptProtectData
-          -> Data/session.bin
-
-Resolver / Subtitle
-  -> SessionStore.WriteNetscapeFileAsync
-  -> Temp/bilibili_cookies.txt
-  -> yt-dlp child
+  -> BilibiliAuthService.StartQrAsync / PollQrAsync
+  -> QrMatrixEncoder -> native Canvas
+  -> SessionStore -> Windows DPAPI -> Data/session.bin
 ```
 
-## Media preview
+No browser/WebView is required for QR presentation.
+
+## Native media preview
 
 ```text
 OCRPage or EditorPage
-  -> FilePickerService (native HWND initialized FileOpenPicker)
-  -> MediaPreviewService.ProbeAsync
-      -> ToolManager.EnsureFfprobeAsync
-      -> ProcessRunner -> ffprobe.exe
-  -> MediaPreviewService.GetFrameJpegAsync
-      -> ToolManager.EnsureFfmpegAsync
-      -> ProcessRunner -> ffmpeg.exe -> JPEG pipe
-  -> BitmapImage in native WinUI Image
-```
-
-Preview does not depend on browser codecs. OCR ROI and editor regions are normalized from pointer coordinates against the displayed video rectangle.
-
-## Video metadata and download
-
-```text
-VideoPage.LoadMetadata
-  -> BiliSubApplication.GetMetadataAsync
-  -> YtDlpResolver.GetMetadataAsync
-  -> ToolManager.EnsureYtDlpAsync
-  -> ProcessRunner -> yt-dlp.exe -J
-
-VideoPage.Start
-  -> BiliSubApplication.StartVideo
-  -> JobManager.Create("video")
-  -> VideoDownloadService.RunAsync
-      -> YtDlpResolver.ResolveAsync
-      -> RangeDownloader.DownloadAsync per selected DASH stream
-          -> strict bytes=0-0 probe / Content-Range validation
-          -> Stable 1, Fast 8, Turbo 16 global connection budget
-          -> disjoint .seg.tmp -> fsynced completed .seg
-          -> atomic resume manifest
-          -> exact-size assembly
-      -> bounded URL refresh via YtDlpResolver
-      -> yt-dlp single-fragment fallback when Range is broken/unsupported
-      -> ProcessRunner -> ffmpeg stream-copy remux
-      -> verified non-empty final output
-```
-
-Cancel path:
-
-```text
-VideoPage.Cancel
-  -> BiliSubApplication.CancelJob
-  -> AppJob.Cancel / shared CancellationToken
-  -> cancel every HTTP worker and kill yt-dlp/FFmpeg process tree
-  -> remove .tmp/.part/.assembling files
-  -> retain only completed .seg checkpoints and completed output files
-  -> UI returns to ready state
-```
-
-## Subtitle
-
-```text
-SubtitlePage.Load
-  -> BiliSubApplication.GetMetadataAsync -> YtDlpResolver
-SubtitlePage.Start
-  -> BiliSubApplication.StartSubtitle
-  -> SubtitleService.RunAsync
-      -> fetch selected official/AI track
-      -> keep official and AI tracks as distinct selectable identities
-      -> parse Bilibili body JSON, json3 events, WebVTT or SRT
-      -> normalize/sort/merge duplicate cues
-      -> render normalized SRT/TXT/pretty JSON (never rename raw timed text as JSON)
-      -> atomic output write
-```
-
-URL edits invalidate the loaded track/quality owner in both Video and Subtitle pages.
-
-## Hardware and benchmark
-
-```text
-HardwarePage
-  -> HardwareService.Snapshot
-      -> CPU registry guarded by OperatingSystem.IsWindows
-      -> GC memory information
-      -> nvcuda.dll Driver API (no nvidia-smi/PowerShell)
-  -> HardwareService.BenchmarkAsync
-      -> bounded SHA-256 CPU and memory-copy probes
-      -> recommended OCR lane ceiling
+  -> FilePickerService
+  -> MediaPreviewService.ProbeAsync -> ffprobe.exe
+  -> MediaPreviewService.GetFrameJpegAsync -> ffmpeg.exe
+  -> native WinUI preview/player surface
 ```
 
 ## OCR
@@ -156,115 +140,66 @@ HardwarePage
 ```text
 OCRPage.Prepare
   -> BiliSubApplication.PrepareOcrAsync
-  -> OcrManager.ConfigureDeviceAsync / EnsureAsync
-  -> OcrInstaller.EnsureAsync
-      -> pinned uv 0.12.0 + checksum
-      -> private Python 3.12
-      -> paddle 3.2.0 / paddleocr 3.7.0
-      -> CPU/GPU separate runtime manifests
-      -> embedded worker.py checksum
-  -> OcrWorkerClient.StartAsync
-      -> private python.exe -u worker.py --model-cache ... --device ...
-      -> validate Ready + PP-OCRv6_small_det + PP-OCRv6_small_rec + device
-
-OCRPage.TestFrame
-  -> OcrScanner.RecognizeFrameAsync
-      -> FFmpeg ROI JPEG
-      -> OcrManager shared worker pool
-      -> request-id JSON line protocol
-      -> optional enhanced retry for low confidence
+  -> OcrManager / OcrInstaller
+  -> private Python + Paddle runtime under Tools/OCR
 
 OCRPage.Scan
-  -> BiliSubApplication.StartOcrScan (pausable AppJob)
+  -> BiliSubApplication.StartOcrScan
   -> OcrScanner.RunAsync
-      -> load schema-4 checkpoint or select fresh topology
-      -> Auto Predict (hardware) -> Probe (real frame/real OCR throughput) -> Commit
-      -> deterministic core segments + bounded overlap
-      -> one FFmpeg image pipe per lane (NVDEC probe with software fallback)
-      -> shared PaddleOCR worker pool with backpressure
-      -> lane-local SubtitleTracker
-      -> ChineseSubtitleNormalizer
-      -> cue ownership + deterministic boundary reconciliation
-      -> schema-4 safe pause/resume
-  -> ExportOcrAsync reapplies Chinese validator -> SRT
+  -> Auto/1/2/4/8/16 deterministic lane topology
+  -> shared PaddleOCR worker pool
+  -> lane-local SubtitleTracker
+  -> ChineseSubtitleNormalizer
+  -> schema-4 safe pause/resume checkpoint
+  -> ExportOcrAsync -> SRT
 ```
 
 ## Video editor
 
 ```text
-EditorPage native picker / FFmpeg preview / pointer regions
-  -> VideoEditorService.BuildFilter
-      -> normalized region -> source pixels
-      -> sequential Blur / Mosaic / Cover graph
-      -> whole-video or between(t,start,end)
+EditorPage
+  -> MediaPreviewService/native player
   -> BiliSubApplication.StartEditor
   -> VideoEditorService.RunAsync
-      -> ToolManager.EnsureFfmpegAsync
-      -> ProcessRunner -> ffmpeg -progress pipe:1
-      -> .rendering temp output
-      -> verify non-empty
-      -> atomic unique output name
+  -> FFmpeg Blur/Mosaic/Cover graph
+  -> temporary render -> non-empty verification -> atomic final output
 ```
 
-The editor never imports or modifies downloader concurrency/resume/CDN state.
+Editor code does not own or alter downloader concurrency/resume state.
 
-## Update/report
+## Hardware, update and report
 
 ```text
-SupportPage.Check
-  -> UpdateService.CheckAsync
-      -> stable/beta Drive manifest
-      -> require payload_kind=winui3-portable-zip
-      -> reject legacy Go payloads
-SupportPage.Prepare
-  -> strict size + SHA-256 download
-  -> traversal-safe ZIP staging
-  -> validate BiliSubStudio.exe PE marker
-  -> reject payload roots containing Data/Tools/Temp/Cache/Downloads
-  -> copy updater runtime outside install target
-App close
-  -> CreateProcessW CREATE_BREAKAWAY_FROM_JOB
-  -> --apply-portable-update waits old PID
-  -> revalidate payload and copy runtime while preserving portable data directories
-  -> restart native executable
-
-SupportPage.Report
-  -> BugReportService.Sanitize
-  -> redact cookie/token/user paths
-  -> bounded report POST
+HardwarePage -> HardwareService (CPU/RAM + NVIDIA Driver API/NVML)
+SupportPage.Check -> UpdateService.CheckAsync
+SupportPage.Prepare -> SHA-256 verified WinUI portable payload staging
+SupportPage.Report -> BugReportService.Sanitize -> bounded POST
 ```
 
-## Publish, installer and startup gate
+## Publish, installer and startup gates
 
 ```text
-dotnet publish (win-x64, self-contained)
-  -> CopyCompiledXamlResourcesToPublish
-      -> copy App/MainWindow/Page XBF files
-      -> copy BiliSubStudio.pri
-  -> verify.ps1
-      -> require XBF + PRI
-      -> launch exact published BiliSubStudio.exe
-      -> MainWindow.Initialization -> startup sentinel
+verify.ps1
+  -> exact .NET 10.0.400
+  -> static migration contract
+  -> generated C# code map check
+  -> Release build + Core contracts
+  -> self-contained win-x64 publish
+  -> XBF + PRI validation
+  -> exact published EXE startup sentinel
+  -> routed-page layout smoke at 800x600 / 1000x700 / 1500x900
 
 package_windows_candidate.ps1
-  -> build_windows_installer.ps1
-      -> Inno Setup single EXE, current-user scope
-      -> default %LOCALAPPDATA%\Programs\BiliSub Studio runtime root
-      -> Destination Location browser enumerates drives/folders
-      -> selected parent -> dedicated BiliSub Studio product subdirectory
-      -> fixed BiliSub Studio Start-menu group; no group browser
-      -> optional desktop shortcut only
-  -> Windows CI installer smoke
-      -> silent install into custom path containing spaces
-      -> installed EXE hash equality
-      -> installed MainWindow startup sentinel
-      -> silent uninstall
-      -> preserve Data/Tools/Temp/Cache/Downloads
+  -> Inno Setup x64 current-user installer
+  -> custom-directory install smoke
+  -> exact installed-EXE startup/layout smoke
+  -> uninstall + protected-root preservation
 ```
 
 ## Ownership exclusions
 
-- `BiliSubStudio.Core` has no `Microsoft.UI` or `Windows.Storage` reference.
-- WinUI pages do not invoke FFmpeg, Python, yt-dlp or HTTP Range directly.
-- No localhost server, `/api` route, browser UI, WebView/WebView2 or `BiliSubStudioCore.exe` exists in the C# production path.
-- The Go production directories are not imported or modified; only the pinned OCR `worker.py` is linked as a build content asset and executed by the C# OCR owner.
+- `BiliSubStudio.Core` has no WinUI/WinRT UI dependency.
+- WinUI pages do not spawn FFmpeg/Python/yt-dlp directly.
+- No localhost production server, `/api` UI adapter, WebView/WebView2 or `BiliSubStudioCore.exe` exists in the C# production path.
+- Go production directories are not imported or invoked by the C# application.
+- The unified media change is orchestration/UI only; `RangeDownloader`, `VideoDownloadService` transport behavior and `SubtitleService` normalization behavior remain separate owners.
