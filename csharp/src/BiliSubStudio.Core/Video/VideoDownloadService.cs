@@ -51,8 +51,43 @@ public sealed class VideoDownloadService
         var resolveRequest = new VideoResolveRequest(request.Url, request.Quality, request.Mode, request.Container, request.CookieFile);
         var selection = await _resolver.ResolveAsync(resolveRequest, cancellationToken);
         job.Log($"Đã resolve: {selection.Title}");
+        if (selection.Video is not null) job.Log($"Video format {selection.Video.FormatId} · {selection.Video.Height}p · {selection.Video.Size} bytes");
+        if (selection.Audio is not null) job.Log($"Audio format {selection.Audio.FormatId} · {selection.Audio.Size} bytes");
 
-        var work = Path.Combine(_paths.Cache, "video", ResumeKey(request, selection));
+        var estimatedStreams = (selection.Video?.Size ?? 0L) + (selection.Audio?.Size ?? 0L);
+        if (estimatedStreams > 0)
+        {
+            const long reserve = 512L * 1024 * 1024;
+            var required = estimatedStreams <= (long.MaxValue - reserve) / 2
+                ? estimatedStreams * 2 + reserve
+                : long.MaxValue;
+            var root = Path.GetPathRoot(outputDirectory);
+            if (!string.IsNullOrWhiteSpace(root))
+            {
+                try
+                {
+                    var drive = new DriveInfo(root);
+                    if (drive.IsReady && drive.AvailableFreeSpace < required)
+                    {
+                        throw new IOException($"Ổ lưu không đủ dung lượng cho video dài. Cần khoảng {required / (1024d * 1024 * 1024):0.0} GiB, còn {drive.AvailableFreeSpace / (1024d * 1024 * 1024):0.0} GiB.");
+                    }
+                }
+                catch (ArgumentException) { }
+                catch (UnauthorizedAccessException) { }
+            }
+        }
+
+        var bundleCacheRoot = Path.Combine(outputDirectory, ".BiliSubStudio");
+        var workRoot = Path.Combine(bundleCacheRoot, "Cache", "video");
+        Directory.CreateDirectory(workRoot);
+        try
+        {
+            File.SetAttributes(bundleCacheRoot, File.GetAttributes(bundleCacheRoot) | FileAttributes.Hidden);
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+
+        var work = Path.Combine(workRoot, ResumeKey(request, selection));
         Directory.CreateDirectory(work);
         var budget = SpeedConnections(request.Speed);
         var usedRange = true;
@@ -292,9 +327,7 @@ public sealed class VideoDownloadService
         if (directory is null || !Directory.Exists(directory)) return;
         foreach (var path in Directory.EnumerateFiles(directory, Path.GetFileName(prefix) + ".*"))
         {
-            if (path.EndsWith(".part", StringComparison.OrdinalIgnoreCase) ||
-                path.EndsWith(".ytdl", StringComparison.OrdinalIgnoreCase) ||
-                path.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase))
+            if (path.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase))
             {
                 TryDelete(path);
             }
