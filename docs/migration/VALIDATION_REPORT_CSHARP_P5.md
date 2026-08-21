@@ -1,53 +1,49 @@
 # C# P5 installer-ready source checkpoint
 
 Checkpoint: `CSharp-P5-InstallerReady`  
-Date: 2026-08-21 (Asia/Ho_Chi_Minh)
+Date: 2026-08-22 (Asia/Ho_Chi_Minh)
 
 ## Identity and intent
 
 - Frozen Go source identity: `9be4abd8184d2d7d24159dd736b6accfbe1cda90`.
 - Frozen source archive SHA-256: `d4acd9ed2b9237f5b20f187e750059d17802d00fc5d3cd81fe6a4387e458d4da`.
-- Starting integration checkpoint: `CSharp-P4-IntegrationVerified`.
 - C# informational version: `4.0.0-beta.12-csharp-p5`.
-- Primary final-user artifact target: `BiliSubStudio_Setup_v4.0.0-beta.12-csharp-p5_x64.exe`.
+- Primary user artifact target: `BiliSubStudio_Setup_v4.0.0-beta.12-csharp-p5_x64.exe`.
+- Source of truth: GitHub branch `csharp-p5-installer` until field QA completes.
 
-P5 replaces the older “portable-only/no-installer” delivery decision. The app remains unpackaged and self-contained internally, but the normal user receives one installer EXE rather than a source or portable ZIP.
+P5 remains non-promotable. No merge, GitHub Release or update-channel publication is allowed until the exact current installer passes Windows field QA.
 
-## Installer contract
+## Current migration state
 
-- Inno Setup 7 x64 generates a PE32+ x64 single-file installer.
-- Current-user installation defaults to `%LOCALAPPDATA%\Programs\BiliSub Studio`; the user may select another writable drive/folder and no administrator elevation is requested.
-- Start-menu shortcut is automatic; desktop shortcut is optional.
-- `Data`, `Tools`, `Temp`, `Cache` and `Downloads` remain beside the installed EXE and are preserved across upgrades and uninstall by default.
-- The verified publish includes the .NET/Windows App SDK runtime and OCR worker; users do not install .NET, Python, FFmpeg or yt-dlp manually.
-- Installer, app EXE, source inventory and portable fallback each receive SHA-256 evidence.
-- All manifests remain `release_candidate=false`, `promotion_allowed=false` and `field_qa_complete=false` until the exact installer passes Windows QA.
+- C# + .NET 10 + WinUI 3 is the production migration path.
+- Go is reference-only and is not compiled or invoked by the C# app.
+- Production Bilibili download UI is one `Tải media` workflow: one URL, shared metadata, video + subtitle in one parent job.
+- The updater no longer uses Google Drive. Discovery is through repository manifests on GitHub and runtime payloads are restricted to this repository's GitHub Releases.
 
-## Authoring gates
+## GitHub update channel
 
-- P4 Core/runtime and UI integration gates remain green: Core Release 0 warnings/errors, full code-behind compile-contract PASS and 32/32 contract tests PASS.
-- Installer script, application icon, packaging integration, workflow YAML and non-promotion markers: static PASS.
-- Frozen Go production containment remains 96/96 byte-identical.
+- Stable manifest source after merge: `https://raw.githubusercontent.com/wan1778/BiliSub-Studio/main/update/stable.json`.
+- Beta manifest source after merge: `https://raw.githubusercontent.com/wan1778/BiliSub-Studio/main/update/beta.json`.
+- Allowed payload location: `https://github.com/wan1778/BiliSub-Studio/releases/download/...` only.
+- Both manifests currently remain `channel_ready=false`; therefore no update can be prepared or downloaded during field QA.
+- Existing size/SHA-256 verification, ZIP traversal protection, PE32+ x64 validation, protected-root preservation, breakaway updater, transactional swap and rollback remain mandatory.
+- Full publication procedure: `docs/migration/GITHUB_UPDATE_CHANNEL.md`.
 
-## Windows-only gate
+## Rejected real-machine candidates
 
-The installer cannot be compiled truthfully on Linux. Run `.github/workflows/csharp-p5-windows-x64-installer.yml` or execute `verify.ps1` followed by `package_windows_candidate.ps1` on Windows. The pipeline verifies the official Inno Setup release before compiling the installer.
+- `b7d0f438280c6461f6d82f9ec1c0ea9de48a4df3c3afdb764a3097823dd81883`: startup/XAML/runtime-tree failure.
+- `d2c3db9c00dd613696fc7077db30dd2a2f902d6bde288af79dcc008c7e03e361`: Settings `Layout cycle detected`.
+- `662356fe304b8a2d45339c8aa8cc998eb813d6a720adb178d8ddb173f36efaf5`: install/startup/navigation smoke passed, but migration exposed separate `Phụ đề` and `Tải video` tabs instead of the required unified media workflow.
 
-Complete `docs/migration/WINDOWS_FIELD_CHECKLIST_CSHARP_P5.md` for the exact installer SHA-256. A source ZIP or an untested Setup EXE is not the final release.
+## Last verified pre-GitHub-update candidate
 
-## Live Windows CI findings
+- Source head at that point: `611d83e7905b1d17cbefb1aae99b792cf9e41ae5`.
+- Windows workflow run 16: `32533485392`.
+- Installer SHA-256: `2a37143e1b5777741e50b84e6df52f3b524ce1a2f81cd203532ff42ecc4722b5`.
+- Run 16 passed compile/contracts, publish/layout smoke, custom-directory install, installed-EXE startup, uninstall and artifact upload.
 
-- Run 1 exposed that `gh release verify-asset` defaults to the latest release. The workflow now supplies the pinned `is-7_0_2` tag explicitly while retaining release-attestation and Authenticode checks.
-- Run 2 exposed that the generated C# code map could include local `bin`/`obj` compiler output. The generator now excludes those directories so a clean Windows checkout and the Linux authoring tree produce the same map.
-- Run 4 completed the real WinUI build with 0 warnings/errors and passed 32/32 contracts, then exposed an x64 publish-path mismatch. Verification, packaging and installer scripts now use the actual `bin/x64/Release/.../publish` path produced by `Platform=x64`.
-- These pipeline fixes do not promote a candidate. The Windows compile, package, installer and field-QA gates remain mandatory for the exact resulting SHA-256.
-- First real-machine field attempt on 2026-08-21 rejected installer SHA-256 `b7d0f438280c6461f6d82f9ec1c0ea9de48a4df3c3afdb764a3097823dd81883`: the installed app exited silently during startup and Setup allowed the user to expose the full self-contained runtime tree in an arbitrary folder.
-- The replacement source merges `XamlControlsResources`, records every startup phase under `%LOCALAPPDATA%\BiliSub Studio\Logs`, shows fatal startup errors, runs the exact published EXE through a CI launch sentinel, provides a real Destination Location page with a dedicated product subdirectory and limits satellite resources to Vietnamese/English.
-- Run 6 proved the new gate catches the same class of defect before packaging: compile remained 0 warnings/errors and 32/32 contracts passed, but the exact published EXE reported `XamlParseException` from `MainWindow.InitializeComponent`. Packaging was correctly skipped. The handwritten `PathIcon.Data` geometry surface was replaced with stable Segoe MDL2 `FontIcon` glyphs and exception diagnostics now record HRESULT plus runtime-specific properties for the next launch gate.
-- Run 7 confirmed HRESULT `0x802B000A` still originated inside the compiled `MainWindow` XAML, so icon geometry was not the sole cause. The shell XAML is now reduced to standard `NavigationView` + `Frame` + status bar controls while preserving all eight existing feature pages and their C# owners. Decorative header/icon/accessibility markup will only be restored incrementally after the exact published shell passes the runtime gate.
-- Run 8 reproduced the same `LoadComponent` failure even with the reduced shell. Artifact inspection then confirmed the actual publish defect: the app directory had no application `.xbf` files and no `BiliSubStudio.pri`/`resources.pri`, so the executable could not resolve `ms-appx` XAML resources. The app project now copies compiled XBF files plus its PRI from `OutputPath` to `PublishDir`, and verification fails before launch unless both resource classes exist.
-- Run 9 confirmed the publish workaround emitted at least two application XBF files and one PRI. Verification then stopped on a PowerShell collection-shape bug when exactly one PRI matched; the result is now wrapped as an array so the gate can continue to the exact published-EXE launch test.
-- Run 10 passed the exact published-EXE startup gate: XAML initialized, the main window activated, all startup services completed and the sentinel was written. The packaging gate now additionally performs a silent current-user install, launches the installed EXE through the same sentinel, checks the installed EXE hash, silently uninstalls it and confirms the five protected data roots survive before an installer artifact may be uploaded.
-- Run 11 passed the full installer integration gate, including silent current-user install, installed-EXE hash equality, installed WinUI startup, silent uninstall and protected-root preservation. Real-machine review then exposed a confusing first-install Start-menu group page whose shell browser only lists program groups, not disk drives. Setup now disables that page unconditionally, fixes the Start-menu group to `BiliSub Studio` and keeps only the optional desktop-shortcut task visible.
-- Run 12 passed after removing the Start-menu group page. Real-machine UX review then confirmed that disabling the actual Destination Location page also removed the user's legitimate choice of drive/folder. Setup now shows that page unconditionally, preserves the previous app directory on upgrades and uses `AppendDefaultDirName=yes` so selecting a drive or parent folder creates a dedicated `BiliSub Studio` child instead of spilling runtime files into the parent. CI installs the exact candidate into a custom path containing spaces before launch/uninstall validation.
-- Run 13 passed the previous single-page startup gate and installer integration, but real-machine field QA rejected SHA-256 `d2c3db9c00dd613696fc7077db30dd2a2f902d6bde288af79dcc008c7e03e361` with a WinUI layout cycle on Settings. All layout-mutating `SizeChanged` handlers are removed; the exact published and installed EXEs must now render all eight pages at 800×600, 1000×700 and 1500×900 before a sentinel can pass.
+This installer is now superseded for further QA because the updater source has subsequently moved from Drive to GitHub. A new exact installer SHA from the latest GitHub head is required before field testing continues.
+
+## Gate
+
+Complete `docs/migration/WINDOWS_FIELD_CHECKLIST_CSHARP_P5.md` for the exact latest installer SHA-256. Only after every applicable blocker passes may a GitHub Release be created and one of the repository update manifests be changed to `channel_ready=true`.
