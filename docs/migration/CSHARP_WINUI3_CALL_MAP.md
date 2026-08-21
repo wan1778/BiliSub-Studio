@@ -249,11 +249,13 @@ dotnet publish (win-x64, self-contained)
 package_windows_candidate.ps1
   -> build_windows_installer.ps1
       -> Inno Setup single EXE, current-user scope
-      -> fixed %LOCALAPPDATA%\Programs\BiliSub Studio runtime root
-      -> fixed BiliSub Studio Start-menu group; no directory/group browser
+      -> default %LOCALAPPDATA%\Programs\BiliSub Studio runtime root
+      -> Destination Location browser enumerates drives/folders
+      -> selected parent -> dedicated BiliSub Studio product subdirectory
+      -> fixed BiliSub Studio Start-menu group; no group browser
       -> optional desktop shortcut only
   -> Windows CI installer smoke
-      -> silent install
+      -> silent install into custom path containing spaces
       -> installed EXE hash equality
       -> installed MainWindow startup sentinel
       -> silent uninstall

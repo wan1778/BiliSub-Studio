@@ -96,7 +96,7 @@ $installerInstallSmoke = $false
 $installerSmokeLogName = "INSTALLER_STARTUP_SMOKE_LOG.txt"
 
 if ($env:GITHUB_ACTIONS -eq "true") {
-    $installRoot = Join-Path $env:LOCALAPPDATA "Programs\BiliSub Studio"
+    $installRoot = Join-Path $env:RUNNER_TEMP "BiliSub Studio Custom Location\BiliSub Studio"
     if (Test-Path $installRoot) {
         throw "installer smoke requires a clean per-user install root: $installRoot"
     }
@@ -108,6 +108,7 @@ if ($env:GITHUB_ACTIONS -eq "true") {
         "/NORESTART",
         "/SP-",
         "/CURRENTUSER",
+        "/DIR=`"$installRoot`"",
         "/LOG=`"$installLog`""
     ) -Wait -PassThru
     if ($installProcess.ExitCode -ne 0) {
@@ -170,7 +171,9 @@ $statusPath = Join-Path $outputFull "INSTALLER_GATE_STATUS.json"
     install_scope = "current_user"
     requires_admin = $false
     install_root = "%LOCALAPPDATA%\Programs\BiliSub Studio"
-    install_directory_user_selectable = $false
+    install_directory_user_selectable = $true
+    selected_parent_appends_product_directory = $true
+    installer_custom_directory_smoke = $installerInstallSmoke
     winui_startup_smoke = [bool]$identity.winui_startup_smoke
     installer_install_smoke = $installerInstallSmoke
     installer_startup_smoke_log = $installerSmokeLogName

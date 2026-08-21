@@ -191,6 +191,10 @@ for marker in (
     "bilisub-installed-startup-smoke.txt",
     "installed WinUI startup smoke failed",
     "installer_install_smoke = $installerInstallSmoke",
+    'install_directory_user_selectable = $true',
+    'selected_parent_appends_product_directory = $true',
+    '"/DIR=`"$installRoot`""',
+    "BiliSub Studio Custom Location\\BiliSub Studio",
     'foreach ($protectedRoot in @("Data", "Tools", "Temp", "Cache", "Downloads"))',
 ):
     if marker not in installer_script:
@@ -203,9 +207,10 @@ for marker in (
     "uninsneveruninstall",
     "BiliSubStudio.exe",
     "DisableProgramGroupPage=yes",
-    "DisableDirPage=yes",
+    "DisableDirPage=no",
+    "AppendDefaultDirName=yes",
     "AllowNoIcons=no",
-    "UsePreviousAppDir=no",
+    "UsePreviousAppDir=yes",
 ):
     if marker not in inno_script:
         fail(f"Inno Setup contract missing {marker}")
