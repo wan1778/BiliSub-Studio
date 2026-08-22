@@ -1,8 +1,7 @@
 <Window
     x:Class="BiliSubStudio.App.MainWindow"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    xmlns:viewModels="using:BiliSubStudio.App.ViewModels">
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
     <Grid x:Name="RootGrid" Background="{ThemeResource CanvasBrush}">
         <Grid.RowDefinitions>
             <RowDefinition Height="*" />
@@ -79,29 +78,29 @@
                     IsItemClickEnabled="False"
                     AutomationProperties.Name="Nhật ký toàn ứng dụng">
                     <ListView.ItemTemplate>
-                        <DataTemplate x:DataType="viewModels:GlobalLogItem">
+                        <DataTemplate>
                             <Grid Padding="4,2" ColumnSpacing="9">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="58" />
                                     <ColumnDefinition Width="94" />
                                     <ColumnDefinition Width="*" />
                                 </Grid.ColumnDefinitions>
-                                <TextBlock VerticalAlignment="Top" FontFamily="Cascadia Mono" FontSize="10" Foreground="{ThemeResource MutedTextBrush}" Text="{x:Bind Time}" />
+                                <TextBlock VerticalAlignment="Top" FontFamily="Cascadia Mono" FontSize="10" Foreground="{ThemeResource MutedTextBrush}" Text="{Binding Time}" />
                                 <Grid Grid.Column="1">
-                                    <Border Visibility="{x:Bind InfoVisibility}" Padding="7,2" Background="{ThemeResource SuccessSoftBrush}" CornerRadius="7">
-                                        <TextBlock FontSize="10" Foreground="{ThemeResource SuccessBrush}" Text="{x:Bind Source}" TextTrimming="CharacterEllipsis" />
+                                    <Border Visibility="{Binding InfoVisibility}" Padding="7,2" Background="{ThemeResource SuccessSoftBrush}" CornerRadius="7">
+                                        <TextBlock FontSize="10" Foreground="{ThemeResource SuccessBrush}" Text="{Binding Source}" TextTrimming="CharacterEllipsis" />
                                     </Border>
-                                    <Border Visibility="{x:Bind WarningVisibility}" Padding="7,2" Background="{ThemeResource WarningSoftBrush}" CornerRadius="7">
-                                        <TextBlock FontSize="10" Foreground="{ThemeResource WarningBrush}" Text="{x:Bind Source}" TextTrimming="CharacterEllipsis" />
+                                    <Border Visibility="{Binding WarningVisibility}" Padding="7,2" Background="{ThemeResource WarningSoftBrush}" CornerRadius="7">
+                                        <TextBlock FontSize="10" Foreground="{ThemeResource WarningBrush}" Text="{Binding Source}" TextTrimming="CharacterEllipsis" />
                                     </Border>
-                                    <Border Visibility="{x:Bind ErrorVisibility}" Padding="7,2" Background="{ThemeResource DangerSoftBrush}" CornerRadius="7">
-                                        <TextBlock FontSize="10" Foreground="{ThemeResource DangerBrush}" Text="{x:Bind Source}" TextTrimming="CharacterEllipsis" />
+                                    <Border Visibility="{Binding ErrorVisibility}" Padding="7,2" Background="{ThemeResource DangerSoftBrush}" CornerRadius="7">
+                                        <TextBlock FontSize="10" Foreground="{ThemeResource DangerBrush}" Text="{Binding Source}" TextTrimming="CharacterEllipsis" />
                                     </Border>
                                 </Grid>
                                 <Grid Grid.Column="2">
-                                    <TextBlock Visibility="{x:Bind InfoVisibility}" FontFamily="Cascadia Mono" FontSize="10" Foreground="{ThemeResource SuccessBrush}" Text="{x:Bind Message}" TextWrapping="Wrap" />
-                                    <TextBlock Visibility="{x:Bind WarningVisibility}" FontFamily="Cascadia Mono" FontSize="10" Foreground="{ThemeResource WarningBrush}" Text="{x:Bind Message}" TextWrapping="Wrap" />
-                                    <TextBlock Visibility="{x:Bind ErrorVisibility}" FontFamily="Cascadia Mono" FontSize="10" Foreground="{ThemeResource DangerBrush}" Text="{x:Bind Message}" TextWrapping="Wrap" />
+                                    <TextBlock Visibility="{Binding InfoVisibility}" FontFamily="Cascadia Mono" FontSize="10" Foreground="{ThemeResource SuccessBrush}" Text="{Binding Message}" TextWrapping="Wrap" />
+                                    <TextBlock Visibility="{Binding WarningVisibility}" FontFamily="Cascadia Mono" FontSize="10" Foreground="{ThemeResource WarningBrush}" Text="{Binding Message}" TextWrapping="Wrap" />
+                                    <TextBlock Visibility="{Binding ErrorVisibility}" FontFamily="Cascadia Mono" FontSize="10" Foreground="{ThemeResource DangerBrush}" Text="{Binding Message}" TextWrapping="Wrap" />
                                 </Grid>
                             </Grid>
                         </DataTemplate>
