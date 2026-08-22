@@ -13,7 +13,10 @@ public sealed class RangeNotSupportedException : IOException
 
 public sealed class RangeDownloader
 {
-    public const long DefaultChunkSize = 32L * 1024 * 1024;
+    // Proven field-stable size from the legacy 3.9.2/3.9.4 downloader. Larger 32 MiB
+    // requests regress on Bilibili CDNs that terminate a Range body early.
+    public const long DefaultChunkSize = 4L * 1024 * 1024;
+    private const int MaxSegmentAttempts = 32;
     private const int ManifestVersion = 2;
     private readonly HttpClient _http;
 
@@ -29,7 +32,7 @@ public sealed class RangeDownloader
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(original.Url)) throw new ArgumentException("Stream URL rỗng.", nameof(original));
-        concurrency = Math.Clamp(concurrency, 1, 16);
+        concurrency = Math.Clamp(concurrency, 1, 8);
         Directory.CreateDirectory(workDirectory);
 
         var (total, rangeSupported) = await ProbeAsync(original, cancellationToken);
@@ -80,17 +83,21 @@ public sealed class RangeDownloader
                 try
                 {
                     Exception? last = null;
-                    for (var attempt = 1; attempt <= 8; attempt++)
+                    var noProgressFailures = 0;
+                    for (var attempt = 1; attempt <= MaxSegmentAttempts; attempt++)
                     {
                         workerToken.ThrowIfCancellationRequested();
                         ResolvedStream stream;
                         await currentGate.WaitAsync(workerToken);
                         try { stream = current; }
                         finally { currentGate.Release(); }
+
+                        var path = SegmentPath(segmentDirectory, segment.Index);
+                        var temporary = path + ".tmp";
+                        var partialBefore = PartialLength(temporary, segment.Length);
+                        inFlight[segment.Index] = partialBefore;
                         try
                         {
-                            var path = SegmentPath(segmentDirectory, segment.Index);
-                            inFlight[segment.Index] = 0;
                             long bytes;
                             Interlocked.Increment(ref active);
                             try
@@ -129,28 +136,46 @@ public sealed class RangeDownloader
                         catch (OperationCanceledException) { throw; }
                         catch (Exception error)
                         {
-                            inFlight.TryRemove(segment.Index, out _);
+                            var partialAfter = PartialLength(temporary, segment.Length);
+                            var progressed = partialAfter > partialBefore;
+                            inFlight[segment.Index] = partialAfter;
                             completed.TryRemove(segment.Index, out _);
                             Interlocked.Exchange(ref committedBytes, completed.Keys.Sum(index => segments[index].Length));
                             last = error;
-                            if (refresh is not null && attempt % 2 == 0)
+
+                            // A short body that actually delivered bytes is not a reason to throw away
+                            // the partial segment or immediately rotate the signed URL. Continue exactly
+                            // from the missing byte. Refresh only after repeated failures with zero progress.
+                            if (progressed)
                             {
-                                await currentGate.WaitAsync(workerToken);
-                                try
-                                {
-                                    if (current.Generation == stream.Generation)
-                                    {
-                                        current = await refresh(stream.Generation, workerToken);
-                                    }
-                                }
-                                finally { currentGate.Release(); }
+                                noProgressFailures = 0;
                             }
-                            await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(4_000, 250 * attempt * attempt)), workerToken);
+                            else
+                            {
+                                noProgressFailures++;
+                                if (refresh is not null && noProgressFailures % 2 == 0)
+                                {
+                                    await currentGate.WaitAsync(workerToken);
+                                    try
+                                    {
+                                        if (current.Generation == stream.Generation)
+                                        {
+                                            current = await refresh(stream.Generation, workerToken);
+                                        }
+                                    }
+                                    finally { currentGate.Release(); }
+                                }
+                            }
+
+                            var delay = progressed
+                                ? Math.Min(750, 100 * attempt)
+                                : Math.Min(4_000, 250 * Math.Max(1, noProgressFailures) * Math.Max(1, noProgressFailures));
+                            await Task.Delay(TimeSpan.FromMilliseconds(delay), workerToken);
                         }
                     }
                     if (last is not null)
                     {
-                        throw new IOException($"Tải segment {segment.Index} thất bại.", last);
+                        throw new IOException($"Tải segment {segment.Index} thất bại sau {MaxSegmentAttempts} lượt tiếp tục.", last);
                     }
                 }
                 finally
@@ -223,10 +248,18 @@ public sealed class RangeDownloader
         CancellationToken cancellationToken)
     {
         var temporary = finalPath + ".tmp";
-        TryDelete(temporary);
+        var existing = PartialLength(temporary, segment.Length);
+        if (existing == segment.Length)
+        {
+            File.Move(temporary, finalPath, overwrite: true);
+            return existing;
+        }
+
+        var requestStart = segment.Start + existing;
+        var remaining = segment.Length - existing;
         try
         {
-            using var request = CreateRequest(stream, new RangeHeaderValue(segment.Start, segment.End));
+            using var request = CreateRequest(stream, new RangeHeaderValue(requestStart, segment.End));
             using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             if (response.StatusCode != HttpStatusCode.PartialContent)
             {
@@ -234,13 +267,13 @@ public sealed class RangeDownloader
             }
             var range = response.Content.Headers.ContentRange
                 ?? throw new InvalidDataException("Segment thiếu Content-Range.");
-            if (!range.HasRange || range.From != segment.Start || range.To != segment.End || range.Length != expectedTotal)
+            if (!range.HasRange || range.From != requestStart || range.To != segment.End || range.Length != expectedTotal)
             {
-                throw new InvalidDataException($"Content-Range sai: {range}.");
+                throw new InvalidDataException($"Content-Range sai: {range}; cần {requestStart}-{segment.End}/{expectedTotal}.");
             }
-            if (response.Content.Headers.ContentLength is { } contentLength && contentLength != segment.Length)
+            if (response.Content.Headers.ContentLength is { } contentLength && contentLength != remaining)
             {
-                throw new InvalidDataException($"Content-Length sai: {contentLength}/{segment.Length}.");
+                throw new InvalidDataException($"Content-Length sai: {contentLength}/{remaining}.");
             }
             var mediaType = response.Content.Headers.ContentType?.MediaType ?? string.Empty;
             if (mediaType.Contains("text/html", StringComparison.OrdinalIgnoreCase) || mediaType.Contains("application/json", StringComparison.OrdinalIgnoreCase))
@@ -249,14 +282,23 @@ public sealed class RangeDownloader
             }
 
             await using var body = await response.Content.ReadAsStreamAsync(cancellationToken);
-            await using var file = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None, 256 * 1024, FileOptions.Asynchronous | FileOptions.WriteThrough);
-            var buffer = new byte[256 * 1024];
-            long total = 0;
+            await using var file = new FileStream(temporary, FileMode.OpenOrCreate, FileAccess.Write, FileShare.None, 256 * 1024, FileOptions.Asynchronous | FileOptions.WriteThrough);
+            if (file.Length != existing)
+            {
+                file.SetLength(existing);
+            }
+            file.Position = existing;
+            long total = existing;
             while (total < segment.Length)
             {
-                var wanted = (int)Math.Min(buffer.Length, segment.Length - total);
+                var wanted = (int)Math.Min(bufferSize: 256 * 1024, segment.Length - total);
+                var buffer = new byte[wanted];
                 var read = await body.ReadAsync(buffer.AsMemory(0, wanted), cancellationToken);
-                if (read == 0) throw new EndOfStreamException($"Short body {total}/{segment.Length}.");
+                if (read == 0)
+                {
+                    // Preserve the bytes already written. The next attempt starts at this exact byte.
+                    throw new EndOfStreamException($"Short body {total}/{segment.Length}; tiếp tục từ byte {segment.Start + total}.");
+                }
                 await file.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
                 total += read;
                 transferred(read);
@@ -272,15 +314,30 @@ public sealed class RangeDownloader
             File.Move(temporary, finalPath, overwrite: true);
             return total;
         }
-        finally
+        catch (OperationCanceledException)
         {
             TryDelete(temporary);
+            throw;
+        }
+        catch (RangeNotSupportedException)
+        {
+            TryDelete(temporary);
+            throw;
+        }
+        catch (InvalidDataException)
+        {
+            TryDelete(temporary);
+            throw;
         }
     }
 
     private static HttpRequestMessage CreateRequest(ResolvedStream stream, RangeHeaderValue range)
     {
-        var request = new HttpRequestMessage(HttpMethod.Get, stream.Url);
+        var request = new HttpRequestMessage(HttpMethod.Get, stream.Url)
+        {
+            Version = HttpVersion.Version11,
+            VersionPolicy = HttpVersionPolicy.RequestVersionExact,
+        };
         foreach (var pair in stream.Headers)
         {
             request.Headers.TryAddWithoutValidation(pair.Key, pair.Value);
@@ -371,6 +428,23 @@ public sealed class RangeDownloader
             File.Move(temporary, output, overwrite: true);
         }
         finally { TryDelete(temporary); }
+    }
+
+    private static long PartialLength(string path, long maximum)
+    {
+        try
+        {
+            if (!File.Exists(path)) return 0;
+            var length = new FileInfo(path).Length;
+            if (length < 0 || length > maximum)
+            {
+                TryDelete(path);
+                return 0;
+            }
+            return length;
+        }
+        catch (IOException) { return 0; }
+        catch (UnauthorizedAccessException) { return 0; }
     }
 
     private static string SegmentPath(string directory, int index) => Path.Combine(directory, $"{index:D8}.seg");
