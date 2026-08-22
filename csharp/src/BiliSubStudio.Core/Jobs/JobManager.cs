@@ -1,15 +1,19 @@
 using System.Collections.Concurrent;
+using BiliSubStudio.Core.Diagnostics;
 
 namespace BiliSubStudio.Core.Jobs;
 
 public sealed class JobManager : IDisposable
 {
     private readonly ConcurrentDictionary<string, AppJob> _jobs = new(StringComparer.Ordinal);
+    private readonly ApplicationLog? _applicationLog;
+
+    public JobManager(ApplicationLog? applicationLog = null) => _applicationLog = applicationLog;
 
     public AppJob Create(string kind, bool pausable = false)
     {
         var id = $"{kind}-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}-{Guid.NewGuid():N}";
-        var job = new AppJob(id, kind, pausable);
+        var job = new AppJob(id, kind, pausable, _applicationLog);
         if (!_jobs.TryAdd(id, job))
         {
             job.Dispose();
