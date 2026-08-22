@@ -46,7 +46,7 @@ public sealed class OcrScanner
         var source = Path.GetFullPath(request.Path.Trim());
         if (!File.Exists(source) || new FileInfo(source).Length <= 0) throw new FileNotFoundException("Thiếu video nguồn.", source);
         if (request.Duration <= 0) throw new ArgumentException("Thiếu thời lượng video.");
-        _ = OcrCheckpointStore.NormalizeRegion(request.Region);
+        request = request with { Region = OcrCheckpointStore.CanonicalRegion(request.Region) };
         await _ocr.ConfigureDeviceAsync(request.Device, token);
         await _ocr.EnsureAsync(token);
         var ffmpeg = await _tools.EnsureFfmpegAsync(token);
@@ -102,20 +102,23 @@ public sealed class OcrScanner
                 throw new InvalidOperationException("OCR lane lỗi: " + laneFailure.Message, laneFailure);
             throw;
         }
+
         var paused = lanes.Any(x => !x.Completed) && job.IsPauseRequested;
         var merged = Reconcile(lanes, out var boundaryMerges);
+        string? pauseMessage = null;
         if (paused)
         {
             var pausedCheckpoint = checkpoint with { Lanes = lanes.ToList(), BoundaryMerges = boundaryMerges };
             await _checkpoints.SaveAsync(request, pausedCheckpoint, CancellationToken.None);
             var frontier = lanes.OrderBy(x => x.Segment.Index).TakeWhile(x => x.Completed).LastOrDefault()?.Segment.CoreEnd
                 ?? lanes.Min(x => x.MediaSeconds);
-            job.PauseComplete($"Đã tạm dừng an toàn tại {FormatClock(frontier)}.");
+            pauseMessage = $"Đã tạm dừng an toàn tại {FormatClock(frontier)}.";
         }
         else
         {
             await _checkpoints.RemoveAsync(request, token);
         }
+
         var frames = lanes.Sum(x => x.Frames);
         var images = lanes.Sum(x => x.OcrImages);
         var media = lanes.Sum(x => Math.Max(0, Math.Min(x.Segment.CoreEnd, x.MediaSeconds) - x.Segment.CoreStart));
@@ -123,7 +126,9 @@ public sealed class OcrScanner
             merged, frames, images, media, started.Elapsed.TotalSeconds,
             started.Elapsed.TotalSeconds > 0 ? media / started.Elapsed.TotalSeconds : 0,
             selected, lanes.Count(x => x.Completed), boundaryMerges, decoder, paused);
+
         job.SetResult(result);
+        if (paused) job.PauseComplete(pauseMessage);
         return result;
     }
 
@@ -133,24 +138,30 @@ public sealed class OcrScanner
     private async Task<int> SelectParallelismAsync(AppJob job, OcrScanRequest request, CancellationToken cancellationToken)
     {
         var maximumForDuration = Math.Clamp((int)Math.Floor(request.Duration / 120), 1, 16);
+        var requestedDevice = request.Device.Trim().ToLowerInvariant();
+        var effectiveDevice = requestedDevice == "auto" && !string.IsNullOrWhiteSpace(_ocr.Status.ActiveMode)
+            ? _ocr.Status.ActiveMode
+            : requestedDevice;
         var value = request.Parallelism.Trim().ToLowerInvariant();
         if (value != "auto" && value.Length > 0)
         {
             if (!int.TryParse(value, out var explicitValue) || explicitValue < 1 || explicitValue > 16)
                 throw new ArgumentException("Số luồng OCR phải là auto hoặc 1..16.");
             job.Set("benchmark", 0.5, "OCR Safety · kiểm tra headroom cho số luồng đã chọn...");
-            var benchmark = await _hardware.BenchmarkAsync(cancellationToken);
-            var safeMaximum = Math.Min(maximumForDuration, benchmark.RecommendedOcrLanes);
+            _ = await _hardware.BenchmarkAsync(cancellationToken);
+            var safeMaximum = Math.Min(maximumForDuration,
+                HardwareService.RecommendedOcrLanes(_hardware.Snapshot(), effectiveDevice));
             var selected = Math.Min(explicitValue, safeMaximum);
             if (selected < explicitValue)
-                job.Warn($"Đã giới hạn {explicitValue} → {selected} lane để phù hợp CPU/RAM/GPU/VRAM và thời lượng video.");
+                job.Warn($"Đã giới hạn {explicitValue} → {selected} lane cho {effectiveDevice} theo CPU/RAM/GPU/VRAM và thời lượng video.");
             return selected;
         }
 
         job.Set("benchmark", 0.5, "OCR Auto · Predict → Probe → Commit...");
-        var benchmark = await _hardware.BenchmarkAsync(cancellationToken);
-        var predicted = Math.Min(maximumForDuration, benchmark.RecommendedOcrLanes);
-        job.Log($"Auto Predict: tối đa {predicted} lane theo CPU/RAM/GPU/VRAM.");
+        _ = await _hardware.BenchmarkAsync(cancellationToken);
+        var predicted = Math.Min(maximumForDuration,
+            HardwareService.RecommendedOcrLanes(_hardware.Snapshot(), effectiveDevice));
+        job.Log($"Auto Predict: tối đa {predicted} lane cho {effectiveDevice} theo CPU/RAM/GPU/VRAM.");
         var probeFrame = Convert.ToBase64String(await CaptureFrameAsync(request.Path, Math.Min(5, request.Duration / 2), request.Region, false, cancellationToken));
         var best = 1;
         var previousThroughput = 0d;
@@ -223,7 +234,7 @@ public sealed class OcrScanner
     {
         var segment = saved.Segment;
         var startAt = Math.Clamp(saved.MediaSeconds, segment.ScanStart, segment.ScanEnd);
-        var tracker = new SubtitleTracker(mode.Fps);
+        var tracker = new SubtitleTracker(mode.Fps, mode.LowConfidence);
         tracker.Restore(saved.Cues, saved.Active);
         var args = BuildLaneArguments(source, request.Region, mode, startAt, segment.ScanEnd, nvdec);
         var start = new ProcessStartInfo(ffmpeg)
@@ -372,9 +383,10 @@ public sealed class OcrScanner
         var crop = string.Format(CultureInfo.InvariantCulture,
             "crop=iw*{0}:ih*{1}:iw*{2}:ih*{3},scale=1280:320:force_original_aspect_ratio=decrease:flags=fast_bilinear,pad=1280:320:(ow-iw)/2:(oh-ih)/2:black",
             region.Width, region.Height, region.X, region.Y);
+        var fps = mode.Fps.ToString("0.######", CultureInfo.InvariantCulture);
         var filter = nvdec
-            ? $"fps={mode.Fps.ToString("0.######", CultureInfo.InvariantCulture)},hwdownload,format=nv12|p010le|p016le,{crop}"
-            : $"fps={mode.Fps.ToString("0.######", CultureInfo.InvariantCulture)},{crop}";
+            ? $"hwdownload,format=nv12|p010le|p016le,fps={fps},{crop}"
+            : $"fps={fps},{crop}";
         args.AddRange(["-map", "0:v:0", "-an", "-sn", "-dn", "-vf", filter, "-q:v", "4", "-c:v", "mjpeg", "-f", "image2pipe", "pipe:1"]);
         return args;
     }
@@ -382,8 +394,24 @@ public sealed class OcrScanner
     private static double Similarity(string left, string right)
     {
         if (left == right) return 1;
-        var common = left.EnumerateRunes().Select(x => x.Value).Intersect(right.EnumerateRunes().Select(x => x.Value)).Count();
-        return common / (double)Math.Max(1, Math.Max(left.EnumerateRunes().Count(), right.EnumerateRunes().Count()));
+        var leftRunes = left.EnumerateRunes().Select(x => x.Value).ToArray();
+        var rightRunes = right.EnumerateRunes().Select(x => x.Value).ToArray();
+        if (leftRunes.Length == 0 || rightRunes.Length == 0) return 0;
+
+        var previous = Enumerable.Range(0, rightRunes.Length + 1).ToArray();
+        for (var i = 1; i <= leftRunes.Length; i++)
+        {
+            var current = new int[rightRunes.Length + 1];
+            current[0] = i;
+            for (var j = 1; j <= rightRunes.Length; j++)
+            {
+                current[j] = Math.Min(
+                    Math.Min(current[j - 1] + 1, previous[j] + 1),
+                    previous[j - 1] + (leftRunes[i - 1] == rightRunes[j - 1] ? 0 : 1));
+            }
+            previous = current;
+        }
+        return 1 - previous[^1] / (double)Math.Max(leftRunes.Length, rightRunes.Length);
     }
 
     private static string FormatClock(double seconds) => TimeSpan.FromSeconds(Math.Max(0, seconds)).ToString(seconds >= 3600 ? @"hh\:mm\:ss" : @"mm\:ss");

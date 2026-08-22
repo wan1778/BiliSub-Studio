@@ -83,7 +83,9 @@ internal sealed class OcrCheckpointStore
 
     public async Task<OcrParallelCheckpoint> NewAsync(OcrScanRequest request, int parallelism, CancellationToken cancellationToken)
     {
-        var segments = BuildSegments(request.Duration, parallelism, 8);
+        var scanMode = ModeFor(request.Mode, request.Sensitivity);
+        var overlap = Math.Max(scanMode.Guard, scanMode.ActiveGuard);
+        var segments = BuildSegments(request.Duration, parallelism, overlap);
         var key = await KeyAsync(request, Schema, cancellationToken);
         return new OcrParallelCheckpoint(Schema, key, segments.Count,
             segments.Select(x => new OcrLaneCheckpoint(x, x.ScanStart, [], null, 0, 0, false)).ToList());
@@ -121,7 +123,7 @@ internal sealed class OcrCheckpointStore
         var path = Path.GetFullPath(request.Path.Trim());
         var file = new FileInfo(path);
         if (!file.Exists || file.Length <= 0) throw new FileNotFoundException("Video nguồn không tồn tại hoặc rỗng.", path);
-        var region = NormalizeRegion(request.Region);
+        var region = CanonicalRegion(request.Region);
         var mode = ModeFor(request.Mode, request.Sensitivity);
         var identity = new CheckpointIdentity(
             schema, path, file.Length, (file.LastWriteTimeUtc - DateTime.UnixEpoch).Ticks * 100,
@@ -135,6 +137,16 @@ internal sealed class OcrCheckpointStore
         if (region.X < 0 || region.Y < 0 || region.Width <= 0 || region.Height <= 0 || region.X >= 1 || region.Y >= 1 || region.X + region.Width > 1.000001 || region.Y + region.Height > 1.000001)
             throw new ArgumentException("Vùng OCR không hợp lệ.");
         return region;
+    }
+
+    public static OcrRegion CanonicalRegion(OcrRegion region)
+    {
+        region = NormalizeRegion(region);
+        var left = Math.Clamp((int)Math.Floor(region.X * 100), 0, 99);
+        var top = Math.Clamp((int)Math.Floor(region.Y * 100), 0, 99);
+        var right = Math.Clamp(Math.Max(left + 1, (int)Math.Ceiling((region.X + region.Width) * 100)), 1, 100);
+        var bottom = Math.Clamp(Math.Max(top + 1, (int)Math.Ceiling((region.Y + region.Height) * 100)), 1, 100);
+        return new OcrRegion(left / 100d, top / 100d, (right - left) / 100d, (bottom - top) / 100d);
     }
 
     private static double ContiguousFrontier(IReadOnlyList<OcrLaneCheckpoint> lanes)

@@ -78,6 +78,8 @@ public sealed class OcrManager : IAsyncDisposable
                 {
                     var mode = _deviceMode;
                     if (mode == "auto") mode = hardware.NvidiaDetected ? "gpu" : "cpu";
+                    if (mode == "hybrid" && HardwareService.RecommendedOcrLanes(hardware, "hybrid") < 2)
+                        throw new InvalidOperationException("Máy hiện tại không đủ headroom để chạy Hybrid OCR an toàn; hãy dùng CPU, GPU hoặc Auto.");
                     await BuildPoolLockedAsync(mode, mode == "hybrid" ? 2 : 1, hardware, operationToken);
                 }
                 catch (Exception gpuError) when (_deviceMode == "auto" && gpuError is not OperationCanceledException)
