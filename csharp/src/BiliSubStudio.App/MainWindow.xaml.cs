@@ -62,9 +62,9 @@ public sealed partial class MainWindow : Window
         _application.Jobs.AttachLog(_globalLog);
         var folderPicker = new FolderPickerService(() => this);
         var filePicker = new FilePickerService(() => this);
-        var hardwarePage = new HardwarePage(_application);
-        var accountPage = new AccountPage(_application);
-        _supportPage = new SupportPage(_application);
+        var hardwarePage = new HardwarePage(_application, _globalLog);
+        var accountPage = new AccountPage(_application, _globalLog);
+        _supportPage = new SupportPage(_application, _globalLog);
         _settingsPage = new SettingsPage(
             new SettingsViewModel(_application.Settings, folderPicker),
             _application,
