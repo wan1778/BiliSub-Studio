@@ -96,10 +96,18 @@ $outputBase = "BiliSubStudio_Setup_v4.0.0-beta.12-csharp-p5_$($sourceTag)_x64"
 $launcherPublish = Join-Path $env:RUNNER_TEMP "bilisub-root-launcher-$sourceTag"
 if (Test-Path $launcherPublish) { Remove-Item $launcherPublish -Recurse -Force }
 New-Item $launcherPublish -ItemType Directory -Force | Out-Null
-& dotnet publish "csharp/src/BiliSubStudio.Launcher/BiliSubStudio.Launcher.csproj" \
-    -c Release -r win-x64 --self-contained true \
-    -p:PublishAot=true -p:StripSymbols=true -p:NuGetAudit=false \
-    -o $launcherPublish
+$launcherArguments = @(
+    "publish",
+    "csharp/src/BiliSubStudio.Launcher/BiliSubStudio.Launcher.csproj",
+    "-c", "Release",
+    "-r", "win-x64",
+    "--self-contained", "true",
+    "-p:PublishAot=true",
+    "-p:StripSymbols=true",
+    "-p:NuGetAudit=false",
+    "-o", $launcherPublish
+)
+& dotnet @launcherArguments
 if ($LASTEXITCODE -ne 0) { throw "root launcher NativeAOT publish failed with exit code $LASTEXITCODE" }
 $launcherExe = Join-Path $launcherPublish "BiliSubStudio.exe"
 if (-not (Test-Path $launcherExe -PathType Leaf)) { throw "root launcher publish did not create BiliSubStudio.exe" }
