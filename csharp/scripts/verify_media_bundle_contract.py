@@ -44,9 +44,18 @@ require(positions == sorted(positions), "codec preference must not outrank resol
 
 require('Path.Combine(outputDirectory, ".BiliSubStudio")' in download, "long-media work files must live on the selected output drive")
 require("estimatedStreams * 2 + reserve" in download and "AvailableFreeSpace" in download, "large-media free-space preflight is missing")
-require("public const long DefaultChunkSize" in range_downloader, "Range chunk size must remain 64-bit")
+require("public const long DefaultChunkSize = 4L * 1024 * 1024" in range_downloader, "field-proven Range chunk size must remain 4 MiB")
+require("private const int MaxSegmentAttempts = 32" in range_downloader, "short-read continuation must keep the proven 32-attempt ceiling")
 require("private sealed record Segment(int Index, long Start, long End)" in range_downloader, "Range segment offsets must remain 64-bit")
 require("private sealed record ResumeManifest(int Version, long Total, long ChunkSize" in range_downloader, "resume manifest sizes must remain 64-bit")
+require("requestStart = segment.Start + existing" in range_downloader, "short-read retry must restart at the missing byte, not segment start")
+require("FileMode.OpenOrCreate" in range_downloader and "file.Position = existing" in range_downloader, "partial Range bytes must be preserved between retries")
+require("partialAfter - partialBefore" in range_downloader and "gained >= meaningfulProgress" in range_downloader, "tiny-read progress must be distinguished from healthy continuation")
+require("weakProgressFailures % 2 == 0" in range_downloader, "repeated tiny reads must refresh the signed stream URL/CDN")
+require("Version = HttpVersion.Version11" in range_downloader and "RequestVersionExact" in range_downloader, "Range worker pool must force exact HTTP/1.1")
+require("end = Math.Min(total - 1, start + chunkSize - 1)" in range_downloader, "Range end must include the final byte without off-by-one loss")
+require("private static int TransferConnections" in download and '"turbo" => 8' in download, "effective transport budget must retain field-proven Stable/Fast/Turbo 1/4/8 behavior")
+require("var budget = TransferConnections(request.Speed)" in download, "video path must use field-stable transfer budget")
 
 cleanup_match = re.search(r"private static void CleanupFallbackTemporary\(string prefix\)(.*?)private static void TryDelete", download, re.S)
 require(cleanup_match is not None, "fallback cleanup owner is missing")
@@ -54,6 +63,7 @@ cleanup = cleanup_match.group(1)
 require(".tmp" in cleanup, "fallback cleanup must still remove temporary scratch files")
 require(".part" not in cleanup and ".ytdl" not in cleanup, "fallback cleanup must preserve yt-dlp resume state")
 require('"--continue"' in download and '"--retries", "20"' in download, "yt-dlp fallback resume/retry flags are missing")
+require('"--http-chunk-size", "4M"' in download, "yt-dlp fallback must avoid one giant response body and use 4 MiB HTTP chunks")
 
 for control in ("VideoAssetCheckBox", "ThumbnailAssetCheckBox", "SubtitleAssetCheckBox"):
     require(f'x:Name="{control}"' in xaml, f"missing separate-download control: {control}")
@@ -85,4 +95,4 @@ require("128L * 1024 * 1024" in subtitle, "long-video subtitle cap must remain 1
 require("for (var attempt = 1; attempt <= 4; attempt++)" in subtitle, "subtitle HTTP retry contract is missing")
 require("value.TotalHours" in subtitle, "SRT rendering must support durations beyond 24 hours")
 
-print("PASS: long-media/highest-quality/default-all/separate-assets/thumbnail/optional-subtitle/resume contracts")
+print("PASS: long-media/highest-quality/default-all/separate-assets/short-read-continuation/thumbnail/optional-subtitle/resume contracts")
