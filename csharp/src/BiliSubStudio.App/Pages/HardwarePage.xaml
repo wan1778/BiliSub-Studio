@@ -2,47 +2,85 @@
     x:Class="BiliSubStudio.App.Pages.HardwarePage"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Background="{ThemeResource CanvasBrush}"
     AutomationProperties.Name="Phần cứng và benchmark">
     <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
-        <Grid x:Name="PageRoot" Padding="28" MaxWidth="1050" HorizontalAlignment="Left">
-            <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
-            <StackPanel Spacing="5">
-                <TextBlock Style="{StaticResource PageTitleStyle}" Text="Phần cứng &amp; Benchmark" />
-                <TextBlock Style="{StaticResource BodyTextStyle}" Text="Probe native CPU/RAM/NVIDIA CUDA; không gọi nvidia-smi hay PowerShell." />
-            </StackPanel>
-            <Grid x:Name="HardwareGrid" Grid.Row="1" Margin="0,22,0,0" ColumnSpacing="14" RowSpacing="14">
-                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
-                <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="0" /></Grid.RowDefinitions>
+        <Grid x:Name="PageRoot" Padding="0,0,0,28" RowSpacing="14">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <Grid x:Name="HardwareGrid" ColumnSpacing="14">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+
                 <Border Style="{StaticResource CardBorderStyle}">
-                    <StackPanel Spacing="10">
-                        <TextBlock Style="{StaticResource CardTitleStyle}" Text="Máy hiện tại" />
-                        <TextBlock x:Name="CpuText" Style="{StaticResource BodyTextStyle}" />
-                        <TextBlock x:Name="MemoryText" Style="{StaticResource BodyTextStyle}" />
-                        <TextBlock x:Name="GpuText" Style="{StaticResource BodyTextStyle}" />
-                        <Button x:Name="RefreshButton" Click="Refresh_Click" Content="Probe lại" />
+                    <StackPanel Spacing="12">
+                        <Grid>
+                            <TextBlock Style="{StaticResource CardTitleStyle}" Text="Máy hiện tại" />
+                            <Border HorizontalAlignment="Right" Padding="9,4" Background="{ThemeResource SuccessSoftBrush}" CornerRadius="10">
+                                <TextBlock FontSize="10" Foreground="{ThemeResource SuccessBrush}" Text="Native probe" />
+                            </Border>
+                        </Grid>
+                        <Border Padding="12,10" Background="{ThemeResource RaisedSurfaceBrush}" CornerRadius="9">
+                            <StackPanel Spacing="8">
+                                <TextBlock x:Name="CpuText" Style="{StaticResource BodyTextStyle}" />
+                                <TextBlock x:Name="MemoryText" Style="{StaticResource BodyTextStyle}" />
+                                <TextBlock x:Name="GpuText" Style="{StaticResource BodyTextStyle}" />
+                            </StackPanel>
+                        </Border>
+                        <Button x:Name="RefreshButton" HorizontalAlignment="Left" Click="Refresh_Click" Content="Probe lại" Style="{StaticResource SecondaryButtonStyle}" />
                     </StackPanel>
                 </Border>
+
                 <Border x:Name="ToolsCard" Grid.Column="1" Style="{StaticResource CardBorderStyle}">
-                    <StackPanel Spacing="10">
-                        <TextBlock Style="{StaticResource CardTitleStyle}" Text="Công cụ portable" />
-                        <TextBlock x:Name="ToolsText" Style="{StaticResource BodyTextStyle}" />
+                    <StackPanel Spacing="12">
+                        <Grid>
+                            <TextBlock Style="{StaticResource CardTitleStyle}" Text="Công cụ portable" />
+                            <Border HorizontalAlignment="Right" Padding="9,4" Background="{ThemeResource AccentSoftBrush}" CornerRadius="10">
+                                <TextBlock FontSize="10" Foreground="{ThemeResource AccentPrimaryBrush}" Text="App-owned" />
+                            </Border>
+                        </Grid>
+                        <Border Padding="12,10" Background="{ThemeResource AccentSoftBrush}" BorderBrush="{ThemeResource AccentPrimaryBrush}" BorderThickness="1" CornerRadius="9">
+                            <TextBlock x:Name="ToolsText" Style="{StaticResource BodyTextStyle}" Foreground="{ThemeResource AccentPrimaryBrush}" />
+                        </Border>
                         <StackPanel Orientation="Horizontal" Spacing="8">
-                            <Button x:Name="PrepareToolsButton" Click="PrepareTools_Click" Content="Chuẩn bị FFmpeg + yt-dlp" />
-                            <Button x:Name="PrepareOcrButton" Click="PrepareOcr_Click" Content="Chuẩn bị OCR" />
+                            <Button x:Name="PrepareToolsButton" Click="PrepareTools_Click" Content="Chuẩn bị FFmpeg + yt-dlp" Style="{StaticResource SecondaryButtonStyle}" />
+                            <Button x:Name="PrepareOcrButton" Click="PrepareOcr_Click" Content="Chuẩn bị OCR" Style="{StaticResource SecondaryButtonStyle}" />
                         </StackPanel>
                     </StackPanel>
                 </Border>
             </Grid>
-            <Border Grid.Row="2" Margin="0,14,0,0" Style="{StaticResource CardBorderStyle}">
-                <StackPanel Spacing="10">
-                    <Grid>
-                        <TextBlock Style="{StaticResource CardTitleStyle}" Text="Benchmark" />
-                        <Button x:Name="BenchmarkButton" HorizontalAlignment="Right" Click="Benchmark_Click" Content="Chạy benchmark" />
-                    </Grid>
-                    <ProgressBar x:Name="Progress" IsIndeterminate="False" AutomationProperties.Name="Tiến độ chuẩn bị hoặc benchmark" />
-                    <TextBlock x:Name="ResultText" Style="{StaticResource BodyTextStyle}" Text="Chưa chạy." AutomationProperties.LiveSetting="Polite" />
-                    <TextBlock Style="{StaticResource MutedTextStyle}" Text="Kết quả là một tín hiệu cho OCR Auto Predict; Probe video thật vẫn quyết định topology trước khi Commit." />
-                </StackPanel>
+
+            <Border Grid.Row="1" Style="{StaticResource CardBorderStyle}">
+                <Grid ColumnSpacing="16">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="1.15*" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Spacing="10">
+                        <Grid>
+                            <StackPanel Spacing="2">
+                                <TextBlock Style="{StaticResource CardTitleStyle}" Text="Benchmark an toàn" />
+                                <TextBlock Style="{StaticResource MutedTextStyle}" Text="Đo CPU/RAM để đưa tín hiệu cho OCR Auto; không tự ý nâng lane trước probe video thật." />
+                            </StackPanel>
+                            <Button x:Name="BenchmarkButton" HorizontalAlignment="Right" Click="Benchmark_Click" Content="Chạy benchmark" />
+                        </Grid>
+                        <ProgressBar x:Name="Progress" IsIndeterminate="False" AutomationProperties.Name="Tiến độ chuẩn bị hoặc benchmark" />
+                        <Border Padding="12,10" Background="{ThemeResource SuccessSoftBrush}" BorderBrush="{ThemeResource SuccessBrush}" BorderThickness="1" CornerRadius="9">
+                            <TextBlock x:Name="ResultText" Style="{StaticResource BodyTextStyle}" Foreground="{ThemeResource SuccessBrush}" Text="Chưa chạy." AutomationProperties.LiveSetting="Polite" />
+                        </Border>
+                    </StackPanel>
+                    <Border Grid.Column="1" Padding="14" Background="{ThemeResource WarningSoftBrush}" BorderBrush="{ThemeResource WarningBrush}" BorderThickness="1" CornerRadius="10">
+                        <StackPanel Spacing="6">
+                            <TextBlock FontSize="12" FontWeight="SemiBold" Foreground="{ThemeResource WarningBrush}" Text="Quy tắc OCR Auto" />
+                            <TextBlock FontSize="11" Foreground="{ThemeResource WarningBrush}" TextWrapping="Wrap" Text="Benchmark chỉ là tín hiệu. Probe video thật phải xác nhận CPU/GPU/RAM ổn định trước khi tăng topology 1 → 2 → 4 → 8 → 16." />
+                        </StackPanel>
+                    </Border>
+                </Grid>
             </Border>
         </Grid>
     </ScrollViewer>
