@@ -53,12 +53,16 @@ public sealed class OcrScanner
         var mode = OcrCheckpointStore.ModeFor(request.Mode, request.Sensitivity);
         var saved = await _checkpoints.LoadAsync(request, token);
         var selected = saved?.SelectedParallelism ?? await SelectParallelismAsync(job, request, token);
-        await _ocr.ConfigureScanWorkersAsync(selected, token);
+        var configuredWorkers = await _ocr.ConfigureScanWorkersAsync(selected, token);
+        if (configuredWorkers < selected)
+            throw new InvalidOperationException($"OCR topology không hợp lệ: cần {selected} Python worker nhưng chỉ tạo được {configuredWorkers}.");
         var checkpoint = saved ?? await _checkpoints.NewAsync(request, selected, token);
         selected = checkpoint.SelectedParallelism;
+        if (checkpoint.Lanes.Count != selected)
+            throw new InvalidDataException($"OCR checkpoint topology không hợp lệ: {checkpoint.Lanes.Count}/{selected} lane.");
         job.Log(saved is null
-            ? $"OCR Commit: khóa topology {selected} lane."
-            : $"Resume checkpoint schema 4: giữ topology {selected} lane.");
+            ? $"OCR Commit: khóa {selected} FFmpeg lane + {configuredWorkers} Python worker."
+            : $"Resume checkpoint schema 4: giữ {selected} FFmpeg lane + {configuredWorkers} Python worker.");
         var decoder = await ProbeNvdecAsync(ffmpeg, source, request.Region, mode, token) ? "nvdec" : "software";
         job.Log(decoder == "nvdec" ? "Decoder: NVIDIA NVDEC." : "Decoder: software fallback.");
 
@@ -163,29 +167,28 @@ public sealed class OcrScanner
         var predicted = Math.Min(maximumForDuration, HardwareService.RecommendedOcrLanes(hardware, effectiveDevice));
         var probeCeiling = Math.Min(maximumForDuration, HardwareService.RecommendedOcrProbeCeiling(hardware, effectiveDevice));
         job.Log($"Auto Predict: đề xuất {predicted} lane; live probe được thử tới {probeCeiling} lane cho {effectiveDevice} theo CPU/RAM/GPU/VRAM.");
-        var probeFrame = Convert.ToBase64String(await CaptureFrameAsync(request.Path, Math.Min(5, request.Duration / 2), request.Region, false, cancellationToken));
         var best = 1;
-        var previousThroughput = 0d;
         foreach (var level in new[] { 1, 2, 4, 8, 16 }.Where(x => x <= probeCeiling))
         {
             try
             {
                 job.Set("benchmark", -1, $"OCR Auto Probe: {level} lane...");
-                await _ocr.ConfigureScanWorkersAsync(level, cancellationToken);
+                var configuredWorkers = await _ocr.ConfigureScanWorkersAsync(level, cancellationToken);
+                if (configuredWorkers < level)
+                    throw new InvalidOperationException($"chỉ tạo được {configuredWorkers}/{level} Python worker");
                 var watch = Stopwatch.StartNew();
-                var probeResults = await Task.WhenAll(Enumerable.Range(0, level).Select(_ => _ocr.RunAsync(probeFrame, cancellationToken)));
+                var probeResults = await Task.WhenAll(Enumerable.Range(0, level).Select(async index =>
+                {
+                    var at = request.Duration * (index + 0.5) / level;
+                    var jpeg = await CaptureFrameAsync(request.Path, at, request.Region, false, cancellationToken);
+                    return await _ocr.RunAsync(Convert.ToBase64String(jpeg), cancellationToken);
+                }));
                 var failed = probeResults.FirstOrDefault(result => !result.Ok);
                 if (failed is not null)
                     throw new InvalidOperationException(failed.Error ?? "OCR worker trả kết quả lỗi trong Auto Probe.");
                 var throughput = level / Math.Max(0.001, watch.Elapsed.TotalSeconds);
-                job.Log($"Auto Probe {level}: {throughput:0.00} ảnh/s.");
-                if (previousThroughput > 0 && throughput < previousThroughput * 1.10)
-                {
-                    job.Log("Auto dừng: mức kế tiếp tăng dưới 10% throughput.");
-                    break;
-                }
+                job.Log($"Auto Probe {level}: đủ {configuredWorkers} worker · {level} pipeline FFmpeg+OCR đồng thời PASS · {throughput:0.00} mẫu/s.");
                 best = level;
-                previousThroughput = throughput;
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception error)

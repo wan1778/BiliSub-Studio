@@ -227,9 +227,14 @@ OCRPage.Scan
        -> at most one topology level above the prediction
   -> Auto live probe 1/2/4/8/16 up to duration/resource ceiling
        -> create the requested worker pool
-       -> run concurrent inference on one real video frame
-       -> OOM/worker error/under-10% gain keeps the last stable level
+       -> sample one real frame from the center of every candidate segment
+       -> run N concurrent FFmpeg decode + OCR pipelines for N candidate lanes
+       -> require at least one live Python worker per requested lane
+       -> OOM/worker error keeps the last stable level
+       -> measured throughput is diagnostic only; it cannot collapse real segment topology
   -> deterministic lane topology + shared PaddleOCR pool
+       -> require checkpoint segment count == selected lanes
+       -> Commit log exposes N FFmpeg lanes + N-or-more Python workers
   -> SubtitleTracker + ChineseSubtitleNormalizer
   -> schema-4 safe pause/resume checkpoint
   -> ExportOcrAsync -> SRT

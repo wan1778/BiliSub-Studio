@@ -117,9 +117,21 @@ public sealed class OcrManager : IAsyncDisposable
             target = Math.Max(target, minimum);
             if (_workers.Count == target && _workers.All(x => x.IsAlive)) return target;
             var hardware = _hardware.Snapshot();
-            await BuildPoolLockedAsync(_activeMode, target, hardware, cancellationToken);
-            _state = "ready";
-            return _workers.Count;
+            _state = "starting";
+            try
+            {
+                await BuildPoolLockedAsync(_activeMode, target, hardware, cancellationToken);
+                _state = "ready";
+                _error = null;
+                return _workers.Count;
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception error)
+            {
+                _state = "failed";
+                _error = error.Message;
+                throw;
+            }
         }
         finally { _gate.Release(); }
     }

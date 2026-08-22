@@ -262,6 +262,11 @@ public sealed partial class OcrPage : Page
                 RenderCues();
                 TelemetryText.Text = $"{result.Frames} frames · {result.OcrImages} OCR · {result.ParallelismSelected} lanes · {result.RealtimeSpeed:0.00}× · {result.BoundaryMerges} merges";
             }
+            else
+            {
+                var ocrStatus = _application.OcrStatus;
+                TelemetryText.Text = $"{ocrStatus.Workers} Python worker · {ocrStatus.ActiveMode} · {snapshot.Status}";
+            }
             if (snapshot.Done)
             {
                 var paused = latestResult?.Paused == true;
