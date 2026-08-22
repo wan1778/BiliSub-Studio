@@ -104,8 +104,8 @@ var
   I, Pass: Integer;
   Line, RelativePath, DirectoryPath, Target: String;
 begin
-  { Migration is intentionally checksum-owned: remove only files that the old
-    verified publish declared as runtime. Unknown/user files in {app} survive. }
+  { Migration is checksum-owned: remove only files declared by the old verified
+    runtime inventory. Unknown or user-owned root files are left untouched. }
   if not FileExists(ExpandConstant('{app}\BiliSubStudio.exe')) then
     Exit;
   if not FileExists(ExpandConstant('{app}\SHA256SUMS.txt')) then
