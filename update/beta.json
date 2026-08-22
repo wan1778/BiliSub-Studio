@@ -1,14 +1,14 @@
 {
-  "version": "4.0.0-beta.20-csharp-p5",
+  "version": "4.0.0-beta.21-csharp-p5",
   "channel_ready": true,
-  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.6/BiliSubStudio_4.0.6_Windows-x64-portable.zip",
-  "sha256": "6683fc76ecbb6ac9de877caa8252d04dd73d1eb17889a908ee653496df4b101b",
-  "size": 94425582,
+  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.7/BiliSubStudio_4.0.7_Windows-x64-portable.zip",
+  "sha256": "22328c7e8deb0d77de4907468e1fe02d547d80e9234feea6c63fc4e6f0dad2c6",
+  "size": 94426295,
   "payload_kind": "winui3-portable-zip",
   "notes": [
-    "OCR Auto thăm dò live 1/2/4 lane thay vì khóa cứng theo dự đoán VRAM.",
-    "Card 4 GB không còn bị xếp nhầm vào mức 1 lane khi CUDA báo thiếu một phần VRAM.",
-    "Auto fallback về topology ổn định trước đó khi OOM, worker lỗi hoặc throughput không tăng.",
-    "Nút Hủy vẫn hoạt động sau Tạm dừng và xóa đúng checkpoint OCR dở."
+    "Sửa OCR Auto 4.0.6 vẫn thu về một process do phép so throughput sai.",
+    "Auto giữ mức cao nhất tạo đủ worker và chạy đủ pipeline FFmpeg+OCR đồng thời thành công.",
+    "Core kiểm tra số Python worker và FFmpeg segment trước khi scan.",
+    "Telemetry hiển thị số Python worker thật trong lúc chạy."
   ]
 }
