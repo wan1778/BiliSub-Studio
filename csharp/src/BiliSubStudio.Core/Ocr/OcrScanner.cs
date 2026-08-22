@@ -127,8 +127,6 @@ public sealed class OcrScanner
             started.Elapsed.TotalSeconds > 0 ? media / started.Elapsed.TotalSeconds : 0,
             selected, lanes.Count(x => x.Completed), boundaryMerges, decoder, paused);
 
-        // Publish the result before changing the job to the terminal paused state. The UI can
-        // poll at any instant and must never observe Done=true with a missing pause result.
         job.SetResult(result);
         if (paused) job.PauseComplete(pauseMessage);
         return result;
@@ -140,24 +138,30 @@ public sealed class OcrScanner
     private async Task<int> SelectParallelismAsync(AppJob job, OcrScanRequest request, CancellationToken cancellationToken)
     {
         var maximumForDuration = Math.Clamp((int)Math.Floor(request.Duration / 120), 1, 16);
+        var requestedDevice = request.Device.Trim().ToLowerInvariant();
+        var effectiveDevice = requestedDevice == "auto" && !string.IsNullOrWhiteSpace(_ocr.Status.ActiveMode)
+            ? _ocr.Status.ActiveMode
+            : requestedDevice;
         var value = request.Parallelism.Trim().ToLowerInvariant();
         if (value != "auto" && value.Length > 0)
         {
             if (!int.TryParse(value, out var explicitValue) || explicitValue < 1 || explicitValue > 16)
                 throw new ArgumentException("Số luồng OCR phải là auto hoặc 1..16.");
             job.Set("benchmark", 0.5, "OCR Safety · kiểm tra headroom cho số luồng đã chọn...");
-            var benchmark = await _hardware.BenchmarkAsync(cancellationToken);
-            var safeMaximum = Math.Min(maximumForDuration, benchmark.RecommendedOcrLanes);
+            _ = await _hardware.BenchmarkAsync(cancellationToken);
+            var safeMaximum = Math.Min(maximumForDuration,
+                HardwareService.RecommendedOcrLanes(_hardware.Snapshot(), effectiveDevice));
             var selected = Math.Min(explicitValue, safeMaximum);
             if (selected < explicitValue)
-                job.Warn($"Đã giới hạn {explicitValue} → {selected} lane để phù hợp CPU/RAM/GPU/VRAM và thời lượng video.");
+                job.Warn($"Đã giới hạn {explicitValue} → {selected} lane cho {effectiveDevice} theo CPU/RAM/GPU/VRAM và thời lượng video.");
             return selected;
         }
 
         job.Set("benchmark", 0.5, "OCR Auto · Predict → Probe → Commit...");
-        var benchmark = await _hardware.BenchmarkAsync(cancellationToken);
-        var predicted = Math.Min(maximumForDuration, benchmark.RecommendedOcrLanes);
-        job.Log($"Auto Predict: tối đa {predicted} lane theo CPU/RAM/GPU/VRAM.");
+        _ = await _hardware.BenchmarkAsync(cancellationToken);
+        var predicted = Math.Min(maximumForDuration,
+            HardwareService.RecommendedOcrLanes(_hardware.Snapshot(), effectiveDevice));
+        job.Log($"Auto Predict: tối đa {predicted} lane cho {effectiveDevice} theo CPU/RAM/GPU/VRAM.");
         var probeFrame = Convert.ToBase64String(await CaptureFrameAsync(request.Path, Math.Min(5, request.Duration / 2), request.Region, false, cancellationToken));
         var best = 1;
         var previousThroughput = 0d;
