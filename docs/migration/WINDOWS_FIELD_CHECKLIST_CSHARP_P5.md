@@ -121,10 +121,11 @@ Any replacement candidate must have a different SHA-256 and must preserve the 37
 - [ ] OCR Auto preflight plus manual 1/2/4/8; 16 only when resource headroom is sufficient.
 - [ ] CPU/GPU/RAM/VRAM and lane/decoder/timing telemetry update while scanning.
 - [ ] Auto topology evaluates actual machine/video capability before raising lanes/batch; UI must not remain `measuring` while CPU/GPU/RAM have fallen idle and the benchmark has hung.
-- [ ] On the Ryzen 7 4800H / RTX 3050 Laptop 4 GB / RAM 32 GB field machine, a fresh Auto scan live-probes 1 → 2 → 4 and commits four real segment lanes when all four workers initialize/infer successfully; diagnostic throughput alone must never collapse it to one.
-- [ ] A committed four-lane GPU scan shows four Python workers and four concurrent FFmpeg segment processes in live telemetry/Task Manager; Core rejects a worker/segment count mismatch before scanning.
+- [ ] On the Ryzen 7 4800H / RTX 3050 Laptop 4 GB / RAM 32 GB field machine, a fresh Auto scan probes the shared worker pool separately from segment lanes and commits four real FFmpeg segments when the CPU/RAM/video probe passes; worker capacity must not collapse it to one lane.
+- [ ] A committed four-lane scan shows four concurrent FFmpeg segment processes in Task Manager and telemetry reports the actual independent Python pool (for example `4 FFmpeg lane · 1/2/4 worker`); Core must not require these counts to match.
 - [ ] Pause reaches safe schema-4 checkpoint; active lanes become zero; Resume preserves topology and progress.
-- [ ] After Pause reaches `paused`, Cancel remains enabled; pressing it deletes the paused checkpoint and clears partial cues/progress, so the next Scan starts from zero.
+- [ ] During Running and Pausing, Cancel remains enabled. It shows cleanup in progress and does not publish terminal Cancelled until all FFmpeg/Python work has stopped and checkpoint deletion is verified.
+- [ ] After Pause reaches `paused`, both Continue and Hủy và xóa are available; pressing Hủy và xóa clears partial cues/progress and the next action is explicitly Quét từ đầu.
 - [ ] Close during OCR waits for safe checkpoint or refuses unsafe close.
 - [ ] Completed cue list/timeline synchronization works and Chinese SRT rejects foreign standalone OCR garbage such as the previously observed `A N...` family.
 - [ ] Editor multi-region Blur/Mosaic/Cover validation, export and cancellation work end-to-end.

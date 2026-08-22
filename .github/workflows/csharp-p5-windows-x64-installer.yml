@@ -175,10 +175,10 @@ jobs:
           @(
             "# BiliSub Studio $publicVersion",
             "",
-            '- Sửa root cause khiến OCR Auto vẫn chỉ chạy một process trong 4.0.6: bỏ phép so throughput của một ảnh giống nhau vốn làm topology 2/4 bị loại sai.',
-            '- Auto commit mức cao nhất tạo đủ Python worker và chạy đủ pipeline FFmpeg+OCR đồng thời trên các đoạn video thật; OOM hoặc worker error vẫn quay về mức ổn định trước đó.',
-            '- Trước khi scan, Core kiểm tra cứng số Python worker và số FFmpeg segment đúng với topology đã chọn.',
-            '- Telemetry khi đang chạy hiển thị trực tiếp số Python worker thật để có thể đối chiếu với Task Manager.'
+            '- Sửa root cause OCR Auto bị thu về một luồng: FFmpeg segment lane và Python/PaddleOCR worker nay là hai tầng độc lập.',
+            '- Auto probe riêng worker theo GPU/VRAM và lane video theo CPU/RAM/thời lượng; N lane dùng chung M worker, không còn ép N=M.',
+            '- Hủy trong lúc Running/Pausing/Paused chỉ hoàn tất sau khi dừng tiến trình và xác nhận checkpoint đã xóa; lần quét sau bắt đầu từ đầu.',
+            '- Bổ sung Quét lại từ đầu, Fresh/Resume rõ ràng và telemetry tách số FFmpeg lane với Python worker.'
           ) | Set-Content $notes -Encoding UTF8
 
           gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
@@ -199,10 +199,10 @@ jobs:
             size = $portableSize
             payload_kind = "winui3-portable-zip"
             notes = @(
-              "Sửa OCR Auto 4.0.6 vẫn thu về một process do phép so throughput sai.",
-              "Auto giữ mức cao nhất tạo đủ worker và chạy đủ pipeline FFmpeg+OCR đồng thời thành công.",
-              "Core kiểm tra số Python worker và FFmpeg segment trước khi scan.",
-              "Telemetry hiển thị số Python worker thật trong lúc chạy."
+              "Tách FFmpeg segment lane khỏi shared Python/PaddleOCR worker pool.",
+              "Auto probe độc lập CPU/RAM/video và GPU/VRAM; không còn yêu cầu số lane bằng số worker.",
+              "Hủy OCR transactional: dừng tiến trình, xóa và xác nhận checkpoint trước khi kết thúc.",
+              "Fresh/Resume/Quét lại từ đầu và telemetry lane/worker được hiển thị rõ."
             )
           }
           $manifest | ConvertTo-Json -Depth 4 | Set-Content "update/beta.json" -Encoding UTF8
