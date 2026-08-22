@@ -53,12 +53,14 @@ internal sealed class OcrInstaller
                 DetectionModel, RecognitionModel, await Sha256Async(worker, cancellationToken), kind, spec.Package, spec.Index);
             if (File.Exists(python) && await ManifestMatchesAsync(manifestPath, expected, cancellationToken))
             {
+                // Worker source is copied independently from the heavy private runtime. If only
+                // worker_sha256 changed, keep the healthy venv and advance the manifest atomically.
+                await WriteManifestAsync(manifestPath, expected, cancellationToken);
                 return new OcrRuntime(python, worker, Path.Combine(_paths.Ocr, "models"), spec.Device, kind);
             }
 
             // An interrupted uv/python/pip operation can leave a partially populated venv.
-            // Never try to layer a new runtime over it: models/cache are outside runtimeRoot
-            // and are preserved, while this device-specific private venv is rebuilt cleanly.
+            // Never layer a new runtime over it. Models/cache live outside runtimeRoot and survive.
             if (Directory.Exists(runtimeRoot)) Directory.Delete(runtimeRoot, recursive: true);
             Directory.CreateDirectory(runtimeRoot);
 
@@ -192,7 +194,11 @@ internal sealed class OcrInstaller
     {
         try
         {
-            return JsonSerializer.Deserialize<InstallManifest>(await File.ReadAllTextAsync(path, cancellationToken)) == expected;
+            var actual = JsonSerializer.Deserialize<InstallManifest>(await File.ReadAllTextAsync(path, cancellationToken));
+            if (actual is null) return false;
+            // A worker-only update is runtime-compatible. All heavy dependency/runtime fields
+            // must still match exactly before the existing venv is reused.
+            return actual with { WorkerSha256 = expected.WorkerSha256 } == expected;
         }
         catch (Exception error) when (error is IOException or JsonException) { return false; }
     }
