@@ -41,7 +41,9 @@ public sealed record VideoDownloadRequest(
     string BundleSubtitleFormat = "",
     string BundleSubtitleTrack = "",
     bool BundleSubtitleIfAvailable = false,
-    bool BundleThumbnail = false);
+    bool BundleThumbnail = false,
+    bool MediaBundle = false,
+    bool BundleVideo = true);
 
 public sealed record VideoDownloadResult(string OutputPath, long Size, bool UsedRange, int PeakConnections);
 
