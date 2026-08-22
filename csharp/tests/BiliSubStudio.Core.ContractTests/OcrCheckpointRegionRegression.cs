@@ -22,7 +22,5 @@ internal static class OcrCheckpointRegionRegression
 
         if (dragged != reopened || dragged != new OcrRegion(0.05, 0.65, 0.90, 0.29))
             throw new InvalidOperationException("OCR ROI identity changes after config percent persistence/restart");
-
-        Console.WriteLine("PASS  OCR checkpoint ROI remains stable across restart");
     }
 }
