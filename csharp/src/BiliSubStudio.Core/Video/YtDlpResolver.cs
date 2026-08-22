@@ -9,7 +9,7 @@ public sealed class YtDlpResolver
 {
     private readonly ToolManager _tools;
     private readonly ProcessRunner _processes;
-    private readonly BilibiliPlayurlClient? _playurl;
+    private readonly BilibiliPlayurlClient _playurl;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private long _generation;
 
@@ -17,7 +17,7 @@ public sealed class YtDlpResolver
     {
         _tools = tools;
         _processes = processes;
-        _playurl = playurl;
+        _playurl = playurl ?? new BilibiliPlayurlClient();
     }
 
     public async Task<StreamSelection> ResolveAsync(VideoResolveRequest request, CancellationToken cancellationToken)
@@ -30,17 +30,14 @@ public sealed class YtDlpResolver
             IReadOnlyDictionary<string, IReadOnlyList<string>> endpointMap =
                 new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase);
             var warnings = new List<string>();
-            if (_playurl is not null)
+            try
             {
-                try
-                {
-                    endpointMap = await _playurl.GetEndpointMapAsync(request.Url, info.Id, request.CookieFile, cancellationToken);
-                }
-                catch (OperationCanceledException) { throw; }
-                catch (Exception error)
-                {
-                    warnings.Add("Không lấy được CDN backup từ playurl: " + Compact(error.GetBaseException().Message));
-                }
+                endpointMap = await _playurl.GetEndpointMapAsync(request.Url, info.Id, request.CookieFile, cancellationToken);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception error)
+            {
+                warnings.Add("Không lấy được CDN backup từ playurl: " + Compact(error.GetBaseException().Message));
             }
 
             var generation = Interlocked.Increment(ref _generation);
@@ -55,7 +52,7 @@ public sealed class YtDlpResolver
                 var endpoints = MergeEndpointUrls(selected.Url, rawEndpoints);
                 var endpointIndex = endpoints.Count == 0 ? 0 : Math.Abs(request.EndpointOffset) % endpoints.Count;
                 video = ToStream(StreamKind.Video, selected, generation, endpoints, endpointIndex);
-                if (_playurl is not null && endpoints.Count <= 1)
+                if (endpoints.Count <= 1)
                     warnings.Add($"Video format {selected.FormatId} chỉ có một CDN endpoint khả dụng.");
             }
             if (!string.Equals(request.Mode, "video-only", StringComparison.OrdinalIgnoreCase))
@@ -66,7 +63,7 @@ public sealed class YtDlpResolver
                 var endpoints = MergeEndpointUrls(selected.Url, rawEndpoints);
                 var endpointIndex = endpoints.Count == 0 ? 0 : Math.Abs(request.EndpointOffset) % endpoints.Count;
                 audio = ToStream(StreamKind.Audio, selected, generation, endpoints, endpointIndex);
-                if (_playurl is not null && endpoints.Count <= 1)
+                if (endpoints.Count <= 1)
                     warnings.Add($"Audio format {selected.FormatId} chỉ có một CDN endpoint khả dụng.");
             }
             return new StreamSelection(info.Title, info.Id, video, audio, string.Join(" ", warnings.Distinct(StringComparer.Ordinal)));
