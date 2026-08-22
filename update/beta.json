@@ -1,11 +1,13 @@
 {
   "version": "4.0.0-beta.12-csharp-p5",
-  "channel_ready": false,
-  "download_url": "",
-  "sha256": "",
-  "size": 0,
+  "channel_ready": true,
+  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.0-beta.12-csharp-p5/BiliSubStudio_4.0.0-beta.12-csharp-p5_Windows-x64-portable.zip",
+  "sha256": "001dfc2d6bede52a934da960b4cc8f73c368539375ad02d7c0d061a36be45c8e",
+  "size": 94411380,
   "payload_kind": "winui3-portable-zip",
   "notes": [
-    "Kênh beta trên GitHub chưa được công bố. Candidate hiện tại vẫn phải hoàn tất field QA trước khi tạo GitHub Release."
+    "Public Beta C# + WinUI 3 đã được công bố.",
+    "Các bản sửa tiếp theo sẽ được phát hành qua kênh beta này.",
+    "Downloader có primary/backup CDN failover và Range resume cho media dài."
   ]
 }
