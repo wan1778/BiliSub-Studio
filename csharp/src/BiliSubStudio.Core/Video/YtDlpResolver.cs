@@ -10,14 +10,20 @@ public sealed class YtDlpResolver
     private readonly ToolManager _tools;
     private readonly ProcessRunner _processes;
     private readonly BilibiliPlayurlClient _playurl;
+    private readonly BilibiliSubtitleClient _subtitles;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private long _generation;
 
-    public YtDlpResolver(ToolManager tools, ProcessRunner processes, BilibiliPlayurlClient? playurl = null)
+    public YtDlpResolver(
+        ToolManager tools,
+        ProcessRunner processes,
+        BilibiliPlayurlClient? playurl = null,
+        BilibiliSubtitleClient? subtitles = null)
     {
         _tools = tools;
         _processes = processes;
         _playurl = playurl ?? new BilibiliPlayurlClient();
+        _subtitles = subtitles ?? new BilibiliSubtitleClient();
     }
 
     public async Task<StreamSelection> ResolveAsync(VideoResolveRequest request, CancellationToken cancellationToken)
@@ -93,9 +99,55 @@ public sealed class YtDlpResolver
 
             var tracks = new List<SubtitleTrack>();
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var subtitleWarning = string.Empty;
+
+            // Prefer Bilibili's player metadata because yt-dlp can expose zero tracks
+            // for videos whose signed-in player still offers normal or AI captions.
+            try
+            {
+                var nativeTracks = await _subtitles.GetTracksAsync(url, info.Id, cookieFile, cancellationToken);
+                foreach (var track in nativeTracks)
+                {
+                    if (seen.Add(track.Language)) tracks.Add(track);
+                }
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception error)
+            {
+                subtitleWarning = "Không đọc được phụ đề trực tiếp từ Bilibili: " + Compact(error.GetBaseException().Message);
+            }
+
+            // yt-dlp remains a compatibility source. Native Bilibili tracks win on a
+            // duplicate synthetic track id; otherwise these entries fill any gaps.
             AddTracks(info.Subtitles, official: true, ai: false, tracks, seen);
             AddTracks(info.AutomaticCaptions, official: false, ai: true, tracks, seen);
-            return new VideoMetadata(info.Title, info.Id, qualities, tracks, info.Thumbnail);
+
+            // Product contract: if any normal/platform-provided subtitle exists, use
+            // that class only. Bilibili AI captions are the fallback class, never a
+            // higher-priority replacement merely because their language is Chinese.
+            IReadOnlyList<SubtitleTrack> selectedTracks;
+            var available = tracks.Where(track => track.Official)
+                .OrderBy(SubtitleTrackPolicy.Priority)
+                .ThenBy(track => track.DisplayName, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (available.Length > 0)
+            {
+                selectedTracks = available;
+            }
+            else
+            {
+                var ai = tracks.Where(track => track.Ai)
+                    .OrderBy(SubtitleTrackPolicy.Priority)
+                    .ThenBy(track => track.DisplayName, StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+                selectedTracks = ai.Length > 0
+                    ? ai
+                    : tracks.OrderBy(SubtitleTrackPolicy.Priority)
+                        .ThenBy(track => track.DisplayName, StringComparer.OrdinalIgnoreCase)
+                        .ToArray();
+            }
+
+            return new VideoMetadata(info.Title, info.Id, qualities, selectedTracks, info.Thumbnail, subtitleWarning);
         }
         finally
         {
@@ -130,7 +182,10 @@ public sealed class YtDlpResolver
     {
         foreach (var pair in source.OrderBy(x => x.Key, StringComparer.Ordinal))
         {
-            var trackId = (official ? "official:" : ai ? "ai:" : "track:") + pair.Key;
+            var rawLanguage = ai && !pair.Key.StartsWith("ai-", StringComparison.OrdinalIgnoreCase)
+                ? "ai-" + pair.Key
+                : pair.Key;
+            var trackId = (official ? "official:" : ai ? "ai:" : "track:") + rawLanguage;
             if (!seen.Add(trackId)) continue;
             var selected = pair.Value
                 .Where(x => !string.IsNullOrWhiteSpace(x.Url))
@@ -139,7 +194,7 @@ public sealed class YtDlpResolver
             if (selected is null) continue;
             output.Add(new SubtitleTrack(
                 trackId,
-                (string.IsNullOrWhiteSpace(selected.Name) ? pair.Key : selected.Name) + (official ? " · Chính thức" : ai ? " · AI" : string.Empty),
+                (string.IsNullOrWhiteSpace(selected.Name) ? pair.Key : selected.Name) + (official ? " · Có sẵn" : ai ? " · Bilibili AI" : string.Empty),
                 official,
                 ai,
                 selected.Url,
