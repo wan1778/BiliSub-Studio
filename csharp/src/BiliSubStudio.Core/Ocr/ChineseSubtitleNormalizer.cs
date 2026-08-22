@@ -34,10 +34,10 @@ public static partial class ChineseSubtitleNormalizer
         output = text.Trim();
         if (hanCount == 0 || output.Length == 0) return false;
 
-        // Keep legitimate short tokens such as B站, VIP会员 or OpenAI模型, but reject
-        // the characteristic OCR garbage previously seen as isolated Latin letters.
+        // Keep mixed Chinese tokens such as B站, VIP会员 or OpenAI模型, but reject
+        // standalone Latin OCR noise such as ABC or A N that should never enter Chinese SRT.
         if (Regex.IsMatch(output,
-                @"(?:^|\s)[A-Za-z](?:\s+[A-Za-z]){1,}(?=\s|[，。！？、；：,.!?…]|$)",
+                @"(?:^|\s)[A-Za-z]+(?=\s|[，。！？、；：,.!?…]|$)",
                 RegexOptions.CultureInvariant))
         {
             output = string.Empty;
