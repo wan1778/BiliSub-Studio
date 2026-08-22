@@ -172,15 +172,15 @@ jobs:
           ) | Set-Content $releaseSums -Encoding UTF8
 
           $notes = Join-Path $env:RUNNER_TEMP "bilisub-beta-release-notes.md"
-          @"
-          # BiliSub Studio $publicVersion
-
-          - Sửa lỗi Windows `os error 448` / `untrusted mount point` khi Chuẩn bị OCR bằng cách tách uv/Python bootstrap sang LocalAppData.
-          - Không còn phụ thuộc vào minor-version junction `Python 3.12`; OCR dùng trực tiếp `python.exe` của patch-version đã xác minh.
-          - Nếu 4.0.4 đã tải Python xong nhưng chết ở bước tạo junction, 4.0.5 có thể nhận lại interpreter hợp lệ thay vì tải lại vô ích.
-          - Private OCR venv được dựng từ đường dẫn Python chính xác; các bước cài Paddle/PaddleOCR bị cấm tự tải Python khác.
-          - Xóa OCR runtime cũng dọn bootstrap uv/Python trong LocalAppData.
-          "@ | Set-Content $notes -Encoding UTF8
+          @(
+            "# BiliSub Studio $publicVersion",
+            "",
+            '- Sửa lỗi Windows `os error 448` / `untrusted mount point` khi Chuẩn bị OCR bằng cách tách uv/Python bootstrap sang LocalAppData.',
+            '- Không còn phụ thuộc vào minor-version junction `Python 3.12`; OCR dùng trực tiếp `python.exe` của patch-version đã xác minh.',
+            '- Nếu 4.0.4 đã tải Python xong nhưng chết ở bước tạo junction, 4.0.5 có thể nhận lại interpreter hợp lệ thay vì tải lại vô ích.',
+            '- Private OCR venv được dựng từ đường dẫn Python chính xác; các bước cài Paddle/PaddleOCR bị cấm tự tải Python khác.',
+            '- Xóa OCR runtime cũng dọn bootstrap uv/Python trong LocalAppData.'
+          ) | Set-Content $notes -Encoding UTF8
 
           gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
           if ($LASTEXITCODE -eq 0) {
