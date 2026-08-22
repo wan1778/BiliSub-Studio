@@ -59,6 +59,13 @@ public sealed class ApplicationLog
     {
         source = string.IsNullOrWhiteSpace(source) ? "App" : source.Trim();
         message = Normalize(message);
+        if (level == AppLogLevel.Info
+            && (message.Contains("cảnh báo", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("bỏ qua", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("thất bại; chuyển yt-dlp fallback", StringComparison.OrdinalIgnoreCase)))
+        {
+            level = AppLogLevel.Warning;
+        }
         AppLogEntry entry;
         lock (_gate)
         {

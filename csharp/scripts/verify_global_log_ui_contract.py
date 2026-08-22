@@ -70,6 +70,15 @@ for marker in (
 ):
     require(marker in log_code, f"persistent application log contract missing {marker}")
 
+for marker in (
+    'level == AppLogLevel.Info',
+    'message.Contains("cảnh báo", StringComparison.OrdinalIgnoreCase)',
+    'message.Contains("bỏ qua", StringComparison.OrdinalIgnoreCase)',
+    'message.Contains("thất bại; chuyển yt-dlp fallback", StringComparison.OrdinalIgnoreCase)',
+    'level = AppLogLevel.Warning',
+):
+    require(marker in log_code, f"recoverable warning auto-classification missing {marker}")
+
 require('ApplicationLog? applicationLog = null' in job_code, "AppJob must accept the shared log owner")
 require('public void Warn(string message)' in job_code, "AppJob warning level is missing")
 require('public void Error(string message)' in job_code, "AppJob error level is missing")
