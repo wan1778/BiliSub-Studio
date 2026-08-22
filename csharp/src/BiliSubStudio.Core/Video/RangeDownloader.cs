@@ -17,6 +17,7 @@ public sealed class RangeDownloader
     // requests regress on Bilibili CDNs that terminate a Range body early.
     public const long DefaultChunkSize = 4L * 1024 * 1024;
     private const int MaxSegmentAttempts = 32;
+    private const int MaxProbeAttempts = 6;
     private const int ManifestVersion = 2;
     private readonly HttpClient _http;
 
@@ -35,7 +36,40 @@ public sealed class RangeDownloader
         concurrency = Math.Clamp(concurrency, 1, 8);
         Directory.CreateDirectory(workDirectory);
 
-        var (total, rangeSupported) = await ProbeAsync(original, cancellationToken);
+        // A signed Bilibili CDN endpoint can transiently answer 403/429/5xx even though the
+        // stream itself supports Range. Do not classify one transient probe as permanent
+        // no-Range support and jump to yt-dlp. Refresh the signed stream and probe again.
+        var current = original;
+        long total = 0;
+        var rangeSupported = false;
+        var probeSucceeded = false;
+        Exception? probeError = null;
+        for (var attempt = 1; attempt <= MaxProbeAttempts; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                (total, rangeSupported) = await ProbeAsync(current, cancellationToken);
+                probeSucceeded = true;
+                probeError = null;
+                break;
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (HttpRequestException error)
+            {
+                probeError = error;
+                if (refresh is not null)
+                {
+                    current = await refresh(current.Generation, cancellationToken);
+                }
+                await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(3_000, 250 * attempt * attempt)), cancellationToken);
+            }
+        }
+        if (!probeSucceeded)
+        {
+            throw new IOException($"Probe HTTP Range thất bại sau {MaxProbeAttempts} lượt làm mới CDN.", probeError);
+        }
+
         status?.Invoke(new RangeDownloadStatus(rangeSupported, 0, concurrency, 0, total, 0));
         if (!rangeSupported)
         {
@@ -69,7 +103,6 @@ public sealed class RangeDownloader
         var inFlight = new ConcurrentDictionary<int, long>();
         var queue = new ConcurrentQueue<Segment>(segments.Where(x => !completed.ContainsKey(x.Index)));
         using var manifestGate = new SemaphoreSlim(1, 1);
-        var current = original;
         using var currentGate = new SemaphoreSlim(1, 1);
         using var workerCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var workerToken = workerCancellation.Token;
@@ -145,7 +178,8 @@ public sealed class RangeDownloader
 
                             // Preserve every byte. Normal short reads (hundreds of KiB+) continue on the
                             // same URL. Pathological tiny reads like the real 379-byte incident still
-                            // continue from the missing byte, but also trigger a signed-URL/CDN refresh.
+                            // continue from the missing byte. Explicit HTTP transport failures (403/429/5xx,
+                            // including the real HTTP 503 incident) refresh the signed stream immediately.
                             var remainingBefore = Math.Max(1, segment.Length - partialBefore);
                             var meaningfulProgress = Math.Min(64L * 1024, remainingBefore);
                             if (gained >= meaningfulProgress)
@@ -155,18 +189,20 @@ public sealed class RangeDownloader
                             else
                             {
                                 weakProgressFailures++;
-                                if (refresh is not null && weakProgressFailures % 2 == 0)
+                            }
+
+                            var immediateRefresh = error is HttpRequestException;
+                            if (refresh is not null && (immediateRefresh || weakProgressFailures % 2 == 0))
+                            {
+                                await currentGate.WaitAsync(workerToken);
+                                try
                                 {
-                                    await currentGate.WaitAsync(workerToken);
-                                    try
+                                    if (current.Generation == stream.Generation)
                                     {
-                                        if (current.Generation == stream.Generation)
-                                        {
-                                            current = await refresh(stream.Generation, workerToken);
-                                        }
+                                        current = await refresh(stream.Generation, workerToken);
                                     }
-                                    finally { currentGate.Release(); }
                                 }
+                                finally { currentGate.Release(); }
                             }
 
                             var delay = gained > 0
@@ -238,7 +274,7 @@ public sealed class RangeDownloader
         {
             return (response.Content.Headers.ContentLength.Value, false);
         }
-        throw new HttpRequestException($"Probe CDN HTTP {(int)response.StatusCode}.");
+        throw new HttpRequestException($"Probe CDN HTTP {(int)response.StatusCode}.", null, response.StatusCode);
     }
 
     private async Task<long> DownloadSegmentAsync(
@@ -265,7 +301,14 @@ public sealed class RangeDownloader
             using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             if (response.StatusCode != HttpStatusCode.PartialContent)
             {
-                throw new RangeNotSupportedException($"CDN trả HTTP {(int)response.StatusCode}, cần 206.");
+                // HTTP 200/other successful response means the CDN actually ignored the Range header.
+                // 403/408/429/5xx are transport/CDN conditions: keep resume state and let the caller
+                // refresh the signed endpoint instead of declaring Range unsupported immediately.
+                if (response.IsSuccessStatusCode)
+                {
+                    throw new RangeNotSupportedException($"CDN bỏ qua HTTP Range: trả {(int)response.StatusCode}, cần 206.");
+                }
+                throw new HttpRequestException($"CDN tạm thời trả HTTP {(int)response.StatusCode}, cần 206.", null, response.StatusCode);
             }
             var range = response.Content.Headers.ContentRange
                 ?? throw new InvalidDataException("Segment thiếu Content-Range.");
