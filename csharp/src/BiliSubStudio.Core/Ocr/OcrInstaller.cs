@@ -60,14 +60,23 @@ internal sealed class OcrInstaller
             var environment = ManagedEnvironment();
             foreach (var arguments in new[]
             {
-                new[] { "python", "install", PythonVersion, "--install-dir", Path.Combine(_paths.Ocr, "python"), "--managed-python", "--no-config" },
+                new[] { "python", "install", PythonVersion, "--install-dir", Path.Combine(_paths.Ocr, "python"), "--managed-python", "--no-registry", "--no-bin", "--no-config" },
                 new[] { "venv", Path.Combine(runtimeRoot, "venv"), "--python", PythonVersion, "--managed-python", "--no-config" },
                 new[] { "pip", "install", "--python", python, $"{spec.Package}=={PaddleVersion}", "--index-url", spec.Index, "--no-config" },
                 new[] { "pip", "install", "--python", python, $"paddleocr=={PaddleOcrVersion}", "--no-config" },
             })
             {
                 var result = await _processes.RunAsync(uv, arguments, cancellationToken, environment);
-                if (result.ExitCode != 0) throw new InvalidOperationException($"Cài OCR ({arguments[0]}): {result.StandardError.Trim()}");
+                if (result.ExitCode != 0)
+                {
+                    var detail = result.StandardError.Trim();
+                    if (detail.Contains("os error 448", StringComparison.OrdinalIgnoreCase) ||
+                        detail.Contains("untrusted mount point", StringComparison.OrdinalIgnoreCase))
+                    {
+                        throw new InvalidOperationException("Windows chặn đường dẫn reparse point khi cài OCR. BiliSub Studio đã chuyển UV/Python về thư mục local và tắt Python link; hãy bấm Chuẩn bị OCR lại. Chi tiết: " + detail);
+                    }
+                    throw new InvalidOperationException($"Cài OCR ({arguments[0]}): {detail}");
+                }
             }
             await WriteManifestAsync(manifestPath, expected, cancellationToken);
             if (!File.Exists(python)) throw new FileNotFoundException("Cài OCR không tạo private Python.", python);
@@ -150,10 +159,12 @@ internal sealed class OcrInstaller
 
     private Dictionary<string, string?> ManagedEnvironment() => new(StringComparer.OrdinalIgnoreCase)
     {
+        ["UV_DATA_DIR"] = Path.Combine(_paths.Ocr, "uv-data"),
         ["UV_PYTHON_INSTALL_DIR"] = Path.Combine(_paths.Ocr, "python"),
-        ["UV_PYTHON_BIN_DIR"] = Path.Combine(_paths.Ocr, "python-bin"),
+        ["UV_PYTHON_INSTALL_BIN"] = "0",
         ["UV_PYTHON_INSTALL_REGISTRY"] = "0",
         ["UV_CACHE_DIR"] = Path.Combine(_paths.Ocr, "cache", "uv"),
+        ["UV_LINK_MODE"] = "copy",
         ["UV_MANAGED_PYTHON"] = "1",
         ["UV_NO_PROGRESS"] = "1",
         ["PYTHONUTF8"] = "1",
