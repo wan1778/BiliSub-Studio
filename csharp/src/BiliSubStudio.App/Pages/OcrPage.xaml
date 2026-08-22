@@ -32,6 +32,7 @@
                     <TextBlock Style="{StaticResource MutedTextStyle}" Text="CPU/GPU/Hybrid · topology 1/2/4/8/16 · checkpoint schema 4" />
                 </StackPanel>
                 <Button
+                    x:Name="PickVideoButton"
                     Grid.Column="1"
                     MinHeight="40"
                     Padding="18,8"
