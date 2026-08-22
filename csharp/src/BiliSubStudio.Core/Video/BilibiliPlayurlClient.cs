@@ -124,14 +124,24 @@ public sealed partial class BilibiliPlayurlClient
     {
         using var document = await SendJsonAsync(new Uri("https://api.bilibili.com/x/web-interface/nav"), cookieHeader, cancellationToken);
         var root = document.RootElement;
-        if (!root.TryGetProperty("code", out var codeElement) || !codeElement.TryGetInt32(out var code) || code != 0 ||
-            !root.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object ||
+        var code = root.TryGetProperty("code", out var codeElement) && codeElement.TryGetInt32(out var codeValue)
+            ? codeValue
+            : int.MinValue;
+        var message = root.TryGetProperty("message", out var messageElement) ? messageElement.GetString() : null;
+
+        // Bilibili deliberately returns code -101 for anonymous nav requests while
+        // still exposing data.wbi_img. Those public WBI keys are valid and must be
+        // accepted; rejecting every non-zero nav code disables backup-CDN discovery
+        // for users who are not logged in.
+        if (code is not (0 or -101))
+            throw new InvalidOperationException($"Không lấy được WBI key từ Bilibili · nav code {code}: {Compact(message)}");
+        if (!root.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object ||
             !data.TryGetProperty("wbi_img", out var wbi) || wbi.ValueKind != JsonValueKind.Object)
-            throw new InvalidOperationException("Không lấy được WBI key từ Bilibili.");
+            throw new InvalidOperationException($"Không lấy được WBI key từ Bilibili · nav code {code} không có wbi_img.");
 
         var lookup = FileStem(wbi, "img_url") + FileStem(wbi, "sub_url");
         if (lookup.Length <= MixinKeyEncTable.Max())
-            throw new InvalidDataException("WBI key Bilibili không hợp lệ.");
+            throw new InvalidDataException($"WBI key Bilibili không hợp lệ · nav code {code}.");
         var builder = new StringBuilder(32);
         foreach (var index in MixinKeyEncTable)
         {
