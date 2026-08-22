@@ -85,7 +85,7 @@ public sealed class UpdateService
     {
         BreakawayLauncher.Start(update.UpdaterExecutable,
         [
-            "--apply-portable-update", update.PayloadDirectory, _paths.Root,
+            "--apply-portable-update", update.PayloadDirectory, Path.GetFullPath(AppContext.BaseDirectory),
             Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture),
         ]);
     }
@@ -228,7 +228,10 @@ public sealed class UpdateService
         }
 
         ValidatePayloadLayout(payload);
-        var backupRoot = Path.Combine(target, "Temp", "Update", "rollback-" + Guid.NewGuid().ToString("N"));
+        var targetParent = Directory.GetParent(target)?.FullName;
+        var backupRoot = string.Equals(Path.GetFileName(target), AppPaths.InstalledRuntimeDirectoryName, StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(targetParent)
+            ? Path.Combine(targetParent, "Temp", "Update", "rollback-" + Guid.NewGuid().ToString("N"))
+            : Path.Combine(target, "Temp", "Update", "rollback-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(backupRoot);
         try
         {
