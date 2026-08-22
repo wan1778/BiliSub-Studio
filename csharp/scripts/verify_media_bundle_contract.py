@@ -13,6 +13,8 @@ def require(condition: bool, message: str) -> None:
 models = read("csharp/src/BiliSubStudio.Core/Video/VideoModels.cs")
 resolver = read("csharp/src/BiliSubStudio.Core/Video/YtDlpResolver.cs")
 playurl = read("csharp/src/BiliSubStudio.Core/Video/BilibiliPlayurlClient.cs")
+subtitle_client = read("csharp/src/BiliSubStudio.Core/Video/BilibiliSubtitleClient.cs")
+subtitle_policy = read("csharp/src/BiliSubStudio.Core/Video/SubtitleTrackPolicy.cs")
 download = read("csharp/src/BiliSubStudio.Core/Video/VideoDownloadService.cs")
 range_downloader = read("csharp/src/BiliSubStudio.Core/Video/RangeDownloader.cs")
 application = read("csharp/src/BiliSubStudio.Core/Application/BiliSubApplication.cs")
@@ -21,11 +23,13 @@ page = read("csharp/src/BiliSubStudio.App/Pages/VideoPage.xaml.cs")
 xaml = read("csharp/src/BiliSubStudio.App/Pages/VideoPage.xaml")
 cdn_fixture = read("csharp/tests/BiliSubStudio.CdnRegression/Program.cs")
 cdn_failover_fixture = read("csharp/tests/BiliSubStudio.CdnFailoverRegression/Program.cs")
+subtitle_fixture = read("csharp/tests/BiliSubStudio.SubtitleRegression/Program.cs")
 workflow = read(".github/workflows/csharp-p5-windows-x64-installer.yml")
 application_lower = application.lower()
 xaml_lower = xaml.lower()
 
 require('string ThumbnailUrl = ""' in models, "VideoMetadata must carry thumbnail URL")
+require('string SubtitleDiscoveryWarning = ""' in models, "VideoMetadata must carry subtitle discovery diagnostics")
 require("bool BundleSubtitleIfAvailable = false" in models, "media request must support optional subtitles")
 require("bool BundleThumbnail = false" in models, "media request must support thumbnail bundling")
 require("bool MediaBundle = false" in models, "request must distinguish media-bundle orchestration from legacy video callers")
@@ -43,9 +47,36 @@ require('"baseUrl", "base_url", "url"' in playurl, "playurl client must retain t
 require('new[] { "backupUrl", "backup_url" }' in playurl, "playurl client must retain camel/snake-case backup endpoint arrays")
 require("ExtractFormatId" in playurl and "30064" not in playurl, "playurl endpoint matching must be format-driven, not hard-coded to one representation")
 require("ReadCookieHeaderAsync" in playurl and "SESSDATA" in playurl, "playurl discovery must preserve the authenticated quality/session context")
+require("code is not (0 or -101)" in playurl, "anonymous Bilibili nav code -101 must still allow valid wbi_img discovery")
 require("_playurl.GetEndpointMapAsync" in resolver, "selected yt-dlp formats must be enriched from raw playurl")
 require("MergeEndpointUrls" in resolver, "resolver must deduplicate yt-dlp primary and raw playurl candidates")
 require("Math.Abs(request.EndpointOffset) % endpoints.Count" in resolver, "resolver endpoint selection must remain deterministic when an offset is explicitly requested")
+
+# Subtitle contract: normal/platform tracks are the first source class; Bilibili AI is fallback.
+require("x/player/v2" in subtitle_client and '"subtitle_url"' in subtitle_client,
+        "native Bilibili normal subtitle discovery is missing")
+require("x/v2/subtitle/web/view" in subtitle_client and "preferred_language=ai-zh" in subtitle_client,
+        "authenticated Bilibili AI subtitle fallback endpoint is missing")
+require("ParseWebSubtitleTracks" in subtitle_client and "DecodeMessage" in subtitle_client,
+        "Bilibili AI Protobuf parsing is missing")
+require('ContainsCookie(cookieHeader, "SESSDATA")' in subtitle_client,
+        "AI subtitle fallback must use the current authenticated Bilibili session")
+require("_subtitles.GetTracksAsync" in resolver,
+        "yt-dlp metadata must be enriched by native Bilibili subtitle discovery")
+require("var available = tracks.Where(track => track.Official)" in resolver,
+        "available/normal subtitle source class must be checked before AI")
+require("else\n            {\n                var ai = tracks.Where(track => track.Ai)" in resolver,
+        "AI tracks must be selected only when no available subtitle class exists")
+require("if (track.Official) return chinese ? 0 : 1;" in subtitle_policy,
+        "normal subtitle policy must outrank every AI track")
+require("if (track.Ai) return chinese ? 2 : 3;" in subtitle_policy,
+        "AI subtitle policy must remain fallback")
+require("available subtitle > Bilibili AI subtitle" in subtitle_fixture,
+        "executable subtitle fixture must prove normal subtitles outrank AI")
+require("normal metadata empty → Bilibili AI Protobuf subtitle" in subtitle_fixture,
+        "executable subtitle fixture must prove authenticated AI Protobuf fallback")
+require("BiliSubStudio.SubtitleRegression" in workflow,
+        "workflow must execute Bilibili subtitle priority/AI regression")
 
 # The service must exhaust the current primary+backup set before performing a fresh playurl resolve.
 require("currentStreams = new Dictionary<StreamKind, ResolvedStream>()" in download, "video/audio CDN state must be tracked independently")
@@ -127,7 +158,7 @@ require("MediaBundle: true" in page and "BundleVideo: downloadVideo" in page, "U
 require("BundleThumbnail: downloadThumbnail" in page, "UI must honor separate thumbnail selection")
 require("BundleSubtitleIfAvailable: downloadSubtitle" in page, "UI must honor separate subtitle selection")
 require("TrackBox.SelectedItem as SubtitleTrack" in page, "subtitle selection must remain optional")
-require("track.Language.IndexOf(':')" in page, "subtitle language ranking must strip official/AI prefix")
+require("SubtitleTrackPolicy.Preferred(metadata.Subtitles)" in page, "Media UI must use the unified normal-first subtitle policy")
 require('Content="Tải media"' in xaml, "primary CTA must remain Tải media")
 require("không chọn mục nào" in xaml_lower and "chỉ tải đúng các mục đã chọn" in xaml_lower, "UI must explain default-all versus separate-download behavior")
 require("thumbnail" in xaml_lower and "phụ đề nếu nguồn có" in xaml_lower, "UI must explain thumbnail + optional subtitle behavior")
@@ -147,4 +178,4 @@ require("128L * 1024 * 1024" in subtitle, "long-video subtitle cap must remain 1
 require("for (var attempt = 1; attempt <= 4; attempt++)" in subtitle, "subtitle HTTP retry contract is missing")
 require("value.TotalHours" in subtitle, "SRT rendering must support durations beyond 24 hours")
 
-print("PASS: root-cause CDN failover + cached backup rotation + playurl refetch guards + long-media/highest-quality/default-all/separate-assets/short-read/HTTP503/adaptive-range/thumbnail/optional-subtitle/resume contracts")
+print("PASS: CDN/WBI failover + Bilibili normal/AI subtitle fallback + default-all/separate-assets + long-media Range/resume contracts")
