@@ -169,6 +169,13 @@ public sealed partial class SettingsPage : Page
 
     private async void RemoveOcr_Click(object sender, RoutedEventArgs e)
     {
+        if (_application.Jobs.ActiveSnapshots().Any(job => string.Equals(job.Kind, "ocrscan", StringComparison.Ordinal)))
+        {
+            const string message = "OCR đang quét; hãy Tạm dừng hoặc Hủy trước khi xóa runtime OCR.";
+            _log.Warning("Cài đặt", "Đã chặn xóa OCR runtime vì đang có tác vụ ocrscan.");
+            await ShowErrorAsync(message);
+            return;
+        }
         if (!await ConfirmAsync("Xóa OCR runtime?", "Private Python, PaddleOCR và model cache sẽ bị xóa.")) return;
         try
         {
