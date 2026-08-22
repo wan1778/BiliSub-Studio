@@ -66,6 +66,13 @@ public sealed partial class OcrPage : Page
         if (selected is null) return;
         try
         {
+            _cues = [];
+            _visibleCues = [];
+            CueList.Items.Clear();
+            ExportButton.IsEnabled = false;
+            Progress.Value = 0;
+            TelemetryText.Text = "Chưa có telemetry.";
+            OcrResultText.Text = string.Empty;
             _path = selected;
             PathText.Text = selected;
             StatusText.Text = "Đang đọc video...";
@@ -204,6 +211,12 @@ public sealed partial class OcrPage : Page
     private async void Scan_Click(object sender, RoutedEventArgs e)
     {
         if (_path is null || _media is null) return;
+        _cues = [];
+        _visibleCues = [];
+        CueList.Items.Clear();
+        ExportButton.IsEnabled = false;
+        Progress.Value = 0;
+        TelemetryText.Text = "Đang chờ kết quả OCR...";
         _jobId = _application.StartOcrScan(BuildRequest());
         ScanButton.IsEnabled = false;
         TestFrameButton.IsEnabled = false;
@@ -211,7 +224,6 @@ public sealed partial class OcrPage : Page
         SelectRegionButton.IsEnabled = false;
         PauseButton.IsEnabled = true;
         CancelButton.IsEnabled = true;
-        CueList.Items.Clear();
         while (_jobId is not null)
         {
             var snapshot = _application.Jobs.GetSnapshot(_jobId);
