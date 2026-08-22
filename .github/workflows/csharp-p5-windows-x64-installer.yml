@@ -82,6 +82,9 @@ jobs:
       - name: Verify raw Bilibili CDN endpoint discovery
         run: dotnet run --project csharp/tests/BiliSubStudio.CdnRegression/BiliSubStudio.CdnRegression.csproj -c Release -p:NuGetAudit=false
 
+      - name: Verify CDN failover keeps exact Range offset
+        run: dotnet run --project csharp/tests/BiliSubStudio.CdnFailoverRegression/BiliSubStudio.CdnFailoverRegression.csproj -c Release -p:NuGetAudit=false
+
       - name: Verify tidy installer runtime layout
         run: python csharp/scripts/verify_installer_runtime_layout_contract.py
 
