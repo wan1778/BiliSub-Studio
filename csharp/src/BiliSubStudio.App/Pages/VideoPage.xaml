@@ -10,7 +10,6 @@
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
             <Grid>
@@ -198,35 +197,33 @@
                             </Grid>
                         </StackPanel>
                     </Border>
+
+                    <Border Style="{StaticResource CardBorderStyle}">
+                        <StackPanel Spacing="10">
+                            <Grid ColumnSpacing="12">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Style="{StaticResource CardTitleStyle}" Text="Tiến độ" />
+                                <TextBlock x:Name="PercentText" Grid.Column="1" Style="{StaticResource MutedTextStyle}" Text="0%" />
+                            </Grid>
+                            <ProgressBar
+                                x:Name="Progress"
+                                Height="8"
+                                Minimum="0"
+                                Maximum="100"
+                                AutomationProperties.Name="Tiến độ tải media" />
+                            <TextBlock
+                                x:Name="StatusText"
+                                TextWrapping="Wrap"
+                                Style="{StaticResource BodyTextStyle}"
+                                Text="Sẵn sàng."
+                                AutomationProperties.LiveSetting="Polite" />
+                        </StackPanel>
+                    </Border>
                 </StackPanel>
             </Grid>
-
-            <Border Grid.Row="3" Style="{StaticResource CardBorderStyle}">
-                <Grid ColumnSpacing="14">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="110" />
-                        <ColumnDefinition Width="*" />
-                    </Grid.ColumnDefinitions>
-                    <StackPanel Spacing="3">
-                        <TextBlock Style="{StaticResource CardTitleStyle}" Text="Tiến độ" />
-                        <TextBlock x:Name="PercentText" Style="{StaticResource MutedTextStyle}" Text="0%" />
-                    </StackPanel>
-                    <StackPanel Grid.Column="1" Spacing="8">
-                        <ProgressBar
-                            x:Name="Progress"
-                            Height="8"
-                            Minimum="0"
-                            Maximum="100"
-                            AutomationProperties.Name="Tiến độ tải media" />
-                        <TextBlock
-                            x:Name="StatusText"
-                            TextWrapping="Wrap"
-                            Style="{StaticResource BodyTextStyle}"
-                            Text="Sẵn sàng."
-                            AutomationProperties.LiveSetting="Polite" />
-                    </StackPanel>
-                </Grid>
-            </Border>
         </Grid>
     </ScrollViewer>
 </Page>
