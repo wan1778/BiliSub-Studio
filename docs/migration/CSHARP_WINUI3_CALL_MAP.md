@@ -222,20 +222,22 @@ OCRPage.Scan
   -> BiliSubApplication.StartOcrScan
   -> JobManager/AppJob -> shared ApplicationLog
   -> OcrScanner.RunAsync
-  -> HardwareService.RecommendedOcrSegmentLanes
-       -> CPU/RAM/video-duration ceiling for deterministic FFmpeg segments
-  -> HardwareService.RecommendedOcrWorkers + RecommendedOcrWorkerProbeCeiling
-       -> independent device/GPU/VRAM prediction for the shared PaddleOCR pool
-  -> Worker live probe 1/2/4/8/16
-       -> create N Python workers and run N distinct real-frame inferences concurrently
-       -> OOM/startup/worker failure restores the last stable worker pool
-  -> Segment live probe 1/2/4/8/16
-       -> run N concurrent FFmpeg decodes through the already committed M-worker pool
-       -> N segment lanes never require N Python workers
-       -> failure keeps the last stable segment level
-  -> deterministic lane topology + independently sized shared PaddleOCR pool
+  -> HardwareService.BenchmarkAsync
+       -> CPU/RAM telemetry only; never caps Auto
+  -> OcrTopologyBenchmark.SelectAsync
+       -> exact ladder 1 -> 2 -> 4 -> 8 -> 16
+  -> OcrScanner.ProbeTopologyLevelAsync(N)
+       -> OcrManager.ConfigureWorkerPoolAsync(N)
+       -> require exactly N live Python workers
+       -> N concurrent FFmpeg captures at distinct real video positions
+       -> N concurrent PaddleOCR inferences
+       -> PASS advances to the next level
+       -> startup/error/OOM/three-minute timeout restores the immediately preceding PASS level
+  -> commit only after the benchmark finishes
+       -> selected N means N deterministic FFmpeg segments + N Python workers
        -> require checkpoint segment count == selected lanes
-       -> Commit/live telemetry exposes N FFmpeg lanes + M Python workers and worker kinds
+       -> require live worker count == selected lanes before scan starts
+       -> benchmark/live telemetry exposes candidate, last PASS and committed topology
   -> SubtitleTracker + ChineseSubtitleNormalizer
   -> schema-4 safe pause/resume checkpoint
   -> ExportOcrAsync -> SRT

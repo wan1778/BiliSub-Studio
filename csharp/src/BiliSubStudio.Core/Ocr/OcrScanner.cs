@@ -74,20 +74,34 @@ public sealed class OcrScanner
         if (startMode == OcrScanStartMode.Resume && saved is null)
             throw new InvalidOperationException("Không còn checkpoint OCR phù hợp để tiếp tục. Hãy Quét từ đầu.");
 
-        job.Set("benchmark", 0.5, "OCR Auto · đo máy và tách lane quét khỏi OCR worker...");
-        _ = await _hardware.BenchmarkAsync(token);
-        var hardware = _hardware.Snapshot();
-        var effectiveDevice = EffectiveDevice(request.Device);
-        var segmentCeiling = MaximumSegmentLanes(request, hardware);
-        var configuredWorkers = await SelectWorkerPoolAsync(job, request, hardware, effectiveDevice, segmentCeiling, token);
-        var selected = saved?.SelectedParallelism ?? await SelectParallelismAsync(job, request, hardware, configuredWorkers, token);
+        job.Set("benchmark", 0.5, "OCR · đo nền CPU/RAM trước benchmark pipeline thật...");
+        var baseline = await _hardware.BenchmarkAsync(token);
+        job.Log($"Benchmark nền (chỉ telemetry): CPU {baseline.CpuMegabytesPerSecond:0} MiB/s · RAM {baseline.MemoryMegabytesPerSecond:0} MiB/s. Kết quả này không chặn bậc Auto.");
+
+        int selected;
+        if (saved is null)
+        {
+            selected = await SelectParallelismAsync(job, ffmpeg, request, token);
+        }
+        else
+        {
+            selected = saved.SelectedParallelism;
+            job.Set("benchmark", -1, $"OCR Resume Probe: kiểm tra lại topology {selected} trước khi tiếp tục...");
+            await ProbeTopologyLevelAsync(ffmpeg, request, selected, token);
+            job.Log($"Resume Probe {selected}: {selected} Python worker + {selected} FFmpeg pipeline PASS.");
+        }
+        var configuredWorkers = _ocr.Status.Workers;
+        if (configuredWorkers != selected)
+            throw new InvalidDataException($"OCR topology chưa khóa đúng: {selected} FFmpeg lane nhưng có {configuredWorkers} Python worker.");
         var checkpoint = saved ?? await _checkpoints.NewAsync(request, selected, token);
         selected = checkpoint.SelectedParallelism;
         if (checkpoint.Lanes.Count != selected)
             throw new InvalidDataException($"OCR checkpoint topology không hợp lệ: {checkpoint.Lanes.Count}/{selected} lane.");
+        if (configuredWorkers != selected)
+            throw new InvalidDataException($"OCR checkpoint yêu cầu {selected} lane nhưng worker pool đang có {configuredWorkers}.");
         job.Log(saved is null
-            ? $"OCR Commit: khóa {selected} FFmpeg segment lane; dùng pool chung {configuredWorkers} Python worker ({_ocr.Status.WorkerKinds})."
-            : $"Resume checkpoint schema 4: giữ {selected} FFmpeg segment lane; dựng lại độc lập pool chung {configuredWorkers} Python worker ({_ocr.Status.WorkerKinds}).");
+            ? $"OCR Commit: benchmark xong, khóa {selected} pipeline = {selected} FFmpeg lane + {configuredWorkers} Python worker ({_ocr.Status.WorkerKinds})."
+            : $"Resume checkpoint schema 4: giữ và kiểm tra lại {selected} pipeline = {selected} FFmpeg lane + {configuredWorkers} Python worker ({_ocr.Status.WorkerKinds}).");
         var decoder = await ProbeNvdecAsync(ffmpeg, source, request.Region, mode, token) ? "nvdec" : "software";
         job.Log(decoder == "nvdec" ? "Decoder: NVIDIA NVDEC." : "Decoder: software fallback.");
 
@@ -195,122 +209,77 @@ public sealed class OcrScanner
 
     private async Task<int> SelectParallelismAsync(
         AppJob job,
+        string ffmpeg,
         OcrScanRequest request,
-        HardwareSnapshot hardware,
-        int configuredWorkers,
         CancellationToken cancellationToken)
     {
-        var safeMaximum = MaximumSegmentLanes(request, hardware);
         var value = request.Parallelism.Trim().ToLowerInvariant();
         if (value != "auto" && value.Length > 0)
         {
             if (!int.TryParse(value, out var explicitValue) || explicitValue < 1 || explicitValue > 16)
                 throw new ArgumentException("Số luồng OCR phải là auto hoặc 1..16.");
-            var selected = Math.Min(explicitValue, safeMaximum);
-            if (selected < explicitValue)
-                job.Warn($"Đã giới hạn {explicitValue} → {selected} segment lane theo CPU/RAM và thời lượng video.");
-            return selected;
+            job.Set("benchmark", -1, $"OCR Manual Probe: {explicitValue} Python worker + {explicitValue} FFmpeg pipeline...");
+            await ProbeTopologyLevelAsync(ffmpeg, request, explicitValue, cancellationToken);
+            job.Log($"Manual Probe {explicitValue}: topology đầy đủ PASS; bắt đầu quét với đúng {explicitValue} luồng.");
+            return explicitValue;
         }
 
-        job.Log($"Auto Segment Predict: thử tới {safeMaximum} FFmpeg lane theo CPU/RAM/thời lượng; pool OCR giữ độc lập {configuredWorkers} worker.");
-        var best = 1;
-        foreach (var level in new[] { 1, 2, 4, 8, 16 }.Where(x => x <= safeMaximum))
-        {
-            try
+        var lastStable = 0;
+        job.Log("Auto Benchmark: bắt buộc thử tuần tự 1 → 2 → 4 → 8 → 16 bằng pipeline thật; không dùng dự đoán phần cứng làm trần.");
+        var selected = await OcrTopologyBenchmark.SelectAsync(
+            async (level, token) =>
             {
-                job.Set("benchmark", -1, $"OCR Auto Segment Probe: {level} FFmpeg lane → pool {configuredWorkers} OCR worker...");
+                job.Set("benchmark", -1, $"OCR Auto Benchmark {level}/16: tạo {level} Python worker và chạy {level} FFmpeg + OCR đồng thời...");
+                job.SetResult(new OcrBenchmarkTelemetry(level, lastStable, 16, _ocr.Status.Workers, _ocr.Status.WorkerKinds, "đang thử"));
                 var watch = Stopwatch.StartNew();
-                var probeResults = await Task.WhenAll(Enumerable.Range(0, level).Select(async index =>
-                {
-                    var at = request.Duration * (index + 0.5) / level;
-                    var jpeg = await CaptureFrameAsync(request.Path, at, request.Region, false, cancellationToken);
-                    return await _ocr.RunAsync(Convert.ToBase64String(jpeg), cancellationToken);
-                }));
-                var failed = probeResults.FirstOrDefault(result => !result.Ok);
-                if (failed is not null)
-                    throw new InvalidOperationException(failed.Error ?? "OCR worker trả kết quả lỗi trong Auto Probe.");
+                await ProbeTopologyLevelAsync(ffmpeg, request, level, token);
                 var throughput = level / Math.Max(0.001, watch.Elapsed.TotalSeconds);
-                job.Log($"Auto Segment Probe {level}: {level} decode pipeline dùng chung {configuredWorkers} worker PASS · {throughput:0.00} mẫu/s.");
-                best = level;
-            }
-            catch (OperationCanceledException) { throw; }
-            catch (Exception error)
+                lastStable = level;
+                job.SetResult(new OcrBenchmarkTelemetry(level, lastStable, 16, _ocr.Status.Workers, _ocr.Status.WorkerKinds, "PASS"));
+                job.Log($"Auto Benchmark {level}: {level} Python worker + {level} FFmpeg pipeline PASS · {throughput:0.00} mẫu/s.");
+            },
+            async (best, token) =>
             {
-                if (level == 1) throw;
-                job.Warn($"Auto Segment Probe {level} lane không an toàn: {Compact(error.Message)} · giữ {best} lane.");
-                break;
-            }
-        }
-        return best;
+                job.Set("benchmark", -1, $"OCR Auto Rollback: dựng lại topology ổn định {best}...");
+                var restored = await _ocr.ConfigureWorkerPoolAsync(best, token);
+                if (restored != best)
+                    throw new InvalidOperationException($"Không phục hồi đủ {best} Python worker sau benchmark lỗi; chỉ có {restored}.");
+                job.SetResult(new OcrBenchmarkTelemetry(best, best, 16, restored, _ocr.Status.WorkerKinds, "đã quay về"));
+            },
+            (failed, best, error) =>
+                job.Warn($"Auto Benchmark {failed} FAIL: {Compact(error.Message)} · đã quay về {best} pipeline ổn định."),
+            cancellationToken);
+        job.Set("benchmark", 1.5, $"Benchmark hoàn tất · khóa {selected} pipeline; chuẩn bị bắt đầu quét...");
+        return selected;
     }
 
-    private async Task<int> SelectWorkerPoolAsync(
-        AppJob job,
+    private async Task ProbeTopologyLevelAsync(
+        string ffmpeg,
         OcrScanRequest request,
-        HardwareSnapshot hardware,
-        string effectiveDevice,
-        int segmentCeiling,
+        int level,
         CancellationToken cancellationToken)
     {
-        var minimum = effectiveDevice == "hybrid" ? 2 : 1;
-        var predicted = Math.Max(minimum, HardwareService.RecommendedOcrWorkers(hardware, effectiveDevice));
-        var ceiling = Math.Max(minimum, Math.Min(segmentCeiling,
-            Math.Max(predicted, HardwareService.RecommendedOcrWorkerProbeCeiling(hardware, effectiveDevice))));
-        var levels = new[] { 1, 2, 4, 8, 16 }.Where(x => x >= minimum && x <= ceiling).ToArray();
-        if (levels.Length == 0) levels = [minimum];
-        job.Log($"Auto Worker Predict: {predicted} worker; live probe tới {ceiling} cho {effectiveDevice}. Segment lane không bị buộc bằng worker.");
-
-        var best = minimum;
-        foreach (var level in levels)
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromMinutes(3));
+        try
         {
-            try
+            var actual = await _ocr.ConfigureWorkerPoolAsync(level, timeout.Token);
+            if (actual != level)
+                throw new InvalidOperationException($"chỉ tạo được {actual}/{level} Python worker");
+            var probeResults = await Task.WhenAll(Enumerable.Range(0, level).Select(async index =>
             {
-                job.Set("benchmark", -1, $"OCR Worker Probe: {level} Python worker...");
-                var actual = await _ocr.ConfigureWorkerPoolAsync(level, cancellationToken);
-                if (actual < level)
-                    throw new InvalidOperationException($"chỉ tạo được {actual}/{level} Python worker");
-                var results = await Task.WhenAll(Enumerable.Range(0, level).Select(async index =>
-                {
-                    var at = request.Duration * (index + 0.5) / level;
-                    var jpeg = await CaptureFrameAsync(request.Path, at, request.Region, false, cancellationToken);
-                    return await _ocr.RunAsync(Convert.ToBase64String(jpeg), cancellationToken);
-                }));
-                var failed = results.FirstOrDefault(x => !x.Ok);
-                if (failed is not null)
-                    throw new InvalidOperationException(failed.Error ?? "OCR worker trả kết quả lỗi trong Worker Probe.");
-                best = actual;
-                job.Log($"OCR Worker Probe {level}: PASS ({_ocr.Status.WorkerKinds}).");
-            }
-            catch (OperationCanceledException) { throw; }
-            catch (Exception error)
-            {
-                if (level == minimum) throw;
-                job.Warn($"OCR Worker Probe {level} không an toàn: {Compact(error.Message)} · giữ {best} worker.");
-                break;
-            }
+                var at = request.Duration * (index + 0.5) / level;
+                var jpeg = await CaptureFrameWithFfmpegAsync(ffmpeg, request.Path, at, request.Region, false, timeout.Token);
+                return await _ocr.RunAsync(Convert.ToBase64String(jpeg), timeout.Token);
+            }));
+            var failed = probeResults.FirstOrDefault(result => !result.Ok);
+            if (failed is not null)
+                throw new InvalidOperationException(failed.Error ?? "OCR worker trả kết quả lỗi trong benchmark.");
         }
-
-        if (_ocr.Status.Workers != best)
-            best = await _ocr.ConfigureWorkerPoolAsync(best, cancellationToken);
-        return best;
-    }
-
-    private string EffectiveDevice(string requested)
-    {
-        var value = requested.Trim().ToLowerInvariant();
-        return value == "auto" && !string.IsNullOrWhiteSpace(_ocr.Status.ActiveMode)
-            ? _ocr.Status.ActiveMode
-            : value;
-    }
-
-    private static int MaximumSegmentLanes(OcrScanRequest request, HardwareSnapshot hardware)
-    {
-        var durationLimit = Math.Clamp((int)Math.Floor(request.Duration / 120), 1, 16);
-        var hardwareLimit = HardwareService.RecommendedOcrSegmentLanes(hardware);
-        var value = request.Parallelism.Trim().ToLowerInvariant();
-        if (value != "auto" && int.TryParse(value, out var explicitValue))
-            return Math.Min(Math.Clamp(explicitValue, 1, 16), Math.Min(durationLimit, hardwareLimit));
-        return Math.Min(durationLimit, hardwareLimit);
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new TimeoutException($"topology {level} không hoàn tất probe trong 3 phút");
+        }
     }
 
     private static void PublishTelemetry(
@@ -489,8 +458,19 @@ public sealed class OcrScanner
 
     private async Task<byte[]> CaptureFrameAsync(string path, double at, OcrRegion region, bool enhanced, CancellationToken cancellationToken)
     {
-        region = OcrCheckpointStore.NormalizeRegion(region);
         var ffmpeg = await _tools.EnsureFfmpegAsync(cancellationToken);
+        return await CaptureFrameWithFfmpegAsync(ffmpeg, path, at, region, enhanced, cancellationToken);
+    }
+
+    private async Task<byte[]> CaptureFrameWithFfmpegAsync(
+        string ffmpeg,
+        string path,
+        double at,
+        OcrRegion region,
+        bool enhanced,
+        CancellationToken cancellationToken)
+    {
+        region = OcrCheckpointStore.NormalizeRegion(region);
         var filter = string.Format(CultureInfo.InvariantCulture,
             "crop=iw*{0}:ih*{1}:iw*{2}:ih*{3},scale=1280:320:force_original_aspect_ratio=decrease,pad=1280:320:(ow-iw)/2:(oh-ih)/2:black{4}",
             region.Width, region.Height, region.X, region.Y, enhanced ? ",eq=contrast=1.25:brightness=0.03,unsharp=5:5:0.8" : string.Empty);

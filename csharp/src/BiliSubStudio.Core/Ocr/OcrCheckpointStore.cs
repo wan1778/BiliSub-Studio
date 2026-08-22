@@ -102,7 +102,7 @@ internal sealed class OcrCheckpointStore
     public static IReadOnlyList<OcrScanSegment> BuildSegments(double duration, int parallelism, double overlap)
     {
         if (duration <= 0 || double.IsNaN(duration) || double.IsInfinity(duration)) throw new ArgumentException("Thời lượng video không hợp lệ.");
-        parallelism = Math.Clamp(parallelism, 1, Math.Min(16, Math.Max(1, (int)Math.Floor(duration / 120))));
+        parallelism = Math.Clamp(parallelism, 1, 16);
         var output = new List<OcrScanSegment>();
         for (var index = 0; index < parallelism; index++)
         {

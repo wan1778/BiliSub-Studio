@@ -128,7 +128,7 @@
                                         <ComboBoxItem Content="Chính xác" Tag="accurate" />
                                         <ComboBoxItem Content="Nhanh" Tag="fast" />
                                     </ComboBox>
-                                    <ComboBox Grid.Column="2" x:Name="LanesBox" Header="Lane video" SelectedIndex="0"><x:String>auto</x:String><x:String>1</x:String><x:String>2</x:String><x:String>4</x:String><x:String>8</x:String><x:String>16</x:String></ComboBox>
+                                    <ComboBox Grid.Column="2" x:Name="LanesBox" Header="Luồng OCR" SelectedIndex="0"><x:String>auto</x:String><x:String>1</x:String><x:String>2</x:String><x:String>4</x:String><x:String>8</x:String><x:String>16</x:String></ComboBox>
                                 </Grid>
                                 <StackPanel Orientation="Horizontal" Spacing="7">
                                     <Button x:Name="PrepareOcrButton" Click="Prepare_Click" Content="Chuẩn bị OCR" />

@@ -67,14 +67,13 @@ The C# OCR subsystem owns:
 - CPU/GPU/Hybrid worker lifecycle;
 - local video frame extraction through app-owned FFmpeg;
 - ROI validation, Chinese subtitle normalization and cue tracking;
-- Auto parallelism benchmarking/capacity selection;
-- deterministic FFmpeg segment-lane topology with one lane-local tracker per segment;
-- an independently sized, bounded Python/PaddleOCR worker pool shared by every segment lane;
+- full-pipeline Auto benchmarking/capacity selection before scan work starts;
+- deterministic OCR topology with one FFmpeg segment lane, one Python/PaddleOCR worker and one lane-local tracker per selected pipeline;
 - explicit Fresh/Resume scan intent plus pause/checkpoint/cancel-and-delete and final SRT export.
 
-Segment lanes and OCR workers are different capacity units. CPU/RAM/video duration gate the FFmpeg segment count; device mode and GPU/VRAM gate the worker pool. Auto probes both layers on real frames, but never requires one Python process per FFmpeg lane. A committed topology such as four FFmpeg segment lanes feeding one shared GPU worker is valid and remains four lanes in its checkpoint.
+Auto always probes the complete ladder `1 -> 2 -> 4 -> 8 -> 16`. Candidate `N` must create exactly `N` live Python workers and complete `N` concurrent FFmpeg-to-OCR probes on distinct real video frames. Static CPU/RAM/GPU/VRAM estimates are diagnostics only and never cap this ladder. When a candidate fails, times out or runs out of memory, Core transactionally restores the immediately preceding PASS level and only then begins the real scan. If every level passes, 16 is committed. Manual `N` probes and commits exactly `N`; it is never silently downgraded.
 
-For pausable OCR jobs, Cancel is not terminal until active FFmpeg/Python work has stopped and the exact matching checkpoint is verified absent. Resume preserves the saved segment topology; Fresh removes the matching checkpoint before selecting a new topology. Paused cue preview is restricted to the contiguous safe frontier even when later segments have processed more work.
+For pausable OCR jobs, Cancel is not terminal until active FFmpeg/Python work has stopped and the exact matching checkpoint is verified absent. Resume preserves and re-probes the saved full topology; Fresh removes the matching checkpoint before running a new ladder. Paused cue preview is restricted to the contiguous safe frontier even when later segments have processed more work.
 
 `internal/ocr/worker.py` is an implementation asset, not a second BiliSub backend. It communicates with the C# process through the private worker protocol and exposes no BiliSub HTTP server.
 
