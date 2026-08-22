@@ -31,7 +31,18 @@
                     </StackPanel>
                     <TextBlock Style="{StaticResource MutedTextStyle}" Text="CPU/GPU/Hybrid · topology 1/2/4/8/16 · checkpoint schema 4" />
                 </StackPanel>
-                <Button Grid.Column="1" AccessKey="O" Click="PickVideo_Click" Content="Chọn video" />
+                <Button
+                    Grid.Column="1"
+                    MinHeight="40"
+                    Padding="18,8"
+                    AccessKey="O"
+                    Click="PickVideo_Click"
+                    Background="{ThemeResource AccentPrimaryBrush}"
+                    BorderBrush="{ThemeResource AccentPrimaryBrush}"
+                    Foreground="White"
+                    FontWeight="SemiBold"
+                    CornerRadius="8"
+                    Content="Chọn video" />
             </Grid>
 
             <Grid x:Name="WorkspaceGrid" Grid.Row="1" Height="600" ColumnSpacing="14">
@@ -61,7 +72,12 @@
                                 PointerMoved="PreviewCanvas_PointerMoved"
                                 PointerReleased="PreviewCanvas_PointerReleased"
                                 AutomationProperties.Name="Vùng kéo chọn OCR">
-                                <shapes:Rectangle x:Name="RoiRectangle" Stroke="#42CC96" StrokeThickness="2" Fill="#3042CC96" />
+                                <shapes:Rectangle
+                                    x:Name="RoiRectangle"
+                                    IsHitTestVisible="False"
+                                    Stroke="#42CC96"
+                                    StrokeThickness="2"
+                                    Fill="#3042CC96" />
                             </Canvas>
                         </Grid>
                     </Border>
@@ -78,7 +94,7 @@
                             <TextBlock x:Name="ClockText" VerticalAlignment="Center" Style="{StaticResource MutedTextStyle}" Text="00:00 / 00:00" />
                             <Button Grid.Column="1" x:Name="PlaybackButton" AccessKey="P" Click="Playback_Click" Content="Phát video" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />
                             <Button Grid.Column="2" x:Name="FullscreenButton" AccessKey="F" Click="Fullscreen_Click" Content="Toàn màn hình" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />
-                            <ToggleSwitch Grid.Column="3" x:Name="SelectRegionButton" AccessKey="R" Toggled="SelectRegion_Toggled" OnContent="Đang khoanh ROI" OffContent="Khoanh ROI" IsEnabled="False" />
+                            <ToggleSwitch Grid.Column="3" x:Name="SelectRegionButton" AccessKey="R" Toggled="SelectRegion_Toggled" OnContent="Đang chỉnh ROI" OffContent="Chỉnh ROI" IsEnabled="False" />
                             <Button Grid.Column="4" x:Name="RefreshFrameButton" Click="RefreshFrame_Click" Content="Cập nhật frame" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />
                         </Grid>
                     </StackPanel>
@@ -98,30 +114,20 @@
                         </Border>
                         <Border Style="{StaticResource CardBorderStyle}">
                             <StackPanel Spacing="10">
-                                <TextBlock Style="{StaticResource CardTitleStyle}" Text="Vùng nhận diện (%)" />
-                                <TextBlock Style="{StaticResource MutedTextStyle}" Text="Nhập bằng bàn phím hoặc bật Khoanh ROI rồi kéo trực tiếp trên frame." />
-                                <Grid ColumnSpacing="6">
-                                    <Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
-                                    <TextBox x:Name="LeftBox" Header="Trái" Text="5" TextChanged="RegionBox_TextChanged" />
-                                    <TextBox Grid.Column="1" x:Name="TopBox" Header="Trên" Text="65" TextChanged="RegionBox_TextChanged" />
-                                    <TextBox Grid.Column="2" x:Name="RightBox" Header="Phải" Text="95" TextChanged="RegionBox_TextChanged" />
-                                    <TextBox Grid.Column="3" x:Name="BottomBox" Header="Dưới" Text="94" TextChanged="RegionBox_TextChanged" />
-                                </Grid>
-                                <TextBlock x:Name="RegionValidationText" Style="{StaticResource MutedTextStyle}" Text="Chọn video để áp dụng vùng." AutomationProperties.LiveSetting="Polite" />
-                                <Button x:Name="ApplyRegionButton" Click="ApplyRegion_Click" Content="Áp dụng vùng" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />
-                            </StackPanel>
-                        </Border>
-                        <Border Style="{StaticResource CardBorderStyle}">
-                            <StackPanel Spacing="10">
                                 <Grid>
-                                    <TextBlock Style="{StaticResource CardTitleStyle}" Text="Engine và scan" />
-                                    <Border HorizontalAlignment="Right" Padding="8,3" Background="{ThemeResource AccentSoftBrush}" CornerRadius="9"><TextBlock FontSize="10" Foreground="{ThemeResource AccentPrimaryBrush}" Text="Auto predict" /></Border>
+                                    <TextBlock Style="{StaticResource CardTitleStyle}" Text="Engine và quét" />
+                                    <Border HorizontalAlignment="Right" Padding="8,3" Background="{ThemeResource AccentSoftBrush}" CornerRadius="9"><TextBlock FontSize="10" Foreground="{ThemeResource AccentPrimaryBrush}" Text="Tự động dự đoán" /></Border>
                                 </Grid>
+                                <TextBlock Style="{StaticResource MutedTextStyle}" Text="Bật Chỉnh ROI rồi kéo vùng trống để tạo khung mới; kéo bên trong khung xanh để di chuyển." />
                                 <Grid ColumnSpacing="7">
                                     <Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
                                     <ComboBox x:Name="DeviceBox" Header="Thiết bị" SelectedIndex="0"><x:String>auto</x:String><x:String>cpu</x:String><x:String>gpu</x:String><x:String>hybrid</x:String></ComboBox>
-                                    <ComboBox Grid.Column="1" x:Name="ScanModeBox" Header="Chế độ" SelectedIndex="0"><x:String>balanced</x:String><x:String>accurate</x:String><x:String>fast</x:String></ComboBox>
-                                    <ComboBox Grid.Column="2" x:Name="LanesBox" Header="Lanes" SelectedIndex="0"><x:String>auto</x:String><x:String>1</x:String><x:String>2</x:String><x:String>4</x:String><x:String>8</x:String><x:String>16</x:String></ComboBox>
+                                    <ComboBox Grid.Column="1" x:Name="ScanModeBox" Header="Chế độ" SelectedIndex="0">
+                                        <ComboBoxItem Content="Cân bằng" Tag="balanced" />
+                                        <ComboBoxItem Content="Chính xác" Tag="accurate" />
+                                        <ComboBoxItem Content="Nhanh" Tag="fast" />
+                                    </ComboBox>
+                                    <ComboBox Grid.Column="2" x:Name="LanesBox" Header="Luồng" SelectedIndex="0"><x:String>auto</x:String><x:String>1</x:String><x:String>2</x:String><x:String>4</x:String><x:String>8</x:String><x:String>16</x:String></ComboBox>
                                 </Grid>
                                 <StackPanel Orientation="Horizontal" Spacing="7">
                                     <Button Click="Prepare_Click" Content="Chuẩn bị OCR" />
@@ -136,7 +142,7 @@
                             <StackPanel Spacing="8">
                                 <Grid>
                                     <TextBlock Style="{StaticResource CardTitleStyle}" Text="Quét toàn video" />
-                                    <Border HorizontalAlignment="Right" Padding="8,3" Background="{ThemeResource SuccessSoftBrush}" CornerRadius="9"><TextBlock FontSize="10" Foreground="{ThemeResource SuccessBrush}" Text="Checkpoint safe" /></Border>
+                                    <Border HorizontalAlignment="Right" Padding="8,3" Background="{ThemeResource SuccessSoftBrush}" CornerRadius="9"><TextBlock FontSize="10" Foreground="{ThemeResource SuccessBrush}" Text="Checkpoint an toàn" /></Border>
                                 </Grid>
                                 <StackPanel Orientation="Horizontal" Spacing="7">
                                     <Button x:Name="ScanButton" Click="Scan_Click" Content="Quét / Tiếp tục" IsEnabled="False" />
