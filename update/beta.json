@@ -1,9 +1,9 @@
 {
-  "version": "4.0.0-beta.13-csharp-p5",
+  "version": "4.0.0-beta.14-csharp-p5",
   "channel_ready": true,
-  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.0-beta.13-csharp-p5/BiliSubStudio_4.0.0-beta.13-csharp-p5_Windows-x64-portable.zip",
-  "sha256": "4ed1f4c5447c0a084894d56505034554a77efd37a3b2405d255987b7fe190c9f",
-  "size": 94415874,
+  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.0-beta.14-csharp-p5/BiliSubStudio_4.0.0-beta.14-csharp-p5_Windows-x64-portable.zip",
+  "sha256": "eb94e799e297be4d8e24279914c35a439a0af9e9c44e519bc038893e7ba4e6b0",
+  "size": 94415206,
   "payload_kind": "winui3-portable-zip",
   "notes": [
     "Sửa WBI/CDN failover cho video Bilibili dài.",
