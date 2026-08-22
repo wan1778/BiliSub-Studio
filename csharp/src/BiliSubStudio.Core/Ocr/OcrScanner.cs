@@ -126,25 +126,40 @@ public sealed class OcrScanner
         job.Set("benchmark", 0.5, "OCR Auto · Predict → Probe → Commit...");
         var benchmark = await _hardware.BenchmarkAsync(cancellationToken);
         var predicted = Math.Min(maximumForDuration, benchmark.RecommendedOcrLanes);
-        job.Log($"Auto Predict: tối đa {predicted} lane theo CPU/RAM/GPU.");
+        job.Log($"Auto Predict: tối đa {predicted} lane theo CPU/RAM/GPU/VRAM.");
         var probeFrame = Convert.ToBase64String(await CaptureFrameAsync(request.Path, Math.Min(5, request.Duration / 2), request.Region, false, cancellationToken));
         var best = 1;
         var previousThroughput = 0d;
         foreach (var level in new[] { 1, 2, 4, 8, 16 }.Where(x => x <= predicted))
         {
-            job.Set("benchmark", -1, $"OCR Auto Probe: {level} lane...");
-            await _ocr.ConfigureScanWorkersAsync(level, cancellationToken);
-            var watch = Stopwatch.StartNew();
-            await Task.WhenAll(Enumerable.Range(0, level).Select(_ => _ocr.RunAsync(probeFrame, cancellationToken)));
-            var throughput = level / Math.Max(0.001, watch.Elapsed.TotalSeconds);
-            job.Log($"Auto Probe {level}: {throughput:0.00} ảnh/s.");
-            if (previousThroughput > 0 && throughput < previousThroughput * 1.10)
+            try
             {
-                job.Log("Auto dừng: mức kế tiếp tăng dưới 10% throughput.");
+                job.Set("benchmark", -1, $"OCR Auto Probe: {level} lane...");
+                await _ocr.ConfigureScanWorkersAsync(level, cancellationToken);
+                var watch = Stopwatch.StartNew();
+                var probeResults = await Task.WhenAll(Enumerable.Range(0, level).Select(_ => _ocr.RunAsync(probeFrame, cancellationToken)));
+                var failed = probeResults.FirstOrDefault(result => !result.Ok);
+                if (failed is not null)
+                {
+                    throw new InvalidOperationException(failed.Error ?? "OCR worker trả kết quả lỗi trong Auto Probe.");
+                }
+                var throughput = level / Math.Max(0.001, watch.Elapsed.TotalSeconds);
+                job.Log($"Auto Probe {level}: {throughput:0.00} ảnh/s.");
+                if (previousThroughput > 0 && throughput < previousThroughput * 1.10)
+                {
+                    job.Log("Auto dừng: mức kế tiếp tăng dưới 10% throughput.");
+                    break;
+                }
+                best = level;
+                previousThroughput = throughput;
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception error)
+            {
+                if (level == 1) throw;
+                job.Warn($"Auto Probe {level} lane không an toàn: {Compact(error.Message)} · giữ {best} lane.");
                 break;
             }
-            best = level;
-            previousThroughput = throughput;
         }
         return best;
     }
