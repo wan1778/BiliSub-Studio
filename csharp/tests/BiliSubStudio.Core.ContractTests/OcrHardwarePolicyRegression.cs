@@ -39,7 +39,5 @@ internal static class OcrHardwarePolicyRegression
         var noGpu = new HardwareSnapshot("fixture", 32, GiB(32), false, string.Empty, string.Empty, 0);
         if (DeviceLanes(noGpu, "cpu") != 16 || DeviceLanes(noGpu, "auto") != 4)
             throw new InvalidOperationException("CPU/Auto no-GPU policy drifted from reviewed limits");
-
-        Console.WriteLine("PASS  OCR topology is device-aware and respects NVIDIA VRAM headroom");
     }
 }
