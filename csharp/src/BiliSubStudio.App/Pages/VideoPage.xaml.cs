@@ -1,5 +1,6 @@
 using BiliSubStudio.App.Services;
 using BiliSubStudio.Core.Application;
+using BiliSubStudio.Core.Diagnostics;
 using BiliSubStudio.Core.Video;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -10,14 +11,15 @@ public sealed partial class VideoPage : Page
 {
     private readonly BiliSubApplication _application;
     private readonly IFolderPickerService _folderPicker;
+    private readonly ApplicationLog _log;
     private string? _metadataUrl;
     private string? _jobId;
-    private int _logOffset;
 
-    public VideoPage(BiliSubApplication application, IFolderPickerService folderPicker)
+    public VideoPage(BiliSubApplication application, IFolderPickerService folderPicker, ApplicationLog log)
     {
         _application = application;
         _folderPicker = folderPicker;
+        _log = log;
         InitializeComponent();
     }
 
@@ -54,6 +56,7 @@ public sealed partial class VideoPage : Page
         {
             MetadataText.Text = "Hãy nhập liên kết Bilibili.";
             StatusText.Text = "Chưa có nguồn để kiểm tra.";
+            _log.Warning("Media", "Kiểm tra nguồn bị bỏ qua vì URL rỗng.");
             return;
         }
 
@@ -61,12 +64,14 @@ public sealed partial class VideoPage : Page
         {
             LoadMetadataButton.IsEnabled = false;
             StatusText.Text = "Đang đọc video, thumbnail và phụ đề...";
+            _log.Info("Media", "Đang kiểm tra metadata Bilibili.");
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(90));
             var metadata = await _application.GetMetadataAsync(url, timeout.Token);
 
             if (!string.Equals(UrlBox.Text.Trim(), url, StringComparison.Ordinal))
             {
                 StatusText.Text = "URL đã đổi trong lúc kiểm tra; kết quả cũ đã bị bỏ.";
+                _log.Warning("Media", "Metadata cũ bị bỏ vì URL đã đổi trong lúc request đang chạy.");
                 return;
             }
 
@@ -104,16 +109,19 @@ public sealed partial class VideoPage : Page
             StatusText.Text = !hasOutput
                 ? "Nguồn hợp lệ. Chọn thư mục lưu để tiếp tục."
                 : "Nguồn hợp lệ. Không chọn mục tải riêng = tải Video + Thumbnail + Phụ đề nếu có.";
+            _log.Info("Media", $"Metadata hợp lệ · {QualityBox.Items.Count} chất lượng · {(hasThumbnail ? "có" : "không có")} thumbnail · {TrackBox.Items.Count} track phụ đề.");
         }
         catch (OperationCanceledException)
         {
             MetadataText.Text = "Kiểm tra metadata quá thời gian; dữ liệu nguồn cũ đã bị xóa.";
             StatusText.Text = "Không nhận được metadata trong 90 giây. Hãy thử lại.";
+            _log.Warning("Media", "Kiểm tra metadata quá thời gian sau 90 giây.");
         }
         catch (Exception error)
         {
             MetadataText.Text = "Không đọc được metadata; dữ liệu nguồn cũ đã bị xóa.";
             StatusText.Text = error.Message;
+            _log.Error("Media", "Không đọc được metadata: " + error.Message);
         }
         finally
         {
@@ -153,11 +161,13 @@ public sealed partial class VideoPage : Page
                 StatusText.Text = StartButton.IsEnabled
                     ? "Đã chọn nơi lưu. Sẵn sàng tải media."
                     : "Đã chọn nơi lưu. Hãy Kiểm tra nguồn trước khi tải.";
+                _log.Info("Media", "Đã chọn thư mục đầu ra cho Media.");
             }
             catch (Exception error)
             {
                 StatusText.Text = "Không dùng được thư mục đã chọn: " + error.Message;
                 StartButton.IsEnabled = false;
+                _log.Error("Media", "Thư mục đầu ra không dùng được: " + error.Message);
             }
             finally
             {
@@ -169,6 +179,7 @@ public sealed partial class VideoPage : Page
         if (_metadataUrl is null || !string.Equals(_metadataUrl, UrlBox.Text.Trim(), StringComparison.Ordinal))
         {
             StatusText.Text = "URL chưa được kiểm tra hoặc đã thay đổi. Bấm Kiểm tra trước khi tải.";
+            _log.Warning("Media", "Không bắt đầu tải vì URL chưa được kiểm tra hoặc đã thay đổi.");
             return;
         }
 
@@ -183,6 +194,7 @@ public sealed partial class VideoPage : Page
         if (downloadVideo && QualityBox.SelectedItem is null)
         {
             StatusText.Text = "Nguồn chưa có lựa chọn chất lượng video hợp lệ.";
+            _log.Warning("Media", "Không bắt đầu tải vì chưa có chất lượng video hợp lệ.");
             return;
         }
 
@@ -191,6 +203,7 @@ public sealed partial class VideoPage : Page
         {
             StatusText.Text = "Hãy chọn thư mục lưu trước khi tải.";
             StartButton.IsEnabled = false;
+            _log.Warning("Media", "Không bắt đầu tải vì chưa chọn thư mục lưu.");
             return;
         }
 
@@ -204,12 +217,11 @@ public sealed partial class VideoPage : Page
         {
             StatusText.Text = "Thư mục lưu không dùng được: " + error.Message;
             StartButton.IsEnabled = false;
+            _log.Error("Media", "Xác minh thư mục lưu lỗi: " + error.Message);
             return;
         }
 
         var track = TrackBox.SelectedItem as SubtitleTrack;
-        _logOffset = 0;
-        LogBox.Text = string.Empty;
         Progress.Value = 0;
         PercentText.Text = "0%";
 
@@ -237,6 +249,7 @@ public sealed partial class VideoPage : Page
         StatusText.Text = hasExplicitSelection
             ? "Đang tải các mục bạn đã chọn..."
             : "Đang tải bộ media đầy đủ...";
+        _log.Info("Media", hasExplicitSelection ? "Đã bắt đầu tải các asset được chọn." : "Đã bắt đầu tải bộ Media mặc định.", _jobId);
         await MonitorJobAsync();
     }
 
@@ -249,9 +262,7 @@ public sealed partial class VideoPage : Page
     {
         while (_jobId is not null)
         {
-            var snapshot = _application.Jobs.GetSnapshot(_jobId, _logOffset);
-            _logOffset = snapshot.LogNext;
-            if (snapshot.Logs.Count > 0) LogBox.Text += string.Join("\n", snapshot.Logs) + "\n";
+            var snapshot = _application.Jobs.GetSnapshot(_jobId, int.MaxValue);
             Progress.Value = Math.Max(0, snapshot.Progress);
 
             var transport = snapshot.ActiveConnections > 0
