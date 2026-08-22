@@ -30,10 +30,18 @@ public sealed class VideoDownloadService
         _processes = processes;
     }
 
-    // 1/4/8 is the last field-proven Bilibili budget from the legacy 3.9.2 line.
-    // 1/8/16 is still useful in synthetic tests, but real Bilibili CDNs have shown
-    // early short bodies under the larger worker counts.
+    // Preserve the public legacy speed mapping contract used by older callers/tests.
     public static int SpeedConnections(string speed) => (speed ?? string.Empty).Trim().ToLowerInvariant() switch
+    {
+        "stable" => 1,
+        "turbo" => 16,
+        _ => 8,
+    };
+
+    // Real Bilibili field data in 3.9.2 established 1/4/8 as the safer transport
+    // budget after repeated CDN short bodies. Keep the user-facing modes while using
+    // the field-proven effective worker counts for the actual network path.
+    private static int TransferConnections(string speed) => (speed ?? string.Empty).Trim().ToLowerInvariant() switch
     {
         "stable" => 1,
         "turbo" => 8,
@@ -92,7 +100,7 @@ public sealed class VideoDownloadService
 
         var work = Path.Combine(workRoot, ResumeKey(request, selection));
         Directory.CreateDirectory(work);
-        var budget = SpeedConnections(request.Speed);
+        var budget = TransferConnections(request.Speed);
         var usedRange = true;
         var peakConnections = 0;
         var transportGate = new object();
