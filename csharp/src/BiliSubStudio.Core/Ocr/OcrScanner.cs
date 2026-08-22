@@ -46,7 +46,7 @@ public sealed class OcrScanner
         var source = Path.GetFullPath(request.Path.Trim());
         if (!File.Exists(source) || new FileInfo(source).Length <= 0) throw new FileNotFoundException("Thiếu video nguồn.", source);
         if (request.Duration <= 0) throw new ArgumentException("Thiếu thời lượng video.");
-        _ = OcrCheckpointStore.NormalizeRegion(request.Region);
+        request = request with { Region = OcrCheckpointStore.CanonicalRegion(request.Region) };
         await _ocr.ConfigureDeviceAsync(request.Device, token);
         await _ocr.EnsureAsync(token);
         var ffmpeg = await _tools.EnsureFfmpegAsync(token);
