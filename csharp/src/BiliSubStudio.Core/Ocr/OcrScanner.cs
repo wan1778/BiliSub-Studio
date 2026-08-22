@@ -119,8 +119,15 @@ public sealed class OcrScanner
         var value = request.Parallelism.Trim().ToLowerInvariant();
         if (value != "auto" && value.Length > 0)
         {
-            if (!int.TryParse(value, out var explicitValue) || explicitValue < 1 || explicitValue > 16) throw new ArgumentException("Số luồng OCR phải là auto hoặc 1..16.");
-            return Math.Min(explicitValue, maximumForDuration);
+            if (!int.TryParse(value, out var explicitValue) || explicitValue < 1 || explicitValue > 16)
+                throw new ArgumentException("Số luồng OCR phải là auto hoặc 1..16.");
+            job.Set("benchmark", 0.5, "OCR Safety · kiểm tra headroom cho số luồng đã chọn...");
+            var benchmark = await _hardware.BenchmarkAsync(cancellationToken);
+            var safeMaximum = Math.Min(maximumForDuration, benchmark.RecommendedOcrLanes);
+            var selected = Math.Min(explicitValue, safeMaximum);
+            if (selected < explicitValue)
+                job.Warn($"Đã giới hạn {explicitValue} → {selected} lane để phù hợp CPU/RAM/GPU/VRAM và thời lượng video.");
+            return selected;
         }
 
         job.Set("benchmark", 0.5, "OCR Auto · Predict → Probe → Commit...");
@@ -140,9 +147,7 @@ public sealed class OcrScanner
                 var probeResults = await Task.WhenAll(Enumerable.Range(0, level).Select(_ => _ocr.RunAsync(probeFrame, cancellationToken)));
                 var failed = probeResults.FirstOrDefault(result => !result.Ok);
                 if (failed is not null)
-                {
                     throw new InvalidOperationException(failed.Error ?? "OCR worker trả kết quả lỗi trong Auto Probe.");
-                }
                 var throughput = level / Math.Max(0.001, watch.Elapsed.TotalSeconds);
                 job.Log($"Auto Probe {level}: {throughput:0.00} ảnh/s.");
                 if (previousThroughput > 0 && throughput < previousThroughput * 1.10)
