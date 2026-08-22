@@ -48,25 +48,35 @@ public sealed class HardwareService
                 memoryBytes += block.Length;
             }
             var snapshot = Snapshot();
-            var lanes = 1;
-            foreach (var level in new[] { 2, 4, 8, 16 })
-            {
-                if (snapshot.LogicalProcessors >= level * 2 && snapshot.MemoryBytes >= level * 768L * 1024 * 1024) lanes = level;
-            }
-            if (snapshot.NvidiaDetected)
-            {
-                lanes = Math.Min(lanes, RecommendedGpuOcrLanes(snapshot.VramBytes));
-            }
-            else
-            {
-                lanes = Math.Min(lanes, 4);
-            }
+            var lanes = RecommendedOcrLanes(snapshot, "auto");
             return new BenchmarkResult(
                 cpuBytes / 1024d / 1024d / cpuWatch.Elapsed.TotalSeconds,
                 memoryBytes / 1024d / 1024d / memoryWatch.Elapsed.TotalSeconds,
                 lanes,
                 overall.Elapsed);
         }, cancellationToken);
+    }
+
+    internal static int RecommendedOcrLanes(HardwareSnapshot snapshot, string? deviceMode)
+    {
+        var baseLanes = 1;
+        foreach (var level in new[] { 2, 4, 8, 16 })
+        {
+            if (snapshot.LogicalProcessors >= level * 2 && snapshot.MemoryBytes >= level * 768L * 1024 * 1024)
+                baseLanes = level;
+        }
+
+        var mode = (deviceMode ?? "auto").Trim().ToLowerInvariant();
+        if (mode == "cpu") return baseLanes;
+        if (!snapshot.NvidiaDetected) return mode == "auto" ? Math.Min(baseLanes, 4) : 1;
+
+        var gpuLanes = RecommendedGpuOcrLanes(snapshot.VramBytes);
+        if (mode == "hybrid")
+        {
+            var rawLimit = Math.Min(baseLanes, Math.Min(16, gpuLanes + 1));
+            return new[] { 16, 8, 4, 2, 1 }.First(level => level <= rawLimit);
+        }
+        return Math.Min(baseLanes, gpuLanes);
     }
 
     internal static int RecommendedGpuOcrLanes(long vramBytes)
