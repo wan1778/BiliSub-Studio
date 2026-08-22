@@ -115,6 +115,7 @@ $sourceIdentity = Get-SourceIdentity $root
 
 Invoke-Checked python @("csharp/scripts/validate_csharp_migration.py")
 Invoke-Checked python @("csharp/scripts/generate_csharp_code_map.py", "--check")
+Invoke-Checked python @("csharp/scripts/verify_global_log_ui_contract.py")
 Invoke-Checked dotnet @("restore", "csharp/BiliSubStudio.sln", "-p:Platform=x64", "-p:NuGetAudit=false")
 Invoke-Checked dotnet @("build", "csharp/BiliSubStudio.sln", "-c", "Release", "-p:Platform=x64", "-p:UseSharedCompilation=false", "-p:ContinuousIntegrationBuild=true", "--no-restore")
 Invoke-Checked dotnet @("run", "--project", "csharp/tests/BiliSubStudio.Core.ContractTests/BiliSubStudio.Core.ContractTests.csproj", "-c", "Release", "--no-build", "--no-restore")
@@ -240,6 +241,6 @@ if ($env:GITHUB_OUTPUT) {
     "source_tree_sha256=$($sourceIdentity.Hash)" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
 }
 
-Write-Host "PASS: Windows C# compile, contract runner, short-read regression, self-contained WinUI publish, real startup smoke, worker identity, PE32+ x64 and checksum readback"
+Write-Host "PASS: Windows C# compile, global-log/shell contract, contract runner, short-read regression, self-contained WinUI publish, real startup smoke, worker identity, PE32+ x64 and checksum readback"
 Write-Host "BiliSubStudio.exe SHA-256: $exeHash"
 Write-Host "Source tree SHA-256: $($sourceIdentity.Hash)"
