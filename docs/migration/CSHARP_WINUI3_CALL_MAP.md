@@ -140,20 +140,41 @@ VideoPage.Start_Click
   -> BiliSubApplication.StartVideo
   -> one parent JobManager job kind `media`
        -> optional bundle-video phase
-          -> VideoDownloadService
-          -> RangeDownloader
+          -> VideoDownloadService.DownloadOneAsync
+          -> RangeDownloader.DownloadAsync
+             -> probe with Range bytes=0-0
+                 transient HTTP/network failure
+                   -> refresh signed stream/CDN
+                   -> retry probe, bounded to 6 attempts
+                 successful non-206 body
+                   -> true RangeNotSupported -> final fallback path
              -> 4 MiB Range segments
-             -> preserve partial bytes
-             -> retry from exact missing byte
              -> exact HTTP/1.1 workers
-             -> refresh signed stream after repeated pathological tiny reads
-          -> yt-dlp fallback with resumable state / 4 MiB HTTP chunks
+             -> preserve partial bytes
+             -> short body
+                 -> retry from exact missing byte
+                 -> repeated pathological tiny reads refresh signed stream
+                 -> healthy large continuation does not rotate URL unnecessarily
+             -> HTTP 403/408/429/5xx, including field HTTP 503
+                 -> HttpRequestException transport condition, not RangeNotSupported
+                 -> preserve resume state
+                 -> refresh signed stream/CDN immediately
+                 -> retry same missing range
+             -> segment recovery bounded to 32 attempts
+          -> if multi-connection Range still fails
+             -> ApplicationLog warning with root transport cause
+             -> retry the same stream through RangeDownloader at 1 connection
+             -> resume completed segment manifest
+          -> only after Range recovery/degradation fails
+             -> yt-dlp fallback with resumable state / 4 MiB HTTP chunks
        -> optional thumbnail phase
        -> optional bundle-subtitle phase
           -> SubtitleService -> normalized output
   -> one parent Finish / Cancel owner
   -> AppJob diagnostics -> shared ApplicationLog
 ```
+
+The 2026-08-22 real-machine failure on installer SHA `7f37dcb5...` proved why HTTP status classification matters: a segment HTTP `503` was previously converted immediately to `RangeNotSupportedException`, which forced yt-dlp fallback; yt-dlp then failed with `985 bytes read, 4144194 more expected`. The current path keeps transient CDN errors inside bounded Range recovery and only treats a successful response that actually ignores the Range header as no-Range support.
 
 URL edits invalidate quality/subtitle state. Parent cancellation is linked to the currently active child phase. Media no longer owns a page-local `LogBox`; progress/status stays on the Media page while diagnostics are written to the global shell log.
 
@@ -274,7 +295,10 @@ verify.ps1
   -> generated C# code map check
   -> shared-log / consolidated-shell / compact-media contract
   -> Release build + Core contracts
-  -> 379-byte short-read regression executable
+  -> Range field regression executable
+       -> 379-byte short-read continuation
+       -> segment HTTP 503 -> refresh -> Range success
+       -> probe HTTP 503 -> refresh -> Range success
   -> self-contained win-x64 publish
   -> XBF + PRI validation
   -> exact published EXE startup sentinel
@@ -285,6 +309,7 @@ verify.ps1
 
 workflow pre-gates
   -> verify_media_bundle_contract.py
+       -> short-read + HTTP503 + adaptive Range source contracts
   -> verify_installer_runtime_layout_contract.py
        -> Runtime destination/shortcuts
        -> AppPaths parent-root resolution
@@ -310,5 +335,5 @@ package_windows_candidate.ps1
 - No localhost production server, `/api` UI adapter, WebView/WebView2 or `BiliSubStudioCore.exe` exists in the C# production path.
 - Go production directories are not imported or invoked by the C# application.
 - Update discovery and payload hosting are GitHub-only; transactional update safety remains owned by `UpdateService`.
-- The shared log refactor does not alter Range downloader, OCR scanner topology or editor render algorithms; it changes diagnostic routing and shell/page composition.
+- The transient-CDN hardening changes only video transport classification/retry/degradation; it does not alter OCR scanner topology, editor render algorithms, metadata ownership or the unified Media UI contract.
 - The tidy installer layout changes only installed runtime placement and path ownership; the verified publish bytes themselves remain unchanged inside `Runtime\`.
