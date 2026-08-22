@@ -218,23 +218,24 @@ OCRPage.Prepare
   -> private Python + Paddle runtime under Tools/OCR
 
 OCRPage.Scan
+  -> explicit OcrScanStartMode.Fresh or OcrScanStartMode.Resume
   -> BiliSubApplication.StartOcrScan
   -> JobManager/AppJob -> shared ApplicationLog
   -> OcrScanner.RunAsync
-  -> HardwareService.RecommendedOcrLanes
-       -> conservative CPU/RAM/GPU/VRAM starting prediction
-  -> HardwareService.RecommendedOcrProbeCeiling
-       -> at most one topology level above the prediction
-  -> Auto live probe 1/2/4/8/16 up to duration/resource ceiling
-       -> create the requested worker pool
-       -> sample one real frame from the center of every candidate segment
-       -> run N concurrent FFmpeg decode + OCR pipelines for N candidate lanes
-       -> require at least one live Python worker per requested lane
-       -> OOM/worker error keeps the last stable level
-       -> measured throughput is diagnostic only; it cannot collapse real segment topology
-  -> deterministic lane topology + shared PaddleOCR pool
+  -> HardwareService.RecommendedOcrSegmentLanes
+       -> CPU/RAM/video-duration ceiling for deterministic FFmpeg segments
+  -> HardwareService.RecommendedOcrWorkers + RecommendedOcrWorkerProbeCeiling
+       -> independent device/GPU/VRAM prediction for the shared PaddleOCR pool
+  -> Worker live probe 1/2/4/8/16
+       -> create N Python workers and run N distinct real-frame inferences concurrently
+       -> OOM/startup/worker failure restores the last stable worker pool
+  -> Segment live probe 1/2/4/8/16
+       -> run N concurrent FFmpeg decodes through the already committed M-worker pool
+       -> N segment lanes never require N Python workers
+       -> failure keeps the last stable segment level
+  -> deterministic lane topology + independently sized shared PaddleOCR pool
        -> require checkpoint segment count == selected lanes
-       -> Commit log exposes N FFmpeg lanes + N-or-more Python workers
+       -> Commit/live telemetry exposes N FFmpeg lanes + M Python workers and worker kinds
   -> SubtitleTracker + ChineseSubtitleNormalizer
   -> schema-4 safe pause/resume checkpoint
   -> ExportOcrAsync -> SRT
@@ -245,12 +246,20 @@ OCRPage.Pause
   -> OcrCheckpointStore.SaveAsync + write-through fsync
   -> OcrScanResult(Paused=true)
   -> page retains the exact OcrScanRequest
-  -> Continue + Cancel remain enabled; partial Export remains disabled
+  -> Continue + Quét lại từ đầu + Hủy và xóa remain available; partial Export remains disabled
 
-OCRPage.Cancel (paused)
-  -> BiliSubApplication.RemoveOcrCheckpointAsync(exact paused request)
-  -> OcrCheckpointStore.RemoveAsync
-  -> clear partial cues/progress/telemetry
+OCRPage.Cancel (running, pausing or paused)
+  -> BiliSubApplication.CancelOcrScanAsync(exact active/checkpoint request)
+  -> pausable AppJob stays cancelling while Core stops work
+  -> OcrScanner cancellation cleanup + OcrCheckpointStore.RemoveAsync
+  -> propagate delete errors and verify schema-4/schema-3 files are absent
+  -> AppJob.CancelComplete only after cleanup
+  -> UI returns to Fresh / Quét từ đầu and clears partial cues/progress/telemetry
+
+OCRPage.Restart
+  -> remove and verify the exact checkpoint
+  -> StartOcrScan(Fresh)
+  -> select a new segment topology from zero
 ```
 
 ## Video editor

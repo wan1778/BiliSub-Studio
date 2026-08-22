@@ -48,7 +48,7 @@ public sealed class HardwareService
                 memoryBytes += block.Length;
             }
             var snapshot = Snapshot();
-            var lanes = RecommendedOcrLanes(snapshot, "auto");
+            var lanes = RecommendedOcrSegmentLanes(snapshot);
             return new BenchmarkResult(
                 cpuBytes / 1024d / 1024d / cpuWatch.Elapsed.TotalSeconds,
                 memoryBytes / 1024d / 1024d / memoryWatch.Elapsed.TotalSeconds,
@@ -57,55 +57,47 @@ public sealed class HardwareService
         }, cancellationToken);
     }
 
-    internal static int RecommendedOcrLanes(HardwareSnapshot snapshot, string? deviceMode)
-    {
-        var baseLanes = RecommendedCpuOcrLanes(snapshot);
-
-        var mode = (deviceMode ?? "auto").Trim().ToLowerInvariant();
-        if (mode == "cpu") return baseLanes;
-        if (!snapshot.NvidiaDetected) return mode == "auto" ? Math.Min(baseLanes, 4) : 1;
-
-        var gpuLanes = RecommendedGpuOcrLanes(snapshot.VramBytes);
-        if (mode == "hybrid")
-        {
-            var rawLimit = Math.Min(baseLanes, Math.Min(16, gpuLanes + 1));
-            return new[] { 16, 8, 4, 2, 1 }.First(level => level <= rawLimit);
-        }
-        return Math.Min(baseLanes, gpuLanes);
-    }
-
-    internal static int RecommendedOcrProbeCeiling(HardwareSnapshot snapshot, string? deviceMode)
-    {
-        var recommended = RecommendedOcrLanes(snapshot, deviceMode);
-        var mode = (deviceMode ?? "auto").Trim().ToLowerInvariant();
-        if (mode == "cpu" || !snapshot.NvidiaDetected) return recommended;
-
-        // Static VRAM is only a conservative starting point. The live Auto Probe creates
-        // workers and runs inference concurrently, so it may safely test one topology level
-        // higher and fall back on OOM, worker errors, or insufficient throughput gain.
-        var nextLevel = recommended switch
-        {
-            <= 1 => 2,
-            2 => 4,
-            4 => 8,
-            8 => 16,
-            _ => 16,
-        };
-        return Math.Min(RecommendedCpuOcrLanes(snapshot), nextLevel);
-    }
-
-    private static int RecommendedCpuOcrLanes(HardwareSnapshot snapshot)
+    internal static int RecommendedOcrSegmentLanes(HardwareSnapshot snapshot)
     {
         var lanes = 1;
         foreach (var level in new[] { 2, 4, 8, 16 })
         {
-            if (snapshot.LogicalProcessors >= level * 2 && snapshot.MemoryBytes >= level * 768L * 1024 * 1024)
+            // A segment lane owns an FFmpeg decoder and one in-flight frame, not a
+            // PaddleOCR model. Keep CPU and RAM headroom for the WinUI process and OS.
+            if (snapshot.LogicalProcessors >= level * 4 && snapshot.MemoryBytes >= level * 512L * 1024 * 1024)
                 lanes = level;
         }
         return lanes;
     }
 
-    internal static int RecommendedGpuOcrLanes(long vramBytes)
+    internal static int RecommendedOcrWorkers(HardwareSnapshot snapshot, string? deviceMode)
+    {
+        var mode = (deviceMode ?? "auto").Trim().ToLowerInvariant();
+        if (mode == "auto") mode = snapshot.NvidiaDetected ? "gpu" : "cpu";
+        if (mode == "cpu") return RecommendedCpuOcrWorkers(snapshot);
+        if (!snapshot.NvidiaDetected) return 1;
+        if (mode == "hybrid") return Math.Max(2, RecommendedGpuOcrWorkers(snapshot.VramBytes) + 1);
+        return RecommendedGpuOcrWorkers(snapshot.VramBytes);
+    }
+
+    internal static int RecommendedOcrWorkerProbeCeiling(HardwareSnapshot snapshot, string? deviceMode)
+    {
+        var recommended = RecommendedOcrWorkers(snapshot, deviceMode);
+        var mode = (deviceMode ?? "auto").Trim().ToLowerInvariant();
+        if (mode == "auto") mode = snapshot.NvidiaDetected ? "gpu" : "cpu";
+        if (mode == "cpu" || !snapshot.NvidiaDetected) return recommended;
+
+        // Worker startup plus concurrent real inference is the capacity proof. Static total
+        // VRAM is only the conservative starting point, so allow one live-probed level higher.
+        var nextLevel = new[] { 1, 2, 4, 8, 16 }.FirstOrDefault(level => level > recommended);
+        if (nextLevel == 0) nextLevel = 16;
+        return Math.Min(16, nextLevel);
+    }
+
+    private static int RecommendedCpuOcrWorkers(HardwareSnapshot snapshot) =>
+        snapshot.LogicalProcessors >= 8 && snapshot.MemoryBytes >= 4L * 1024 * 1024 * 1024 ? 2 : 1;
+
+    internal static int RecommendedGpuOcrWorkers(long vramBytes)
     {
         const long gib = 1024L * 1024 * 1024;
         // CUDA commonly reports slightly less than the advertised VRAM tier. Keep a

@@ -8,6 +8,7 @@ public sealed class AppJob : IDisposable
     private readonly CancellationTokenSource _cancellation = new();
     private readonly List<string> _logs = [];
     private readonly TaskCompletionSource<bool> _pauseCompletion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource<bool> _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly ApplicationLog? _applicationLog;
     private string _status = "queued";
     private double _progress;
@@ -16,6 +17,7 @@ public sealed class AppJob : IDisposable
     private string? _error;
     private object? _result;
     private bool _pauseRequested;
+    private bool _cancelRequested;
     private double _bytesPerSecond;
     private int _activeConnections;
     private bool? _rangeSupported;
@@ -35,6 +37,7 @@ public sealed class AppJob : IDisposable
     public string Kind { get; }
     public bool PauseSupported { get; }
     public CancellationToken CancellationToken => _cancellation.Token;
+    public Task Completion => _completion.Task;
 
     public void Cancel()
     {
@@ -42,17 +45,39 @@ public sealed class AppJob : IDisposable
         var changed = false;
         lock (_gate)
         {
-            if (_done)
+            if (_done || _cancelRequested)
             {
                 return;
             }
-            _status = "cancelled";
-            _message = "Đã hủy tác vụ.";
-            _done = true;
+            _cancelRequested = true;
+            _status = PauseSupported ? "cancelling" : "cancelled";
+            _message = PauseSupported ? "Đang dừng tác vụ và dọn dữ liệu dở..." : "Đã hủy tác vụ.";
+            _done = !PauseSupported;
             changed = true;
-            _pauseCompletion.TrySetResult(true);
+            if (_done)
+            {
+                _pauseCompletion.TrySetResult(true);
+                _completion.TrySetResult(true);
+            }
         }
-        if (changed) _applicationLog?.Info(Kind, "Đã hủy tác vụ.", Id);
+        if (changed) _applicationLog?.Info(Kind, PauseSupported ? "Đang hủy tác vụ an toàn." : "Đã hủy tác vụ.", Id);
+    }
+
+    public void CancelComplete(string? message = null)
+    {
+        string finalMessage;
+        lock (_gate)
+        {
+            if (_done) return;
+            _cancelRequested = true;
+            _status = "cancelled";
+            _message = string.IsNullOrWhiteSpace(message) ? "Đã hủy tác vụ và dọn dữ liệu dở." : message;
+            finalMessage = _message;
+            _done = true;
+            _pauseCompletion.TrySetResult(true);
+            _completion.TrySetResult(true);
+        }
+        _applicationLog?.Info(Kind, finalMessage, Id);
     }
 
     public Task RequestPauseAsync()
@@ -67,6 +92,10 @@ public sealed class AppJob : IDisposable
             {
                 throw new InvalidOperationException("Tác vụ đã kết thúc.");
             }
+            if (_cancelRequested)
+            {
+                throw new InvalidOperationException("Tác vụ đang được hủy.");
+            }
             _pauseRequested = true;
             _status = "pausing";
             _message = "Đang lưu checkpoint an toàn để tạm dừng...";
@@ -76,7 +105,7 @@ public sealed class AppJob : IDisposable
 
     public bool IsPauseRequested
     {
-        get { lock (_gate) return _pauseRequested && !_done; }
+        get { lock (_gate) return _pauseRequested && !_cancelRequested && !_done; }
     }
 
     public void PauseComplete(string? message = null)
@@ -84,7 +113,7 @@ public sealed class AppJob : IDisposable
         string finalMessage;
         lock (_gate)
         {
-            if (_done)
+            if (_done || _cancelRequested)
             {
                 return;
             }
@@ -93,6 +122,7 @@ public sealed class AppJob : IDisposable
             finalMessage = _message;
             _done = true;
             _pauseCompletion.TrySetResult(true);
+            _completion.TrySetResult(true);
         }
         _applicationLog?.Info(Kind, finalMessage, Id);
     }
@@ -170,6 +200,7 @@ public sealed class AppJob : IDisposable
             _done = true;
             _result = result;
             _pauseCompletion.TrySetResult(true);
+            _completion.TrySetResult(true);
             if (error is null)
             {
                 _status = "done";

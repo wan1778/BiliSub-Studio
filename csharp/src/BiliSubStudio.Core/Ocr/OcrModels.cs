@@ -20,6 +20,23 @@ public sealed record OcrScanRequest(
     double Sensitivity,
     double Duration);
 
+public enum OcrScanStartMode
+{
+    Fresh,
+    Resume,
+}
+
+public sealed record OcrScanTelemetry(
+    int SegmentLanes,
+    int ActiveLanes,
+    int CompletedLanes,
+    int WorkerCount,
+    string WorkerKinds,
+    double AggregateProgressPercent,
+    double SafeFrontierSeconds,
+    int Frames,
+    int OcrImages);
+
 public sealed record OcrScanResult(
     IReadOnlyList<OcrCue> Cues,
     int Frames,
@@ -31,6 +48,10 @@ public sealed record OcrScanResult(
     int CompletedLanes,
     int BoundaryMerges,
     string Decoder,
+    int WorkerCount,
+    string WorkerKinds,
+    double SafeFrontierSeconds,
+    int TotalCueCount,
     bool Paused = false);
 
 public sealed record OcrStatus(
@@ -39,6 +60,7 @@ public sealed record OcrStatus(
     string DeviceMode,
     string ActiveMode,
     int Workers,
+    string WorkerKinds,
     string Engine,
     string Model,
     string? Error = null);

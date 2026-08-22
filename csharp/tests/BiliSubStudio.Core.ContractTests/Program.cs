@@ -47,6 +47,7 @@ internal static class Program
         ("invalid encrypted session is quarantined without blocking startup", InvalidSessionContractAsync),
         ("corrupt OCR checkpoint topology is ignored safely", InvalidOcrCheckpointContractAsync),
         ("job cancellation owns immediate terminal state", JobCancellationContractAsync),
+        ("pausable OCR cancellation waits for cleanup completion", PausableJobCancellationContractAsync),
         ("Windows output filename policy rejects reserved names", FileNamePolicyContractAsync),
         ("update version ordering respects prerelease identifiers", UpdateVersionContractAsync),
         ("updater rejects incomplete x64 PE headers", UpdatePeValidationContractAsync),
@@ -507,6 +508,26 @@ internal static class Program
         return Task.CompletedTask;
     }
 
+    private static async Task PausableJobCancellationContractAsync()
+    {
+        using var job = new AppJob("ocr-test", "ocrscan", pauseSupported: true);
+        job.Cancel();
+        var cancelling = job.Snapshot();
+        Equal("cancelling", cancelling.Status);
+        Equal(false, cancelling.Done);
+        True(job.CancellationToken.IsCancellationRequested, "pausable OCR token did not cancel");
+        True(!job.Completion.IsCompleted, "pausable OCR became terminal before Core cleanup");
+        job.PauseComplete("must not win cancellation race");
+        Equal(false, job.Snapshot().Done);
+
+        job.CancelComplete("checkpoint removed");
+        await job.Completion;
+        var cancelled = job.Snapshot();
+        Equal("cancelled", cancelled.Status);
+        Equal(true, cancelled.Done);
+        Equal("checkpoint removed", cancelled.Message);
+    }
+
     private static async Task InvalidOcrCheckpointContractAsync()
     {
         await WithTemporaryRootAsync(async root =>
@@ -562,6 +583,13 @@ internal static class Program
             await operation;
             result = operation.GetType().GetProperty("Result")?.GetValue(operation);
             True(result is null, "null checkpoint cue was not ignored safely");
+
+            var remove = storeType.GetMethod("RemoveAsync", BindingFlags.Instance | BindingFlags.Public)
+                ?? throw new InvalidOperationException("missing checkpoint remove method");
+            operation = (Task?)remove.Invoke(store, [request, CancellationToken.None])
+                ?? throw new InvalidOperationException("checkpoint remove did not return a task");
+            await operation;
+            True(!File.Exists(Path.Combine(directory, key + ".json")), "checkpoint removal reported success while schema-4 file still existed");
         });
     }
 

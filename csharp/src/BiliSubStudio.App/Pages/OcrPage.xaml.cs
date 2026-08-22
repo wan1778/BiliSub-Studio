@@ -21,7 +21,9 @@ public sealed partial class OcrPage : Page
     private string? _path;
     private MediaPreviewInfo? _media;
     private string? _jobId;
-    private OcrScanRequest? _pausedRequest;
+    private OcrScanRequest? _checkpointRequest;
+    private OcrScanRequest? _activeRequest;
+    private bool _cancelInProgress;
     private IReadOnlyList<OcrCue> _cues = [];
     private IReadOnlyList<OcrCue> _visibleCues = [];
     private OcrRegion _region = new(0.05, 0.65, 0.90, 0.29);
@@ -72,12 +74,14 @@ public sealed partial class OcrPage : Page
         if (selected is null) return;
         try
         {
-            _pausedRequest = null;
+            _checkpointRequest = null;
+            _activeRequest = null;
             _cues = [];
             _visibleCues = [];
             CueList.Items.Clear();
             CancelButton.IsEnabled = false;
-            ScanButton.Content = "Quét / Tiếp tục";
+            ScanButton.Content = "Quét từ đầu";
+            RestartButton.Visibility = Visibility.Collapsed;
             ExportButton.IsEnabled = false;
             Progress.Value = 0;
             TelemetryText.Text = "Chưa có telemetry.";
@@ -101,9 +105,8 @@ public sealed partial class OcrPage : Page
             var checkpoint = await _application.InspectOcrCheckpointAsync(checkpointRequest, CancellationToken.None);
             if (checkpoint.Exists)
             {
-                _pausedRequest = checkpointRequest;
-                CancelButton.IsEnabled = true;
-                ScanButton.Content = "Tiếp tục";
+                _checkpointRequest = checkpointRequest;
+                ApplyCheckpointUi();
                 StatusText.Text = $"Có checkpoint schema {checkpoint.Schema}: {checkpoint.ProgressPercent:0.0}% · {checkpoint.CueCount} câu.";
             }
         }
@@ -229,15 +232,45 @@ public sealed partial class OcrPage : Page
     private async void Scan_Click(object sender, RoutedEventArgs e)
     {
         if (_path is null || _media is null) return;
+        var request = _checkpointRequest ?? BuildRequest();
+        var startMode = _checkpointRequest is null ? OcrScanStartMode.Fresh : OcrScanStartMode.Resume;
+        await StartScanAsync(request, startMode);
+    }
+
+    private async void Restart_Click(object sender, RoutedEventArgs e)
+    {
+        if (_path is null || _media is null || _jobId is not null) return;
+        var request = _checkpointRequest ?? BuildRequest();
+        try
+        {
+            RestartButton.IsEnabled = false;
+            ScanButton.IsEnabled = false;
+            await _application.RemoveOcrCheckpointAsync(request, CancellationToken.None);
+            var checkpoint = await _application.InspectOcrCheckpointAsync(request, CancellationToken.None);
+            if (checkpoint.Exists) throw new IOException("Checkpoint OCR vẫn còn; chưa thể Quét lại từ đầu.");
+            _checkpointRequest = null;
+            await StartScanAsync(BuildRequest(), OcrScanStartMode.Fresh);
+        }
+        catch (Exception error)
+        {
+            RestartButton.IsEnabled = true;
+            StatusText.Text = error.Message;
+            RefreshRegionActions();
+        }
+    }
+
+    private async Task StartScanAsync(OcrScanRequest request, OcrScanStartMode startMode)
+    {
         _cues = [];
         _visibleCues = [];
         CueList.Items.Clear();
         ExportButton.IsEnabled = false;
         Progress.Value = 0;
         TelemetryText.Text = "Đang chờ kết quả OCR...";
-        var request = BuildRequest();
-        _pausedRequest = null;
-        _jobId = _application.StartOcrScan(request);
+        _checkpointRequest = null;
+        _activeRequest = request;
+        var runningId = _application.StartOcrScan(request, startMode);
+        _jobId = runningId;
         OcrScanResult? latestResult = null;
         PickVideoButton.IsEnabled = false;
         DeviceBox.IsEnabled = false;
@@ -245,14 +278,16 @@ public sealed partial class OcrPage : Page
         LanesBox.IsEnabled = false;
         PrepareOcrButton.IsEnabled = false;
         ScanButton.IsEnabled = false;
+        RestartButton.Visibility = Visibility.Collapsed;
         TestFrameButton.IsEnabled = false;
         SelectRegionButton.IsOn = false;
         SelectRegionButton.IsEnabled = false;
         PauseButton.IsEnabled = true;
         CancelButton.IsEnabled = true;
-        while (_jobId is not null)
+        CancelButton.Content = "Hủy";
+        while (_jobId == runningId)
         {
-            var snapshot = _application.Jobs.GetSnapshot(_jobId);
+            var snapshot = _application.Jobs.GetSnapshot(runningId);
             Progress.Value = snapshot.Progress;
             StatusText.Text = snapshot.Message;
             if (snapshot.Result is OcrScanResult result)
@@ -260,31 +295,37 @@ public sealed partial class OcrPage : Page
                 latestResult = result;
                 _cues = result.Cues;
                 RenderCues();
-                TelemetryText.Text = $"{result.Frames} frames · {result.OcrImages} OCR · {result.ParallelismSelected} lanes · {result.RealtimeSpeed:0.00}× · {result.BoundaryMerges} merges";
+                TelemetryText.Text = $"{result.ParallelismSelected} FFmpeg lane · {result.WorkerCount} worker ({result.WorkerKinds}) · {result.CompletedLanes}/{result.ParallelismSelected} lane xong · {result.Frames} frames · {result.OcrImages} OCR · {result.RealtimeSpeed:0.00}× · frontier {FormatClock(result.SafeFrontierSeconds)}";
+            }
+            else if (snapshot.Result is OcrScanTelemetry telemetry)
+            {
+                TelemetryText.Text = $"{telemetry.SegmentLanes} FFmpeg lane · {telemetry.WorkerCount} worker ({telemetry.WorkerKinds}) · {telemetry.ActiveLanes} đang chạy · {telemetry.CompletedLanes} xong · {telemetry.Frames} frames · {telemetry.OcrImages} OCR · frontier {FormatClock(telemetry.SafeFrontierSeconds)}";
             }
             else
             {
                 var ocrStatus = _application.OcrStatus;
-                TelemetryText.Text = $"{ocrStatus.Workers} Python worker · {ocrStatus.ActiveMode} · {snapshot.Status}";
+                TelemetryText.Text = $"Đang chọn topology · {ocrStatus.Workers} Python worker ({ocrStatus.WorkerKinds}) · {ocrStatus.ActiveMode} · {snapshot.Status}";
             }
             if (snapshot.Done)
             {
                 var paused = latestResult?.Paused == true;
                 var cancelled = string.Equals(snapshot.Status, "cancelled", StringComparison.OrdinalIgnoreCase);
-                if (cancelled)
-                    await _application.RemoveOcrCheckpointAsync(request, CancellationToken.None);
-                _pausedRequest = paused ? request : null;
+                _checkpointRequest = paused ? request : null;
+                _activeRequest = null;
                 _jobId = null;
-                PickVideoButton.IsEnabled = true;
-                DeviceBox.IsEnabled = true;
-                ScanModeBox.IsEnabled = true;
-                LanesBox.IsEnabled = true;
-                PrepareOcrButton.IsEnabled = true;
-                PauseButton.IsEnabled = false;
-                CancelButton.IsEnabled = paused;
-                ScanButton.Content = paused ? "Tiếp tục" : "Quét / Tiếp tục";
-                ExportButton.IsEnabled = !paused && _cues.Count > 0;
-                RefreshRegionActions();
+                RestoreIdleControls();
+                if (cancelled)
+                    ResetFreshUi("Đã hủy lần quét dở và xác nhận checkpoint đã được xóa.");
+                else if (paused)
+                    ApplyCheckpointUi();
+                else
+                {
+                    CancelButton.IsEnabled = false;
+                    CancelButton.Content = "Hủy";
+                    RestartButton.Visibility = Visibility.Collapsed;
+                    ScanButton.Content = "Quét lại từ đầu";
+                    ExportButton.IsEnabled = _cues.Count > 0;
+                }
                 break;
             }
             await Task.Delay(400);
@@ -302,35 +343,37 @@ public sealed partial class OcrPage : Page
         catch (Exception error)
         {
             StatusText.Text = error.Message;
-            PauseButton.IsEnabled = true;
+            PauseButton.IsEnabled = _jobId is not null && !_cancelInProgress;
         }
     }
 
     private async void Cancel_Click(object sender, RoutedEventArgs e)
     {
-        if (_jobId is not null)
-        {
-            _application.CancelJob(_jobId);
-            CancelButton.IsEnabled = false;
-            return;
-        }
-        if (_pausedRequest is not { } pausedRequest) return;
+        if (_cancelInProgress) return;
+        var request = _activeRequest ?? _checkpointRequest;
+        if (request is null) return;
 
         try
         {
-            CancelButton.IsEnabled = false;
+            _cancelInProgress = true;
+            PauseButton.IsEnabled = false;
             ScanButton.IsEnabled = false;
-            await _application.RemoveOcrCheckpointAsync(pausedRequest, CancellationToken.None);
-            _pausedRequest = null;
-            _cues = [];
-            _visibleCues = [];
-            CueList.Items.Clear();
-            Progress.Value = 0;
-            TelemetryText.Text = "Chưa có telemetry.";
-            OcrResultText.Text = string.Empty;
-            ExportButton.IsEnabled = false;
-            ScanButton.Content = "Quét / Tiếp tục";
-            StatusText.Text = "Đã hủy lần quét dở và xóa checkpoint OCR.";
+            RestartButton.IsEnabled = false;
+            CancelButton.Content = "Đang hủy...";
+            CancelButton.IsEnabled = true;
+            if (_jobId is { } runningId)
+                await _application.CancelOcrScanAsync(runningId, request, CancellationToken.None);
+            else
+            {
+                await _application.RemoveOcrCheckpointAsync(request, CancellationToken.None);
+                var checkpoint = await _application.InspectOcrCheckpointAsync(request, CancellationToken.None);
+                if (checkpoint.Exists) throw new IOException("Checkpoint OCR vẫn còn sau khi Hủy.");
+            }
+            _jobId = null;
+            _activeRequest = null;
+            _checkpointRequest = null;
+            RestoreIdleControls();
+            ResetFreshUi("Đã hủy lần quét dở và xác nhận checkpoint đã được xóa. Lần bấm sau sẽ Quét từ đầu.");
         }
         catch (Exception error)
         {
@@ -339,8 +382,51 @@ public sealed partial class OcrPage : Page
         }
         finally
         {
+            _cancelInProgress = false;
+            RestartButton.IsEnabled = true;
             RefreshRegionActions();
         }
+    }
+
+    private void RestoreIdleControls()
+    {
+        PickVideoButton.IsEnabled = true;
+        DeviceBox.IsEnabled = true;
+        ScanModeBox.IsEnabled = true;
+        LanesBox.IsEnabled = true;
+        PrepareOcrButton.IsEnabled = true;
+        PauseButton.IsEnabled = false;
+        RefreshRegionActions();
+    }
+
+    private void ApplyCheckpointUi()
+    {
+        DeviceBox.IsEnabled = false;
+        ScanModeBox.IsEnabled = false;
+        LanesBox.IsEnabled = false;
+        SelectRegionButton.IsEnabled = false;
+        ScanButton.Content = "Tiếp tục";
+        CancelButton.Content = "Hủy và xóa";
+        CancelButton.IsEnabled = true;
+        RestartButton.Visibility = Visibility.Visible;
+        RestartButton.IsEnabled = true;
+        ExportButton.IsEnabled = false;
+    }
+
+    private void ResetFreshUi(string message)
+    {
+        _cues = [];
+        _visibleCues = [];
+        CueList.Items.Clear();
+        Progress.Value = 0;
+        TelemetryText.Text = "Chưa có telemetry.";
+        OcrResultText.Text = string.Empty;
+        ExportButton.IsEnabled = false;
+        ScanButton.Content = "Quét từ đầu";
+        CancelButton.Content = "Hủy";
+        CancelButton.IsEnabled = false;
+        RestartButton.Visibility = Visibility.Collapsed;
+        StatusText.Text = message;
     }
 
     private async void Export_Click(object sender, RoutedEventArgs e)
