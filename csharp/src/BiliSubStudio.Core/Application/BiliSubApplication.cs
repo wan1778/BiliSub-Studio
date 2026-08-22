@@ -399,8 +399,8 @@ public sealed class BiliSubApplication : IAsyncDisposable
 
             var completedLabel = completed.Count > 0 ? string.Join(" + ", completed) : "không có file phù hợp";
             var warningSuffix = hasWarning ? " · có cảnh báo" : string.Empty;
-            object? result = video ?? (object?)subtitle ?? thumbnailPath;
-            job.Finish(null, $"Hoàn tất media · {completedLabel}{warningSuffix}: {outputDirectory}", result);
+            object? mediaResult = video is not null ? video : subtitle is not null ? subtitle : thumbnailPath;
+            job.Finish(null, $"Hoàn tất media · {completedLabel}{warningSuffix}: {outputDirectory}", mediaResult);
         });
         return job.Id;
     }
