@@ -112,6 +112,15 @@ jobs:
         run: |
           $version = "4.0.0-beta.12-csharp-p5"
           $tag = "v$version"
+
+          # Published beta versions are immutable. Cleanup-only commits must not
+          # overwrite the installer/source/checksums for an already released version.
+          $existingManifest = Get-Content "update/beta.json" -Raw | ConvertFrom-Json
+          if ($existingManifest.channel_ready -eq $true -and [string]$existingManifest.version -eq $version) {
+            Write-Host "Public beta $version is already published; keeping its release assets immutable."
+            exit 0
+          }
+
           $artifactDir = (Resolve-Path "csharp/artifacts/windows-x64").Path
           $publishDir = (Resolve-Path "csharp/src/BiliSubStudio.App/bin/x64/Release/net10.0-windows10.0.26100.0/win-x64/publish").Path
           $installerStatus = Get-Content (Join-Path $artifactDir "INSTALLER_GATE_STATUS.json") -Raw | ConvertFrom-Json
@@ -153,13 +162,11 @@ jobs:
 
           gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
           if ($LASTEXITCODE -eq 0) {
-            gh release upload $tag $installer $portable $source.FullName $releaseSums --repo $env:GITHUB_REPOSITORY --clobber
-            if ($LASTEXITCODE -ne 0) { throw "failed to refresh public beta release assets" }
+            throw "release tag $tag already exists while update manifest is not ready; refusing to overwrite immutable beta assets"
           }
-          else {
-            gh release create $tag $installer $portable $source.FullName $releaseSums --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --title "BiliSub Studio 4.0.0 Beta 12" --notes-file $notes --prerelease
-            if ($LASTEXITCODE -ne 0) { throw "failed to create public beta release" }
-          }
+
+          gh release create $tag $installer $portable $source.FullName $releaseSums --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --title "BiliSub Studio 4.0.0 Beta 12" --notes-file $notes --prerelease
+          if ($LASTEXITCODE -ne 0) { throw "failed to create public beta release" }
 
           $downloadUrl = "https://github.com/$($env:GITHUB_REPOSITORY)/releases/download/$tag/$portableName"
           $manifest = [ordered]@{
@@ -188,5 +195,5 @@ jobs:
           }
 
 # Pull requests build and verify the exact installer without publishing it.
-# A successful push build on main publishes a GitHub pre-release/public beta and
-# activates update/beta.json. Stable 4.0.0 remains a separate quality gate.
+# A successful push build on main publishes a GitHub pre-release/public beta only for
+# a new version. Existing beta release assets are immutable. Stable 4.0.0 is separate.
