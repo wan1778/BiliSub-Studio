@@ -62,8 +62,32 @@ public sealed class VideoDownloadService
         var resolveRequest = new VideoResolveRequest(request.Url, request.Quality, request.Mode, request.Container, request.CookieFile);
         var selection = await _resolver.ResolveAsync(resolveRequest, cancellationToken);
         job.Log($"Đã resolve: {selection.Title}");
-        if (selection.Video is not null) job.Log($"Video format {selection.Video.FormatId} · {selection.Video.Height}p · {selection.Video.Size} bytes");
-        if (selection.Audio is not null) job.Log($"Audio format {selection.Audio.FormatId} · {selection.Audio.Size} bytes");
+        if (!string.IsNullOrWhiteSpace(selection.EndpointDiscoveryWarning)) job.Warn(selection.EndpointDiscoveryWarning);
+
+        static string Host(ResolvedStream? stream)
+        {
+            if (stream is null || !Uri.TryCreate(stream.Url, UriKind.Absolute, out var uri)) return "không rõ";
+            return uri.IdnHost;
+        }
+
+        static string Fingerprint(ResolvedStream? stream)
+        {
+            if (stream is null || !Uri.TryCreate(stream.Url, UriKind.Absolute, out var uri)) return string.Empty;
+            return uri.Scheme + "://" + uri.IdnHost + (uri.IsDefaultPort ? string.Empty : ":" + uri.Port) + uri.AbsolutePath;
+        }
+
+        static int EndpointCount(ResolvedStream stream) => Math.Max(1, stream.EndpointUrls?.Count ?? 0);
+
+        if (selection.Video is not null)
+        {
+            job.Log($"Video format {selection.Video.FormatId} · {selection.Video.Height}p · {selection.Video.Size} bytes");
+            job.Log($"Video CDN {Host(selection.Video)} · endpoint {selection.Video.EndpointIndex + 1}/{EndpointCount(selection.Video)}");
+        }
+        if (selection.Audio is not null)
+        {
+            job.Log($"Audio format {selection.Audio.FormatId} · {selection.Audio.Size} bytes");
+            job.Log($"Audio CDN {Host(selection.Audio)} · endpoint {selection.Audio.EndpointIndex + 1}/{EndpointCount(selection.Audio)}");
+        }
 
         var estimatedStreams = (selection.Video?.Size ?? 0L) + (selection.Audio?.Size ?? 0L);
         if (estimatedStreams > 0)
@@ -107,6 +131,7 @@ public sealed class VideoDownloadService
         var transports = new Dictionary<StreamKind, RangeDownloadStatus>();
         using var selectionGate = new SemaphoreSlim(1, 1);
         var current = selection;
+        var endpointOffset = 0;
 
         async Task<ResolvedStream> RefreshAsync(StreamKind kind, long seen, CancellationToken token)
         {
@@ -115,9 +140,26 @@ public sealed class VideoDownloadService
             {
                 var existing = kind == StreamKind.Video ? current.Video : current.Audio;
                 if (existing is not null && existing.Generation != seen) return existing;
-                current = await _resolver.ResolveAsync(resolveRequest, token);
-                return (kind == StreamKind.Video ? current.Video : current.Audio)
+
+                endpointOffset++;
+                var previousFingerprint = Fingerprint(existing);
+                var previousHost = Host(existing);
+                current = await _resolver.ResolveAsync(resolveRequest with { EndpointOffset = endpointOffset }, token);
+                if (!string.IsNullOrWhiteSpace(current.EndpointDiscoveryWarning)) job.Warn(current.EndpointDiscoveryWarning);
+                var refreshed = (kind == StreamKind.Video ? current.Video : current.Audio)
                     ?? throw new InvalidOperationException("URL mới thiếu stream cần làm mới.");
+
+                var sameRoute = previousFingerprint.Length > 0 &&
+                    string.Equals(previousFingerprint, Fingerprint(refreshed), StringComparison.OrdinalIgnoreCase);
+                if (sameRoute)
+                {
+                    job.Warn($"CDN {kind}: playurl refresh vẫn trả cùng tuyến {Host(refreshed)} · endpoint {refreshed.EndpointIndex + 1}/{EndpointCount(refreshed)}.");
+                }
+                else
+                {
+                    job.Warn($"CDN {kind}: chuyển {previousHost} → {Host(refreshed)} · endpoint {refreshed.EndpointIndex + 1}/{EndpointCount(refreshed)} · giữ nguyên Range resume.");
+                }
+                return refreshed;
             }
             finally { selectionGate.Release(); }
         }
@@ -169,11 +211,19 @@ public sealed class VideoDownloadService
                 rangeError = error;
                 if (connections > 1)
                 {
-                    job.Warn($"Range {stream.Kind} gặp lỗi transport; tự hạ 1 kết nối trước fallback: {error.GetBaseException().Message}");
+                    job.Warn($"Range {stream.Kind} gặp lỗi sau CDN rotation; tự hạ 1 kết nối trước fallback: {error.GetBaseException().Message}");
                     try
                     {
+                        ResolvedStream stableStream;
+                        await selectionGate.WaitAsync(cancellationToken);
+                        try
+                        {
+                            stableStream = (stream.Kind == StreamKind.Video ? current.Video : current.Audio) ?? stream;
+                        }
+                        finally { selectionGate.Release(); }
+                        job.Warn($"Range {stream.Kind}: thử lại 1 kết nối từ CDN {Host(stableStream)} · endpoint {stableStream.EndpointIndex + 1}/{EndpointCount(stableStream)}.");
                         var path = await _downloader.DownloadAsync(
-                            stream, work, name, 1,
+                            stableStream, work, name, 1,
                             (seen, token) => RefreshAsync(stream.Kind, seen, token),
                             status => Report(stream.Kind, status), cancellationToken);
                         job.Log($"Range {stream.Kind} đã phục hồi ở chế độ 1 kết nối.");
@@ -188,7 +238,7 @@ public sealed class VideoDownloadService
             }
 
             var rootMessage = rangeError?.GetBaseException().Message ?? "Không rõ lỗi Range.";
-            job.Warn($"Range {stream.Kind} thất bại sau các bước phục hồi; chuyển yt-dlp fallback: {rangeError?.Message} · gốc: {rootMessage}");
+            job.Warn($"Range {stream.Kind} thất bại sau CDN rotation + refresh + adaptive 1 kết nối; yt-dlp chỉ còn là fallback cuối: {rangeError?.Message} · gốc: {rootMessage}");
             RangeDownloadStatus fallbackStatus;
             lock (transportGate)
             {
