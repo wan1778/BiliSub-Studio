@@ -289,10 +289,10 @@ public sealed class RangeDownloader
             }
             file.Position = existing;
             long total = existing;
+            var buffer = new byte[256 * 1024];
             while (total < segment.Length)
             {
-                var wanted = (int)Math.Min(bufferSize: 256 * 1024, segment.Length - total);
-                var buffer = new byte[wanted];
+                var wanted = (int)Math.Min(buffer.Length, segment.Length - total);
                 var read = await body.ReadAsync(buffer.AsMemory(0, wanted), cancellationToken);
                 if (read == 0)
                 {
