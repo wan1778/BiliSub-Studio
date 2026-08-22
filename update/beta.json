@@ -1,14 +1,14 @@
 {
-  "version": "4.0.0-beta.18-csharp-p5",
+  "version": "4.0.0-beta.19-csharp-p5",
   "channel_ready": true,
-  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.4/BiliSubStudio_4.0.4_Windows-x64-portable.zip",
-  "sha256": "c2237a8036dec874f6d7acc2464015117ec1ab8da908e51df27425d8fba58663",
-  "size": 94421203,
+  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.5/BiliSubStudio_4.0.5_Windows-x64-portable.zip",
+  "sha256": "899102c4140bcb5df7293480a0b0d030054d2b5c4f448e428c76d7be9733a11d",
+  "size": 94424689,
   "payload_kind": "winui3-portable-zip",
   "notes": [
-    "Sửa parser PaddleOCR 3.x và nhận diện phụ đề cứng.",
-    "Auto lanes có safety gate theo CPU/RAM/GPU/VRAM và fallback topology an toàn.",
-    "Sửa worker timeout, lỗi lane, checkpoint/shutdown và race khi đang quét.",
-    "Runtime OCR cài dở được phục hồi sạch; worker update không cài lại Paddle/Python không cần thiết."
+    "Sửa Windows OCR os error 448 / untrusted mount point.",
+    "uv/Python bootstrap chuyển sang LocalAppData thay vì phụ thuộc thư mục cài ứng dụng.",
+    "Dùng trực tiếp Python patch-version hợp lệ, không phụ thuộc minor-version junction 3.12.",
+    "Có thể phục hồi Python đã tải dở từ lần Chuẩn bị OCR thất bại của 4.0.4."
   ]
 }
