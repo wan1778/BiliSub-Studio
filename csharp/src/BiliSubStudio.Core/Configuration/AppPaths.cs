@@ -9,6 +9,8 @@ public sealed record AppPaths(
     string Cache,
     string DefaultDownloads)
 {
+    public const string InstalledRuntimeDirectoryName = "Runtime";
+
     public static AppPaths FromRoot(string root)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(root);
@@ -23,7 +25,18 @@ public sealed record AppPaths(
             Path.Combine(absoluteRoot, "Downloads"));
     }
 
-    public static AppPaths FromExecutableDirectory() => FromRoot(AppContext.BaseDirectory);
+    public static AppPaths FromExecutableDirectory()
+    {
+        var executableDirectory = Path.GetFullPath(AppContext.BaseDirectory)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (string.Equals(Path.GetFileName(executableDirectory), InstalledRuntimeDirectoryName, StringComparison.OrdinalIgnoreCase))
+        {
+            var installRoot = Directory.GetParent(executableDirectory)?.FullName
+                ?? throw new InvalidOperationException("Không xác định được thư mục cài đặt BiliSub Studio.");
+            return FromRoot(installRoot);
+        }
+        return FromRoot(executableDirectory);
+    }
 
     public string ConfigFile => Path.Combine(Data, "config.json");
 
