@@ -198,13 +198,6 @@
                             </Grid>
                         </StackPanel>
                     </Border>
-
-                    <Border Background="{ThemeResource SuccessSoftBrush}" BorderBrush="{ThemeResource SuccessBrush}" BorderThickness="1" CornerRadius="13" Padding="16">
-                        <StackPanel Spacing="7">
-                            <TextBlock FontSize="13" FontWeight="SemiBold" Foreground="{ThemeResource SuccessBrush}" Text="Nhật ký đã gộp" />
-                            <TextBlock FontSize="11" Foreground="{ThemeResource SuccessBrush}" Text="Media không còn có ô log riêng. Mọi log, cảnh báo và lỗi đi vào Nhật ký toàn ứng dụng ở thanh dưới." TextWrapping="Wrap" />
-                        </StackPanel>
-                    </Border>
                 </StackPanel>
             </Grid>
 
