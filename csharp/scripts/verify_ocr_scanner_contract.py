@@ -27,8 +27,7 @@ def main() -> int:
     require(set_result >= 0 and pause_complete >= 0 and set_result < pause_complete,
             "paused job can become terminal before OcrScanResult is published")
 
-    require('?$"hwdownload,format=nv12|p010le|p016le,fps={fps},{crop}"' in scanner.replace(" ", "") or
-            '$"hwdownload,format=nv12|p010le|p016le,fps={fps},{crop}"' in scanner,
+    require('$"hwdownload,format=nv12|p010le|p016le,fps={fps},{crop}"' in scanner,
             "NVDEC filter does not download hardware frames before software fps/crop filters")
 
     similarity_start = scanner.find("private static double Similarity")
@@ -39,8 +38,12 @@ def main() -> int:
 
     require("HardwareService.RecommendedOcrLanes(_hardware.Snapshot(), effectiveDevice)" in scanner,
             "scanner topology does not follow the effective OCR device")
+    require("new SubtitleTracker(mode.Fps, mode.LowConfidence)" in scanner,
+            "scan mode low-confidence threshold is not applied to subtitle tracking")
+    require("var overlap = Math.Max(scanMode.Guard, scanMode.ActiveGuard);" in checkpoint,
+            "scan mode guard is not applied to lane overlap")
 
-    print("PASS OCR scanner checkpoint, NVDEC, similarity and device-policy contracts")
+    print("PASS OCR scanner checkpoint, NVDEC, similarity, device and mode-policy contracts")
     return 0
 
 
