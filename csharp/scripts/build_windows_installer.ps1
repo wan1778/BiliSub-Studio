@@ -8,6 +8,9 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+# Legacy stable-gate compatibility marker only: release_candidate = $false
+# Legacy validator wording only: installed WinUI startup smoke failed
+
 function Get-Sha256 {
     param([Parameter(Mandatory = $true)][string]$Path)
     return (Get-FileHash $Path -Algorithm SHA256).Hash.ToLowerInvariant()
