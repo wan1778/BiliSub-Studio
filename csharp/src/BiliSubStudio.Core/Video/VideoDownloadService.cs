@@ -150,6 +150,7 @@ public sealed class VideoDownloadService
 
         async Task<(string Path, bool Range)> DownloadOneAsync(ResolvedStream stream, string name, int connections)
         {
+            Exception? rangeError = null;
             try
             {
                 var path = await _downloader.DownloadAsync(
@@ -159,27 +160,52 @@ public sealed class VideoDownloadService
                 return (path, true);
             }
             catch (OperationCanceledException) { throw; }
+            catch (RangeNotSupportedException error)
+            {
+                rangeError = error;
+            }
             catch (Exception error)
             {
-                job.Log($"Range {stream.Kind} thất bại; chuyển yt-dlp fallback: {error.Message}");
-                RangeDownloadStatus fallbackStatus;
-                lock (transportGate)
+                rangeError = error;
+                if (connections > 1)
                 {
-                    if (transports.TryGetValue(stream.Kind, out var previous))
-                        fallbackStatus = previous with { RangeSupported = false, ActiveConnections = 1, ConfiguredConnections = 1, BytesPerSecond = 0 };
-                    else
-                        fallbackStatus = new RangeDownloadStatus(false, 1, 1, 0, 0, 0);
+                    job.Warn($"Range {stream.Kind} gặp lỗi transport; tự hạ 1 kết nối trước fallback: {error.GetBaseException().Message}");
+                    try
+                    {
+                        var path = await _downloader.DownloadAsync(
+                            stream, work, name, 1,
+                            (seen, token) => RefreshAsync(stream.Kind, seen, token),
+                            status => Report(stream.Kind, status), cancellationToken);
+                        job.Log($"Range {stream.Kind} đã phục hồi ở chế độ 1 kết nối.");
+                        return (path, true);
+                    }
+                    catch (OperationCanceledException) { throw; }
+                    catch (Exception stableError)
+                    {
+                        rangeError = stableError;
+                    }
                 }
-                Report(stream.Kind, fallbackStatus);
-                try
-                {
-                    var path = await FallbackAsync(job, request, stream, work, cancellationToken);
-                    return (path, false);
-                }
-                finally
-                {
-                    Report(stream.Kind, fallbackStatus with { ActiveConnections = 0, BytesPerSecond = 0 });
-                }
+            }
+
+            var rootMessage = rangeError?.GetBaseException().Message ?? "Không rõ lỗi Range.";
+            job.Warn($"Range {stream.Kind} thất bại sau các bước phục hồi; chuyển yt-dlp fallback: {rangeError?.Message} · gốc: {rootMessage}");
+            RangeDownloadStatus fallbackStatus;
+            lock (transportGate)
+            {
+                if (transports.TryGetValue(stream.Kind, out var previous))
+                    fallbackStatus = previous with { RangeSupported = false, ActiveConnections = 1, ConfiguredConnections = 1, BytesPerSecond = 0 };
+                else
+                    fallbackStatus = new RangeDownloadStatus(false, 1, 1, 0, 0, 0);
+            }
+            Report(stream.Kind, fallbackStatus);
+            try
+            {
+                var path = await FallbackAsync(job, request, stream, work, cancellationToken);
+                return (path, false);
+            }
+            finally
+            {
+                Report(stream.Kind, fallbackStatus with { ActiveConnections = 0, BytesPerSecond = 0 });
             }
         }
 
