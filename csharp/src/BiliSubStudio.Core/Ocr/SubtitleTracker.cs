@@ -3,6 +3,7 @@ namespace BiliSubStudio.Core.Ocr;
 internal sealed class SubtitleTracker
 {
     private readonly double _frameSpan;
+    private readonly double _candidateGap;
     private readonly double _lowConfidence;
     private readonly List<OcrCue> _committed = [];
     private Candidate? _candidate;
@@ -13,6 +14,7 @@ internal sealed class SubtitleTracker
     public SubtitleTracker(double framesPerSecond, double lowConfidence = 0.68)
     {
         _frameSpan = 1 / Math.Max(0.25, framesPerSecond);
+        _candidateGap = Math.Max(0.75, _frameSpan * 2.5);
         _lowConfidence = Math.Clamp(lowConfidence, 0, 1);
     }
 
@@ -42,7 +44,9 @@ internal sealed class SubtitleTracker
         }
         if (!ChineseSubtitleNormalizer.TryNormalize(result.Text, out var text))
         {
-            // Foreign-script OCR garbage is inconclusive, never an empty frame.
+            // Foreign-script OCR garbage is inconclusive for an already active subtitle,
+            // but it must break an unconfirmed candidate so distant hits cannot combine.
+            _candidate = null;
             return;
         }
         if (_active is not null && Similarity(_active.Text, text) >= 0.80)
@@ -59,7 +63,7 @@ internal sealed class SubtitleTracker
         }
         _emptyHits = 0;
         var required = text.EnumerateRunes().Count() <= 1 || result.Confidence < _lowConfidence ? 3 : 2;
-        if (_candidate is null || Similarity(_candidate.Text, text) < 0.80)
+        if (_candidate is null || at - _candidate.Last > _candidateGap || Similarity(_candidate.Text, text) < 0.80)
         {
             _candidate = new Candidate(text, at, at, result.Confidence, 1, required);
             return;
