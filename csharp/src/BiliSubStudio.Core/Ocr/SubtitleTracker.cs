@@ -3,13 +3,18 @@ namespace BiliSubStudio.Core.Ocr;
 internal sealed class SubtitleTracker
 {
     private readonly double _frameSpan;
+    private readonly double _lowConfidence;
     private readonly List<OcrCue> _committed = [];
     private Candidate? _candidate;
     private OcrCue? _active;
     private int _emptyHits;
     private double _emptyStart;
 
-    public SubtitleTracker(double framesPerSecond) => _frameSpan = 1 / Math.Max(0.25, framesPerSecond);
+    public SubtitleTracker(double framesPerSecond, double lowConfidence = 0.68)
+    {
+        _frameSpan = 1 / Math.Max(0.25, framesPerSecond);
+        _lowConfidence = Math.Clamp(lowConfidence, 0, 1);
+    }
 
     public bool CanCheckpoint => _candidate is null && _emptyHits == 0;
     public IReadOnlyList<OcrCue> Cues => _committed;
@@ -53,7 +58,7 @@ internal sealed class SubtitleTracker
             return;
         }
         _emptyHits = 0;
-        var required = text.EnumerateRunes().Count() <= 1 || result.Confidence < 0.68 ? 3 : 2;
+        var required = text.EnumerateRunes().Count() <= 1 || result.Confidence < _lowConfidence ? 3 : 2;
         if (_candidate is null || Similarity(_candidate.Text, text) < 0.80)
         {
             _candidate = new Candidate(text, at, at, result.Confidence, 1, required);
