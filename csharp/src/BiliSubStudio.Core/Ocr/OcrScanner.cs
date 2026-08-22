@@ -64,6 +64,7 @@ public sealed class OcrScanner
 
         var started = Stopwatch.StartNew();
         var progress = checkpoint.Lanes.Select(x => x.MediaSeconds).ToArray();
+        Exception? laneFailure = null;
         using var laneCancellation = CancellationTokenSource.CreateLinkedTokenSource(token);
         async Task<OcrLaneCheckpoint> RunGuardedLaneAsync(OcrLaneCheckpoint lane)
         {
@@ -80,11 +81,27 @@ public sealed class OcrScanner
                         job.Set("scanning", percent, $"Đang quét OCR · {selected} lane · {percent:0.0}%");
                     }, job, laneCancellation.Token);
             }
-            catch { laneCancellation.Cancel(); throw; }
+            catch (Exception error)
+            {
+                if (!token.IsCancellationRequested && error is not OperationCanceledException)
+                    Interlocked.CompareExchange(ref laneFailure, error, null);
+                laneCancellation.Cancel();
+                throw;
+            }
         }
         var laneTasks = checkpoint.Lanes.Select(RunGuardedLaneAsync).ToArray();
 
-        var lanes = await Task.WhenAll(laneTasks);
+        OcrLaneCheckpoint[] lanes;
+        try
+        {
+            lanes = await Task.WhenAll(laneTasks);
+        }
+        catch
+        {
+            if (!token.IsCancellationRequested && laneFailure is not null)
+                throw new InvalidOperationException("OCR lane lỗi: " + laneFailure.Message, laneFailure);
+            throw;
+        }
         var paused = lanes.Any(x => !x.Completed) && job.IsPauseRequested;
         var merged = Reconcile(lanes, out var boundaryMerges);
         if (paused)
@@ -186,7 +203,7 @@ public sealed class OcrScanner
             return await RunLaneAsync(ffmpeg, source, request, mode, lane, decoder == "nvdec", onProgress, job, cancellationToken);
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception error) when (decoder == "nvdec")
+        catch (Exception error) when (decoder == "nvdec" && error is not OcrRecognitionException)
         {
             job.Log($"Lane {lane.Segment.Index + 1}: NVDEC lỗi, fallback software: {error.Message}");
             return await RunLaneAsync(ffmpeg, source, request, mode, lane, false, onProgress, job, cancellationToken);
@@ -239,7 +256,18 @@ public sealed class OcrScanner
                 frames++;
                 images++;
                 mediaSeconds = at;
-                var result = await _ocr.RunAsync(Convert.ToBase64String(jpeg), cancellationToken);
+                OcrResult result;
+                try
+                {
+                    result = await _ocr.RunAsync(Convert.ToBase64String(jpeg), cancellationToken);
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception error)
+                {
+                    throw new OcrRecognitionException("OCR worker lỗi: " + error.Message, error);
+                }
+                if (!result.Ok)
+                    throw new OcrRecognitionException(result.Error ?? "OCR worker trả kết quả lỗi.");
                 tracker.Observe(at, result);
                 onProgress(at);
                 if (job.IsPauseRequested && tracker.CanCheckpoint)
@@ -365,6 +393,8 @@ public sealed class OcrScanner
         return text.Length > 300 ? text[..300] + "…" : text;
     }
     private static void Kill(Process process) { try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { } }
+
+    private sealed class OcrRecognitionException(string message, Exception? inner = null) : Exception(message, inner);
 
     private sealed class JpegStreamReader
     {
