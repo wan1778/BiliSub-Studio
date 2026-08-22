@@ -138,9 +138,6 @@ public sealed class OcrManager : IAsyncDisposable
             {
                 var error = "OCR worker đã dừng; nhấn Chuẩn bị OCR để khởi tạo lại.";
                 channel.Writer.TryComplete(new InvalidOperationException(error));
-                // A worker from an old pool can finish after ConfigureScanWorkersAsync
-                // has already installed a healthy replacement. Do not let that stale
-                // completion overwrite the new pool's ready state.
                 if (ReferenceEquals(_available, channel))
                 {
                     _state = "failed";
@@ -156,7 +153,10 @@ public sealed class OcrManager : IAsyncDisposable
         {
             if (!_preparationCancellation.IsCancellationRequested) _preparationCancellation.Cancel();
         }
-        await _gate.WaitAsync(cancellationToken);
+
+        using var bounded = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        if (!cancellationToken.CanBeCanceled) bounded.CancelAfter(TimeSpan.FromSeconds(90));
+        await _gate.WaitAsync(bounded.Token);
         try
         {
             await StopWorkersLockedAsync();
