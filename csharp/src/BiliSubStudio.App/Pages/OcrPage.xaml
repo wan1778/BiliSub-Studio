@@ -131,7 +131,7 @@
                                     <ComboBox Grid.Column="2" x:Name="LanesBox" Header="Luồng" SelectedIndex="0"><x:String>auto</x:String><x:String>1</x:String><x:String>2</x:String><x:String>4</x:String><x:String>8</x:String><x:String>16</x:String></ComboBox>
                                 </Grid>
                                 <StackPanel Orientation="Horizontal" Spacing="7">
-                                    <Button Click="Prepare_Click" Content="Chuẩn bị OCR" />
+                                    <Button x:Name="PrepareOcrButton" Click="Prepare_Click" Content="Chuẩn bị OCR" />
                                     <Button x:Name="TestFrameButton" Click="TestFrame_Click" Content="Test frame" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />
                                 </StackPanel>
                                 <Border Padding="10,8" Background="{ThemeResource AccentSoftBrush}" CornerRadius="8">
