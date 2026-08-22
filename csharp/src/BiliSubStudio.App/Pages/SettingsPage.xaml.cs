@@ -1,5 +1,6 @@
 using BiliSubStudio.App.ViewModels;
 using BiliSubStudio.Core.Application;
+using BiliSubStudio.Core.Diagnostics;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 
@@ -8,25 +9,50 @@ namespace BiliSubStudio.App.Pages;
 public sealed partial class SettingsPage : Page
 {
     private readonly BiliSubApplication _application;
+    private readonly HardwarePage _hardwarePage;
+    private readonly AccountPage _accountPage;
+    private readonly SupportPage _supportPage;
+    private readonly ApplicationLog _log;
     private bool _syncing;
 
-    public SettingsPage(SettingsViewModel viewModel, BiliSubApplication application)
+    public SettingsPage(
+        SettingsViewModel viewModel,
+        BiliSubApplication application,
+        HardwarePage hardwarePage,
+        AccountPage accountPage,
+        SupportPage supportPage,
+        ApplicationLog log)
     {
         ViewModel = viewModel;
         _application = application;
+        _hardwarePage = hardwarePage;
+        _accountPage = accountPage;
+        _supportPage = supportPage;
+        _log = log;
         InitializeComponent();
+        LogPathText.Text = log.FilePath;
+        SelectSection("general");
     }
 
     public SettingsViewModel ViewModel { get; }
 
     public event Action<string>? ThemeRequested;
-    public event Action<string>? NavigateRequested;
 
     public async Task<SettingsSnapshot> InitializeAsync()
     {
         var snapshot = await ViewModel.InitializeAsync();
         SyncControlsFromViewModel();
         return snapshot;
+    }
+
+    internal async Task RunLayoutSmokeAsync()
+    {
+        foreach (var section in new[] { "general", "hardware", "account", "support" })
+        {
+            SelectSection(section);
+            await Task.Delay(80);
+        }
+        SelectSection("general");
     }
 
     private async void Theme_Checked(object sender, RoutedEventArgs e)
@@ -39,6 +65,7 @@ public sealed partial class SettingsPage : Page
         if (await ViewModel.SetThemeAsync(theme))
         {
             ThemeRequested?.Invoke(ViewModel.Theme);
+            _log.Info("Cài đặt", $"Đã đổi theme sang {ViewModel.Theme}.");
         }
         SyncControlsFromViewModel();
     }
@@ -51,6 +78,7 @@ public sealed partial class SettingsPage : Page
         }
 
         await ViewModel.SetUpdateCheckAsync(AutoUpdateToggle.IsOn);
+        _log.Info("Cài đặt", $"Tự kiểm tra cập nhật: {(AutoUpdateToggle.IsOn ? "bật" : "tắt")}.");
         SyncControlsFromViewModel();
     }
 
@@ -70,29 +98,88 @@ public sealed partial class SettingsPage : Page
         }
     }
 
+    private void SectionTab_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is ToggleButton { Tag: string section }) SelectSection(section);
+    }
 
-    private void LoginTab_Click(object sender, RoutedEventArgs e) => NavigateRequested?.Invoke("account");
-    private void SupportTab_Click(object sender, RoutedEventArgs e) => NavigateRequested?.Invoke("support");
+    private void SelectSection(string section)
+    {
+        _syncing = true;
+        try
+        {
+            GeneralTab.IsChecked = section == "general";
+            HardwareTab.IsChecked = section == "hardware";
+            AccountTab.IsChecked = section == "account";
+            SupportTab.IsChecked = section == "support";
+        }
+        finally { _syncing = false; }
+
+        GeneralScroll.Visibility = section == "general" ? Visibility.Visible : Visibility.Collapsed;
+        SectionHost.Visibility = section == "general" ? Visibility.Collapsed : Visibility.Visible;
+        SectionHost.Content = section switch
+        {
+            "hardware" => _hardwarePage,
+            "account" => _accountPage,
+            "support" => _supportPage,
+            _ => null,
+        };
+
+        (BreadcrumbText.Text, SectionSubtitle.Text) = section switch
+        {
+            "hardware" => ("BiliSub Studio / Cài đặt / Hiệu năng", "Phần cứng, công cụ portable và benchmark trước khi OCR Auto nâng tải"),
+            "account" => ("BiliSub Studio / Cài đặt / Đăng nhập", "Phiên Bilibili, QR native và cookie được bảo vệ bằng Windows DPAPI"),
+            "support" => ("BiliSub Studio / Cài đặt / Cập nhật & hỗ trợ", "Cập nhật đã xác minh, báo lỗi và nhật ký chẩn đoán chung"),
+            _ => ("BiliSub Studio / Cài đặt / Chung", "Giao diện, thư mục, dung lượng và cấu hình portable"),
+        };
+    }
 
     private async void Cleanup_Click(object sender, RoutedEventArgs e)
     {
         if (!await ConfirmAsync("Dọn Temp và Cache?", "Chỉ dữ liệu tạm/chưa hoàn tất bị xóa.")) return;
-        try { _application.CleanupStorage(); await ViewModel.InitializeAsync(); }
-        catch (Exception error) { await ShowErrorAsync(error.Message); }
+        try
+        {
+            _application.CleanupStorage();
+            await ViewModel.InitializeAsync();
+            _log.Info("Cài đặt", "Đã dọn Temp và Cache.");
+        }
+        catch (Exception error)
+        {
+            _log.Error("Cài đặt", "Dọn Temp/Cache lỗi: " + error.Message);
+            await ShowErrorAsync(error.Message);
+        }
     }
 
     private async void ResetTools_Click(object sender, RoutedEventArgs e)
     {
         if (!await ConfirmAsync("Reset toàn bộ Tools?", "FFmpeg, yt-dlp và OCR runtime sẽ cần tải lại.")) return;
-        try { await _application.ResetToolsAsync(CancellationToken.None); await ViewModel.InitializeAsync(); }
-        catch (Exception error) { await ShowErrorAsync(error.Message); }
+        try
+        {
+            await _application.ResetToolsAsync(CancellationToken.None);
+            await ViewModel.InitializeAsync();
+            _log.Info("Cài đặt", "Đã reset Tools.");
+        }
+        catch (Exception error)
+        {
+            _log.Error("Cài đặt", "Reset Tools lỗi: " + error.Message);
+            await ShowErrorAsync(error.Message);
+        }
     }
 
     private async void RemoveOcr_Click(object sender, RoutedEventArgs e)
     {
         if (!await ConfirmAsync("Xóa OCR runtime?", "Private Python, PaddleOCR và model cache sẽ bị xóa.")) return;
-        try { await _application.RemoveOcrAsync(CancellationToken.None); await ViewModel.InitializeAsync(); }
-        catch (Exception error) { await ShowErrorAsync(error.Message); }
+        try
+        {
+            await _application.RemoveOcrAsync(CancellationToken.None);
+            await ViewModel.InitializeAsync();
+            _log.Info("Cài đặt", "Đã xóa OCR runtime.");
+        }
+        catch (Exception error)
+        {
+            _log.Error("Cài đặt", "Xóa OCR runtime lỗi: " + error.Message);
+            await ShowErrorAsync(error.Message);
+        }
     }
 
     private async Task<bool> ConfirmAsync(string title, string message)
