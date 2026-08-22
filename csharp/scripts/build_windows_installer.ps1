@@ -100,6 +100,7 @@ Assert-Pe32PlusX64 $installer
 $installerHash = Get-Sha256 $installer
 $signature = Get-AuthenticodeSignature $installer
 $installerInstallSmoke = $false
+$legacyFlatMigrationSmoke = $false
 $installerSmokeLogName = "INSTALLER_STARTUP_SMOKE_LOG.txt"
 
 if ($env:GITHUB_ACTIONS -eq "true") {
@@ -107,6 +108,22 @@ if ($env:GITHUB_ACTIONS -eq "true") {
     if (Test-Path $installRoot) {
         throw "installer smoke requires a clean per-user install root: $installRoot"
     }
+
+    # Reproduce the legacy layout visible on real machines: the whole self-contained
+    # publish was previously copied directly into {app}. The new installer must migrate
+    # only checksum-owned runtime files into Runtime\ and preserve user/protected data.
+    New-Item $installRoot -ItemType Directory -Force | Out-Null
+    Get-ChildItem $publishFull -Force | Copy-Item -Destination $installRoot -Recurse -Force
+    $protectedMarkers = @{}
+    foreach ($protectedRoot in @("Data", "Tools", "Temp", "Cache", "Downloads")) {
+        $directory = Join-Path $installRoot $protectedRoot
+        New-Item $directory -ItemType Directory -Force | Out-Null
+        $marker = Join-Path $directory "installer-migration-preserve.txt"
+        Set-Content $marker "PRESERVE-$protectedRoot" -Encoding UTF8
+        $protectedMarkers[$protectedRoot] = $marker
+    }
+    $unknownRootFile = Join-Path $installRoot "user-file-not-owned-by-runtime.keep"
+    Set-Content $unknownRootFile "DO NOT DELETE" -Encoding UTF8
 
     $installLog = Join-Path $outputFull "INNO_INSTALL_SMOKE_LOG.txt"
     $installProcess = Start-Process -FilePath $installer -ArgumentList @(
@@ -122,24 +139,45 @@ if ($env:GITHUB_ACTIONS -eq "true") {
         throw "silent per-user installer smoke failed with exit code $($installProcess.ExitCode)"
     }
 
-    $installedExe = Join-Path $installRoot "BiliSubStudio.exe"
+    $installedRuntime = Join-Path $installRoot "Runtime"
+    $installedExe = Join-Path $installedRuntime "BiliSubStudio.exe"
     if (-not (Test-Path $installedExe -PathType Leaf)) {
-        throw "installer smoke did not create the expected application executable"
+        throw "installer smoke did not create Runtime\BiliSubStudio.exe"
+    }
+    if (Test-Path (Join-Path $installRoot "BiliSubStudio.exe") -PathType Leaf) {
+        throw "legacy flat runtime executable remains in the install root"
     }
     if ((Get-Sha256 $installedExe) -ne [string]$identity.exe_sha256) {
         throw "installed application executable differs from the verified publish"
     }
-    $installedSums = Join-Path $installRoot "SHA256SUMS.txt"
+    $installedSums = Join-Path $installedRuntime "SHA256SUMS.txt"
     if (-not (Test-Path $installedSums -PathType Leaf)) {
-        throw "installer smoke did not install the publish checksum inventory"
+        throw "installer smoke did not install the publish checksum inventory under Runtime"
     }
-    Assert-ChecksumFile $installRoot $installedSums
+    Assert-ChecksumFile $installedRuntime $installedSums
+
+    foreach ($protectedRoot in $protectedMarkers.Keys) {
+        $marker = [string]$protectedMarkers[$protectedRoot]
+        if (-not (Test-Path $marker -PathType Leaf)) {
+            throw "installer migration removed protected data marker: $protectedRoot"
+        }
+    }
+    if (-not (Test-Path $unknownRootFile -PathType Leaf)) {
+        throw "installer migration removed an unknown user-owned root file"
+    }
+    foreach ($legacyRuntimeDirectory in @("en-US", "vi-VN", "Assets", "Pages", "Microsoft.UI.Xaml")) {
+        $legacyPath = Join-Path $installRoot $legacyRuntimeDirectory
+        if (Test-Path $legacyPath) {
+            throw "legacy runtime directory remains at install root after migration: $legacyRuntimeDirectory"
+        }
+    }
+    $legacyFlatMigrationSmoke = $true
 
     $startupLog = Join-Path $env:LOCALAPPDATA "BiliSub Studio\Logs\startup.log"
     if (Test-Path $startupLog) { Remove-Item $startupLog -Force }
     $smokeSentinel = Join-Path $env:RUNNER_TEMP "bilisub-installed-startup-smoke.txt"
     if (Test-Path $smokeSentinel) { Remove-Item $smokeSentinel -Force }
-    $appProcess = Start-Process -FilePath $installedExe -ArgumentList "--startup-smoke-test=`"$smokeSentinel`"" -PassThru
+    $appProcess = Start-Process -FilePath $installedExe -WorkingDirectory $installedRuntime -ArgumentList "--startup-smoke-test=`"$smokeSentinel`"" -PassThru
     if (-not $appProcess.WaitForExit(30000)) {
         Stop-Process -Id $appProcess.Id -Force -ErrorAction SilentlyContinue
         throw "installed WinUI startup smoke timed out"
@@ -169,6 +207,9 @@ if ($env:GITHUB_ACTIONS -eq "true") {
             throw "uninstaller removed protected root: $protectedRoot"
         }
     }
+    if (-not (Test-Path $unknownRootFile -PathType Leaf)) {
+        throw "uninstaller removed the unknown user-owned root file"
+    }
     $installerInstallSmoke = $true
 }
 
@@ -183,9 +224,11 @@ $statusPath = Join-Path $outputFull "INSTALLER_GATE_STATUS.json"
     install_scope = "current_user"
     requires_admin = $false
     install_root = "%LOCALAPPDATA%\Programs\BiliSub Studio"
+    runtime_subdirectory = "Runtime"
     install_directory_user_selectable = $true
     selected_parent_appends_product_directory = $true
     installer_custom_directory_smoke = $installerInstallSmoke
+    legacy_flat_runtime_migration_smoke = $legacyFlatMigrationSmoke
     winui_startup_smoke = [bool]$identity.winui_startup_smoke
     installer_install_smoke = $installerInstallSmoke
     installer_startup_smoke_log = $installerSmokeLogName
@@ -206,6 +249,6 @@ if ($env:GITHUB_OUTPUT) {
     "installer_sha256=$installerHash" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
 }
 
-Write-Host "PASS: one-file per-user installer compiled as PE32+ x64"
+Write-Host "PASS: one-file per-user installer compiled as PE32+ x64 with tidy Runtime layout and legacy migration smoke"
 Write-Host "Installer SHA-256: $installerHash"
 Write-Host "Status remains field-QA pending; promotion is forbidden"
