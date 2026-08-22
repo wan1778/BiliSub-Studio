@@ -282,7 +282,7 @@ public sealed partial class OcrPage : Page
         TestFrameButton.IsEnabled = false;
         SelectRegionButton.IsOn = false;
         SelectRegionButton.IsEnabled = false;
-        PauseButton.IsEnabled = true;
+        PauseButton.IsEnabled = false;
         CancelButton.IsEnabled = true;
         CancelButton.Content = "Hủy";
         while (_jobId == runningId)
@@ -301,15 +301,23 @@ public sealed partial class OcrPage : Page
             {
                 TelemetryText.Text = $"{telemetry.SegmentLanes} FFmpeg lane · {telemetry.WorkerCount} worker ({telemetry.WorkerKinds}) · {telemetry.ActiveLanes} đang chạy · {telemetry.CompletedLanes} xong · {telemetry.Frames} frames · {telemetry.OcrImages} OCR · frontier {FormatClock(telemetry.SafeFrontierSeconds)}";
             }
+            else if (snapshot.Result is OcrBenchmarkTelemetry benchmark)
+            {
+                var stable = benchmark.LastStable > 0 ? benchmark.LastStable.ToString() : "chưa có";
+                TelemetryText.Text = $"Benchmark {benchmark.Candidate}/{benchmark.Maximum} · PASS gần nhất {stable} · {benchmark.WorkerCount} Python worker ({benchmark.WorkerKinds}) · {benchmark.Phase}";
+            }
             else
             {
                 var ocrStatus = _application.OcrStatus;
-                TelemetryText.Text = $"Đang chọn topology · {ocrStatus.Workers} Python worker ({ocrStatus.WorkerKinds}) · {ocrStatus.ActiveMode} · {snapshot.Status}";
+                TelemetryText.Text = $"Đang chuẩn bị benchmark · {ocrStatus.Workers} Python worker ({ocrStatus.WorkerKinds}) · {ocrStatus.ActiveMode} · {snapshot.Status}";
             }
+            if (!_cancelInProgress && !snapshot.PauseRequested)
+                PauseButton.IsEnabled = string.Equals(snapshot.Status, "scanning", StringComparison.OrdinalIgnoreCase);
             if (snapshot.Done)
             {
                 var paused = latestResult?.Paused == true;
                 var cancelled = string.Equals(snapshot.Status, "cancelled", StringComparison.OrdinalIgnoreCase);
+                var failed = string.Equals(snapshot.Status, "error", StringComparison.OrdinalIgnoreCase) || !string.IsNullOrWhiteSpace(snapshot.Error);
                 _checkpointRequest = paused ? request : null;
                 _activeRequest = null;
                 _jobId = null;
@@ -318,6 +326,20 @@ public sealed partial class OcrPage : Page
                     ResetFreshUi("Đã hủy lần quét dở và xác nhận checkpoint đã được xóa.");
                 else if (paused)
                     ApplyCheckpointUi();
+                else if (failed)
+                {
+                    var checkpoint = await _application.InspectOcrCheckpointAsync(request, CancellationToken.None);
+                    if (checkpoint.Exists)
+                    {
+                        _checkpointRequest = request;
+                        ApplyCheckpointUi();
+                        StatusText.Text = snapshot.Error ?? snapshot.Message;
+                    }
+                    else
+                    {
+                        ResetFreshUi(snapshot.Error ?? snapshot.Message);
+                    }
+                }
                 else
                 {
                     CancelButton.IsEnabled = false;

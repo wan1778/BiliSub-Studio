@@ -41,6 +41,7 @@ internal static class Program
         ("editor filter graph preserves normalized regions", EditorFilterContractAsync),
         ("Chinese OCR validator rejects foreign scripts", ChineseOcrContractAsync),
         ("Paddle GPU wheel follows numeric CUDA compatibility", OcrGpuWheelContractAsync),
+        ("OCR Auto benchmarks 1 2 4 8 16 and restores last PASS", OcrAutoBenchmarkContractAsync),
         ("QR encoder produces fixed version 10 matrix", QrContractAsync),
         ("session cookie normalization matches legacy", SessionCookieContractAsync),
         ("cookie normalization rejects control-character injection", SessionCookieInjectionContractAsync),
@@ -456,6 +457,59 @@ internal static class Program
         True(cu128.EndsWith("/cu126/", StringComparison.Ordinal), "CUDA 12.8 must select cu126 wheels");
         True(cu125.EndsWith("/cu118/", StringComparison.Ordinal), "CUDA 12.5 must select compatible cu118 wheels");
         return Task.CompletedTask;
+    }
+
+    private static async Task OcrAutoBenchmarkContractAsync()
+    {
+        var policy = typeof(OcrScanRequest).Assembly.GetType("BiliSubStudio.Core.Ocr.OcrTopologyBenchmark")
+            ?? throw new InvalidOperationException("missing OCR topology benchmark policy");
+        var levels = policy.GetProperty("Levels", BindingFlags.Static | BindingFlags.NonPublic)?.GetValue(null) as IReadOnlyList<int>
+            ?? throw new InvalidOperationException("missing OCR topology benchmark levels");
+        if (!levels.SequenceEqual([1, 2, 4, 8, 16]))
+            throw new InvalidOperationException("OCR Auto ladder is not exactly 1 -> 2 -> 4 -> 8 -> 16");
+        if (OcrCheckpointStore.BuildSegments(90, 16, 1).Count != 16)
+            throw new InvalidOperationException("short video duration silently reduced a benchmark-selected 16-pipeline topology");
+
+        var select = policy.GetMethod("SelectAsync", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing OCR topology benchmark selector");
+        static async Task<int> InvokeAsync(
+            MethodInfo method,
+            Func<int, CancellationToken, Task> probe,
+            Func<int, CancellationToken, Task> restore,
+            Action<int, int, Exception> rejected)
+        {
+            var pending = method.Invoke(null, [probe, restore, rejected, CancellationToken.None]) as Task<int>
+                ?? throw new InvalidOperationException("OCR topology selector returned the wrong task type");
+            return await pending;
+        }
+
+        var attempted = new List<int>();
+        var restored = new List<int>();
+        var rejectedLevel = 0;
+        var rejectedBest = 0;
+        var selected = await InvokeAsync(
+            select,
+            (level, _) =>
+            {
+                attempted.Add(level);
+                return level == 8
+                    ? Task.FromException(new InvalidOperationException("fixture OOM"))
+                    : Task.CompletedTask;
+            },
+            (level, _) => { restored.Add(level); return Task.CompletedTask; },
+            (failed, best, _) => { rejectedLevel = failed; rejectedBest = best; });
+        if (selected != 4 || !attempted.SequenceEqual([1, 2, 4, 8]) || !restored.SequenceEqual([4]) || rejectedLevel != 8 || rejectedBest != 4)
+            throw new InvalidOperationException("OCR Auto did not stop at failed level 8 and restore stable level 4");
+
+        attempted.Clear();
+        restored.Clear();
+        selected = await InvokeAsync(
+            select,
+            (level, _) => { attempted.Add(level); return Task.CompletedTask; },
+            (level, _) => { restored.Add(level); return Task.CompletedTask; },
+            (_, _, _) => throw new InvalidOperationException("all-pass benchmark unexpectedly rejected a level"));
+        if (selected != 16 || !attempted.SequenceEqual([1, 2, 4, 8, 16]) || restored.Count != 0)
+            throw new InvalidOperationException("OCR Auto did not retain level 16 after every real probe passed");
     }
 
     private static Task QrContractAsync()

@@ -22,10 +22,6 @@ internal static class OcrHardwarePolicyRegression
             "RecommendedOcrWorkers",
             BindingFlags.Static | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("missing device-aware OCR worker policy");
-        var probePolicy = assembly.GetMethod(
-            "RecommendedOcrWorkerProbeCeiling",
-            BindingFlags.Static | BindingFlags.NonPublic)
-            ?? throw new InvalidOperationException("missing live OCR worker probe ceiling policy");
 
         static long GiB(double value) => checked((long)(value * 1024 * 1024 * 1024));
         int GpuWorkers(double gib) => (int)(gpuPolicy.Invoke(null, [GiB(gib)])
@@ -34,8 +30,6 @@ internal static class OcrHardwarePolicyRegression
             ?? throw new InvalidOperationException("OCR segment-lane policy returned null"));
         int DeviceWorkers(HardwareSnapshot hardware, string mode) => (int)(workerPolicy.Invoke(null, [hardware, mode])
             ?? throw new InvalidOperationException("OCR device worker policy returned null"));
-        int ProbeCeiling(HardwareSnapshot hardware, string mode) => (int)(probePolicy.Invoke(null, [hardware, mode])
-            ?? throw new InvalidOperationException("OCR worker probe ceiling policy returned null"));
 
         if (GpuWorkers(3) != 1 || GpuWorkers(6) != 2 || GpuWorkers(12) != 4 || GpuWorkers(24) != 8 || GpuWorkers(48) != 16)
             throw new InvalidOperationException("OCR GPU worker policy drifted from reviewed safety thresholds");
@@ -45,8 +39,8 @@ internal static class OcrHardwarePolicyRegression
         var laptop4Gb = new HardwareSnapshot("fixture", 16, GiB(32), true, "RTX laptop fixture", "CUDA 12.8", GiB(3.75));
         if (SegmentLanes(laptop4Gb) != 4)
             throw new InvalidOperationException("Ryzen-class fixture did not retain four FFmpeg segment lanes");
-        if (DeviceWorkers(laptop4Gb, "auto") != 2 || ProbeCeiling(laptop4Gb, "auto") != 4)
-            throw new InvalidOperationException("4 GB laptop GPU cannot live-probe four workers from its conservative two-worker prediction");
+        if (DeviceWorkers(laptop4Gb, "auto") != 2)
+            throw new InvalidOperationException("4 GB laptop GPU lost its conservative two-worker hardware estimate");
 
         var lowVram = new HardwareSnapshot("fixture", 32, GiB(32), true, "NVIDIA fixture", "CUDA 12.8", GiB(6));
         if (SegmentLanes(lowVram) != 8)
@@ -57,13 +51,9 @@ internal static class OcrHardwarePolicyRegression
             throw new InvalidOperationException("GPU/Auto worker policy ignored NVIDIA VRAM headroom");
         if (DeviceWorkers(lowVram, "hybrid") != 3)
             throw new InvalidOperationException("Hybrid worker policy lost its independent GPU+CPU pool");
-        if (ProbeCeiling(lowVram, "gpu") != 4 || ProbeCeiling(lowVram, "hybrid") != 4)
-            throw new InvalidOperationException("live GPU/Hybrid worker probe cannot test one level above the static prediction");
 
         var noGpu = new HardwareSnapshot("fixture", 32, GiB(32), false, string.Empty, string.Empty, 0);
         if (SegmentLanes(noGpu) != 8 || DeviceWorkers(noGpu, "cpu") != 2 || DeviceWorkers(noGpu, "auto") != 2)
             throw new InvalidOperationException("no-GPU segment/worker policies are no longer independent");
-        if (ProbeCeiling(noGpu, "auto") != 2)
-            throw new InvalidOperationException("no-GPU Auto unexpectedly exceeded its CPU worker probe ceiling");
     }
 }

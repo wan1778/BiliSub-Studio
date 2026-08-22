@@ -118,11 +118,13 @@ Any replacement candidate must have a different SHA-256 and must preserve the 37
 
 - [ ] H.264/HEVC plus fallback preview, play/pause/mute/seek/fullscreen.
 - [ ] OCR ROI strict validation; invalid ROI disables Test/Start and is never silently clamped.
-- [ ] OCR Auto preflight plus manual 1/2/4/8; 16 only when resource headroom is sufficient.
+- [ ] OCR Auto visibly benchmarks the exact ladder 1 → 2 → 4 → 8 → 16 before real scan progress begins; manual 1/2/4/8/16 probes the exact requested topology.
 - [ ] CPU/GPU/RAM/VRAM and lane/decoder/timing telemetry update while scanning.
 - [ ] Auto topology evaluates actual machine/video capability before raising lanes/batch; UI must not remain `measuring` while CPU/GPU/RAM have fallen idle and the benchmark has hung.
-- [ ] On the Ryzen 7 4800H / RTX 3050 Laptop 4 GB / RAM 32 GB field machine, a fresh Auto scan probes the shared worker pool separately from segment lanes and commits four real FFmpeg segments when the CPU/RAM/video probe passes; worker capacity must not collapse it to one lane.
-- [ ] A committed four-lane scan shows four concurrent FFmpeg segment processes in Task Manager and telemetry reports the actual independent Python pool (for example `4 FFmpeg lane · 1/2/4 worker`); Core must not require these counts to match.
+- [ ] Auto is not capped by a static CPU/RAM/GPU/VRAM prediction. At candidate N it creates exactly N Python workers and runs N concurrent FFmpeg + OCR probes on distinct real frames.
+- [ ] If 1/2/4 PASS and 8 fails/OOM/times out, telemetry reports the 8 failure, Core restores exactly 4 workers, commits 4 lanes and only then starts the scan; level 16 is not attempted after the first failed level.
+- [ ] If 1/2/4/8 all PASS, Auto must attempt 16. If 16 PASS, it commits 16; if 16 fails, it restores and commits 8.
+- [ ] A committed four-lane scan shows four concurrent FFmpeg segment processes and four Python worker processes in Task Manager; telemetry reports `4 FFmpeg lane · 4 worker`.
 - [ ] Pause reaches safe schema-4 checkpoint; active lanes become zero; Resume preserves topology and progress.
 - [ ] During Running and Pausing, Cancel remains enabled. It shows cleanup in progress and does not publish terminal Cancelled until all FFmpeg/Python work has stopped and checkpoint deletion is verified.
 - [ ] After Pause reaches `paused`, both Continue and Hủy và xóa are available; pressing Hủy và xóa clears partial cues/progress and the next action is explicitly Quét từ đầu.

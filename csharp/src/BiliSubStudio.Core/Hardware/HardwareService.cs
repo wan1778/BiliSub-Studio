@@ -80,20 +80,6 @@ public sealed class HardwareService
         return RecommendedGpuOcrWorkers(snapshot.VramBytes);
     }
 
-    internal static int RecommendedOcrWorkerProbeCeiling(HardwareSnapshot snapshot, string? deviceMode)
-    {
-        var recommended = RecommendedOcrWorkers(snapshot, deviceMode);
-        var mode = (deviceMode ?? "auto").Trim().ToLowerInvariant();
-        if (mode == "auto") mode = snapshot.NvidiaDetected ? "gpu" : "cpu";
-        if (mode == "cpu" || !snapshot.NvidiaDetected) return recommended;
-
-        // Worker startup plus concurrent real inference is the capacity proof. Static total
-        // VRAM is only the conservative starting point, so allow one live-probed level higher.
-        var nextLevel = new[] { 1, 2, 4, 8, 16 }.FirstOrDefault(level => level > recommended);
-        if (nextLevel == 0) nextLevel = 16;
-        return Math.Min(16, nextLevel);
-    }
-
     private static int RecommendedCpuOcrWorkers(HardwareSnapshot snapshot) =>
         snapshot.LogicalProcessors >= 8 && snapshot.MemoryBytes >= 4L * 1024 * 1024 * 1024 ? 2 : 1;
 

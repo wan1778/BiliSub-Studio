@@ -1,5 +1,7 @@
 # OCR topology and scan-state correction
 
+> Superseded for Auto topology by `2026-08-23-ocr-full-pipeline-benchmark.md`. Public 4.0.8 implemented the independent lane/worker model described below, but field review rejected that model because Auto must benchmark and commit equal-count full FFmpeg+Python pipelines. The transactional Cancel/Fresh/Resume findings in this document remain applicable.
+
 Pinned baseline: `15df1e4cd0b814e8efdfc1de14069c65895e3999` (`main`, public beta 4.0.7).
 
 Field status: 4.0.7 is **FAIL**. Auto still commits one scan lane on a Ryzen 7 4800H / RTX 3050 Laptop 4 GB / 32 GB machine, and Cancel does not reliably return the page to a fresh scan with the matching checkpoint removed.

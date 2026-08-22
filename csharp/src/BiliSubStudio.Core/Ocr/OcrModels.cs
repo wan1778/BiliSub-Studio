@@ -26,6 +26,14 @@ public enum OcrScanStartMode
     Resume,
 }
 
+public sealed record OcrBenchmarkTelemetry(
+    int Candidate,
+    int LastStable,
+    int Maximum,
+    int WorkerCount,
+    string WorkerKinds,
+    string Phase);
+
 public sealed record OcrScanTelemetry(
     int SegmentLanes,
     int ActiveLanes,

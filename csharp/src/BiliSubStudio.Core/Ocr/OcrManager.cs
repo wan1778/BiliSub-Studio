@@ -80,9 +80,7 @@ public sealed class OcrManager : IAsyncDisposable
                 {
                     var mode = _deviceMode;
                     if (mode == "auto") mode = hardware.NvidiaDetected ? "gpu" : "cpu";
-                    if (mode == "hybrid" && HardwareService.RecommendedOcrWorkers(hardware, "hybrid") < 2)
-                        throw new InvalidOperationException("Máy hiện tại không đủ headroom để chạy Hybrid OCR an toàn; hãy dùng CPU, GPU hoặc Auto.");
-                    await BuildPoolLockedAsync(mode, mode == "hybrid" ? 2 : 1, hardware, operationToken);
+                    await BuildPoolLockedAsync(mode, 1, hardware, operationToken);
                 }
                 catch (Exception gpuError) when (_deviceMode == "auto" && gpuError is not OperationCanceledException)
                 {
@@ -115,23 +113,28 @@ public sealed class OcrManager : IAsyncDisposable
         await _gate.WaitAsync(cancellationToken);
         try
         {
-            var minimum = _activeMode == "hybrid" ? 2 : 1;
-            target = Math.Max(target, minimum);
             if (_workers.Count == target && _workers.All(x => x.IsAlive)) return target;
             var hardware = _hardware.Snapshot();
             _state = "starting";
             try
             {
-                await BuildPoolLockedAsync(_activeMode, target, hardware, cancellationToken);
+                await ResizePoolLockedAsync(_activeMode, target, hardware, cancellationToken);
                 _state = "ready";
                 _error = null;
                 return _workers.Count;
             }
-            catch (OperationCanceledException) { throw; }
+            catch (OperationCanceledException)
+            {
+                var retained = _workers.Count > 0 && _workers.All(x => x.IsAlive);
+                _state = retained ? "ready" : "stopped";
+                _error = null;
+                throw;
+            }
             catch (Exception error)
             {
-                _state = "failed";
-                _error = error.Message;
+                var retained = _workers.Count > 0 && _workers.All(x => x.IsAlive);
+                _state = retained ? "ready" : "failed";
+                _error = retained ? null : error.Message;
                 throw;
             }
         }
@@ -205,29 +208,18 @@ public sealed class OcrManager : IAsyncDisposable
     private async Task BuildPoolLockedAsync(string mode, int target, HardwareSnapshot hardware, CancellationToken cancellationToken)
     {
         await StopWorkersLockedAsync();
-        var kinds = mode switch
-        {
-            "cpu" => Enumerable.Repeat("cpu", target).ToArray(),
-            "gpu" => Enumerable.Repeat("gpu", target).ToArray(),
-            "hybrid" => new[] { "gpu", "cpu" }.Concat(Enumerable.Repeat("gpu", Math.Max(0, target - 2))).ToArray(),
-            _ => throw new ArgumentException("Chế độ OCR nội bộ không hợp lệ."),
-        };
+        var kinds = DesiredKinds(mode, target);
         try
         {
             foreach (var kind in kinds)
             {
                 var runtime = await _installer.EnsureAsync(kind, hardware, cancellationToken);
                 var worker = new OcrWorkerClient(runtime);
-                await worker.StartAsync(cancellationToken);
+                try { await worker.StartAsync(cancellationToken); }
+                catch { await worker.DisposeAsync(); throw; }
                 _workers.Add(worker);
             }
-            _available = Channel.CreateBounded<OcrWorkerClient>(new BoundedChannelOptions(_workers.Count)
-            {
-                SingleReader = false,
-                SingleWriter = false,
-                FullMode = BoundedChannelFullMode.Wait,
-            });
-            foreach (var worker in _workers) _available.Writer.TryWrite(worker);
+            RebuildAvailabilityLocked();
             _activeMode = mode;
         }
         catch
@@ -236,6 +228,86 @@ public sealed class OcrManager : IAsyncDisposable
             throw;
         }
     }
+
+    private async Task ResizePoolLockedAsync(string mode, int target, HardwareSnapshot hardware, CancellationToken cancellationToken)
+    {
+        var desired = DesiredKinds(mode, target);
+        var shared = Math.Min(_workers.Count, desired.Length);
+        var canReuse = string.Equals(_activeMode, mode, StringComparison.OrdinalIgnoreCase)
+            && _workers.All(x => x.IsAlive)
+            && Enumerable.Range(0, shared).All(index =>
+                string.Equals(_workers[index].Kind, desired[index], StringComparison.OrdinalIgnoreCase));
+        if (!canReuse)
+        {
+            await BuildPoolLockedAsync(mode, target, hardware, cancellationToken);
+            return;
+        }
+
+        _available?.Writer.TryComplete();
+        _available = null;
+        if (_workers.Count > target)
+        {
+            for (var index = _workers.Count - 1; index >= target; index--)
+            {
+                var worker = _workers[index];
+                _workers.RemoveAt(index);
+                await worker.DisposeAsync();
+            }
+            RebuildAvailabilityLocked();
+            return;
+        }
+
+        var retained = _workers.Count;
+        try
+        {
+            for (var index = retained; index < desired.Length; index++)
+            {
+                var runtime = await _installer.EnsureAsync(desired[index], hardware, cancellationToken);
+                var worker = new OcrWorkerClient(runtime);
+                try { await worker.StartAsync(cancellationToken); }
+                catch { await worker.DisposeAsync(); throw; }
+                _workers.Add(worker);
+            }
+            RebuildAvailabilityLocked();
+        }
+        catch
+        {
+            for (var index = _workers.Count - 1; index >= retained; index--)
+            {
+                var worker = _workers[index];
+                _workers.RemoveAt(index);
+                await worker.DisposeAsync();
+            }
+            RebuildAvailabilityLocked();
+            throw;
+        }
+    }
+
+    private void RebuildAvailabilityLocked()
+    {
+        if (_workers.Count == 0)
+        {
+            _available = null;
+            return;
+        }
+        _available = Channel.CreateBounded<OcrWorkerClient>(new BoundedChannelOptions(_workers.Count)
+        {
+            SingleReader = false,
+            SingleWriter = false,
+            FullMode = BoundedChannelFullMode.Wait,
+        });
+        foreach (var worker in _workers) _available.Writer.TryWrite(worker);
+    }
+
+    private static string[] DesiredKinds(string mode, int target) => mode switch
+    {
+        "cpu" => Enumerable.Repeat("cpu", target).ToArray(),
+        "gpu" => Enumerable.Repeat("gpu", target).ToArray(),
+        "hybrid" => target == 1
+            ? ["gpu"]
+            : new[] { "gpu", "cpu" }.Concat(Enumerable.Repeat("gpu", target - 2)).ToArray(),
+        _ => throw new ArgumentException("Chế độ OCR nội bộ không hợp lệ."),
+    };
 
     private async Task StopWorkersLockedAsync()
     {

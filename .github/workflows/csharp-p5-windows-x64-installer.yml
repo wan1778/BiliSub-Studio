@@ -175,10 +175,10 @@ jobs:
           @(
             "# BiliSub Studio $publicVersion",
             "",
-            '- Sửa root cause OCR Auto bị thu về một luồng: FFmpeg segment lane và Python/PaddleOCR worker nay là hai tầng độc lập.',
-            '- Auto probe riêng worker theo GPU/VRAM và lane video theo CPU/RAM/thời lượng; N lane dùng chung M worker, không còn ép N=M.',
-            '- Hủy trong lúc Running/Pausing/Paused chỉ hoàn tất sau khi dừng tiến trình và xác nhận checkpoint đã xóa; lần quét sau bắt đầu từ đầu.',
-            '- Bổ sung Quét lại từ đầu, Fresh/Resume rõ ràng và telemetry tách số FFmpeg lane với Python worker.'
+            '- Sửa lại OCR Auto theo đúng full-pipeline benchmark: luôn thử tuần tự 1 → 2 → 4 → 8 → 16 trước khi quét thật.',
+            '- Mức N chỉ PASS khi tạo đủ N Python worker và chạy N FFmpeg + OCR đồng thời trên các frame video khác nhau.',
+            '- Khi mức mới lỗi/OOM/timeout, worker pool quay về mức PASS gần nhất rồi mới khóa cùng số FFmpeg lane để quét.',
+            '- Telemetry hiển thị mức đang benchmark, mức PASS gần nhất và topology thực tế; Tạm dừng chỉ bật sau khi scan bắt đầu.'
           ) | Set-Content $notes -Encoding UTF8
 
           gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
@@ -199,10 +199,10 @@ jobs:
             size = $portableSize
             payload_kind = "winui3-portable-zip"
             notes = @(
-              "Tách FFmpeg segment lane khỏi shared Python/PaddleOCR worker pool.",
-              "Auto probe độc lập CPU/RAM/video và GPU/VRAM; không còn yêu cầu số lane bằng số worker.",
-              "Hủy OCR transactional: dừng tiến trình, xóa và xác nhận checkpoint trước khi kết thúc.",
-              "Fresh/Resume/Quét lại từ đầu và telemetry lane/worker được hiển thị rõ."
+              "OCR Auto benchmark đủ 1 → 2 → 4 → 8 → 16 trước khi quét.",
+              "Mức N yêu cầu N Python worker và N FFmpeg + OCR pipeline thật.",
+              "Mức lỗi/OOM/timeout tự quay về mức PASS gần nhất rồi mới bắt đầu scan.",
+              "Telemetry hiển thị candidate, last PASS và topology đã commit."
             )
           }
           $manifest | ConvertTo-Json -Depth 4 | Set-Content "update/beta.json" -Encoding UTF8
