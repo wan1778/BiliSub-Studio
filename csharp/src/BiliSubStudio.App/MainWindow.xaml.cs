@@ -1,9 +1,12 @@
+using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.Text.Json;
 using BiliSubStudio.App.Pages;
 using BiliSubStudio.App.Services;
 using BiliSubStudio.App.ViewModels;
 using BiliSubStudio.Core.Application;
 using BiliSubStudio.Core.Configuration;
+using BiliSubStudio.Core.Diagnostics;
 using Microsoft.UI;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
@@ -14,6 +17,7 @@ namespace BiliSubStudio.App;
 public sealed partial class MainWindow : Window
 {
     private readonly BiliSubApplication _application;
+    private readonly ApplicationLog _globalLog;
     private readonly SettingsPage _settingsPage;
     private readonly SupportPage _supportPage;
     private readonly Dictionary<string, UIElement> _pages;
@@ -22,6 +26,7 @@ public sealed partial class MainWindow : Window
     private bool _initialized;
     private bool _safeToClose;
     private bool _closing;
+    private int _errorCount;
 
     public MainWindow()
     {
@@ -45,31 +50,44 @@ public sealed partial class MainWindow : Window
         {
             _buildTag = "dev";
         }
+
         Title = $"BiliSub Studio · build {_buildTag}";
         var paths = AppPaths.FromExecutableDirectory();
+        _globalLog = new ApplicationLog(paths.Data);
+        _globalLog.EntryAdded += OnGlobalLogEntry;
+        LogFileText.Text = "Lưu bền vững: " + _globalLog.FilePath;
+        _globalLog.Info("Ứng dụng", $"Khởi tạo BiliSub Studio · build {_buildTag}.");
+
         _application = new BiliSubApplication(paths);
+        _application.Jobs.AttachLog(_globalLog);
         var folderPicker = new FolderPickerService(() => this);
         var filePicker = new FilePickerService(() => this);
-        _settingsPage = new SettingsPage(new SettingsViewModel(_application.Settings, folderPicker), _application);
+        var hardwarePage = new HardwarePage(_application);
+        var accountPage = new AccountPage(_application);
         _supportPage = new SupportPage(_application);
+        _settingsPage = new SettingsPage(
+            new SettingsViewModel(_application.Settings, folderPicker),
+            _application,
+            hardwarePage,
+            accountPage,
+            _supportPage,
+            _globalLog);
         _settingsPage.ThemeRequested += ApplyTheme;
         _pages = new Dictionary<string, UIElement>(StringComparer.Ordinal)
         {
-            ["video"] = new VideoPage(_application, folderPicker),
+            ["video"] = new VideoPage(_application, folderPicker, _globalLog),
             ["ocr"] = new OcrPage(_application, filePicker),
             ["editor"] = new EditorPage(_application, filePicker),
-            ["hardware"] = new HardwarePage(_application),
-            ["account"] = new AccountPage(_application),
-            ["support"] = _supportPage,
             ["settings"] = _settingsPage,
         };
-        _settingsPage.NavigateRequested += NavigateTo;
         RootGrid.Loaded += OnLoaded;
         Closed += OnClosed;
         AppWindow.Closing += OnAppWindowClosing;
         Navigation.SelectedItem = Navigation.MenuItems[0];
         ContentFrame.Content = _pages["video"];
     }
+
+    public ObservableCollection<GlobalLogItem> GlobalLogEntries { get; } = [];
 
     internal Task Initialization => _initialization.Task;
 
@@ -90,7 +108,12 @@ public sealed partial class MainWindow : Window
                 ContentFrame.Content = page;
                 StartupDiagnostics.Write("layout-smoke-page", $"{tag}; {requested.Width}x{requested.Height}");
                 await Task.Delay(120);
+                if (string.Equals(tag, "settings", StringComparison.Ordinal))
+                    await _settingsPage.RunLayoutSmokeAsync();
             }
+            ShowGlobalLog(true);
+            await Task.Delay(100);
+            ShowGlobalLog(false);
         }
         ContentFrame.Content = _pages["video"];
         StartupDiagnostics.Write("layout-smoke-pass");
@@ -109,7 +132,10 @@ public sealed partial class MainWindow : Window
             var snapshot = await _settingsPage.InitializeAsync();
             ApplyTheme(snapshot.Config.Theme);
             FooterStatus.Text = _application.Sessions.LastLoadWarning
-                ?? $"C#/.NET 10/WinUI 3 · native services ready · build {_buildTag}";
+                ?? $"Native services ready · build {_buildTag}";
+            if (_application.Sessions.LastLoadWarning is { Length: > 0 } sessionWarning)
+                _globalLog.Warning("Đăng nhập", sessionWarning);
+            _globalLog.Info("Ứng dụng", "Khởi tạo native services hoàn tất.");
             if (_application.Config.CheckUpdates) _ = CheckForUpdatesOnLaunchAsync();
             StartupDiagnostics.Write("main-window-initialized", $"build={_buildTag}");
             _initialization.TrySetResult(true);
@@ -117,6 +143,7 @@ public sealed partial class MainWindow : Window
         catch (Exception error)
         {
             FooterStatus.Text = "Khởi tạo lỗi: " + error.Message;
+            _globalLog.Error("Ứng dụng", "Khởi tạo lỗi: " + error.Message);
             StartupDiagnostics.WriteException("main-window-initialize-failed", error);
             _initialization.TrySetException(error);
         }
@@ -127,39 +154,29 @@ public sealed partial class MainWindow : Window
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         try
         {
+            _globalLog.Info("Cập nhật", "Đang tự kiểm tra kênh cập nhật.");
             var info = await _application.Updates.CheckAsync(timeout.Token);
             _supportPage.ApplyUpdateInfo(info);
+            _globalLog.Info("Cập nhật", info.Message);
             if (info.Available && info.ChannelReady)
-                FooterStatus.Text = $"Có bản WinUI 3 mới: {info.Latest} · mở Cập nhật & hỗ trợ";
+                FooterStatus.Text = $"Có bản WinUI 3 mới: {info.Latest} · mở Cài đặt > Cập nhật & hỗ trợ";
         }
         catch (OperationCanceledException) when (timeout.IsCancellationRequested)
         {
-            _supportPage.ApplyUpdateError("Tự kiểm tra cập nhật quá thời gian; có thể thử lại thủ công.");
+            const string message = "Tự kiểm tra cập nhật quá thời gian; có thể thử lại thủ công.";
+            _supportPage.ApplyUpdateError(message);
+            _globalLog.Warning("Cập nhật", message);
         }
         catch (Exception error)
         {
             _supportPage.ApplyUpdateError("Tự kiểm tra cập nhật: " + error.Message);
+            _globalLog.Error("Cập nhật", "Tự kiểm tra cập nhật lỗi: " + error.Message);
         }
     }
 
     private void Navigation_SelectionChanged(Microsoft.UI.Xaml.Controls.NavigationView sender, Microsoft.UI.Xaml.Controls.NavigationViewSelectionChangedEventArgs args)
     {
         if (args.SelectedItemContainer?.Tag is string tag && _pages.TryGetValue(tag, out var page)) ContentFrame.Content = page;
-    }
-
-    private void NavigateTo(string tag)
-    {
-        if (!_pages.TryGetValue(tag, out var page)) return;
-        ContentFrame.Content = page;
-        foreach (var candidate in Navigation.MenuItems.Concat(Navigation.FooterMenuItems))
-        {
-            if (candidate is Microsoft.UI.Xaml.Controls.NavigationViewItem { Tag: string itemTag } item && string.Equals(itemTag, tag, StringComparison.Ordinal))
-            {
-                Navigation.SelectedItem = item;
-                item.Focus(FocusState.Programmatic);
-                return;
-            }
-        }
     }
 
     private void ApplyTheme(string theme)
@@ -169,6 +186,58 @@ public sealed partial class MainWindow : Window
         AppWindow.TitleBar.ButtonForegroundColor = dark ? Windows.UI.Color.FromArgb(255, 243, 247, 252) : Windows.UI.Color.FromArgb(255, 20, 28, 38);
         AppWindow.TitleBar.ButtonBackgroundColor = dark ? Windows.UI.Color.FromArgb(255, 12, 18, 27) : Windows.UI.Color.FromArgb(255, 246, 248, 252);
     }
+
+    private void OnGlobalLogEntry(AppLogEntry entry)
+    {
+        if (!DispatcherQueue.HasThreadAccess)
+        {
+            DispatcherQueue.TryEnqueue(() => OnGlobalLogEntry(entry));
+            return;
+        }
+
+        GlobalLogEntries.Add(new GlobalLogItem(entry));
+        while (GlobalLogEntries.Count > 500) GlobalLogEntries.RemoveAt(0);
+        if (GlobalLogEntries.Count > 0) GlobalLogList.ScrollIntoView(GlobalLogEntries[^1]);
+
+        if (entry.Level == AppLogLevel.Error)
+        {
+            _errorCount++;
+            LogErrorCount.Text = $"{_errorCount} lỗi";
+            ShowGlobalLog(true);
+        }
+    }
+
+    private void GlobalLogToggle_Click(object sender, RoutedEventArgs e) =>
+        ShowGlobalLog(GlobalLogPanel.Visibility != Visibility.Visible);
+
+    private void CollapseLog_Click(object sender, RoutedEventArgs e) => ShowGlobalLog(false);
+
+    private void ClearLogView_Click(object sender, RoutedEventArgs e)
+    {
+        GlobalLogEntries.Clear();
+        _errorCount = 0;
+        LogErrorCount.Text = "0 lỗi";
+        _globalLog.Info("Nhật ký", "Đã xóa phần hiển thị; file log bền vững vẫn được giữ.");
+    }
+
+    private void OpenLogFile_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = "explorer.exe",
+                Arguments = $"/select,\"{_globalLog.FilePath}\"",
+                UseShellExecute = true,
+            });
+        }
+        catch (Exception error)
+        {
+            _globalLog.Error("Nhật ký", "Không mở được file log: " + error.Message);
+        }
+    }
+
+    private void ShowGlobalLog(bool show) => GlobalLogPanel.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
 
     private void ResizeInitialWindow()
     {
@@ -190,6 +259,7 @@ public sealed partial class MainWindow : Window
         args.Cancel = true;
         _closing = true;
         FooterStatus.Text = "Đang lưu checkpoint an toàn trước khi đóng...";
+        _globalLog.Info("Ứng dụng", "Đang chuẩn bị đóng an toàn.");
         try
         {
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(95));
@@ -197,14 +267,20 @@ public sealed partial class MainWindow : Window
             _application.LaunchPendingUpdate();
             _safeToClose = true;
             FooterStatus.Text = "Đã an toàn để đóng.";
+            _globalLog.Info("Ứng dụng", "Đóng an toàn hoàn tất.");
             Close();
         }
         catch (Exception error)
         {
             _closing = false;
             FooterStatus.Text = "Từ chối đóng để bảo toàn dữ liệu: " + error.Message;
+            _globalLog.Error("Ứng dụng", "Từ chối đóng để bảo toàn dữ liệu: " + error.Message);
         }
     }
 
-    private async void OnClosed(object sender, WindowEventArgs args) => await _application.DisposeAsync();
+    private async void OnClosed(object sender, WindowEventArgs args)
+    {
+        _globalLog.EntryAdded -= OnGlobalLogEntry;
+        await _application.DisposeAsync();
+    }
 }
