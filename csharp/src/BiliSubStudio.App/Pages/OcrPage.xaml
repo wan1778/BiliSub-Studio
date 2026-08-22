@@ -118,7 +118,7 @@
                                     <TextBlock Style="{StaticResource CardTitleStyle}" Text="Engine và quét" />
                                     <Border HorizontalAlignment="Right" Padding="8,3" Background="{ThemeResource AccentSoftBrush}" CornerRadius="9"><TextBlock FontSize="10" Foreground="{ThemeResource AccentPrimaryBrush}" Text="Tự động dự đoán" /></Border>
                                 </Grid>
-                                <TextBlock Style="{StaticResource MutedTextStyle}" Text="Bật Chỉnh ROI rồi kéo vùng trống để tạo khung mới; kéo bên trong khung xanh để di chuyển." />
+                                <TextBlock Style="{StaticResource MutedTextStyle}" Text="Bật Chỉnh ROI: kéo giữa để di chuyển, kéo mép/góc để đổi kích thước, kéo ngoài khung để tạo vùng mới." />
                                 <Grid ColumnSpacing="7">
                                     <Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
                                     <ComboBox x:Name="DeviceBox" Header="Thiết bị" SelectedIndex="0"><x:String>auto</x:String><x:String>cpu</x:String><x:String>gpu</x:String><x:String>hybrid</x:String></ComboBox>
