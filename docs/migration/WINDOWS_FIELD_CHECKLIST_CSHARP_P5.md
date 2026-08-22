@@ -13,13 +13,14 @@ Status starts as **BLOCKED**. Record one exact branch source revision, workflow 
 - `51260889e3b62ab3264aaaa38b32149aa008c3d2334660aa7c3716dfd6445b07` — rejected/superseded: real-machine ~2-hour Bilibili test reproduced `379 bytes read ... more expected`, Range segment 0 failure and yt-dlp fallback exhaustion.
 - `bbf956e07bcd4f44d6855bb97ddaff369a96161930fba449153f59531058ee99` — superseded after downloader run 61 passed the dedicated 379-byte continuation fixture, because the subsequent shell/UI requirement replaced per-page logs with one global diagnostic log, consolidated Settings navigation and changed Media layout.
 - `8d47d3fd25947ed5dcbf55ac167e512e9d7102028fe4bb42596f3ebed0be980e` — superseded: shared-log/consolidated-shell candidate passed CI, but real-machine inspection showed the installer still unpacked the complete self-contained WinUI/.NET runtime directly into the user-visible install root. The replacement must use the reviewed `Runtime\` layout and migrate the old flat runtime safely.
+- `7f37dcb5235f0446d8da1b0ea8e49fa0beaf3e0a3297321993f1dd5715548be0` — rejected 2026-08-22: real-machine long-video transfer still treated a transient CDN HTTP `503` as permanent Range failure, immediately switched to yt-dlp fallback, then yt-dlp failed with `985 bytes read, 4144194 more expected` after 20 retries. Never promote this installer.
 
-Any replacement candidate must have a different SHA-256 and must preserve the short-read transport fix, shared-log/consolidated-shell UI contract and tidy installed-runtime layout.
+Any replacement candidate must have a different SHA-256 and must preserve the 379-byte continuation fix, transient-CDN recovery, adaptive Range degradation, shared-log/consolidated-shell UI contract and tidy installed-runtime layout.
 
 ## Build and installer identity
 
 - [ ] Windows workflow runs from the intended `csharp-p5-installer` source revision with SDK `10.0.400`.
-- [ ] `verify_global_log_ui_contract.py`, `verify_installer_runtime_layout_contract.py`, media/short-read contracts, generated code map, Core contracts, WinUI startup/layout smoke and installer packaging all pass on the same source.
+- [ ] `verify_global_log_ui_contract.py`, `verify_installer_runtime_layout_contract.py`, media/short-read/HTTP-503 contracts, generated code map, Core contracts, WinUI startup/layout smoke and installer packaging all pass on the same source.
 - [ ] Preserve `BUILD_IDENTITY.json`, source/publish/candidate checksum inventories, `INSTALLER_GATE_STATUS.json` and `CANDIDATE_GATE_STATUS.json`.
 - [ ] Confirm app and Setup are PE32+ x64 and hashes match every manifest.
 - [ ] Confirm `INSTALLER_GATE_STATUS.json` records `runtime_subdirectory=Runtime` and `legacy_flat_runtime_migration_smoke=true`.
@@ -79,19 +80,25 @@ Any replacement candidate must have a different SHA-256 and must preserve the sh
 - [ ] One or more Video/Thumbnail/Phụ đề boxes selected => only those selected assets are requested.
 - [ ] Missing optional subtitle or thumbnail produces an explicit non-fatal skip/warning rather than failing unrelated selected assets.
 
-## Long-media / Range short-read transport — BLOCKER
+## Long-media / Range short-read / transient CDN transport — BLOCKER
 
-- [ ] Retest the **same ~2-hour Bilibili URL** that reproduced `379 bytes read ... more expected` on rejected SHA `512608...` before attempting a >6-hour test.
+- [ ] Retest the **same long Bilibili URL** that reproduced HTTP `503` then yt-dlp `985 bytes read ... more expected` on rejected SHA `7f37dcb5...`.
+- [ ] Also retain the earlier ~2-hour reproduction coverage for `379 bytes read ... more expected` from rejected SHA `512608...`.
 - [ ] Range requests use the restored 4 MiB segment contract and effective Stable/Fast/Turbo transport budgets 1/4/8.
 - [ ] A short body preserves bytes already received and the next request continues from the exact missing byte rather than restarting the segment.
 - [ ] Repeated pathological tiny reads may refresh the signed URL/CDN while preserving the partial segment.
+- [ ] A transient probe or segment HTTP failure such as `403`, `408`, `429`, `500`, `502`, `503` or `504` is **not** treated as immediate proof that Range is unsupported; refresh the signed stream/CDN and retry first.
+- [ ] A healthy large short-read recovery must not trigger unnecessary URL refresh merely because the weak-failure counter is zero.
+- [ ] If multi-connection Range still exhausts its bounded recovery, automatically retry that stream at **1 connection** before entering yt-dlp fallback.
+- [ ] The global log clearly reports adaptive degradation and, if all Range recovery fails, includes the root transport cause before fallback.
 - [ ] Range worker transport remains exact HTTP/1.1.
-- [ ] yt-dlp fallback keeps resume state and uses 4 MiB HTTP chunks rather than depending on one giant response body.
-- [ ] Progress continues through short-read recovery; no false 90% state while the actual video stream is dead.
+- [ ] Dedicated Windows regression executable passes all three cases on the same source: `379-byte short-read`, `segment HTTP 503`, and `probe HTTP 503`.
+- [ ] yt-dlp fallback remains the final fallback only; it keeps resume state and uses 4 MiB HTTP chunks rather than depending on one giant response body.
+- [ ] Progress continues through short-read/transient-CDN recovery; no false terminal 90% state while the actual video stream is dead.
 - [ ] Completed video is non-empty, opens/plays, and matches the selected mode/container.
 - [ ] If video + subtitle are requested, subtitle output is valid and stored in the same configured output directory.
 - [ ] Cancel during active video transfer stops the media parent job and leaves no orphan yt-dlp/FFmpeg.
-- [ ] After the same 2-hour reproduction case passes, test a >6-hour Bilibili video before declaring the long-media gate complete.
+- [ ] After the same real-machine reproduction cases pass, test a >6-hour Bilibili video before declaring the long-media gate complete.
 
 ## GitHub update channel — BLOCKER
 
