@@ -1,14 +1,14 @@
 {
-  "version": "4.0.0-beta.21-csharp-p5",
+  "version": "4.0.0-beta.22-csharp-p5",
   "channel_ready": true,
-  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.7/BiliSubStudio_4.0.7_Windows-x64-portable.zip",
-  "sha256": "22328c7e8deb0d77de4907468e1fe02d547d80e9234feea6c63fc4e6f0dad2c6",
-  "size": 94426295,
+  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.8/BiliSubStudio_4.0.8_Windows-x64-portable.zip",
+  "sha256": "e240fe04f8b35b4c6e8195f1addb84efce45fdd331e6c494a08665e757a3aa17",
+  "size": 94434651,
   "payload_kind": "winui3-portable-zip",
   "notes": [
-    "Sửa OCR Auto 4.0.6 vẫn thu về một process do phép so throughput sai.",
-    "Auto giữ mức cao nhất tạo đủ worker và chạy đủ pipeline FFmpeg+OCR đồng thời thành công.",
-    "Core kiểm tra số Python worker và FFmpeg segment trước khi scan.",
-    "Telemetry hiển thị số Python worker thật trong lúc chạy."
+    "Tách FFmpeg segment lane khỏi shared Python/PaddleOCR worker pool.",
+    "Auto probe độc lập CPU/RAM/video và GPU/VRAM; không còn yêu cầu số lane bằng số worker.",
+    "Hủy OCR transactional: dừng tiến trình, xóa và xác nhận checkpoint trước khi kết thúc.",
+    "Fresh/Resume/Quét lại từ đầu và telemetry lane/worker được hiển thị rõ."
   ]
 }
