@@ -65,7 +65,11 @@ internal sealed class OcrCheckpointStore
         if (checkpoint is null) return new OcrCheckpointInfo(false, 0, 0, 0, 0, 0, 0, 0, []);
         var completed = checkpoint.Lanes.Count(x => x.Completed);
         var media = ContiguousFrontier(checkpoint.Lanes);
-        var cues = checkpoint.Lanes.SelectMany(x => x.Cues.Concat(x.Active is { } active ? new[] { active } : Array.Empty<OcrCue>())).OrderBy(x => x.Start).ToArray();
+        var cues = checkpoint.Lanes
+            .SelectMany(x => x.Cues.Concat(x.Active is { } active ? new[] { active } : Array.Empty<OcrCue>()))
+            .Where(x => x.Start <= media + 0.001)
+            .OrderBy(x => x.Start)
+            .ToArray();
         return new OcrCheckpointInfo(
             true, Schema, media, cues.Length, checkpoint.SelectedParallelism, completed, checkpoint.Lanes.Count,
             request.Duration > 0 ? Math.Clamp(media / request.Duration * 100, 0, 100) : 0,
@@ -77,7 +81,11 @@ internal sealed class OcrCheckpointStore
         foreach (var schema in new[] { 4, 3 })
         {
             var key = await KeyAsync(request, schema, cancellationToken);
-            TryDelete(Path.Combine(DirectoryPath, key + ".json"));
+            var path = Path.Combine(DirectoryPath, key + ".json");
+            File.Delete(path);
+            File.Delete(path + ".tmp");
+            if (File.Exists(path) || File.Exists(path + ".tmp"))
+                throw new IOException($"Không thể xóa checkpoint OCR schema {schema}: {path}");
         }
     }
 
@@ -149,7 +157,7 @@ internal sealed class OcrCheckpointStore
         return new OcrRegion(left / 100d, top / 100d, (right - left) / 100d, (bottom - top) / 100d);
     }
 
-    private static double ContiguousFrontier(IReadOnlyList<OcrLaneCheckpoint> lanes)
+    internal static double ContiguousFrontier(IReadOnlyList<OcrLaneCheckpoint> lanes)
     {
         var frontier = 0d;
         foreach (var lane in lanes.OrderBy(x => x.Segment.Index))

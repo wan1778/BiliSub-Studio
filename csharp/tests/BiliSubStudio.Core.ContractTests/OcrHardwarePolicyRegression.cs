@@ -11,49 +11,59 @@ internal static class OcrHardwarePolicyRegression
     {
         var assembly = typeof(HardwareService);
         var gpuPolicy = assembly.GetMethod(
-            "RecommendedGpuOcrLanes",
+            "RecommendedGpuOcrWorkers",
             BindingFlags.Static | BindingFlags.NonPublic)
-            ?? throw new InvalidOperationException("missing OCR GPU VRAM lane policy");
-        var devicePolicy = assembly.GetMethod(
-            "RecommendedOcrLanes",
+            ?? throw new InvalidOperationException("missing OCR GPU worker policy");
+        var segmentPolicy = assembly.GetMethod(
+            "RecommendedOcrSegmentLanes",
             BindingFlags.Static | BindingFlags.NonPublic)
-            ?? throw new InvalidOperationException("missing device-aware OCR lane policy");
+            ?? throw new InvalidOperationException("missing OCR segment-lane policy");
+        var workerPolicy = assembly.GetMethod(
+            "RecommendedOcrWorkers",
+            BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing device-aware OCR worker policy");
         var probePolicy = assembly.GetMethod(
-            "RecommendedOcrProbeCeiling",
+            "RecommendedOcrWorkerProbeCeiling",
             BindingFlags.Static | BindingFlags.NonPublic)
-            ?? throw new InvalidOperationException("missing live OCR probe ceiling policy");
+            ?? throw new InvalidOperationException("missing live OCR worker probe ceiling policy");
 
         static long GiB(double value) => checked((long)(value * 1024 * 1024 * 1024));
-        int GpuLanes(double gib) => (int)(gpuPolicy.Invoke(null, [GiB(gib)])
-            ?? throw new InvalidOperationException("OCR GPU VRAM policy returned null"));
-        int DeviceLanes(HardwareSnapshot hardware, string mode) => (int)(devicePolicy.Invoke(null, [hardware, mode])
-            ?? throw new InvalidOperationException("OCR device policy returned null"));
+        int GpuWorkers(double gib) => (int)(gpuPolicy.Invoke(null, [GiB(gib)])
+            ?? throw new InvalidOperationException("OCR GPU worker policy returned null"));
+        int SegmentLanes(HardwareSnapshot hardware) => (int)(segmentPolicy.Invoke(null, [hardware])
+            ?? throw new InvalidOperationException("OCR segment-lane policy returned null"));
+        int DeviceWorkers(HardwareSnapshot hardware, string mode) => (int)(workerPolicy.Invoke(null, [hardware, mode])
+            ?? throw new InvalidOperationException("OCR device worker policy returned null"));
         int ProbeCeiling(HardwareSnapshot hardware, string mode) => (int)(probePolicy.Invoke(null, [hardware, mode])
-            ?? throw new InvalidOperationException("OCR probe ceiling policy returned null"));
+            ?? throw new InvalidOperationException("OCR worker probe ceiling policy returned null"));
 
-        if (GpuLanes(3) != 1 || GpuLanes(6) != 2 || GpuLanes(12) != 4 || GpuLanes(24) != 8 || GpuLanes(48) != 16)
-            throw new InvalidOperationException("OCR GPU VRAM lane policy drifted from reviewed safety thresholds");
-        if (GpuLanes(3.75) != 2)
-            throw new InvalidOperationException("advertised 4 GB GPU collapsed to one OCR lane because CUDA reports slightly less VRAM");
+        if (GpuWorkers(3) != 1 || GpuWorkers(6) != 2 || GpuWorkers(12) != 4 || GpuWorkers(24) != 8 || GpuWorkers(48) != 16)
+            throw new InvalidOperationException("OCR GPU worker policy drifted from reviewed safety thresholds");
+        if (GpuWorkers(3.75) != 2)
+            throw new InvalidOperationException("advertised 4 GB GPU collapsed to one predicted OCR worker because CUDA reports slightly less VRAM");
 
         var laptop4Gb = new HardwareSnapshot("fixture", 16, GiB(32), true, "RTX laptop fixture", "CUDA 12.8", GiB(3.75));
-        if (DeviceLanes(laptop4Gb, "auto") != 2 || ProbeCeiling(laptop4Gb, "auto") != 4)
-            throw new InvalidOperationException("4 GB laptop GPU cannot live-probe 4 OCR lanes from its conservative 2-lane prediction");
+        if (SegmentLanes(laptop4Gb) != 4)
+            throw new InvalidOperationException("Ryzen-class fixture did not retain four FFmpeg segment lanes");
+        if (DeviceWorkers(laptop4Gb, "auto") != 2 || ProbeCeiling(laptop4Gb, "auto") != 4)
+            throw new InvalidOperationException("4 GB laptop GPU cannot live-probe four workers from its conservative two-worker prediction");
 
         var lowVram = new HardwareSnapshot("fixture", 32, GiB(32), true, "NVIDIA fixture", "CUDA 12.8", GiB(6));
-        if (DeviceLanes(lowVram, "cpu") != 16)
-            throw new InvalidOperationException("CPU OCR was incorrectly capped by NVIDIA VRAM");
-        if (DeviceLanes(lowVram, "gpu") != 2 || DeviceLanes(lowVram, "auto") != 2)
-            throw new InvalidOperationException("GPU/Auto OCR ignored NVIDIA VRAM headroom");
-        if (DeviceLanes(lowVram, "hybrid") != 2)
-            throw new InvalidOperationException("Hybrid OCR exceeded reviewed GPU+CPU topology headroom");
+        if (SegmentLanes(lowVram) != 8)
+            throw new InvalidOperationException("segment lanes are still being capped by NVIDIA VRAM");
+        if (DeviceWorkers(lowVram, "cpu") != 2)
+            throw new InvalidOperationException("CPU worker policy exceeded its reviewed two-worker cap");
+        if (DeviceWorkers(lowVram, "gpu") != 2 || DeviceWorkers(lowVram, "auto") != 2)
+            throw new InvalidOperationException("GPU/Auto worker policy ignored NVIDIA VRAM headroom");
+        if (DeviceWorkers(lowVram, "hybrid") != 3)
+            throw new InvalidOperationException("Hybrid worker policy lost its independent GPU+CPU pool");
         if (ProbeCeiling(lowVram, "gpu") != 4 || ProbeCeiling(lowVram, "hybrid") != 4)
-            throw new InvalidOperationException("live GPU/Hybrid probe cannot test one topology above the static prediction");
+            throw new InvalidOperationException("live GPU/Hybrid worker probe cannot test one level above the static prediction");
 
         var noGpu = new HardwareSnapshot("fixture", 32, GiB(32), false, string.Empty, string.Empty, 0);
-        if (DeviceLanes(noGpu, "cpu") != 16 || DeviceLanes(noGpu, "auto") != 4)
-            throw new InvalidOperationException("CPU/Auto no-GPU policy drifted from reviewed limits");
-        if (ProbeCeiling(noGpu, "auto") != 4)
-            throw new InvalidOperationException("no-GPU Auto unexpectedly exceeded its reviewed CPU probe ceiling");
+        if (SegmentLanes(noGpu) != 8 || DeviceWorkers(noGpu, "cpu") != 2 || DeviceWorkers(noGpu, "auto") != 2)
+            throw new InvalidOperationException("no-GPU segment/worker policies are no longer independent");
+        if (ProbeCeiling(noGpu, "auto") != 2)
+            throw new InvalidOperationException("no-GPU Auto unexpectedly exceeded its CPU worker probe ceiling");
     }
 }

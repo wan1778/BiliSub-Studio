@@ -40,50 +40,83 @@ public sealed class OcrScanner
         return result;
     }
 
-    public async Task<OcrScanResult> RunAsync(AppJob job, OcrScanRequest request)
+    public async Task<OcrScanResult> RunAsync(AppJob job, OcrScanRequest request, OcrScanStartMode startMode)
+    {
+        request = request with { Region = OcrCheckpointStore.CanonicalRegion(request.Region) };
+        try
+        {
+            return await RunCoreAsync(job, request, startMode);
+        }
+        catch (Exception) when (job.CancellationToken.IsCancellationRequested)
+        {
+            // Cancellation means discard this incomplete scan. Terminal cancelled state is
+            // published only after the exact checkpoint identity is verified absent.
+            await _checkpoints.RemoveAsync(request, CancellationToken.None);
+            throw new OperationCanceledException(job.CancellationToken);
+        }
+    }
+
+    private async Task<OcrScanResult> RunCoreAsync(AppJob job, OcrScanRequest request, OcrScanStartMode startMode)
     {
         var token = job.CancellationToken;
         var source = Path.GetFullPath(request.Path.Trim());
         if (!File.Exists(source) || new FileInfo(source).Length <= 0) throw new FileNotFoundException("Thiếu video nguồn.", source);
         if (request.Duration <= 0) throw new ArgumentException("Thiếu thời lượng video.");
-        request = request with { Region = OcrCheckpointStore.CanonicalRegion(request.Region) };
         await _ocr.ConfigureDeviceAsync(request.Device, token);
         await _ocr.EnsureAsync(token);
         var ffmpeg = await _tools.EnsureFfmpegAsync(token);
         var mode = OcrCheckpointStore.ModeFor(request.Mode, request.Sensitivity);
-        var saved = await _checkpoints.LoadAsync(request, token);
-        var selected = saved?.SelectedParallelism ?? await SelectParallelismAsync(job, request, token);
-        var configuredWorkers = await _ocr.ConfigureScanWorkersAsync(selected, token);
-        if (configuredWorkers < selected)
-            throw new InvalidOperationException($"OCR topology không hợp lệ: cần {selected} Python worker nhưng chỉ tạo được {configuredWorkers}.");
+        if (startMode == OcrScanStartMode.Fresh)
+            await _checkpoints.RemoveAsync(request, token);
+        var saved = startMode == OcrScanStartMode.Resume
+            ? await _checkpoints.LoadAsync(request, token)
+            : null;
+        if (startMode == OcrScanStartMode.Resume && saved is null)
+            throw new InvalidOperationException("Không còn checkpoint OCR phù hợp để tiếp tục. Hãy Quét từ đầu.");
+
+        job.Set("benchmark", 0.5, "OCR Auto · đo máy và tách lane quét khỏi OCR worker...");
+        _ = await _hardware.BenchmarkAsync(token);
+        var hardware = _hardware.Snapshot();
+        var effectiveDevice = EffectiveDevice(request.Device);
+        var segmentCeiling = MaximumSegmentLanes(request, hardware);
+        var configuredWorkers = await SelectWorkerPoolAsync(job, request, hardware, effectiveDevice, segmentCeiling, token);
+        var selected = saved?.SelectedParallelism ?? await SelectParallelismAsync(job, request, hardware, configuredWorkers, token);
         var checkpoint = saved ?? await _checkpoints.NewAsync(request, selected, token);
         selected = checkpoint.SelectedParallelism;
         if (checkpoint.Lanes.Count != selected)
             throw new InvalidDataException($"OCR checkpoint topology không hợp lệ: {checkpoint.Lanes.Count}/{selected} lane.");
         job.Log(saved is null
-            ? $"OCR Commit: khóa {selected} FFmpeg lane + {configuredWorkers} Python worker."
-            : $"Resume checkpoint schema 4: giữ {selected} FFmpeg lane + {configuredWorkers} Python worker.");
+            ? $"OCR Commit: khóa {selected} FFmpeg segment lane; dùng pool chung {configuredWorkers} Python worker ({_ocr.Status.WorkerKinds})."
+            : $"Resume checkpoint schema 4: giữ {selected} FFmpeg segment lane; dựng lại độc lập pool chung {configuredWorkers} Python worker ({_ocr.Status.WorkerKinds}).");
         var decoder = await ProbeNvdecAsync(ffmpeg, source, request.Region, mode, token) ? "nvdec" : "software";
         job.Log(decoder == "nvdec" ? "Decoder: NVIDIA NVDEC." : "Decoder: software fallback.");
 
         var started = Stopwatch.StartNew();
         var progress = checkpoint.Lanes.Select(x => x.MediaSeconds).ToArray();
+        var frameProgress = checkpoint.Lanes.Select(x => x.Frames).ToArray();
+        var imageProgress = checkpoint.Lanes.Select(x => x.OcrImages).ToArray();
+        var completed = checkpoint.Lanes.Select(x => x.Completed).ToArray();
+        var progressGate = new object();
         Exception? laneFailure = null;
         using var laneCancellation = CancellationTokenSource.CreateLinkedTokenSource(token);
         async Task<OcrLaneCheckpoint> RunGuardedLaneAsync(OcrLaneCheckpoint lane)
         {
+            OcrLaneCheckpoint? outcome = null;
             try
             {
-                return await RunLaneWithFallbackAsync(
+                outcome = await RunLaneWithFallbackAsync(
                     ffmpeg, source, request, mode, lane, decoder,
-                    at =>
+                    (at, frames, images) =>
                     {
-                        progress[lane.Segment.Index] = at;
-                        var unique = checkpoint.Lanes.Sum(x =>
-                            Math.Max(0, Math.Min(x.Segment.CoreEnd, progress[x.Segment.Index]) - x.Segment.CoreStart));
-                        var percent = Math.Clamp(unique / request.Duration * 100, 0, 99.5);
-                        job.Set("scanning", percent, $"Đang quét OCR · {selected} lane · {percent:0.0}%");
+                        lock (progressGate)
+                        {
+                            progress[lane.Segment.Index] = at;
+                            frameProgress[lane.Segment.Index] = frames;
+                            imageProgress[lane.Segment.Index] = images;
+                            PublishTelemetry(job, checkpoint.Lanes, progress, frameProgress, imageProgress, completed, configuredWorkers, _ocr.Status.WorkerKinds, request.Duration);
+                        }
                     }, job, laneCancellation.Token);
+                return outcome;
             }
             catch (Exception error)
             {
@@ -91,6 +124,20 @@ public sealed class OcrScanner
                     Interlocked.CompareExchange(ref laneFailure, error, null);
                 laneCancellation.Cancel();
                 throw;
+            }
+            finally
+            {
+                lock (progressGate)
+                {
+                    if (outcome is not null)
+                    {
+                        progress[lane.Segment.Index] = outcome.MediaSeconds;
+                        frameProgress[lane.Segment.Index] = outcome.Frames;
+                        imageProgress[lane.Segment.Index] = outcome.OcrImages;
+                        completed[lane.Segment.Index] = outcome.Completed;
+                    }
+                    PublishTelemetry(job, checkpoint.Lanes, progress, frameProgress, imageProgress, completed, configuredWorkers, _ocr.Status.WorkerKinds, request.Duration);
+                }
             }
         }
         var laneTasks = checkpoint.Lanes.Select(RunGuardedLaneAsync).ToArray();
@@ -107,20 +154,22 @@ public sealed class OcrScanner
             throw;
         }
 
+        token.ThrowIfCancellationRequested();
         var paused = lanes.Any(x => !x.Completed) && job.IsPauseRequested;
-        var merged = Reconcile(lanes, out var boundaryMerges);
+        var mergedAll = Reconcile(lanes, out var boundaryMerges);
+        var frontier = OcrCheckpointStore.ContiguousFrontier(lanes);
+        var merged = paused ? mergedAll.Where(x => x.Start <= frontier + 0.001).ToArray() : mergedAll;
         string? pauseMessage = null;
         if (paused)
         {
             var pausedCheckpoint = checkpoint with { Lanes = lanes.ToList(), BoundaryMerges = boundaryMerges };
             await _checkpoints.SaveAsync(request, pausedCheckpoint, CancellationToken.None);
-            var frontier = lanes.OrderBy(x => x.Segment.Index).TakeWhile(x => x.Completed).LastOrDefault()?.Segment.CoreEnd
-                ?? lanes.Min(x => x.MediaSeconds);
+            token.ThrowIfCancellationRequested();
             pauseMessage = $"Đã tạm dừng an toàn tại {FormatClock(frontier)}.";
         }
         else
         {
-            await _checkpoints.RemoveAsync(request, token);
+            await _checkpoints.RemoveAsync(request, CancellationToken.None);
         }
 
         var frames = lanes.Sum(x => x.Frames);
@@ -129,53 +178,47 @@ public sealed class OcrScanner
         var result = new OcrScanResult(
             merged, frames, images, media, started.Elapsed.TotalSeconds,
             started.Elapsed.TotalSeconds > 0 ? media / started.Elapsed.TotalSeconds : 0,
-            selected, lanes.Count(x => x.Completed), boundaryMerges, decoder, paused);
+            selected, lanes.Count(x => x.Completed), boundaryMerges, decoder,
+            configuredWorkers, _ocr.Status.WorkerKinds, frontier, mergedAll.Count, paused);
 
         job.SetResult(result);
-        if (paused) job.PauseComplete(pauseMessage);
+        if (paused)
+        {
+            job.PauseComplete(pauseMessage);
+            token.ThrowIfCancellationRequested();
+        }
         return result;
     }
 
     public Task<OcrCheckpointInfo> InspectCheckpointAsync(OcrScanRequest request, CancellationToken cancellationToken) => _checkpoints.InspectAsync(request, cancellationToken);
     public Task RemoveCheckpointAsync(OcrScanRequest request, CancellationToken cancellationToken) => _checkpoints.RemoveAsync(request, cancellationToken);
 
-    private async Task<int> SelectParallelismAsync(AppJob job, OcrScanRequest request, CancellationToken cancellationToken)
+    private async Task<int> SelectParallelismAsync(
+        AppJob job,
+        OcrScanRequest request,
+        HardwareSnapshot hardware,
+        int configuredWorkers,
+        CancellationToken cancellationToken)
     {
-        var maximumForDuration = Math.Clamp((int)Math.Floor(request.Duration / 120), 1, 16);
-        var requestedDevice = request.Device.Trim().ToLowerInvariant();
-        var effectiveDevice = requestedDevice == "auto" && !string.IsNullOrWhiteSpace(_ocr.Status.ActiveMode)
-            ? _ocr.Status.ActiveMode
-            : requestedDevice;
+        var safeMaximum = MaximumSegmentLanes(request, hardware);
         var value = request.Parallelism.Trim().ToLowerInvariant();
         if (value != "auto" && value.Length > 0)
         {
             if (!int.TryParse(value, out var explicitValue) || explicitValue < 1 || explicitValue > 16)
                 throw new ArgumentException("Số luồng OCR phải là auto hoặc 1..16.");
-            job.Set("benchmark", 0.5, "OCR Safety · kiểm tra headroom cho số luồng đã chọn...");
-            _ = await _hardware.BenchmarkAsync(cancellationToken);
-            var safeMaximum = Math.Min(maximumForDuration,
-                HardwareService.RecommendedOcrProbeCeiling(_hardware.Snapshot(), effectiveDevice));
             var selected = Math.Min(explicitValue, safeMaximum);
             if (selected < explicitValue)
-                job.Warn($"Đã giới hạn {explicitValue} → {selected} lane cho {effectiveDevice} theo CPU/RAM/GPU/VRAM và thời lượng video.");
+                job.Warn($"Đã giới hạn {explicitValue} → {selected} segment lane theo CPU/RAM và thời lượng video.");
             return selected;
         }
 
-        job.Set("benchmark", 0.5, "OCR Auto · Predict → Probe → Commit...");
-        _ = await _hardware.BenchmarkAsync(cancellationToken);
-        var hardware = _hardware.Snapshot();
-        var predicted = Math.Min(maximumForDuration, HardwareService.RecommendedOcrLanes(hardware, effectiveDevice));
-        var probeCeiling = Math.Min(maximumForDuration, HardwareService.RecommendedOcrProbeCeiling(hardware, effectiveDevice));
-        job.Log($"Auto Predict: đề xuất {predicted} lane; live probe được thử tới {probeCeiling} lane cho {effectiveDevice} theo CPU/RAM/GPU/VRAM.");
+        job.Log($"Auto Segment Predict: thử tới {safeMaximum} FFmpeg lane theo CPU/RAM/thời lượng; pool OCR giữ độc lập {configuredWorkers} worker.");
         var best = 1;
-        foreach (var level in new[] { 1, 2, 4, 8, 16 }.Where(x => x <= probeCeiling))
+        foreach (var level in new[] { 1, 2, 4, 8, 16 }.Where(x => x <= safeMaximum))
         {
             try
             {
-                job.Set("benchmark", -1, $"OCR Auto Probe: {level} lane...");
-                var configuredWorkers = await _ocr.ConfigureScanWorkersAsync(level, cancellationToken);
-                if (configuredWorkers < level)
-                    throw new InvalidOperationException($"chỉ tạo được {configuredWorkers}/{level} Python worker");
+                job.Set("benchmark", -1, $"OCR Auto Segment Probe: {level} FFmpeg lane → pool {configuredWorkers} OCR worker...");
                 var watch = Stopwatch.StartNew();
                 var probeResults = await Task.WhenAll(Enumerable.Range(0, level).Select(async index =>
                 {
@@ -187,18 +230,119 @@ public sealed class OcrScanner
                 if (failed is not null)
                     throw new InvalidOperationException(failed.Error ?? "OCR worker trả kết quả lỗi trong Auto Probe.");
                 var throughput = level / Math.Max(0.001, watch.Elapsed.TotalSeconds);
-                job.Log($"Auto Probe {level}: đủ {configuredWorkers} worker · {level} pipeline FFmpeg+OCR đồng thời PASS · {throughput:0.00} mẫu/s.");
+                job.Log($"Auto Segment Probe {level}: {level} decode pipeline dùng chung {configuredWorkers} worker PASS · {throughput:0.00} mẫu/s.");
                 best = level;
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception error)
             {
                 if (level == 1) throw;
-                job.Warn($"Auto Probe {level} lane không an toàn: {Compact(error.Message)} · giữ {best} lane.");
+                job.Warn($"Auto Segment Probe {level} lane không an toàn: {Compact(error.Message)} · giữ {best} lane.");
                 break;
             }
         }
         return best;
+    }
+
+    private async Task<int> SelectWorkerPoolAsync(
+        AppJob job,
+        OcrScanRequest request,
+        HardwareSnapshot hardware,
+        string effectiveDevice,
+        int segmentCeiling,
+        CancellationToken cancellationToken)
+    {
+        var minimum = effectiveDevice == "hybrid" ? 2 : 1;
+        var predicted = Math.Max(minimum, HardwareService.RecommendedOcrWorkers(hardware, effectiveDevice));
+        var ceiling = Math.Max(minimum, Math.Min(segmentCeiling,
+            Math.Max(predicted, HardwareService.RecommendedOcrWorkerProbeCeiling(hardware, effectiveDevice))));
+        var levels = new[] { 1, 2, 4, 8, 16 }.Where(x => x >= minimum && x <= ceiling).ToArray();
+        if (levels.Length == 0) levels = [minimum];
+        job.Log($"Auto Worker Predict: {predicted} worker; live probe tới {ceiling} cho {effectiveDevice}. Segment lane không bị buộc bằng worker.");
+
+        var best = minimum;
+        foreach (var level in levels)
+        {
+            try
+            {
+                job.Set("benchmark", -1, $"OCR Worker Probe: {level} Python worker...");
+                var actual = await _ocr.ConfigureWorkerPoolAsync(level, cancellationToken);
+                if (actual < level)
+                    throw new InvalidOperationException($"chỉ tạo được {actual}/{level} Python worker");
+                var results = await Task.WhenAll(Enumerable.Range(0, level).Select(async index =>
+                {
+                    var at = request.Duration * (index + 0.5) / level;
+                    var jpeg = await CaptureFrameAsync(request.Path, at, request.Region, false, cancellationToken);
+                    return await _ocr.RunAsync(Convert.ToBase64String(jpeg), cancellationToken);
+                }));
+                var failed = results.FirstOrDefault(x => !x.Ok);
+                if (failed is not null)
+                    throw new InvalidOperationException(failed.Error ?? "OCR worker trả kết quả lỗi trong Worker Probe.");
+                best = actual;
+                job.Log($"OCR Worker Probe {level}: PASS ({_ocr.Status.WorkerKinds}).");
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception error)
+            {
+                if (level == minimum) throw;
+                job.Warn($"OCR Worker Probe {level} không an toàn: {Compact(error.Message)} · giữ {best} worker.");
+                break;
+            }
+        }
+
+        if (_ocr.Status.Workers != best)
+            best = await _ocr.ConfigureWorkerPoolAsync(best, cancellationToken);
+        return best;
+    }
+
+    private string EffectiveDevice(string requested)
+    {
+        var value = requested.Trim().ToLowerInvariant();
+        return value == "auto" && !string.IsNullOrWhiteSpace(_ocr.Status.ActiveMode)
+            ? _ocr.Status.ActiveMode
+            : value;
+    }
+
+    private static int MaximumSegmentLanes(OcrScanRequest request, HardwareSnapshot hardware)
+    {
+        var durationLimit = Math.Clamp((int)Math.Floor(request.Duration / 120), 1, 16);
+        var hardwareLimit = HardwareService.RecommendedOcrSegmentLanes(hardware);
+        var value = request.Parallelism.Trim().ToLowerInvariant();
+        if (value != "auto" && int.TryParse(value, out var explicitValue))
+            return Math.Min(Math.Clamp(explicitValue, 1, 16), Math.Min(durationLimit, hardwareLimit));
+        return Math.Min(durationLimit, hardwareLimit);
+    }
+
+    private static void PublishTelemetry(
+        AppJob job,
+        IReadOnlyList<OcrLaneCheckpoint> lanes,
+        IReadOnlyList<double> progress,
+        IReadOnlyList<int> frames,
+        IReadOnlyList<int> images,
+        IReadOnlyList<bool> completed,
+        int workers,
+        string workerKinds,
+        double duration)
+    {
+        var unique = lanes.Sum(x =>
+            Math.Max(0, Math.Min(x.Segment.CoreEnd, progress[x.Segment.Index]) - x.Segment.CoreStart));
+        var percent = duration > 0 ? Math.Clamp(unique / duration * 100, 0, 99.5) : 0;
+        var frontier = 0d;
+        foreach (var lane in lanes.OrderBy(x => x.Segment.Index))
+        {
+            if (completed[lane.Segment.Index]) frontier = lane.Segment.CoreEnd;
+            else
+            {
+                frontier = Math.Max(frontier, Math.Clamp(progress[lane.Segment.Index], lane.Segment.CoreStart, lane.Segment.CoreEnd));
+                break;
+            }
+        }
+        var completedCount = completed.Count(x => x);
+        var active = Math.Max(0, lanes.Count - completedCount);
+        job.Set("scanning", percent, $"Đang quét OCR · {lanes.Count} FFmpeg lane · {workers} worker · {percent:0.0}%");
+        job.SetResult(new OcrScanTelemetry(
+            lanes.Count, active, completedCount, workers, workerKinds, percent, frontier,
+            frames.Sum(), images.Sum()));
     }
 
     private async Task<OcrLaneCheckpoint> RunLaneWithFallbackAsync(
@@ -208,7 +352,7 @@ public sealed class OcrScanner
         OcrScanMode mode,
         OcrLaneCheckpoint lane,
         string decoder,
-        Action<double> onProgress,
+        Action<double, int, int> onProgress,
         AppJob job,
         CancellationToken cancellationToken)
     {
@@ -232,7 +376,7 @@ public sealed class OcrScanner
         OcrScanMode mode,
         OcrLaneCheckpoint saved,
         bool nvdec,
-        Action<double> onProgress,
+        Action<double, int, int> onProgress,
         AppJob job,
         CancellationToken cancellationToken)
     {
@@ -284,7 +428,7 @@ public sealed class OcrScanner
                 if (!result.Ok)
                     throw new OcrRecognitionException(result.Error ?? "OCR worker trả kết quả lỗi.");
                 tracker.Observe(at, result);
-                onProgress(at);
+                onProgress(at, frames, images);
                 if (job.IsPauseRequested && tracker.CanCheckpoint)
                 {
                     paused = true;

@@ -25,7 +25,7 @@ def main() -> int:
             "checkpoint key does not use canonical ROI")
 
     set_result = scanner.find("job.SetResult(result);")
-    pause_complete = scanner.find("if (paused) job.PauseComplete(pauseMessage);")
+    pause_complete = scanner.find("job.PauseComplete(pauseMessage);")
     require(set_result >= 0 and pause_complete >= 0 and set_result < pause_complete,
             "paused job can become terminal before OcrScanResult is published")
 
@@ -38,41 +38,57 @@ def main() -> int:
     require("Intersect(" not in similarity_body and "previous[^1]" in similarity_body,
             "OCR boundary similarity is not order-sensitive Levenshtein")
 
-    require("HardwareService.RecommendedOcrLanes(hardware, effectiveDevice)" in scanner,
-            "scanner topology does not follow the effective OCR device")
-    require("HardwareService.RecommendedOcrProbeCeiling(hardware, effectiveDevice)" in scanner and
-            "x <= probeCeiling" in scanner,
-            "Auto topology prediction is still a hard cap instead of a live probe ceiling")
+    require("HardwareService.RecommendedOcrSegmentLanes(hardware)" in scanner,
+            "segment topology does not have an independent CPU/RAM policy")
+    require("HardwareService.RecommendedOcrWorkers(hardware, effectiveDevice)" in scanner and
+            "HardwareService.RecommendedOcrWorkerProbeCeiling(hardware, effectiveDevice)" in scanner,
+            "OCR worker pool does not have an independent device/VRAM live-probe policy")
     require("previousThroughput" not in scanner and "tăng dưới 10% throughput" not in scanner,
             "Auto topology still collapses real lanes using the invalid identical-frame throughput gate")
-    require("configuredWorkers < level" in scanner and "configuredWorkers < selected" in scanner,
-            "scanner does not require a real Python worker for every committed lane")
-    require("request.Duration * (index + 0.5) / level" in scanner and
-            "{level} pipeline FFmpeg+OCR đồng thời PASS" in scanner,
-            "Auto Probe is not exercising one real decode+OCR pipeline per candidate segment")
+    select_start = scanner.find("private async Task<int> SelectParallelismAsync")
+    worker_start = scanner.find("private async Task<int> SelectWorkerPoolAsync")
+    require(select_start >= 0 and worker_start > select_start, "missing separate segment and worker selectors")
+    segment_selector = scanner[select_start:worker_start]
+    require("ConfigureWorkerPoolAsync" not in segment_selector and "configuredWorkers < level" not in segment_selector,
+            "segment-lane selection still requires one Python worker per lane")
+    require("FFmpeg lane → pool {configuredWorkers} OCR worker" in segment_selector,
+            "Auto segment probe does not exercise N decoders through the shared M-worker pool")
+    require("ConfigureWorkerPoolAsync(level" in scanner[worker_start:] and "Worker Probe" in scanner[worker_start:],
+            "worker capacity is not live-probed independently")
     require("checkpoint.Lanes.Count != selected" in scanner,
             "scanner does not verify the committed FFmpeg segment topology")
-    require("FFmpeg lane + {configuredWorkers} Python worker" in scanner,
-            "scanner commit log does not expose real process topology")
+    require("FFmpeg segment lane; dùng pool chung {configuredWorkers} Python worker" in scanner,
+            "scanner commit log does not expose segment and worker topology separately")
     require("new SubtitleTracker(mode.Fps, mode.LowConfidence)" in scanner,
             "scan mode low-confidence threshold is not applied to subtitle tracking")
     require("var overlap = Math.Max(scanMode.Guard, scanMode.ActiveGuard);" in checkpoint,
             "scan mode guard is not applied to lane overlap")
 
-    require("private OcrScanRequest? _pausedRequest;" in page,
+    require("private OcrScanRequest? _checkpointRequest;" in page and
+            "private OcrScanRequest? _activeRequest;" in page,
             "OCR page does not retain the exact request owning a paused checkpoint")
-    require("CancelButton.IsEnabled = paused;" in page,
-            "OCR page disables Cancel when a scan reaches PAUSED")
-    require("_pausedRequest = paused ? request : null;" in page,
+    require("CancelButton.IsEnabled = true;" in page and 'CancelButton.Content = "Đang hủy...";' in page,
+            "OCR page disables or hides Cancel while cancellation cleanup runs")
+    require("_checkpointRequest = paused ? request : null;" in page,
             "OCR page loses the paused checkpoint request at terminal polling")
-    require("await _application.RemoveOcrCheckpointAsync(pausedRequest, CancellationToken.None);" in page,
-            "Cancel cannot delete a paused OCR checkpoint")
-    require("ExportButton.IsEnabled = !paused && _cues.Count > 0;" in page,
+    require("await _application.CancelOcrScanAsync(runningId, request, CancellationToken.None);" in page,
+            "running Cancel does not wait for Core cleanup and verified checkpoint removal")
+    require("checkpoint.Exists" in page and "Checkpoint OCR vẫn còn" in page,
+            "paused Cancel/Restart does not verify checkpoint absence")
+    require('RestartButton' in page and 'OcrScanStartMode.Fresh' in page and 'OcrScanStartMode.Resume' in page,
+            "OCR UI does not expose explicit fresh/resume intent")
+    require("ExportButton.IsEnabled = false;" in page,
             "partial paused OCR cues can incorrectly be exported as completed output")
-    require("{ocrStatus.Workers} Python worker" in page,
-            "live OCR telemetry does not expose the actual worker-process count")
+    require("OcrScanTelemetry telemetry" in page and "{telemetry.SegmentLanes} FFmpeg lane" in page and
+            "{telemetry.WorkerCount} worker" in page,
+            "live OCR telemetry does not expose segment lanes and worker processes separately")
 
-    print("PASS OCR scanner real-process topology, checkpoint, Auto probe, paused-cancel, NVDEC, similarity, device and mode-policy contracts")
+    require("File.Delete(path);" in checkpoint and "if (File.Exists(path)" in checkpoint,
+            "checkpoint removal still swallows delete errors or skips absence verification")
+    require("Where(x => x.Start <= media + 0.001)" in checkpoint,
+            "paused checkpoint cues are not restricted to the contiguous safe frontier")
+
+    print("PASS OCR independent segment/worker topology, verified cancel, explicit fresh/resume, safe-frontier, NVDEC, similarity and mode contracts")
     return 0
 
 

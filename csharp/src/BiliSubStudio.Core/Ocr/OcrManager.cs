@@ -32,6 +32,8 @@ public sealed class OcrManager : IAsyncDisposable
         _deviceMode,
         _activeMode,
         _workers.Count,
+        string.Join(" + ", _workers.GroupBy(x => x.Kind, StringComparer.OrdinalIgnoreCase)
+            .Select(group => $"{group.Count()} {group.Key.ToUpperInvariant()}")),
         "PaddleOCR",
         OcrInstaller.DetectionModel + " + " + OcrInstaller.RecognitionModel,
         _error);
@@ -78,7 +80,7 @@ public sealed class OcrManager : IAsyncDisposable
                 {
                     var mode = _deviceMode;
                     if (mode == "auto") mode = hardware.NvidiaDetected ? "gpu" : "cpu";
-                    if (mode == "hybrid" && HardwareService.RecommendedOcrLanes(hardware, "hybrid") < 2)
+                    if (mode == "hybrid" && HardwareService.RecommendedOcrWorkers(hardware, "hybrid") < 2)
                         throw new InvalidOperationException("Máy hiện tại không đủ headroom để chạy Hybrid OCR an toàn; hãy dùng CPU, GPU hoặc Auto.");
                     await BuildPoolLockedAsync(mode, mode == "hybrid" ? 2 : 1, hardware, operationToken);
                 }
@@ -106,7 +108,7 @@ public sealed class OcrManager : IAsyncDisposable
         }
     }
 
-    public async Task<int> ConfigureScanWorkersAsync(int target, CancellationToken cancellationToken)
+    public async Task<int> ConfigureWorkerPoolAsync(int target, CancellationToken cancellationToken)
     {
         target = Math.Clamp(target, 1, 16);
         await EnsureAsync(cancellationToken);

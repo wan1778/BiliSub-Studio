@@ -448,13 +448,13 @@ public sealed class BiliSubApplication : IAsyncDisposable
         return _ocr.Status;
     }
 
-    public string StartOcrScan(OcrScanRequest request)
+    public string StartOcrScan(OcrScanRequest request, OcrScanStartMode startMode)
     {
         var job = Jobs.Create("ocrscan", pausable: true);
         _ = RunJobAsync(job, async () =>
         {
             await _configStore.UpdateAsync(config => config with { OcrDevice = request.Device }, job.CancellationToken);
-            var result = await _ocrScanner.RunAsync(job, request);
+            var result = await _ocrScanner.RunAsync(job, request, startMode);
             if (!result.Paused) job.Finish(null, $"Đã quét xong: {result.Cues.Count} câu · {result.RealtimeSpeed:0.0}× realtime", result);
         });
         return job.Id;
@@ -507,6 +507,20 @@ public sealed class BiliSubApplication : IAsyncDisposable
 
     public void CancelJob(string id) => Jobs.Cancel(id);
 
+    public async Task CancelOcrScanAsync(string id, OcrScanRequest request, CancellationToken cancellationToken)
+    {
+        if (Jobs.TryGet(id, out var job) && job is not null)
+        {
+            job.Cancel();
+            if (!job.Snapshot().Done)
+                await job.Completion.WaitAsync(TimeSpan.FromSeconds(120), cancellationToken);
+        }
+        await _ocrScanner.RemoveCheckpointAsync(request, cancellationToken);
+        var checkpoint = await _ocrScanner.InspectCheckpointAsync(request, cancellationToken);
+        if (checkpoint.Exists)
+            throw new IOException("Checkpoint OCR vẫn còn sau khi Hủy; không thể xác nhận trạng thái Quét từ đầu.");
+    }
+
     public async Task PrepareShutdownAsync(CancellationToken cancellationToken)
     {
         foreach (var snapshot in Jobs.ActiveSnapshots().Where(x => x.PauseSupported))
@@ -557,7 +571,7 @@ public sealed class BiliSubApplication : IAsyncDisposable
         try { await action(); }
         catch (OperationCanceledException)
         {
-            if (!job.Snapshot().Done) job.Cancel();
+            if (!job.Snapshot().Done) job.CancelComplete();
         }
         catch (Exception error) { job.Finish(error, error.Message); }
     }

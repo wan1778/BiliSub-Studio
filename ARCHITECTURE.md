@@ -68,8 +68,13 @@ The C# OCR subsystem owns:
 - local video frame extraction through app-owned FFmpeg;
 - ROI validation, Chinese subtitle normalization and cue tracking;
 - Auto parallelism benchmarking/capacity selection;
-- deterministic multi-lane scan topology;
-- pause/checkpoint/resume and final SRT export.
+- deterministic FFmpeg segment-lane topology with one lane-local tracker per segment;
+- an independently sized, bounded Python/PaddleOCR worker pool shared by every segment lane;
+- explicit Fresh/Resume scan intent plus pause/checkpoint/cancel-and-delete and final SRT export.
+
+Segment lanes and OCR workers are different capacity units. CPU/RAM/video duration gate the FFmpeg segment count; device mode and GPU/VRAM gate the worker pool. Auto probes both layers on real frames, but never requires one Python process per FFmpeg lane. A committed topology such as four FFmpeg segment lanes feeding one shared GPU worker is valid and remains four lanes in its checkpoint.
+
+For pausable OCR jobs, Cancel is not terminal until active FFmpeg/Python work has stopped and the exact matching checkpoint is verified absent. Resume preserves the saved segment topology; Fresh removes the matching checkpoint before selecting a new topology. Paused cue preview is restricted to the contiguous safe frontier even when later segments have processed more work.
 
 `internal/ocr/worker.py` is an implementation asset, not a second BiliSub backend. It communicates with the C# process through the private worker protocol and exposes no BiliSub HTTP server.
 
