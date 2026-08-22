@@ -19,7 +19,5 @@ internal static class OcrTextFilterRegression
             if (ChineseSubtitleNormalizer.TryNormalize(value, out _))
                 throw new InvalidOperationException($"foreign-script OCR garbage entered Chinese SRT: {value}");
         }
-
-        Console.WriteLine("PASS  Chinese OCR filter keeps mixed tokens and rejects standalone garbage");
     }
 }
