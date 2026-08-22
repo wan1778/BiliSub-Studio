@@ -41,6 +41,16 @@ internal static class OcrTrackerModeRegression
         if (active.GetValue(accurate) is null)
             throw new InvalidOperationException("Accurate OCR did not promote a stable third low-confidence hit");
 
+        var interrupted = Tracker(0.58);
+        observe.Invoke(interrupted, [0d, sample]);
+        observe.Invoke(interrupted, [0.25d, new OcrResult(true, true, "A N", 0.95, [])]);
+        observe.Invoke(interrupted, [0.50d, sample]);
+        if (active.GetValue(interrupted) is not null)
+            throw new InvalidOperationException("foreign-script OCR garbage did not break an unconfirmed subtitle candidate");
+        observe.Invoke(interrupted, [1.00d, sample]);
+        if (active.GetValue(interrupted) is null)
+            throw new InvalidOperationException("subtitle candidate did not recover after fresh consecutive valid hits");
+
         var scannerType = typeof(OcrResult).Assembly.GetType("BiliSubStudio.Core.Ocr.OcrScanner")
             ?? throw new InvalidOperationException("missing OcrScanner");
         var similarity = scannerType.GetMethod("Similarity", BindingFlags.Static | BindingFlags.NonPublic)
