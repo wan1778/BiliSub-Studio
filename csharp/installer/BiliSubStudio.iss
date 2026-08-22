@@ -4,6 +4,9 @@
 #ifndef PublishDir
   #error PublishDir must point to the verified WinUI publish directory
 #endif
+#ifndef LauncherExe
+  #error LauncherExe must point to the verified root launcher executable
+#endif
 #ifndef OutputDir
   #error OutputDir must point to the candidate artifact directory
 #endif
@@ -22,7 +25,8 @@ VersionInfoTextVersion={#AppVersion}
 DefaultDirName={localappdata}\Programs\BiliSub Studio
 DefaultGroupName=BiliSub Studio
 UninstallDisplayName=BiliSub Studio
-UninstallDisplayIcon={app}\Runtime\BiliSubStudio.exe
+UninstallDisplayIcon={app}\BiliSubStudio.exe
+UninstallFilesDir={app}\Uninstall
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
@@ -49,6 +53,7 @@ Name: "desktopicon"; Description: "Tạo lối tắt trên màn hình"; GroupDes
 
 [Files]
 Source: "{#PublishDir}\*"; DestDir: "{app}\Runtime"; Flags: ignoreversion recursesubdirs createallsubdirs notimestamp
+Source: "{#LauncherExe}"; DestDir: "{app}"; DestName: "BiliSubStudio.exe"; Flags: ignoreversion notimestamp
 
 [Dirs]
 Name: "{app}\Data"; Flags: uninsneveruninstall
@@ -58,11 +63,11 @@ Name: "{app}\Cache"; Flags: uninsneveruninstall
 Name: "{app}\Downloads"; Flags: uninsneveruninstall
 
 [Icons]
-Name: "{group}\BiliSub Studio"; Filename: "{app}\Runtime\BiliSubStudio.exe"; WorkingDir: "{app}\Runtime"
-Name: "{autodesktop}\BiliSub Studio"; Filename: "{app}\Runtime\BiliSubStudio.exe"; WorkingDir: "{app}\Runtime"; Tasks: desktopicon
+Name: "{group}\BiliSub Studio"; Filename: "{app}\BiliSubStudio.exe"; WorkingDir: "{app}"
+Name: "{autodesktop}\BiliSub Studio"; Filename: "{app}\BiliSubStudio.exe"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\Runtime\BiliSubStudio.exe"; Description: "Mở BiliSub Studio"; WorkingDir: "{app}\Runtime"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\BiliSubStudio.exe"; Description: "Mở BiliSub Studio"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent
 
 [Code]
 function IsProtectedRootName(const Name: String): Boolean;
@@ -73,7 +78,8 @@ begin
     (CompareText(Name, 'Temp') = 0) or
     (CompareText(Name, 'Cache') = 0) or
     (CompareText(Name, 'Downloads') = 0) or
-    (CompareText(Name, 'Runtime') = 0);
+    (CompareText(Name, 'Runtime') = 0) or
+    (CompareText(Name, 'Uninstall') = 0);
 end;
 
 function FirstPathComponent(const RelativePath: String): String;
@@ -151,8 +157,23 @@ begin
   end;
 end;
 
+procedure CleanupLegacyRootUninstaller;
+begin
+  { The previous installer stored its uninstaller in the product root. The new
+    layout keeps uninstall-owned files under Uninstall\ so the user-visible root
+    stays focused on the launcher and data/runtime folders. }
+  if FileExists(ExpandConstant('{app}\unins000.exe')) then
+    DeleteFile(ExpandConstant('{app}\unins000.exe'));
+  if FileExists(ExpandConstant('{app}\unins000.dat')) then
+    DeleteFile(ExpandConstant('{app}\unins000.dat'));
+  if FileExists(ExpandConstant('{app}\unins000.msg')) then
+    DeleteFile(ExpandConstant('{app}\unins000.msg'));
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssInstall then
     CleanupLegacyFlatRuntime;
+  if CurStep = ssPostInstall then
+    CleanupLegacyRootUninstaller;
 end;
