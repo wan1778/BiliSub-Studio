@@ -3,6 +3,7 @@ using BiliSubStudio.Core.Application;
 using BiliSubStudio.Core.Diagnostics;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
 
 namespace BiliSubStudio.App.Pages;
 
