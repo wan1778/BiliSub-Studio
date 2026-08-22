@@ -15,6 +15,7 @@ public sealed class OcrScanner
     private readonly OcrManager _ocr;
     private readonly HardwareService _hardware;
     private readonly OcrCheckpointStore _checkpoints;
+    private OwnedProcessGroup? _activeProcesses;
 
     internal OcrScanner(ToolManager tools, ProcessRunner processes, OcrManager ocr, HardwareService hardware, OcrCheckpointStore checkpoints)
     {
@@ -27,13 +28,14 @@ public sealed class OcrScanner
 
     public async Task<OcrResult> RecognizeFrameAsync(string path, double at, OcrRegion region, string device, CancellationToken cancellationToken)
     {
+        await using var processes = new OwnedProcessGroup();
         await _ocr.ConfigureDeviceAsync(device, cancellationToken);
         await _ocr.EnsureAsync(cancellationToken);
-        var jpeg = await CaptureFrameAsync(path, at, region, enhanced: false, cancellationToken);
+        var jpeg = await CaptureFrameAsync(path, at, region, enhanced: false, cancellationToken, processes);
         var result = await _ocr.RunAsync(Convert.ToBase64String(jpeg), cancellationToken);
         if (result.Ok && result.Confidence < 0.68)
         {
-            var enhanced = await CaptureFrameAsync(path, at, region, enhanced: true, cancellationToken);
+            var enhanced = await CaptureFrameAsync(path, at, region, enhanced: true, cancellationToken, processes);
             var alternate = await _ocr.RunAsync(Convert.ToBase64String(enhanced), cancellationToken);
             if (alternate.Ok && alternate.Confidence > result.Confidence) result = alternate;
         }
@@ -43,20 +45,39 @@ public sealed class OcrScanner
     public async Task<OcrScanResult> RunAsync(AppJob job, OcrScanRequest request, OcrScanStartMode startMode)
     {
         request = request with { Region = OcrCheckpointStore.CanonicalRegion(request.Region) };
+        var processes = new OwnedProcessGroup();
+        if (Interlocked.CompareExchange(ref _activeProcesses, processes, null) is not null)
+        {
+            await processes.DisposeAsync();
+            throw new InvalidOperationException("Một lần quét OCR khác vẫn đang sở hữu tiến trình FFmpeg.");
+        }
         try
         {
-            return await RunCoreAsync(job, request, startMode);
+            return await RunCoreAsync(job, request, startMode, processes);
         }
         catch (Exception) when (job.CancellationToken.IsCancellationRequested)
         {
-            // Cancellation means discard this incomplete scan. Terminal cancelled state is
-            // published only after the exact checkpoint identity is verified absent.
+            // Cancellation is not terminal until every app-owned FFmpeg tree is reaped and
+            // Python worker is stopped, and the exact checkpoint identity is verified absent.
+            await processes.StopAsync();
+            await _ocr.StopAsync();
             await _checkpoints.RemoveAsync(request, CancellationToken.None);
             throw new OperationCanceledException(job.CancellationToken);
         }
+        finally
+        {
+            await processes.DisposeAsync();
+            Interlocked.CompareExchange(ref _activeProcesses, null, processes);
+        }
     }
 
-    private async Task<OcrScanResult> RunCoreAsync(AppJob job, OcrScanRequest request, OcrScanStartMode startMode)
+    internal int ActiveProcessCount => Volatile.Read(ref _activeProcesses)?.ActiveCount ?? 0;
+
+    private async Task<OcrScanResult> RunCoreAsync(
+        AppJob job,
+        OcrScanRequest request,
+        OcrScanStartMode startMode,
+        OwnedProcessGroup processes)
     {
         var token = job.CancellationToken;
         var source = Path.GetFullPath(request.Path.Trim());
@@ -76,18 +97,19 @@ public sealed class OcrScanner
 
         job.Set("benchmark", 0.5, "OCR · đo nền CPU/RAM trước benchmark pipeline thật...");
         var baseline = await _hardware.BenchmarkAsync(token);
-        job.Log($"Benchmark nền (chỉ telemetry): CPU {baseline.CpuMegabytesPerSecond:0} MiB/s · RAM {baseline.MemoryMegabytesPerSecond:0} MiB/s. Kết quả này không chặn bậc Auto.");
+        job.Log($"Benchmark tốc độ nền: CPU {baseline.CpuMegabytesPerSecond:0} MiB/s · RAM {baseline.MemoryMegabytesPerSecond:0} MiB/s. Auto sẽ quyết định bằng live RAM/VRAM, topology thật và throughput.");
 
         int selected;
         if (saved is null)
         {
-            selected = await SelectParallelismAsync(job, ffmpeg, request, token);
+            selected = await SelectParallelismAsync(job, ffmpeg, request, processes, token);
         }
         else
         {
             selected = saved.SelectedParallelism;
             job.Set("benchmark", -1, $"OCR Resume Probe: kiểm tra lại topology {selected} trước khi tiếp tục...");
-            await ProbeTopologyLevelAsync(ffmpeg, request, selected, token);
+            EnsureResourceHeadroom(job, selected, isManual: true, lastStable: 0);
+            await ProbeTopologyLevelAsync(ffmpeg, request, selected, processes, null, token);
             job.Log($"Resume Probe {selected}: {selected} Python worker + {selected} FFmpeg pipeline PASS.");
         }
         var configuredWorkers = _ocr.Status.Workers;
@@ -102,7 +124,7 @@ public sealed class OcrScanner
         job.Log(saved is null
             ? $"OCR Commit: benchmark xong, khóa {selected} pipeline = {selected} FFmpeg lane + {configuredWorkers} Python worker ({_ocr.Status.WorkerKinds})."
             : $"Resume checkpoint schema 4: giữ và kiểm tra lại {selected} pipeline = {selected} FFmpeg lane + {configuredWorkers} Python worker ({_ocr.Status.WorkerKinds}).");
-        var decoder = await ProbeNvdecAsync(ffmpeg, source, request.Region, mode, token) ? "nvdec" : "software";
+        var decoder = await ProbeNvdecAsync(ffmpeg, source, request.Region, mode, processes, token) ? "nvdec" : "software";
         job.Log(decoder == "nvdec" ? "Decoder: NVIDIA NVDEC." : "Decoder: software fallback.");
 
         var started = Stopwatch.StartNew();
@@ -129,7 +151,7 @@ public sealed class OcrScanner
                             imageProgress[lane.Segment.Index] = images;
                             PublishTelemetry(job, checkpoint.Lanes, progress, frameProgress, imageProgress, completed, configuredWorkers, _ocr.Status.WorkerKinds, request.Duration);
                         }
-                    }, job, laneCancellation.Token);
+                    }, job, processes, laneCancellation.Token);
                 return outcome;
             }
             catch (Exception error)
@@ -211,6 +233,7 @@ public sealed class OcrScanner
         AppJob job,
         string ffmpeg,
         OcrScanRequest request,
+        OwnedProcessGroup processes,
         CancellationToken cancellationToken)
     {
         var value = request.Parallelism.Trim().ToLowerInvariant();
@@ -218,33 +241,58 @@ public sealed class OcrScanner
         {
             if (!int.TryParse(value, out var explicitValue) || explicitValue < 1 || explicitValue > 16)
                 throw new ArgumentException("Số luồng OCR phải là auto hoặc 1..16.");
+            EnsureResourceHeadroom(job, explicitValue, isManual: true, lastStable: 0);
             job.Set("benchmark", -1, $"OCR Manual Probe: {explicitValue} Python worker + {explicitValue} FFmpeg pipeline...");
-            await ProbeTopologyLevelAsync(ffmpeg, request, explicitValue, cancellationToken);
+            await ProbeTopologyLevelAsync(ffmpeg, request, explicitValue, processes, actual =>
+            {
+                var resources = _hardware.ResourceSnapshot();
+                job.SetResult(new OcrBenchmarkTelemetry(
+                    explicitValue, 0, 16, actual, _ocr.Status.WorkerKinds,
+                    $"đang chạy đủ {actual} pipeline", OcrAutoResourcePolicy.FormatSnapshot(resources)));
+            }, cancellationToken);
             job.Log($"Manual Probe {explicitValue}: topology đầy đủ PASS; bắt đầu quét với đúng {explicitValue} luồng.");
             return explicitValue;
         }
 
         var lastStable = 0;
-        job.Log("Auto Benchmark: bắt buộc thử tuần tự 1 → 2 → 4 → 8 → 16 bằng pipeline thật; không dùng dự đoán phần cứng làm trần.");
+        var lastThroughput = 0d;
+        job.Log("Auto Benchmark Predict → Probe → Commit: xét CPU/RAM/VRAM trước từng bậc 1 → 2 → 4 → 8 → 16, rồi chỉ PASS khi đủ đúng N pipeline thật và throughput tăng ít nhất 10%.");
         var selected = await OcrTopologyBenchmark.SelectAsync(
             async (level, token) =>
             {
-                job.Set("benchmark", -1, $"OCR Auto Benchmark {level}/16: tạo {level} Python worker và chạy {level} FFmpeg + OCR đồng thời...");
-                job.SetResult(new OcrBenchmarkTelemetry(level, lastStable, 16, _ocr.Status.Workers, _ocr.Status.WorkerKinds, "đang thử"));
-                var watch = Stopwatch.StartNew();
-                await ProbeTopologyLevelAsync(ffmpeg, request, level, token);
-                var throughput = level / Math.Max(0.001, watch.Elapsed.TotalSeconds);
+                var preflight = EnsureResourceHeadroom(job, level, isManual: false, lastStable: lastStable);
+                job.Set("benchmark", -1, $"OCR Auto Benchmark {level}/16: tài nguyên đạt ngưỡng; đang tạo đúng {level} Python worker...");
+                var probe = await ProbeTopologyLevelAsync(ffmpeg, request, level, processes, actual =>
+                {
+                    var resources = _hardware.ResourceSnapshot();
+                    job.SetResult(new OcrBenchmarkTelemetry(
+                        level, lastStable, 16, actual, _ocr.Status.WorkerKinds,
+                        $"đang chạy đủ {actual} FFmpeg + OCR pipeline", OcrAutoResourcePolicy.FormatSnapshot(resources)));
+                }, token);
+                if (!OcrAutoResourcePolicy.HasUsefulThroughputGain(lastThroughput, probe.Throughput))
+                {
+                    var gain = lastThroughput <= 0 ? 0 : (probe.Throughput / lastThroughput - 1) * 100;
+                    throw new InvalidOperationException(
+                        $"mức {level} chỉ tăng throughput {gain:0.0}% (< 10%) so với mức {lastStable}; không đáng đổi thêm RAM/VRAM");
+                }
                 lastStable = level;
-                job.SetResult(new OcrBenchmarkTelemetry(level, lastStable, 16, _ocr.Status.Workers, _ocr.Status.WorkerKinds, "PASS"));
-                job.Log($"Auto Benchmark {level}: {level} Python worker + {level} FFmpeg pipeline PASS · {throughput:0.00} mẫu/s.");
+                lastThroughput = probe.Throughput;
+                var after = _hardware.ResourceSnapshot();
+                job.SetResult(new OcrBenchmarkTelemetry(
+                    level, lastStable, 16, _ocr.Status.Workers, _ocr.Status.WorkerKinds,
+                    $"PASS · {probe.Throughput:0.00} mẫu/s", OcrAutoResourcePolicy.FormatSnapshot(after)));
+                job.Log($"Auto Benchmark {level}: đủ {level} Python worker + {level} FFmpeg pipeline PASS · {probe.Throughput:0.00} mẫu/s · {preflight.Summary}.");
             },
             async (best, token) =>
             {
                 job.Set("benchmark", -1, $"OCR Auto Rollback: dựng lại topology ổn định {best}...");
                 var restored = await _ocr.ConfigureWorkerPoolAsync(best, token);
-                if (restored != best)
+                if (restored != best || !_ocr.Status.Ready)
                     throw new InvalidOperationException($"Không phục hồi đủ {best} Python worker sau benchmark lỗi; chỉ có {restored}.");
-                job.SetResult(new OcrBenchmarkTelemetry(best, best, 16, restored, _ocr.Status.WorkerKinds, "đã quay về"));
+                var resources = _hardware.ResourceSnapshot();
+                job.SetResult(new OcrBenchmarkTelemetry(
+                    best, best, 16, restored, _ocr.Status.WorkerKinds,
+                    "đã quay về mức PASS an toàn", OcrAutoResourcePolicy.FormatSnapshot(resources)));
             },
             (failed, best, error) =>
                 job.Warn($"Auto Benchmark {failed} FAIL: {Compact(error.Message)} · đã quay về {best} pipeline ổn định."),
@@ -253,10 +301,28 @@ public sealed class OcrScanner
         return selected;
     }
 
-    private async Task ProbeTopologyLevelAsync(
+    private OcrResourceDecision EnsureResourceHeadroom(AppJob job, int candidate, bool isManual, int lastStable)
+    {
+        var hardware = _hardware.Snapshot();
+        var resources = _hardware.ResourceSnapshot();
+        var decision = OcrAutoResourcePolicy.Evaluate(
+            hardware, resources, _ocr.Status.ActiveMode, _ocr.Status.Workers, candidate);
+        var stable = isManual ? 0 : lastStable;
+        job.SetResult(new OcrBenchmarkTelemetry(
+            candidate, stable, 16, _ocr.Status.Workers, _ocr.Status.WorkerKinds,
+            decision.Allowed ? $"preflight PASS; chuẩn bị tạo {candidate}" : "preflight STOP: " + decision.Reason,
+            decision.Summary));
+        if (!decision.Allowed) throw new InvalidOperationException(decision.Reason);
+        job.Log($"Resource preflight {candidate}: PASS · {decision.Summary}.");
+        return decision;
+    }
+
+    private async Task<OcrTopologyProbe> ProbeTopologyLevelAsync(
         string ffmpeg,
         OcrScanRequest request,
         int level,
+        OwnedProcessGroup processes,
+        Action<int>? configured,
         CancellationToken cancellationToken)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -264,17 +330,32 @@ public sealed class OcrScanner
         try
         {
             var actual = await _ocr.ConfigureWorkerPoolAsync(level, timeout.Token);
-            if (actual != level)
+            if (actual != level || !_ocr.Status.Ready)
                 throw new InvalidOperationException($"chỉ tạo được {actual}/{level} Python worker");
-            var probeResults = await Task.WhenAll(Enumerable.Range(0, level).Select(async index =>
+            configured?.Invoke(actual);
+            async Task<OcrResult[]> RunRoundAsync(int round)
             {
-                var at = request.Duration * (index + 0.5) / level;
-                var jpeg = await CaptureFrameWithFfmpegAsync(ffmpeg, request.Path, at, request.Region, false, timeout.Token);
-                return await _ocr.RunAsync(Convert.ToBase64String(jpeg), timeout.Token);
-            }));
+                return await Task.WhenAll(Enumerable.Range(0, level).Select(async index =>
+                {
+                    var at = request.Duration * (round * level + index + 0.5) / (level * 3d);
+                    var jpeg = await CaptureFrameWithFfmpegAsync(ffmpeg, request.Path, at, request.Region, false, processes, timeout.Token);
+                    return await _ocr.RunAsync(Convert.ToBase64String(jpeg), timeout.Token);
+                }));
+            }
+
+            var warmup = await RunRoundAsync(0);
+            var warmupFailure = warmup.FirstOrDefault(result => !result.Ok);
+            if (warmupFailure is not null)
+                throw new InvalidOperationException(warmupFailure.Error ?? "OCR worker trả kết quả lỗi trong benchmark warm-up.");
+            var watch = Stopwatch.StartNew();
+            var probeResults = (await RunRoundAsync(1)).Concat(await RunRoundAsync(2)).ToArray();
             var failed = probeResults.FirstOrDefault(result => !result.Ok);
             if (failed is not null)
                 throw new InvalidOperationException(failed.Error ?? "OCR worker trả kết quả lỗi trong benchmark.");
+            if (_ocr.Status.Workers != level || !_ocr.Status.Ready)
+                throw new InvalidOperationException($"topology {level} mất worker trong lúc probe; còn {_ocr.Status.Workers}/{level}");
+            watch.Stop();
+            return new OcrTopologyProbe(level * 2 / Math.Max(0.001, watch.Elapsed.TotalSeconds));
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -323,18 +404,19 @@ public sealed class OcrScanner
         string decoder,
         Action<double, int, int> onProgress,
         AppJob job,
+        OwnedProcessGroup processes,
         CancellationToken cancellationToken)
     {
         if (lane.Completed) return lane;
         try
         {
-            return await RunLaneAsync(ffmpeg, source, request, mode, lane, decoder == "nvdec", onProgress, job, cancellationToken);
+            return await RunLaneAsync(ffmpeg, source, request, mode, lane, decoder == "nvdec", onProgress, job, processes, cancellationToken);
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception error) when (decoder == "nvdec" && error is not OcrRecognitionException)
         {
             job.Log($"Lane {lane.Segment.Index + 1}: NVDEC lỗi, fallback software: {error.Message}");
-            return await RunLaneAsync(ffmpeg, source, request, mode, lane, false, onProgress, job, cancellationToken);
+            return await RunLaneAsync(ffmpeg, source, request, mode, lane, false, onProgress, job, processes, cancellationToken);
         }
     }
 
@@ -347,6 +429,7 @@ public sealed class OcrScanner
         bool nvdec,
         Action<double, int, int> onProgress,
         AppJob job,
+        OwnedProcessGroup processes,
         CancellationToken cancellationToken)
     {
         var segment = saved.Segment;
@@ -365,6 +448,7 @@ public sealed class OcrScanner
         foreach (var argument in args) start.ArgumentList.Add(argument);
         using var process = new Process { StartInfo = start };
         process.Start();
+        using var ownership = processes.Track(process);
         using var registration = cancellationToken.Register(() => Kill(process));
         var errorTask = process.StandardError.ReadToEndAsync(cancellationToken);
         var reader = new JpegStreamReader(process.StandardOutput.BaseStream);
@@ -456,10 +540,16 @@ public sealed class OcrScanner
         return output;
     }
 
-    private async Task<byte[]> CaptureFrameAsync(string path, double at, OcrRegion region, bool enhanced, CancellationToken cancellationToken)
+    private async Task<byte[]> CaptureFrameAsync(
+        string path,
+        double at,
+        OcrRegion region,
+        bool enhanced,
+        CancellationToken cancellationToken,
+        OwnedProcessGroup processes)
     {
         var ffmpeg = await _tools.EnsureFfmpegAsync(cancellationToken);
-        return await CaptureFrameWithFfmpegAsync(ffmpeg, path, at, region, enhanced, cancellationToken);
+        return await CaptureFrameWithFfmpegAsync(ffmpeg, path, at, region, enhanced, processes, cancellationToken);
     }
 
     private async Task<byte[]> CaptureFrameWithFfmpegAsync(
@@ -468,6 +558,7 @@ public sealed class OcrScanner
         double at,
         OcrRegion region,
         bool enhanced,
+        OwnedProcessGroup processes,
         CancellationToken cancellationToken)
     {
         region = OcrCheckpointStore.NormalizeRegion(region);
@@ -479,10 +570,16 @@ public sealed class OcrScanner
             "-hide_banner", "-loglevel", "error", "-nostdin", "-ss", Math.Max(0, at).ToString("0.000", CultureInfo.InvariantCulture),
             "-i", Path.GetFullPath(path.Trim()), "-map", "0:v:0", "-an", "-sn", "-dn", "-frames:v", "1",
             "-vf", filter, "-q:v", "3", "-c:v", "mjpeg", "-f", "image2pipe", "pipe:1",
-        ], cancellationToken);
+        ], cancellationToken, processes);
     }
 
-    private async Task<bool> ProbeNvdecAsync(string ffmpeg, string source, OcrRegion region, OcrScanMode mode, CancellationToken cancellationToken)
+    private async Task<bool> ProbeNvdecAsync(
+        string ffmpeg,
+        string source,
+        OcrRegion region,
+        OcrScanMode mode,
+        OwnedProcessGroup processes,
+        CancellationToken cancellationToken)
     {
         var args = BuildLaneArguments(source, region, mode, 0, Math.Min(2, mode.Fps > 0 ? 2 : 1), nvdec: true).ToList();
         var frameIndex = args.IndexOf("-f");
@@ -495,7 +592,7 @@ public sealed class OcrScanner
         timeout.CancelAfter(TimeSpan.FromSeconds(12));
         try
         {
-            var result = await _processes.RunAsync(ffmpeg, args, timeout.Token);
+            var result = await _processes.RunAsync(ffmpeg, args, timeout.Token, owner: processes);
             return result.ExitCode == 0;
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { return false; }
@@ -550,6 +647,7 @@ public sealed class OcrScanner
     }
     private static void Kill(Process process) { try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { } }
 
+    private sealed record OcrTopologyProbe(double Throughput);
     private sealed class OcrRecognitionException(string message, Exception? inner = null) : Exception(message, inner);
 
     private sealed class JpegStreamReader

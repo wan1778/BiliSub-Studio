@@ -12,7 +12,8 @@ public sealed class ProcessRunner
         IEnumerable<string> arguments,
         CancellationToken cancellationToken,
         IReadOnlyDictionary<string, string?>? environment = null,
-        Action<string>? standardOutputLine = null)
+        Action<string>? standardOutputLine = null,
+        OwnedProcessGroup? owner = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(executable);
         var start = new ProcessStartInfo(executable)
@@ -42,6 +43,7 @@ public sealed class ProcessRunner
         {
             throw new InvalidOperationException($"Không khởi động được {Path.GetFileName(executable)}.");
         }
+        using var ownership = owner?.Track(process);
 
         using var registration = cancellationToken.Register(() => Kill(process));
         // Drain stderr for the lifetime of the child. Cancelling the read itself can
@@ -68,7 +70,11 @@ public sealed class ProcessRunner
         }
     }
 
-    public async Task<byte[]> CaptureBytesAsync(string executable, IEnumerable<string> arguments, CancellationToken cancellationToken)
+    public async Task<byte[]> CaptureBytesAsync(
+        string executable,
+        IEnumerable<string> arguments,
+        CancellationToken cancellationToken,
+        OwnedProcessGroup? owner = null)
     {
         var start = new ProcessStartInfo(executable)
         {
@@ -87,6 +93,7 @@ public sealed class ProcessRunner
         {
             throw new InvalidOperationException($"Không khởi động được {Path.GetFileName(executable)}.");
         }
+        using var ownership = owner?.Track(process);
         using var registration = cancellationToken.Register(() => Kill(process));
         await using var output = new MemoryStream();
         var copyTask = process.StandardOutput.BaseStream.CopyToAsync(output, cancellationToken);

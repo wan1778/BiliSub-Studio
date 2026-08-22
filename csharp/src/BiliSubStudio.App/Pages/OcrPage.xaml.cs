@@ -304,7 +304,8 @@ public sealed partial class OcrPage : Page
             else if (snapshot.Result is OcrBenchmarkTelemetry benchmark)
             {
                 var stable = benchmark.LastStable > 0 ? benchmark.LastStable.ToString() : "chưa có";
-                TelemetryText.Text = $"Benchmark {benchmark.Candidate}/{benchmark.Maximum} · PASS gần nhất {stable} · {benchmark.WorkerCount} Python worker ({benchmark.WorkerKinds}) · {benchmark.Phase}";
+                var resources = string.IsNullOrWhiteSpace(benchmark.ResourceSummary) ? string.Empty : " · " + benchmark.ResourceSummary;
+                TelemetryText.Text = $"Benchmark {benchmark.Candidate}/{benchmark.Maximum} · PASS gần nhất {stable} · {benchmark.WorkerCount} Python worker ({benchmark.WorkerKinds}) · {benchmark.Phase}{resources}";
             }
             else
             {
@@ -323,7 +324,7 @@ public sealed partial class OcrPage : Page
                 _jobId = null;
                 RestoreIdleControls();
                 if (cancelled)
-                    ResetFreshUi("Đã hủy lần quét dở và xác nhận checkpoint đã được xóa.");
+                    ResetFreshUi("Đã hủy sạch: 0 Python worker · 0 FFmpeg/process tree · checkpoint đã xóa.");
                 else if (paused)
                     ApplyCheckpointUi();
                 else if (failed)
@@ -395,7 +396,7 @@ public sealed partial class OcrPage : Page
             _activeRequest = null;
             _checkpointRequest = null;
             RestoreIdleControls();
-            ResetFreshUi("Đã hủy lần quét dở và xác nhận checkpoint đã được xóa. Lần bấm sau sẽ Quét từ đầu.");
+            ResetFreshUi("Đã hủy sạch: 0 Python worker · 0 FFmpeg/process tree · checkpoint đã xóa. Lần bấm sau sẽ Quét từ đầu.");
         }
         catch (Exception error)
         {

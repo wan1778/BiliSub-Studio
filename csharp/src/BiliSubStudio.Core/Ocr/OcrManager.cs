@@ -313,8 +313,15 @@ public sealed class OcrManager : IAsyncDisposable
     {
         _available?.Writer.TryComplete();
         _available = null;
-        foreach (var worker in _workers) await worker.DisposeAsync();
+        Exception? firstFailure = null;
+        foreach (var worker in _workers)
+        {
+            try { await worker.DisposeAsync(); }
+            catch (Exception error) { firstFailure ??= error; }
+        }
         _workers.Clear();
+        if (firstFailure is not null)
+            throw new IOException("Không thu hồi sạch toàn bộ OCR Python worker.", firstFailure);
     }
 
     private static string NormalizeDevice(string? mode)

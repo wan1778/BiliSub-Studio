@@ -166,7 +166,7 @@
                 <Grid ColumnSpacing="12">
                     <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="2*" /></Grid.ColumnDefinitions>
                     <StackPanel Spacing="5">
-                        <TextBlock Style="{StaticResource CardTitleStyle}" Text="Telemetry" />
+                        <TextBlock Style="{StaticResource CardTitleStyle}" Text="Đo hiệu năng OCR" />
                         <TextBlock x:Name="TelemetryText" Style="{StaticResource MutedTextStyle}" Text="Chưa có telemetry." AutomationProperties.LiveSetting="Polite" />
                     </StackPanel>
                     <ListView Grid.Column="1" x:Name="CueList" MinHeight="72" SelectionChanged="CueList_SelectionChanged" AutomationProperties.Name="Danh sách câu phụ đề OCR" />

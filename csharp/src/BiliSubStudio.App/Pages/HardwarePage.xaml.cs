@@ -90,8 +90,8 @@ public sealed partial class HardwarePage : Page
             ResultText.Text = "Đang benchmark CPU và RAM...";
             _log.Info("Hiệu năng", "Bắt đầu benchmark CPU/RAM.");
             var result = await _application.Hardware.BenchmarkAsync(CancellationToken.None);
-            ResultText.Text = $"CPU SHA-256: {result.CpuMegabytesPerSecond:0} MiB/s · RAM copy: {result.MemoryMegabytesPerSecond:0} MiB/s · ước lượng tĩnh {result.RecommendedOcrLanes} lane (OCR Auto vẫn probe đủ 1→16)";
-            _log.Info("Hiệu năng", $"Benchmark hoàn tất · CPU {result.CpuMegabytesPerSecond:0} MiB/s · RAM {result.MemoryMegabytesPerSecond:0} MiB/s · ước lượng tham khảo {result.RecommendedOcrLanes} lane; OCR Auto không dùng giá trị này làm trần.");
+            ResultText.Text = $"CPU SHA-256: {result.CpuMegabytesPerSecond:0} MiB/s · RAM copy: {result.MemoryMegabytesPerSecond:0} MiB/s · nền tham khảo {result.RecommendedOcrLanes} lane (OCR Auto sẽ đo RAM/VRAM và pipeline thật)";
+            _log.Info("Hiệu năng", $"Benchmark hoàn tất · CPU {result.CpuMegabytesPerSecond:0} MiB/s · RAM {result.MemoryMegabytesPerSecond:0} MiB/s · nền tham khảo {result.RecommendedOcrLanes} lane; OCR Auto dùng live RAM/VRAM + throughput probe để Commit.");
         }
         catch (Exception error)
         {
