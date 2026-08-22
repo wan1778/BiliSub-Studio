@@ -128,7 +128,9 @@ jobs:
           $portableHash = (Get-FileHash $portable -Algorithm SHA256).Hash.ToLowerInvariant()
           $portableSize = (Get-Item $portable).Length
 
-          $source = Get-ChildItem $artifactDir -File -Filter "BiliSubStudio_v4.0.0-beta.12-csharp-p5-source-*.zip" | Select-Object -Single
+          $sources = @(Get-ChildItem $artifactDir -File -Filter "BiliSubStudio_v4.0.0-beta.12-csharp-p5-source-*.zip")
+          if ($sources.Count -ne 1) { throw "expected exactly one exact-source archive, found $($sources.Count)" }
+          $source = $sources[0]
           $releaseSums = Join-Path $artifactDir "RELEASE_SHA256SUMS.txt"
           @(
             "$((Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant())  $([IO.Path]::GetFileName($installer))",
