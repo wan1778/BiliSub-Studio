@@ -9,12 +9,19 @@ public static partial class ChineseSubtitleNormalizer
     {
         var text = string.Join(" ", (input ?? string.Empty).Replace('\r', ' ').Replace('\n', ' ').Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
         text = RepeatedPunctuation().Replace(text, "$1");
-        var hasHan = false;
+
+        var hanCount = 0;
+        var latinCount = 0;
         foreach (var rune in text.EnumerateRunes())
         {
             if (IsHan(rune.Value))
             {
-                hasHan = true;
+                hanCount++;
+                continue;
+            }
+            if (rune.Value is >= 'A' and <= 'Z' or >= 'a' and <= 'z')
+            {
+                latinCount++;
                 continue;
             }
             if (IsForbiddenLetter(rune.Value))
@@ -23,8 +30,25 @@ public static partial class ChineseSubtitleNormalizer
                 return false;
             }
         }
+
         output = text.Trim();
-        return hasHan && output.Length > 0;
+        if (hanCount == 0 || output.Length == 0) return false;
+
+        // Keep legitimate short tokens such as B站, VIP会员 or OpenAI模型, but reject
+        // the characteristic OCR garbage previously seen as isolated Latin letters.
+        if (Regex.IsMatch(output,
+                @"(?:^|\s)[A-Za-z](?:\s+[A-Za-z]){1,}(?=\s|[，。！？、；：,.!?…]|$)",
+                RegexOptions.CultureInvariant))
+        {
+            output = string.Empty;
+            return false;
+        }
+        if (latinCount > Math.Max(6, hanCount * 2))
+        {
+            output = string.Empty;
+            return false;
+        }
+        return true;
     }
 
     private static bool IsHan(int value) =>
@@ -35,7 +59,6 @@ public static partial class ChineseSubtitleNormalizer
 
     private static bool IsForbiddenLetter(int value)
     {
-        if (value is >= 'A' and <= 'Z' or >= 'a' and <= 'z') return true;
         if (value is >= 0x3040 and <= 0x30FF) return true; // Kana
         if (value is >= 0xAC00 and <= 0xD7AF) return true; // Hangul
         if (value is >= 0x0400 and <= 0x052F) return true; // Cyrillic
