@@ -59,12 +59,7 @@ public sealed class HardwareService
 
     internal static int RecommendedOcrLanes(HardwareSnapshot snapshot, string? deviceMode)
     {
-        var baseLanes = 1;
-        foreach (var level in new[] { 2, 4, 8, 16 })
-        {
-            if (snapshot.LogicalProcessors >= level * 2 && snapshot.MemoryBytes >= level * 768L * 1024 * 1024)
-                baseLanes = level;
-        }
+        var baseLanes = RecommendedCpuOcrLanes(snapshot);
 
         var mode = (deviceMode ?? "auto").Trim().ToLowerInvariant();
         if (mode == "cpu") return baseLanes;
@@ -79,13 +74,46 @@ public sealed class HardwareService
         return Math.Min(baseLanes, gpuLanes);
     }
 
+    internal static int RecommendedOcrProbeCeiling(HardwareSnapshot snapshot, string? deviceMode)
+    {
+        var recommended = RecommendedOcrLanes(snapshot, deviceMode);
+        var mode = (deviceMode ?? "auto").Trim().ToLowerInvariant();
+        if (mode == "cpu" || !snapshot.NvidiaDetected) return recommended;
+
+        // Static VRAM is only a conservative starting point. The live Auto Probe creates
+        // workers and runs inference concurrently, so it may safely test one topology level
+        // higher and fall back on OOM, worker errors, or insufficient throughput gain.
+        var nextLevel = recommended switch
+        {
+            <= 1 => 2,
+            2 => 4,
+            4 => 8,
+            8 => 16,
+            _ => 16,
+        };
+        return Math.Min(RecommendedCpuOcrLanes(snapshot), nextLevel);
+    }
+
+    private static int RecommendedCpuOcrLanes(HardwareSnapshot snapshot)
+    {
+        var lanes = 1;
+        foreach (var level in new[] { 2, 4, 8, 16 })
+        {
+            if (snapshot.LogicalProcessors >= level * 2 && snapshot.MemoryBytes >= level * 768L * 1024 * 1024)
+                lanes = level;
+        }
+        return lanes;
+    }
+
     internal static int RecommendedGpuOcrLanes(long vramBytes)
     {
         const long gib = 1024L * 1024 * 1024;
-        if (vramBytes < 4 * gib) return 1;
-        if (vramBytes < 8 * gib) return 2;
-        if (vramBytes < 16 * gib) return 4;
-        if (vramBytes < 32 * gib) return 8;
+        // CUDA commonly reports slightly less than the advertised VRAM tier. Keep a
+        // tier tolerance so a 4 GB laptop GPU does not collapse to the 1-lane tier.
+        if (vramBytes < 7 * gib / 2) return 1;
+        if (vramBytes < 7 * gib) return 2;
+        if (vramBytes < 14 * gib) return 4;
+        if (vramBytes < 28 * gib) return 8;
         return 16;
     }
 
