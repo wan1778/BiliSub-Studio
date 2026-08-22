@@ -97,25 +97,22 @@ public sealed partial class VideoPage : Page
             }
 
             _metadataUrl = url;
-            var hasTrack = TrackBox.SelectedIndex >= 0;
             var hasThumbnail = !string.IsNullOrWhiteSpace(metadata.ThumbnailUrl);
             var hasOutput = !string.IsNullOrWhiteSpace(OutputPathBox.Text);
-            MetadataText.Text = $"{metadata.Title} · {QualityBox.Items.Count} mức chất lượng · thumbnail {(hasThumbnail ? "có" : "không")} · {TrackBox.Items.Count} track phụ đề";
-            StartButton.IsEnabled = QualityBox.SelectedItem is not null && hasOutput;
+            MetadataText.Text = $"{metadata.Title}\nVideo: {QualityBox.Items.Count} lựa chọn · Thumbnail: {(hasThumbnail ? "Có" : "Không")} · Phụ đề: {TrackBox.Items.Count} track";
+            StartButton.IsEnabled = hasOutput;
             StatusText.Text = !hasOutput
-                ? "Nguồn hợp lệ. Hãy chọn thư mục lưu trước khi tải."
-                : hasTrack
-                    ? "Nguồn hợp lệ. Sẵn sàng tải video + thumbnail + phụ đề."
-                    : "Nguồn hợp lệ. Không có phụ đề; vẫn tải video + thumbnail nếu nguồn có.";
+                ? "Nguồn hợp lệ. Chọn thư mục lưu để tiếp tục."
+                : "Nguồn hợp lệ. Không chọn mục tải riêng = tải Video + Thumbnail + Phụ đề nếu có.";
         }
         catch (OperationCanceledException)
         {
-            MetadataText.Text = "Kiểm tra metadata quá thời gian; quality/track cũ đã bị xóa.";
+            MetadataText.Text = "Kiểm tra metadata quá thời gian; dữ liệu nguồn cũ đã bị xóa.";
             StatusText.Text = "Không nhận được metadata trong 90 giây. Hãy thử lại.";
         }
         catch (Exception error)
         {
-            MetadataText.Text = "Không đọc được metadata; quality/track cũ đã bị xóa.";
+            MetadataText.Text = "Không đọc được metadata; dữ liệu nguồn cũ đã bị xóa.";
             StatusText.Text = error.Message;
         }
         finally
@@ -132,7 +129,7 @@ public sealed partial class VideoPage : Page
             StartButton.IsEnabled = false;
             QualityBox.Items.Clear();
             TrackBox.Items.Clear();
-            MetadataText.Text = "URL đã đổi; cần Kiểm tra lại video + thumbnail + phụ đề.";
+            MetadataText.Text = "URL đã đổi. Bấm Kiểm tra lại để đọc nguồn mới.";
         }
     }
 
@@ -146,16 +143,16 @@ public sealed partial class VideoPage : Page
                 var selected = await _folderPicker.PickFolderAsync(OutputPathBox.Text.Trim());
                 if (string.IsNullOrWhiteSpace(selected))
                 {
-                    StatusText.Text = "Đã hủy chọn thư mục; chưa thay đổi nơi lưu.";
+                    StatusText.Text = "Đã hủy chọn thư mục; nơi lưu không thay đổi.";
                     return;
                 }
 
                 var snapshot = await _application.Settings.SetOutputDirectoryAsync(selected);
                 OutputPathBox.Text = snapshot.Config.OutputDirectory;
-                StartButton.IsEnabled = _metadataUrl is not null && QualityBox.SelectedItem is not null;
+                StartButton.IsEnabled = _metadataUrl is not null;
                 StatusText.Text = StartButton.IsEnabled
-                    ? "Đã chọn thư mục lưu. Sẵn sàng tải media."
-                    : "Đã chọn thư mục lưu. Hãy Kiểm tra nguồn trước khi tải.";
+                    ? "Đã chọn nơi lưu. Sẵn sàng tải media."
+                    : "Đã chọn nơi lưu. Hãy Kiểm tra nguồn trước khi tải.";
             }
             catch (Exception error)
             {
@@ -169,10 +166,23 @@ public sealed partial class VideoPage : Page
             return;
         }
 
-        if (_metadataUrl is null || !string.Equals(_metadataUrl, UrlBox.Text.Trim(), StringComparison.Ordinal)) return;
-        if (QualityBox.SelectedItem is null)
+        if (_metadataUrl is null || !string.Equals(_metadataUrl, UrlBox.Text.Trim(), StringComparison.Ordinal))
         {
-            StatusText.Text = "Cần một mức chất lượng video hợp lệ.";
+            StatusText.Text = "URL chưa được kiểm tra hoặc đã thay đổi. Bấm Kiểm tra trước khi tải.";
+            return;
+        }
+
+        var videoSelected = VideoAssetCheckBox.IsChecked == true;
+        var thumbnailSelected = ThumbnailAssetCheckBox.IsChecked == true;
+        var subtitleSelected = SubtitleAssetCheckBox.IsChecked == true;
+        var hasExplicitSelection = videoSelected || thumbnailSelected || subtitleSelected;
+        var downloadVideo = !hasExplicitSelection || videoSelected;
+        var downloadThumbnail = !hasExplicitSelection || thumbnailSelected;
+        var downloadSubtitle = !hasExplicitSelection || subtitleSelected;
+
+        if (downloadVideo && QualityBox.SelectedItem is null)
+        {
+            StatusText.Text = "Nguồn chưa có lựa chọn chất lượng video hợp lệ.";
             return;
         }
 
@@ -205,20 +215,28 @@ public sealed partial class VideoPage : Page
 
         _jobId = _application.StartVideo(new VideoDownloadRequest(
             _metadataUrl,
-            QualityBox.SelectedItem.ToString() ?? "best",
+            QualityBox.SelectedItem?.ToString() ?? "best",
             ContainerBox.SelectedItem?.ToString() ?? "mp4",
             ModeBox.SelectedItem?.ToString() ?? "video+audio",
             SpeedBox.SelectedItem?.ToString() ?? "fast",
             outputDirectory,
             BundleSubtitleFormat: FormatBox.SelectedItem?.ToString() ?? "srt",
-            BundleSubtitleTrack: track?.Language ?? string.Empty,
-            BundleSubtitleIfAvailable: true,
-            BundleThumbnail: true));
+            BundleSubtitleTrack: downloadSubtitle ? track?.Language ?? string.Empty : string.Empty,
+            BundleSubtitleIfAvailable: downloadSubtitle,
+            BundleThumbnail: downloadThumbnail,
+            MediaBundle: true,
+            BundleVideo: downloadVideo));
 
         StartButton.IsEnabled = false;
         LoadMetadataButton.IsEnabled = false;
         ChooseOutputButton.IsEnabled = false;
+        VideoAssetCheckBox.IsEnabled = false;
+        ThumbnailAssetCheckBox.IsEnabled = false;
+        SubtitleAssetCheckBox.IsEnabled = false;
         CancelButton.IsEnabled = true;
+        StatusText.Text = hasExplicitSelection
+            ? "Đang tải các mục bạn đã chọn..."
+            : "Đang tải bộ media đầy đủ...";
         await MonitorJobAsync();
     }
 
@@ -250,8 +268,10 @@ public sealed partial class VideoPage : Page
                 CancelButton.IsEnabled = false;
                 LoadMetadataButton.IsEnabled = true;
                 ChooseOutputButton.IsEnabled = true;
+                VideoAssetCheckBox.IsEnabled = true;
+                ThumbnailAssetCheckBox.IsEnabled = true;
+                SubtitleAssetCheckBox.IsEnabled = true;
                 StartButton.IsEnabled = _metadataUrl is not null
-                    && QualityBox.SelectedItem is not null
                     && !string.IsNullOrWhiteSpace(OutputPathBox.Text);
                 _jobId = null;
                 return;
