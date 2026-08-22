@@ -30,11 +30,14 @@ public sealed class VideoDownloadService
         _processes = processes;
     }
 
+    // 1/4/8 is the last field-proven Bilibili budget from the legacy 3.9.2 line.
+    // 1/8/16 is still useful in synthetic tests, but real Bilibili CDNs have shown
+    // early short bodies under the larger worker counts.
     public static int SpeedConnections(string speed) => (speed ?? string.Empty).Trim().ToLowerInvariant() switch
     {
         "stable" => 1,
-        "turbo" => 16,
-        _ => 8,
+        "turbo" => 8,
+        _ => 4,
     };
 
     public async Task<VideoDownloadResult> RunAsync(AppJob job, VideoDownloadRequest request)
@@ -267,7 +270,8 @@ public sealed class VideoDownloadService
         args.AddRange([
             "--ignore-config", "--no-playlist", "--continue", "--no-overwrites",
             "--retries", "20", "--fragment-retries", "20", "--file-access-retries", "5",
-            "--socket-timeout", "30", "--concurrent-fragments", "1", "--no-warnings", "--newline",
+            "--socket-timeout", "30", "--concurrent-fragments", "1", "--http-chunk-size", "4M",
+            "--no-warnings", "--newline",
             "-f", stream.FormatId, "-o", prefix + ".%(ext)s", "--print", "after_move:filepath", request.Url,
         ]);
         try
