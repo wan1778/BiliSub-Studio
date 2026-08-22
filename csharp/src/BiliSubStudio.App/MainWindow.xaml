@@ -133,9 +133,14 @@
                     Foreground="{ThemeResource MutedTextBrush}"
                     Text="Đang khởi tạo ứng dụng..."
                     TextTrimming="CharacterEllipsis" />
-                <Border Grid.Column="2" Padding="8,3" VerticalAlignment="Center" Background="{ThemeResource DangerSoftBrush}" CornerRadius="10">
-                    <TextBlock x:Name="LogErrorCount" FontSize="10" Foreground="{ThemeResource DangerBrush}" Text="0 lỗi" />
-                </Border>
+                <Grid Grid.Column="2" VerticalAlignment="Center">
+                    <Border x:Name="LogHealthyCountBorder" Padding="8,3" Background="{ThemeResource SuccessSoftBrush}" CornerRadius="10">
+                        <TextBlock FontSize="10" Foreground="{ThemeResource SuccessBrush}" Text="0 lỗi" />
+                    </Border>
+                    <Border x:Name="LogErrorCountBorder" Padding="8,3" Background="{ThemeResource DangerSoftBrush}" CornerRadius="10" Visibility="Collapsed">
+                        <TextBlock x:Name="LogErrorCount" FontSize="10" Foreground="{ThemeResource DangerBrush}" Text="0 lỗi" />
+                    </Border>
+                </Grid>
                 <TextBlock Grid.Column="3" VerticalAlignment="Center" FontSize="10" Foreground="{ThemeResource MutedTextBrush}" Text="C# · .NET 10 · WinUI 3" />
             </Grid>
         </Border>
