@@ -185,6 +185,11 @@ public sealed partial class OcrPage : Page
 
     private async void Prepare_Click(object sender, RoutedEventArgs e)
     {
+        if (_jobId is not null)
+        {
+            StatusText.Text = "Đang quét OCR; không thể khởi tạo lại engine lúc này.";
+            return;
+        }
         try
         {
             StatusText.Text = "Đang chuẩn bị private PaddleOCR runtime...";
@@ -224,6 +229,10 @@ public sealed partial class OcrPage : Page
         TelemetryText.Text = "Đang chờ kết quả OCR...";
         _jobId = _application.StartOcrScan(BuildRequest());
         PickVideoButton.IsEnabled = false;
+        DeviceBox.IsEnabled = false;
+        ScanModeBox.IsEnabled = false;
+        LanesBox.IsEnabled = false;
+        PrepareOcrButton.IsEnabled = false;
         ScanButton.IsEnabled = false;
         TestFrameButton.IsEnabled = false;
         SelectRegionButton.IsOn = false;
@@ -245,6 +254,10 @@ public sealed partial class OcrPage : Page
             {
                 _jobId = null;
                 PickVideoButton.IsEnabled = true;
+                DeviceBox.IsEnabled = true;
+                ScanModeBox.IsEnabled = true;
+                LanesBox.IsEnabled = true;
+                PrepareOcrButton.IsEnabled = true;
                 PauseButton.IsEnabled = false;
                 CancelButton.IsEnabled = false;
                 ExportButton.IsEnabled = _cues.Count > 0;
