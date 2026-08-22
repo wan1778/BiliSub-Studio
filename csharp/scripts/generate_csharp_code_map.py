@@ -24,7 +24,11 @@ NAMESPACE_RE = re.compile(r"^\s*namespace\s+([\w.]+)", re.MULTILINE)
 def generate() -> str:
     rows: list[tuple[str, str, list[str]]] = []
     for source_root in SOURCE_ROOTS:
-        for path in sorted(source_root.rglob("*.cs")):
+        # Sort by the normalized repository path string, not Path ordering. Path
+        # comparison can differ between Windows and POSIX around case, which made
+        # this generated file oscillate for partial files such as Foo.cs/Foo.Default.cs.
+        paths = sorted(source_root.rglob("*.cs"), key=lambda candidate: candidate.relative_to(ROOT).as_posix())
+        for path in paths:
             relative_source_path = path.relative_to(source_root)
             if any(part in IGNORED_SOURCE_DIRECTORIES for part in relative_source_path.parts):
                 continue
