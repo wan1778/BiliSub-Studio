@@ -6,9 +6,17 @@ namespace BiliSubStudio.Core.Jobs;
 public sealed class JobManager : IDisposable
 {
     private readonly ConcurrentDictionary<string, AppJob> _jobs = new(StringComparer.Ordinal);
-    private readonly ApplicationLog? _applicationLog;
+    private ApplicationLog? _applicationLog;
 
     public JobManager(ApplicationLog? applicationLog = null) => _applicationLog = applicationLog;
+
+    public void AttachLog(ApplicationLog applicationLog)
+    {
+        ArgumentNullException.ThrowIfNull(applicationLog);
+        if (_jobs.Values.Any(x => !x.Snapshot().Done))
+            throw new InvalidOperationException("Không thể đổi log khi đang có tác vụ.");
+        _applicationLog = applicationLog;
+    }
 
     public AppJob Create(string kind, bool pausable = false)
     {
