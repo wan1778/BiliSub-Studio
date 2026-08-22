@@ -1,0 +1,134 @@
+name: Publish user-facing release name
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "update/beta.json"
+      - ".github/workflows/public-release-alias.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: bilisub-user-facing-release
+  cancel-in-progress: false
+
+jobs:
+  publish-user-facing-release:
+    name: Publish short GitHub release name
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Check out release metadata
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Create short public release and repoint update channel
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $manifestPath = "update/beta.json"
+          $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
+          $technicalVersion = ([string]$manifest.version).Trim()
+          if ($technicalVersion -notmatch '^4\.0\.0-beta\.(\d+)-csharp-p5$') {
+            Write-Host "No technical beta version to alias: $technicalVersion"
+            exit 0
+          }
+
+          $beta = [int]$Matches[1]
+          if ($beta -lt 15) {
+            Write-Host "Legacy beta $beta predates short public release naming."
+            exit 0
+          }
+
+          $publicVersion = "4.0.$($beta - 14)"
+          $publicTag = "v$publicVersion"
+          $technicalTag = "v$technicalVersion"
+          $publicPortableName = "BiliSubStudio_${publicVersion}_Windows-x64-portable.zip"
+          $publicDownloadUrl = "https://github.com/$($env:GITHUB_REPOSITORY)/releases/download/$publicTag/$publicPortableName"
+
+          gh release view $technicalTag --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -ne 0) {
+            throw "Verified technical release $technicalTag does not exist yet."
+          }
+
+          gh release view $publicTag --repo $env:GITHUB_REPOSITORY *> $null
+          $publicExists = $LASTEXITCODE -eq 0
+
+          if (-not $publicExists) {
+            $aliasDir = Join-Path $env:RUNNER_TEMP "bilisub-public-release-$publicVersion"
+            New-Item $aliasDir -ItemType Directory -Force | Out-Null
+            gh release download $technicalTag --repo $env:GITHUB_REPOSITORY --dir $aliasDir
+            if ($LASTEXITCODE -ne 0) { throw "Failed to download verified assets from $technicalTag" }
+
+            $technicalInstaller = @(Get-ChildItem $aliasDir -File -Filter "BiliSubStudio_Setup_v${technicalVersion}_*_x64.exe")
+            $technicalPortable = @(Get-ChildItem $aliasDir -File -Filter "BiliSubStudio_${technicalVersion}_Windows-x64-portable.zip")
+            $technicalSource = @(Get-ChildItem $aliasDir -File -Filter "BiliSubStudio_v${technicalVersion}-source-*.zip")
+            if ($technicalInstaller.Count -ne 1 -or $technicalPortable.Count -ne 1 -or $technicalSource.Count -ne 1) {
+              throw "Expected exactly one installer, portable ZIP and source ZIP in $technicalTag"
+            }
+
+            $sourceTag = "source"
+            if ($technicalSource[0].Name -match 'source-([0-9a-fA-F]{12})\.zip$') {
+              $sourceTag = $Matches[1].ToLowerInvariant()
+            }
+
+            $publicInstallerName = "BiliSubStudio_Setup_v${publicVersion}_x64.exe"
+            $publicSourceName = "BiliSubStudio_v${publicVersion}-source-${sourceTag}.zip"
+            $publicInstaller = Join-Path $aliasDir $publicInstallerName
+            $publicPortable = Join-Path $aliasDir $publicPortableName
+            $publicSource = Join-Path $aliasDir $publicSourceName
+            Copy-Item $technicalInstaller[0].FullName $publicInstaller
+            Copy-Item $technicalPortable[0].FullName $publicPortable
+            Copy-Item $technicalSource[0].FullName $publicSource
+
+            $releaseSums = Join-Path $aliasDir "RELEASE_SHA256SUMS.txt"
+            @(
+              "$((Get-FileHash $publicInstaller -Algorithm SHA256).Hash.ToLowerInvariant())  $publicInstallerName",
+              "$((Get-FileHash $publicPortable -Algorithm SHA256).Hash.ToLowerInvariant())  $publicPortableName",
+              "$((Get-FileHash $publicSource -Algorithm SHA256).Hash.ToLowerInvariant())  $publicSourceName"
+            ) | Set-Content $releaseSums -Encoding UTF8
+
+            $notesFile = Join-Path $aliasDir "release-notes.md"
+            $noteLines = @("# BiliSub Studio $publicVersion", "", "Bản cập nhật Windows WinUI 3.", "")
+            foreach ($note in @($manifest.notes)) {
+              if (-not [string]::IsNullOrWhiteSpace([string]$note)) { $noteLines += "- $note" }
+            }
+            $noteLines | Set-Content $notesFile -Encoding UTF8
+
+            $target = (gh release view $technicalTag --repo $env:GITHUB_REPOSITORY --json targetCommitish --jq '.targetCommitish').Trim()
+            if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($target)) {
+              throw "Could not resolve target commit for $technicalTag"
+            }
+
+            gh release create $publicTag $publicInstaller $publicPortable $publicSource $releaseSums `
+              --repo $env:GITHUB_REPOSITORY `
+              --target $target `
+              --title "BiliSub Studio $publicVersion" `
+              --notes-file $notesFile `
+              --prerelease
+            if ($LASTEXITCODE -ne 0) { throw "Failed to create user-facing release $publicTag" }
+          }
+
+          if ([string]$manifest.download_url -ne $publicDownloadUrl) {
+            $manifest.download_url = $publicDownloadUrl
+            $manifest | ConvertTo-Json -Depth 4 | Set-Content $manifestPath -Encoding UTF8
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add $manifestPath
+            git commit -m "release: point $technicalVersion to public $publicVersion assets"
+            if ($LASTEXITCODE -ne 0) { throw "Failed to commit public release URL" }
+            git push origin HEAD:main
+            if ($LASTEXITCODE -ne 0) { throw "Failed to publish public release URL" }
+          }
+
+          Write-Host "PASS: technical $technicalVersion is published to users as $publicVersion"
