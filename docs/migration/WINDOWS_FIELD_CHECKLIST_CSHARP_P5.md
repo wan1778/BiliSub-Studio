@@ -11,22 +11,35 @@ Status starts as **BLOCKED**. Record one exact branch source revision, workflow 
 - `3028882b7dda590b3ede7e1c3766b73c0da01685494b5b7646310ef5495bc333` — rejected/superseded: real-machine metadata check exposed strict `System.Int64` parsing of yt-dlp `formats[].filesize`.
 - `79995e296197fb0f451d15a40a7bd9feff45ca2fb99ec7a61d36c9472ac78b8c` — superseded: long-media hardening passed CI, but explicit asset selection / revised Media UI was not complete.
 - `51260889e3b62ab3264aaaa38b32149aa008c3d2334660aa7c3716dfd6445b07` — rejected/superseded: real-machine ~2-hour Bilibili test reproduced `379 bytes read ... more expected`, Range segment 0 failure and yt-dlp fallback exhaustion.
-- `bbf956e07bcd4f44d6855bb97ddaff369a96161930fba449153f59531058ee99` — superseded after downloader run 61 passed the dedicated 379-byte continuation fixture, because the subsequent shell/UI requirement replaced per-page logs with one global diagnostic log, consolidated Settings navigation and changed Media layout. Do not use this SHA for the final field gate.
+- `bbf956e07bcd4f44d6855bb97ddaff369a96161930fba449153f59531058ee99` — superseded after downloader run 61 passed the dedicated 379-byte continuation fixture, because the subsequent shell/UI requirement replaced per-page logs with one global diagnostic log, consolidated Settings navigation and changed Media layout.
+- `8d47d3fd25947ed5dcbf55ac167e512e9d7102028fe4bb42596f3ebed0be980e` — superseded: shared-log/consolidated-shell candidate passed CI, but real-machine inspection showed the installer still unpacked the complete self-contained WinUI/.NET runtime directly into the user-visible install root. The replacement must use the reviewed `Runtime\` layout and migrate the old flat runtime safely.
 
-Any replacement candidate must have a different SHA-256 and must preserve both the short-read transport fix and the shared-log/consolidated-shell UI contract.
+Any replacement candidate must have a different SHA-256 and must preserve the short-read transport fix, shared-log/consolidated-shell UI contract and tidy installed-runtime layout.
 
 ## Build and installer identity
 
 - [ ] Windows workflow runs from the intended `csharp-p5-installer` source revision with SDK `10.0.400`.
-- [ ] `verify_global_log_ui_contract.py`, media/short-read contracts, generated code map, Core contracts, WinUI startup/layout smoke and installer packaging all pass on the same source.
+- [ ] `verify_global_log_ui_contract.py`, `verify_installer_runtime_layout_contract.py`, media/short-read contracts, generated code map, Core contracts, WinUI startup/layout smoke and installer packaging all pass on the same source.
 - [ ] Preserve `BUILD_IDENTITY.json`, source/publish/candidate checksum inventories, `INSTALLER_GATE_STATUS.json` and `CANDIDATE_GATE_STATUS.json`.
 - [ ] Confirm app and Setup are PE32+ x64 and hashes match every manifest.
+- [ ] Confirm `INSTALLER_GATE_STATUS.json` records `runtime_subdirectory=Runtime` and `legacy_flat_runtime_migration_smoke=true`.
 - [ ] Confirm all promotion flags remain false before real-machine QA.
+
+## Installer directory layout / migration — BLOCKER
+
+- [ ] Default path is `%LOCALAPPDATA%\Programs\BiliSub Studio`; a custom parent/drive still appends one dedicated `BiliSub Studio` product directory.
+- [ ] User-visible product root is organized as `Runtime`, `Data`, `Tools`, `Temp`, `Cache`, `Downloads` plus installer/uninstaller/user-owned files; hundreds of DLL/locale/XBF/PRI runtime entries are **not** scattered directly in the root.
+- [ ] `Runtime\BiliSubStudio.exe` is the installed executable and all self-contained DLL/XBF/PRI/locale folders live below `Runtime\`.
+- [ ] Start Menu shortcut, optional desktop shortcut, uninstall display icon and post-install launch all point to `Runtime\BiliSubStudio.exe`.
+- [ ] Running from `Runtime\` still resolves persistent `Data/Tools/Temp/Cache/Downloads` to the parent `BiliSub Studio` root; it must not create duplicate `Runtime\Data`, `Runtime\Tools`, `Runtime\Cache`, `Runtime\Downloads` roots.
+- [ ] Install the replacement candidate directly over one of the old flat-layout field builds. Old root `BiliSubStudio.exe`, DLLs and locale/resource directories listed by the old `SHA256SUMS.txt` are removed/migrated without requiring a manual uninstall.
+- [ ] Existing `Data/Tools/Temp/Cache/Downloads` contents survive that migration unchanged.
+- [ ] A deliberately created unknown file in the product root survives migration; cleanup is checksum-owned and must not broadly delete unknown/user files.
+- [ ] Uninstall removes `Runtime\` and shortcuts while protected data roots remain by default.
 
 ## Clean install / shell / visual gate — BLOCKER
 
 - [ ] Install as standard user without UAC/admin prompt.
-- [ ] Default path is `%LOCALAPPDATA%\Programs\BiliSub Studio`; custom parent/drive still creates a dedicated `BiliSub Studio` child directory.
 - [ ] App starts without separately installing .NET, Python, FFmpeg, yt-dlp or PaddleOCR.
 - [ ] Startup failure must show a visible Vietnamese dialog and write `%LOCALAPPDATA%\BiliSub Studio\Logs\startup.log`.
 - [ ] Exactly four top-level navigation destinations render: `Tải media`, `OCR phụ đề`, `Chỉnh video`, `Cài đặt`.
@@ -88,6 +101,8 @@ Any replacement candidate must have a different SHA-256 and must preserve both t
 - [ ] Before promotion, test a temporary QA manifest with `channel_ready=true` pointing to an exact GitHub Release asset from `wan1778/BiliSub-Studio`.
 - [ ] A non-GitHub Release URL is rejected before download.
 - [ ] Wrong `payload_kind`, size or SHA-256 is rejected without replacing runtime.
+- [ ] On the installed layout, update target is the current `Runtime\` directory only; parent `Data/Tools/Cache/Downloads` are outside the replacement target.
+- [ ] Nested-runtime rollback staging is written under the parent protected `Temp\Update` tree, not inside user data or an arbitrary folder.
 - [ ] A valid GitHub Release payload stages, verifies PE32+ x64 and applies transactionally while preserving `Data/Tools/Temp/Cache/Downloads`.
 - [ ] Forced apply failure restores the previous runtime and the previous app can relaunch.
 - [ ] No GitHub Release or channel manifest is promoted automatically by CI.
