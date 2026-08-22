@@ -467,7 +467,13 @@ internal static class Program
             ?? throw new InvalidOperationException("missing OCR topology benchmark levels");
         if (!levels.SequenceEqual([1, 2, 4, 8, 16]))
             throw new InvalidOperationException("OCR Auto ladder is not exactly 1 -> 2 -> 4 -> 8 -> 16");
-        if (OcrCheckpointStore.BuildSegments(90, 16, 1).Count != 16)
+        var checkpointStore = typeof(OcrScanRequest).Assembly.GetType("BiliSubStudio.Core.Ocr.OcrCheckpointStore")
+            ?? throw new InvalidOperationException("missing OCR checkpoint store");
+        var buildSegments = checkpointStore.GetMethod("BuildSegments", BindingFlags.Static | BindingFlags.Public)
+            ?? throw new InvalidOperationException("missing OCR checkpoint segment builder");
+        var shortSegments = buildSegments.Invoke(null, [90d, 16, 1d]) as System.Collections.ICollection
+            ?? throw new InvalidOperationException("OCR checkpoint segment builder returned the wrong collection type");
+        if (shortSegments.Count != 16)
             throw new InvalidOperationException("short video duration silently reduced a benchmark-selected 16-pipeline topology");
 
         var select = policy.GetMethod("SelectAsync", BindingFlags.Static | BindingFlags.NonPublic)
