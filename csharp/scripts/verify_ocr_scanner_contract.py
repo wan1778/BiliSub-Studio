@@ -43,6 +43,17 @@ def main() -> int:
     require("HardwareService.RecommendedOcrProbeCeiling(hardware, effectiveDevice)" in scanner and
             "x <= probeCeiling" in scanner,
             "Auto topology prediction is still a hard cap instead of a live probe ceiling")
+    require("previousThroughput" not in scanner and "tăng dưới 10% throughput" not in scanner,
+            "Auto topology still collapses real lanes using the invalid identical-frame throughput gate")
+    require("configuredWorkers < level" in scanner and "configuredWorkers < selected" in scanner,
+            "scanner does not require a real Python worker for every committed lane")
+    require("request.Duration * (index + 0.5) / level" in scanner and
+            "{level} pipeline FFmpeg+OCR đồng thời PASS" in scanner,
+            "Auto Probe is not exercising one real decode+OCR pipeline per candidate segment")
+    require("checkpoint.Lanes.Count != selected" in scanner,
+            "scanner does not verify the committed FFmpeg segment topology")
+    require("FFmpeg lane + {configuredWorkers} Python worker" in scanner,
+            "scanner commit log does not expose real process topology")
     require("new SubtitleTracker(mode.Fps, mode.LowConfidence)" in scanner,
             "scan mode low-confidence threshold is not applied to subtitle tracking")
     require("var overlap = Math.Max(scanMode.Guard, scanMode.ActiveGuard);" in checkpoint,
@@ -58,8 +69,10 @@ def main() -> int:
             "Cancel cannot delete a paused OCR checkpoint")
     require("ExportButton.IsEnabled = !paused && _cues.Count > 0;" in page,
             "partial paused OCR cues can incorrectly be exported as completed output")
+    require("{ocrStatus.Workers} Python worker" in page,
+            "live OCR telemetry does not expose the actual worker-process count")
 
-    print("PASS OCR scanner checkpoint, Auto probe, paused-cancel, NVDEC, similarity, device and mode-policy contracts")
+    print("PASS OCR scanner real-process topology, checkpoint, Auto probe, paused-cancel, NVDEC, similarity, device and mode-policy contracts")
     return 0
 
 

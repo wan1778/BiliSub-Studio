@@ -175,10 +175,10 @@ jobs:
           @(
             "# BiliSub Studio $publicVersion",
             "",
-            '- OCR Auto không còn dùng dự đoán VRAM làm trần tuyệt đối; app thăm dò worker/inference đồng thời từng mức và chỉ giữ topology thực sự ổn định.',
-            '- Card 4 GB không còn bị tụt về 1 lane chỉ vì CUDA báo VRAM thấp hơn dung lượng quảng cáo một chút.',
-            '- Auto có thể thử 1 → 2 → 4 lane trên máy đủ CPU/RAM; OOM, worker error hoặc throughput không tăng sẽ quay về mức ổn định trước đó.',
-            '- Sau khi Tạm dừng, nút Hủy vẫn hoạt động và xóa đúng checkpoint/lần quét dở; dữ liệu tạm dừng không được xuất nhầm như kết quả hoàn tất.'
+            '- Sửa root cause khiến OCR Auto vẫn chỉ chạy một process trong 4.0.6: bỏ phép so throughput của một ảnh giống nhau vốn làm topology 2/4 bị loại sai.',
+            '- Auto commit mức cao nhất tạo đủ Python worker và chạy đủ pipeline FFmpeg+OCR đồng thời trên các đoạn video thật; OOM hoặc worker error vẫn quay về mức ổn định trước đó.',
+            '- Trước khi scan, Core kiểm tra cứng số Python worker và số FFmpeg segment đúng với topology đã chọn.',
+            '- Telemetry khi đang chạy hiển thị trực tiếp số Python worker thật để có thể đối chiếu với Task Manager.'
           ) | Set-Content $notes -Encoding UTF8
 
           gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
@@ -199,10 +199,10 @@ jobs:
             size = $portableSize
             payload_kind = "winui3-portable-zip"
             notes = @(
-              "OCR Auto thăm dò live 1/2/4 lane thay vì khóa cứng theo dự đoán VRAM.",
-              "Card 4 GB không còn bị xếp nhầm vào mức 1 lane khi CUDA báo thiếu một phần VRAM.",
-              "Auto fallback về topology ổn định trước đó khi OOM, worker lỗi hoặc throughput không tăng.",
-              "Nút Hủy vẫn hoạt động sau Tạm dừng và xóa đúng checkpoint OCR dở."
+              "Sửa OCR Auto 4.0.6 vẫn thu về một process do phép so throughput sai.",
+              "Auto giữ mức cao nhất tạo đủ worker và chạy đủ pipeline FFmpeg+OCR đồng thời thành công.",
+              "Core kiểm tra số Python worker và FFmpeg segment trước khi scan.",
+              "Telemetry hiển thị số Python worker thật trong lúc chạy."
             )
           }
           $manifest | ConvertTo-Json -Depth 4 | Set-Content "update/beta.json" -Encoding UTF8
