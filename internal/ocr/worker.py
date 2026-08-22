@@ -40,7 +40,27 @@ def as_list(value):
         return []
     if hasattr(value, "tolist"):
         return value.tolist()
+    if isinstance(value, (list, tuple)):
+        return list(value)
     return list(value)
+
+
+def as_mapping(item):
+    """Normalize PaddleOCR 3 Result/json representations to the inner OCR result dict."""
+    payload = item if isinstance(item, dict) else getattr(item, "json", None)
+    if callable(payload):
+        payload = payload()
+    if isinstance(payload, str):
+        payload = json.loads(payload)
+    if not isinstance(payload, dict):
+        try:
+            payload = dict(item)
+        except (TypeError, ValueError):
+            payload = {}
+    # PaddleOCR 3 pipeline Result.json/print output is {"res": {...}}.
+    # Keep compatibility with a flat dict representation as well.
+    inner = payload.get("res") if isinstance(payload, dict) else None
+    return inner if isinstance(inner, dict) else payload
 
 
 def decode_image(encoded):
@@ -52,23 +72,45 @@ def decode_image(encoded):
     return image
 
 
+def normalize_box(box):
+    if hasattr(box, "tolist"):
+        box = box.tolist()
+    if not isinstance(box, list):
+        try:
+            box = list(box)
+        except TypeError:
+            return []
+    # rec_boxes is normally [x_min, y_min, x_max, y_max]. If a polygon is
+    # returned instead, collapse it to the same rectangular contract expected by C#.
+    if len(box) >= 4 and all(isinstance(value, (int, float, np.integer, np.floating)) for value in box[:4]):
+        return [int(round(float(value))) for value in box[:4]]
+    points = []
+    for point in box:
+        if isinstance(point, (list, tuple)) and len(point) >= 2:
+            points.append((float(point[0]), float(point[1])))
+    if not points:
+        return []
+    xs = [point[0] for point in points]
+    ys = [point[1] for point in points]
+    return [int(round(min(xs))), int(round(min(ys))), int(round(max(xs))), int(round(max(ys)))]
+
+
 def parse_prediction(prediction):
     lines = []
     for item in prediction:
-        texts = as_list(item["rec_texts"])
-        scores = as_list(item["rec_scores"])
-        boxes = as_list(item["rec_boxes"])
+        data = as_mapping(item)
+        texts = as_list(data.get("rec_texts"))
+        scores = as_list(data.get("rec_scores"))
+        boxes = as_list(data.get("rec_boxes"))
+        if not boxes:
+            boxes = as_list(data.get("rec_polys"))
         for index, text in enumerate(texts):
             text = str(text or "").strip()
             if not text:
                 continue
             confidence = float(scores[index]) if index < len(scores) else 0.0
-            box = boxes[index] if index < len(boxes) else []
-            if hasattr(box, "tolist"):
-                box = box.tolist()
-            if not isinstance(box, list):
-                box = list(box)
-            lines.append({"text": text, "confidence": confidence, "box": box[:4]})
+            box = normalize_box(boxes[index]) if index < len(boxes) else []
+            lines.append({"text": text, "confidence": confidence, "box": box})
     text = "\n".join(line["text"] for line in lines)
     confidence = sum(line["confidence"] for line in lines) / len(lines) if lines else 0.0
     return {
