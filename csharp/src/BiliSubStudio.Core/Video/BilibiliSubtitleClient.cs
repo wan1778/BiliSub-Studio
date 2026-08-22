@@ -43,9 +43,6 @@ public sealed partial class BilibiliSubtitleClient
         var tracks = new List<SubtitleTrack>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        // First ask the normal player JSON endpoint. It can expose manually provided
-        // tracks publicly and may also expose AI tracks when the current session can
-        // access them.
         try
         {
             using var legacy = await SendJsonAsync(
@@ -58,15 +55,13 @@ public sealed partial class BilibiliSubtitleClient
         catch (OperationCanceledException) { throw; }
         catch (Exception)
         {
-            // Keep metadata usable. The authenticated Protobuf endpoint below can
-            // still recover AI captions when a normal JSON response is unavailable.
+            // Metadata remains usable; the authenticated binary endpoint below can
+            // still recover an AI caption track when available.
         }
 
         var hasAi = tracks.Any(track => track.Ai);
         if (!hasAi && ContainsCookie(cookieHeader, "SESSDATA"))
         {
-            // Current Bilibili web players can expose AI tracks only through this
-            // binary endpoint. It returns Protobuf, not JSON.
             var context = Uri.EscapeDataString("{\"video_type\":1}");
             var uri = new Uri(
                 $"https://api.bilibili.com/x/v2/subtitle/web/view?oid={identity.Cid}&pid={identity.Aid}" +
@@ -83,9 +78,7 @@ public sealed partial class BilibiliSubtitleClient
             catch (OperationCanceledException) { throw; }
             catch (Exception)
             {
-                // Absence or temporary failure of Bilibili AI subtitles must not
-                // block video/thumbnail metadata. The resolver reports a warning only
-                // if direct subtitle discovery itself fails as a whole.
+                // AI subtitle absence/failure is optional and must not block media.
             }
         }
 
@@ -345,7 +338,7 @@ public sealed partial class BilibiliSubtitleClient
     }
 
     private sealed record ProtoSubtitleTrack(string Language, string DisplayName, string Url);
-    private sealed record ProtoField(int Number, int WireType, ulong Value, byte[]? Data);
+    private readonly record struct ProtoField(int Number, int WireType, ulong Value, byte[]? Data);
 
     [GeneratedRegex(@"BV[0-9A-Za-z]+", RegexOptions.CultureInvariant)]
     private static partial Regex BvidRegex();
