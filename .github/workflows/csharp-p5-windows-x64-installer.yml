@@ -77,6 +77,9 @@ jobs:
       - name: Verify long-media bundle contracts
         run: python csharp/scripts/verify_media_bundle_contract.py
 
+      - name: Verify tidy installer runtime layout
+        run: python csharp/scripts/verify_installer_runtime_layout_contract.py
+
       - name: Verify Windows WinUI build
         id: verify
         run: ./csharp/scripts/verify.ps1
