@@ -277,13 +277,50 @@ OCRPage.Restart
 ## Video editor
 
 ```text
-EditorPage
-  -> MediaPreviewService/native player
+EditorPage.Pick_Click
+  -> MediaPreviewService.ProbeAsync
+  -> EditorProjectStore.LoadOrCreateAsync
+       -> Data/Projects/<source-path-sha256-prefix>.json
+       -> schema/source validation
+       -> corrupt project quarantine
+  -> EditorRegionDocument.Reset
+  -> native player for raw playback when directly compatible
+  -> VideoEditorService.GetPreviewFrameJpegAsync for processed frame
+
+EditorPage direct overlay
+  -> drag outside a region -> create normalized source-space region
+  -> select + drag center -> move saved region
+  -> drag one of 8 handles/edges -> resize saved region
+  -> playback/export locks region interaction
+  -> preview/window resize recomputes display geometry only
+  -> EditorRegionDocument.BeginChange/Add/ReplaceSelected/RemoveSelected
+       -> stable region identity
+       -> bounded Undo/Redo history
+  -> debounced EditorProjectStore.SaveAsync
+       -> serialized write-through temporary file
+       -> replace project only after complete JSON write
+
+EditorPage processed preview
+  -> current timeline position + active saved/draft regions
+  -> BiliSubApplication.GetEditorPreviewFrameJpegAsync
+  -> VideoEditorService.GetPreviewFrameJpegAsync
+  -> exact VideoEditorService.BuildFilter Blur/Mosaic/Cover graph
+  -> app-owned FFmpeg MJPEG pipe
+
+EditorPage.Render_Click
   -> BiliSubApplication.StartEditor
-  -> JobManager/AppJob -> shared ApplicationLog
+  -> JobManager.Create(kind=editor, cleanupAwareCancel=true)
   -> VideoEditorService.RunAsync
-  -> FFmpeg Blur/Mosaic/Cover graph
-  -> temporary render -> non-empty verification -> atomic final output
+  -> same FFmpeg Blur/Mosaic/Cover graph and time guards
+  -> temporary `.rendering` output
+  -> non-empty verification -> final output
+
+EditorPage.Cancel_Click
+  -> AppJob.Cancel -> status `cancelling`, Done=false
+  -> ProcessRunner cancels and reaps app-owned FFmpeg tree
+  -> VideoEditorService finally deletes partial `.rendering` file
+  -> BiliSubApplication.RunJobAsync -> AppJob.CancelComplete
+  -> only then UI enables a new export
 ```
 
 ## GitHub update channel

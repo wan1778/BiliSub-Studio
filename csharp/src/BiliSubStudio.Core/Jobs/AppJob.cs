@@ -22,13 +22,14 @@ public sealed class AppJob : IDisposable
     private int _activeConnections;
     private bool? _rangeSupported;
 
-    public AppJob(string id, string kind, bool pauseSupported = false, ApplicationLog? applicationLog = null)
+    public AppJob(string id, string kind, bool pauseSupported = false, ApplicationLog? applicationLog = null, bool cleanupAwareCancel = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(id);
         ArgumentException.ThrowIfNullOrWhiteSpace(kind);
         Id = id;
         Kind = kind;
         PauseSupported = pauseSupported;
+        CleanupAwareCancel = cleanupAwareCancel;
         _applicationLog = applicationLog;
         _applicationLog?.Info(Kind, "Bắt đầu tác vụ.", Id);
     }
@@ -36,6 +37,7 @@ public sealed class AppJob : IDisposable
     public string Id { get; }
     public string Kind { get; }
     public bool PauseSupported { get; }
+    public bool CleanupAwareCancel { get; }
     public CancellationToken CancellationToken => _cancellation.Token;
     public Task Completion => _completion.Task;
 
@@ -50,9 +52,10 @@ public sealed class AppJob : IDisposable
                 return;
             }
             _cancelRequested = true;
-            _status = PauseSupported ? "cancelling" : "cancelled";
-            _message = PauseSupported ? "Đang dừng tác vụ và dọn dữ liệu dở..." : "Đã hủy tác vụ.";
-            _done = !PauseSupported;
+            var waitsForCleanup = PauseSupported || CleanupAwareCancel;
+            _status = waitsForCleanup ? "cancelling" : "cancelled";
+            _message = waitsForCleanup ? "Đang dừng tác vụ và dọn dữ liệu dở..." : "Đã hủy tác vụ.";
+            _done = !waitsForCleanup;
             changed = true;
             if (_done)
             {
@@ -60,7 +63,7 @@ public sealed class AppJob : IDisposable
                 _completion.TrySetResult(true);
             }
         }
-        if (changed) _applicationLog?.Info(Kind, PauseSupported ? "Đang hủy tác vụ an toàn." : "Đã hủy tác vụ.", Id);
+        if (changed) _applicationLog?.Info(Kind, PauseSupported || CleanupAwareCancel ? "Đang hủy tác vụ an toàn." : "Đã hủy tác vụ.", Id);
     }
 
     public void CancelComplete(string? message = null)

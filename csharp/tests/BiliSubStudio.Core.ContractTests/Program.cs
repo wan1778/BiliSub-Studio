@@ -40,6 +40,8 @@ internal static class Program
         ("subtitle JSON exports deterministic SRT", SubtitleContractAsync),
         ("subtitle VTT and SRT normalize before export", SubtitleTimedTextContractAsync),
         ("editor filter graph preserves normalized regions", EditorFilterContractAsync),
+        ("editor document preserves identity through undo redo", EditorDocumentContractAsync),
+        ("editor project persists and quarantines corrupt state", EditorProjectContractAsync),
         ("Chinese OCR validator rejects foreign scripts", ChineseOcrContractAsync),
         ("Paddle GPU wheel follows numeric CUDA compatibility", OcrGpuWheelContractAsync),
         ("OCR Auto benchmarks 1 2 4 8 16 and restores last PASS", OcrAutoBenchmarkContractAsync),
@@ -51,6 +53,7 @@ internal static class Program
         ("corrupt OCR checkpoint topology is ignored safely", InvalidOcrCheckpointContractAsync),
         ("job cancellation owns immediate terminal state", JobCancellationContractAsync),
         ("pausable OCR cancellation waits for cleanup completion", PausableJobCancellationContractAsync),
+        ("cleanup-aware Editor cancellation waits for FFmpeg cleanup", CleanupAwareJobCancellationContractAsync),
         ("Windows output filename policy rejects reserved names", FileNamePolicyContractAsync),
         ("update version ordering respects prerelease identifiers", UpdateVersionContractAsync),
         ("updater rejects incomplete x64 PE headers", UpdatePeValidationContractAsync),
@@ -495,6 +498,57 @@ internal static class Program
         return Task.CompletedTask;
     }
 
+    private static Task EditorDocumentContractAsync()
+    {
+        var document = new EditorRegionDocument();
+        document.Reset([]);
+        document.Add(new EditRegion(.1, .2, .3, .25, "blur", 18, true, 0, 10));
+        var identity = document.Selected?.Id ?? throw new InvalidOperationException("editor region did not receive an identity");
+        True(identity.Length > 0, "editor region identity is empty");
+        document.ReplaceSelected(document.Selected! with { X = .2 });
+        Equal(.2, document.Selected!.X);
+        True(document.Undo(), "editor edit could not be undone");
+        Equal(.1, document.Selected!.X);
+        Equal(identity, document.Selected.Id);
+        True(document.Redo(), "editor edit could not be redone");
+        Equal(.2, document.Selected!.X);
+        Equal(identity, document.Selected.Id);
+        True(document.RemoveSelected(), "editor region could not be removed");
+        Equal(0, document.Regions.Count);
+        True(document.Undo(), "editor removal could not be undone");
+        Equal(identity, document.Selected!.Id);
+        return Task.CompletedTask;
+    }
+
+    private static async Task EditorProjectContractAsync()
+    {
+        await WithTemporaryRootAsync(async root =>
+        {
+            var paths = AppPaths.FromRoot(root);
+            paths.EnsureBootstrapDirectories();
+            var video = Path.Combine(root, "source.mp4");
+            await File.WriteAllBytesAsync(video, [1, 2, 3]);
+            var store = new EditorProjectStore(paths);
+            var created = await store.LoadOrCreateAsync(video, 1920, 1080, 120, CancellationToken.None);
+            Equal(0, created.Regions.Count);
+            var region = new EditRegion(.1, .2, .3, .25, "blur", 18, false, 1, 5, "stable-region");
+            await store.SaveAsync(created with { FileName = "episode-edited.mp4", Regions = [region] }, CancellationToken.None);
+
+            var reopened = await store.LoadOrCreateAsync(video, 1920, 1080, 120, CancellationToken.None);
+            Equal("episode-edited.mp4", reopened.FileName);
+            Equal(1, reopened.Regions.Count);
+            Equal("stable-region", reopened.Regions[0].Id);
+            Equal(.1, reopened.Regions[0].X);
+
+            var projectPath = store.GetProjectPath(video);
+            await File.WriteAllTextAsync(projectPath, "{broken-json");
+            var recovered = await store.LoadOrCreateAsync(video, 1920, 1080, 120, CancellationToken.None);
+            Equal(0, recovered.Regions.Count);
+            True(Directory.GetFiles(Path.GetDirectoryName(projectPath)!, Path.GetFileName(projectPath) + ".corrupt-*").Length == 1,
+                "corrupt editor project was not quarantined");
+        });
+    }
+
     private static Task ChineseOcrContractAsync()
     {
         True(ChineseSubtitleNormalizer.TryNormalize("你好， ，世界！", out var text), "valid Han subtitle rejected");
@@ -686,6 +740,21 @@ internal static class Program
         Equal("cancelled", cancelled.Status);
         Equal(true, cancelled.Done);
         Equal("checkpoint removed", cancelled.Message);
+    }
+
+    private static async Task CleanupAwareJobCancellationContractAsync()
+    {
+        using var job = new AppJob("editor-test", "editor", cleanupAwareCancel: true);
+        job.Cancel();
+        var cancelling = job.Snapshot();
+        Equal("cancelling", cancelling.Status);
+        Equal(false, cancelling.Done);
+        True(job.CancellationToken.IsCancellationRequested, "Editor token did not cancel");
+        True(!job.Completion.IsCompleted, "Editor became terminal before FFmpeg cleanup");
+        job.CancelComplete("FFmpeg stopped and partial render removed");
+        await job.Completion;
+        Equal("cancelled", job.Snapshot().Status);
+        Equal("FFmpeg stopped and partial render removed", job.Snapshot().Message);
     }
 
     private static async Task InvalidOcrCheckpointContractAsync()

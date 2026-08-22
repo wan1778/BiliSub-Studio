@@ -6,7 +6,7 @@ using BiliSubStudio.Core.Tools;
 
 namespace BiliSubStudio.Core.Editor;
 
-public sealed record EditRegion(double X, double Y, double Width, double Height, string Effect, int Strength, bool WholeVideo, double Start, double End);
+public sealed record EditRegion(double X, double Y, double Width, double Height, string Effect, int Strength, bool WholeVideo, double Start, double End, string Id = "");
 
 public sealed record VideoEditRequest(
     string InputPath,
@@ -78,6 +78,45 @@ public sealed class VideoEditorService
         finally { TryDelete(temporary); }
     }
 
+    public async Task<byte[]> GetPreviewFrameJpegAsync(
+        string inputPath,
+        double seconds,
+        int sourceWidth,
+        int sourceHeight,
+        double duration,
+        IReadOnlyList<EditRegion> regions,
+        CancellationToken cancellationToken)
+    {
+        var input = Path.GetFullPath(inputPath.Trim());
+        if (!File.Exists(input) || new FileInfo(input).Length <= 0) throw new FileNotFoundException("Video nguồn không hợp lệ.", input);
+        var ffmpeg = await _tools.EnsureFfmpegAsync(cancellationToken);
+        var active = regions.Where(region => IsActiveAt(region, seconds)).Select(region => region with
+        {
+            WholeVideo = true,
+            Start = 0,
+            End = Math.Max(0, duration),
+        }).ToArray();
+        var args = new List<string>
+        {
+            "-hide_banner", "-loglevel", "error", "-nostdin",
+            "-ss", Math.Max(0, seconds).ToString("0.000", CultureInfo.InvariantCulture),
+            "-i", input, "-frames:v", "1",
+        };
+        if (active.Length > 0)
+        {
+            var graph = BuildFilter(new VideoEditRequest(input, ".", "preview.mp4", sourceWidth, sourceHeight, duration, active));
+            graph += ";[vout]scale=1280:-2:force_original_aspect_ratio=decrease[preview]";
+            args.AddRange(["-filter_complex", graph, "-map", "[preview]"]);
+        }
+        else
+        {
+            args.AddRange(["-vf", "scale=1280:-2:force_original_aspect_ratio=decrease", "-map", "0:v:0"]);
+        }
+        args.AddRange(["-an", "-sn", "-dn", "-q:v", "4", "-c:v", "mjpeg", "-f", "image2pipe", "pipe:1"]);
+        var frame = await _processes.CaptureBytesAsync(ffmpeg, args, cancellationToken);
+        return frame.Length > 0 ? frame : throw new InvalidDataException("Frame preview Editor rỗng.");
+    }
+
     public static string BuildFilter(VideoEditRequest request)
     {
         if (request.SourceWidth <= 0 || request.SourceHeight <= 0) throw new ArgumentException("Không đọc được kích thước video.");
@@ -118,6 +157,9 @@ public sealed class VideoEditorService
         parts.Add($"[{current}]null[vout]");
         return string.Join(";", parts);
     }
+
+    public static bool IsActiveAt(EditRegion region, double seconds) =>
+        region.WholeVideo || seconds >= Math.Max(0, region.Start) && seconds <= region.End;
 
     private static (int X, int Y, int Width, int Height) RegionPixels(EditRegion region, int width, int height)
     {

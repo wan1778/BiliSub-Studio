@@ -79,7 +79,11 @@ For pausable OCR jobs, every OCR FFmpeg process belongs to a per-scan owned proc
 
 ## Editor / preview
 
-WinUI pages own user interaction. Core media services own ffprobe/frame extraction and FFmpeg render orchestration. Editor outputs are non-destructive and never share downloader concurrency/CDN/resume ownership.
+WinUI pages own direct region interaction: create, select, move and resize over the displayed video rectangle. Saved regions keep stable IDs and time spans; the page owns selection plus Undo/Redo presentation, while `EditorRegionDocument` owns deterministic document history.
+
+`EditorProjectStore` persists one schema-versioned project per normalized source path under `Data/Projects`. Writes are serialized, write-through and replace the project file only after serialization completes. Invalid or corrupt project files are quarantined instead of partially loading into the UI. Resizing the preview/window only recalculates screen geometry; normalized source coordinates remain unchanged.
+
+Core media services own ffprobe, exact processed-frame extraction and FFmpeg render orchestration. Preview and export use the same `VideoEditorService.BuildFilter` effect graph and time guards. Final outputs are non-destructive and never share downloader concurrency/CDN/resume ownership. Editor export jobs use cleanup-aware cancellation: Cancel is not terminal until the FFmpeg process tree has exited and the partial `.rendering` artifact has been removed.
 
 ## Jobs, shutdown and logs
 

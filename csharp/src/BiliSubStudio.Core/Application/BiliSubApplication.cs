@@ -24,6 +24,7 @@ public sealed class BiliSubApplication : IAsyncDisposable
     private readonly VideoDownloadService _video;
     private readonly SubtitleService _subtitle;
     private readonly VideoEditorService _editor;
+    private readonly EditorProjectStore _editorProjects;
     private readonly WindowsProcessContainment _containment;
 
     public BiliSubApplication(AppPaths paths)
@@ -52,6 +53,7 @@ public sealed class BiliSubApplication : IAsyncDisposable
         _video = new VideoDownloadService(paths, Resolver, new RangeDownloader(_http), Tools, Processes);
         _subtitle = new SubtitleService(Resolver, _http);
         _editor = new VideoEditorService(Tools, Processes);
+        _editorProjects = new EditorProjectStore(paths);
         _ocr = new OcrManager(paths, Hardware, new OcrInstaller(paths, _http, Processes));
         _ocrScanner = new OcrScanner(Tools, Processes, _ocr, Hardware, new OcrCheckpointStore(paths));
     }
@@ -425,7 +427,7 @@ public sealed class BiliSubApplication : IAsyncDisposable
 
     public string StartEditor(VideoEditRequest request)
     {
-        var job = Jobs.Create("editor");
+        var job = Jobs.Create("editor", cleanupAwareCancel: true);
         _ = RunJobAsync(job, async () =>
         {
             var result = await _editor.RunAsync(job, request with
@@ -436,6 +438,20 @@ public sealed class BiliSubApplication : IAsyncDisposable
         });
         return job.Id;
     }
+
+    public Task<EditorProject> LoadEditorProjectAsync(string path, MediaPreviewInfo media, CancellationToken cancellationToken) =>
+        _editorProjects.LoadOrCreateAsync(path, media.Width, media.Height, media.Duration, cancellationToken);
+
+    public Task SaveEditorProjectAsync(EditorProject project, CancellationToken cancellationToken) =>
+        _editorProjects.SaveAsync(project, cancellationToken);
+
+    public Task<byte[]> GetEditorPreviewFrameJpegAsync(
+        string path,
+        double seconds,
+        MediaPreviewInfo media,
+        IReadOnlyList<EditRegion> regions,
+        CancellationToken cancellationToken) =>
+        _editor.GetPreviewFrameJpegAsync(path, seconds, media.Width, media.Height, media.Duration, regions, cancellationToken);
 
     public async Task<OcrResult> RecognizeFrameAsync(string path, double at, OcrRegion region, string device, CancellationToken cancellationToken) =>
         await _ocrScanner.RecognizeFrameAsync(path, at, region, device, cancellationToken);
