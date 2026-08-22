@@ -9,6 +9,11 @@ CHECKPOINT = ROOT / "csharp" / "src" / "BiliSubStudio.Core" / "Ocr" / "OcrCheckp
 OCR_PAGE = ROOT / "csharp" / "src" / "BiliSubStudio.App" / "Pages" / "OcrPage.xaml.cs"
 MANAGER = ROOT / "csharp" / "src" / "BiliSubStudio.Core" / "Ocr" / "OcrManager.cs"
 TOPOLOGY = ROOT / "csharp" / "src" / "BiliSubStudio.Core" / "Ocr" / "OcrTopologyBenchmark.cs"
+RESOURCE_POLICY = ROOT / "csharp" / "src" / "BiliSubStudio.Core" / "Ocr" / "OcrAutoResourcePolicy.cs"
+HARDWARE = ROOT / "csharp" / "src" / "BiliSubStudio.Core" / "Hardware" / "HardwareService.cs"
+APPLICATION = ROOT / "csharp" / "src" / "BiliSubStudio.Core" / "Application" / "BiliSubApplication.cs"
+PROCESS_GROUP = ROOT / "csharp" / "src" / "BiliSubStudio.Core" / "Processes" / "OwnedProcessGroup.cs"
+PROCESS_RUNNER = ROOT / "csharp" / "src" / "BiliSubStudio.Core" / "Processes" / "ProcessRunner.cs"
 
 
 def require(condition: bool, message: str) -> None:
@@ -22,6 +27,11 @@ def main() -> int:
     page = OCR_PAGE.read_text(encoding="utf-8")
     manager = MANAGER.read_text(encoding="utf-8")
     topology = TOPOLOGY.read_text(encoding="utf-8")
+    resource_policy = RESOURCE_POLICY.read_text(encoding="utf-8")
+    hardware = HARDWARE.read_text(encoding="utf-8")
+    application = APPLICATION.read_text(encoding="utf-8")
+    process_group = PROCESS_GROUP.read_text(encoding="utf-8")
+    process_runner = PROCESS_RUNNER.read_text(encoding="utf-8")
 
     canonical_scan = "request = request with { Region = OcrCheckpointStore.CanonicalRegion(request.Region) };"
     require(canonical_scan in scanner, "scan request does not use restart-stable canonical ROI")
@@ -42,10 +52,6 @@ def main() -> int:
     require("Intersect(" not in similarity_body and "previous[^1]" in similarity_body,
             "OCR boundary similarity is not order-sensitive Levenshtein")
 
-    require("RecommendedOcrSegmentLanes" not in scanner and
-            "RecommendedOcrWorkers" not in scanner and
-            "RecommendedOcrWorkerProbeCeiling" not in scanner,
-            "OCR Auto benchmark is still capped by a static hardware prediction")
     require("Levels { get; } = [1, 2, 4, 8, 16]" in topology,
             "OCR Auto benchmark ladder is not exactly 1/2/4/8/16")
     require("await restore(best, cancellationToken);" in topology and
@@ -53,18 +59,26 @@ def main() -> int:
             "return best;" in topology,
             "failed OCR Auto level does not restore and retain the last PASS topology")
     select_start = scanner.find("private async Task<int> SelectParallelismAsync")
-    probe_start = scanner.find("private async Task ProbeTopologyLevelAsync")
+    probe_start = scanner.find("private async Task<OcrTopologyProbe> ProbeTopologyLevelAsync")
     require(select_start >= 0 and probe_start > select_start, "missing full OCR topology benchmark selector/probe")
     selector = scanner[select_start:probe_start]
     probe = scanner[probe_start:scanner.find("private static void PublishTelemetry", probe_start)]
-    require("OcrTopologyBenchmark.SelectAsync" in selector and "không dùng dự đoán phần cứng làm trần" in selector,
-            "OCR Auto does not execute the complete uncapped benchmark ladder")
+    require("OcrTopologyBenchmark.SelectAsync" in selector and "EnsureResourceHeadroom" in selector and
+            "HasUsefulThroughputGain" in selector,
+            "OCR Auto does not execute Predict -> Probe -> throughput Commit across the fixed ladder")
+    require("GlobalMemoryStatusEx" in hardware and "nvmlDeviceGetMemoryInfo" in hardware,
+            "OCR Auto cannot read live Windows RAM and NVIDIA VRAM headroom")
+    require("GpuWorkerRamBytes" in resource_policy and "GpuWorkerVramBytes" in resource_policy and
+            "ramReserve" in resource_policy and "vramReserve" in resource_policy and
+            "MinimumThroughputGain = 0.10" in resource_policy,
+            "OCR Auto resource policy is missing reviewed RAM/VRAM reserves or throughput threshold")
     require("Math.Min(explicitValue" not in selector and
             "ProbeTopologyLevelAsync(ffmpeg, request, explicitValue" in selector,
             "manual OCR topology is still silently downgraded instead of probing the exact request")
     require("ConfigureWorkerPoolAsync(level" in probe and "actual != level" in probe and
             "Enumerable.Range(0, level)" in probe and "CaptureFrameWithFfmpegAsync" in probe and
-            "_ocr.RunAsync" in probe,
+            "_ocr.RunAsync" in probe and "RunRoundAsync(0)" in probe and "RunRoundAsync(2)" in probe and
+            "_ocr.Status.Workers != level" in probe,
             "each OCR Auto level is not a real N-worker plus N-FFmpeg/OCR concurrent probe")
     require("ConfigureWorkerPoolAsync(best" in selector and "restored != best" in selector,
             "scanner does not verify rollback to the last PASS worker topology")
@@ -96,6 +110,15 @@ def main() -> int:
             "OCR page loses the paused checkpoint request at terminal polling")
     require("await _application.CancelOcrScanAsync(runningId, request, CancellationToken.None);" in page,
             "running Cancel does not wait for Core cleanup and verified checkpoint removal")
+    require("await _ocr.StopAsync(cancellationToken);" in application and
+            "_ocr.Status.Workers != 0" in application and "_ocrScanner.ActiveProcessCount != 0" in application,
+            "OCR Cancel can report completion before Python/FFmpeg ownership reaches zero")
+    require("await processes.StopAsync();" in scanner and "await _ocr.StopAsync();" in scanner and
+            scanner.find("await processes.StopAsync();") < scanner.find("await _checkpoints.RemoveAsync(request, CancellationToken.None);"),
+            "OCR cancellation does not reap process trees before deleting checkpoint")
+    require("class OwnedProcessGroup" in process_group and "Kill(entireProcessTree: true)" in process_group and
+            "ActiveCount" in process_group and "owner?.Track(process)" in process_runner,
+            "OCR FFmpeg process trees are not tracked and reaped as one owned group")
     require("checkpoint.Exists" in page and "Checkpoint OCR vẫn còn" in page,
             "paused Cancel/Restart does not verify checkpoint absence")
     require('RestartButton' in page and 'OcrScanStartMode.Fresh' in page and 'OcrScanStartMode.Resume' in page,
@@ -113,7 +136,7 @@ def main() -> int:
     require("Where(x => x.Start <= media + 0.001)" in checkpoint,
             "paused checkpoint cues are not restricted to the contiguous safe frontier")
 
-    print("PASS OCR full 1/2/4/8/16 benchmark, transactional rollback, verified cancel, explicit fresh/resume, safe-frontier, NVDEC, similarity and mode contracts")
+    print("PASS OCR Predict/Probe/Commit 1/2/4/8/16 benchmark, RAM/VRAM/throughput gate, exact topology, owned-process cleanup, transactional cancel, safe-frontier and NVDEC contracts")
     return 0
 
 

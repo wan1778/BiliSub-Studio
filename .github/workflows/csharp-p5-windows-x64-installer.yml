@@ -175,10 +175,10 @@ jobs:
           @(
             "# BiliSub Studio $publicVersion",
             "",
-            '- Sửa lại OCR Auto theo đúng full-pipeline benchmark: luôn thử tuần tự 1 → 2 → 4 → 8 → 16 trước khi quét thật.',
-            '- Mức N chỉ PASS khi tạo đủ N Python worker và chạy N FFmpeg + OCR đồng thời trên các frame video khác nhau.',
-            '- Khi mức mới lỗi/OOM/timeout, worker pool quay về mức PASS gần nhất rồi mới khóa cùng số FFmpeg lane để quét.',
-            '- Telemetry hiển thị mức đang benchmark, mức PASS gần nhất và topology thực tế; Tạm dừng chỉ bật sau khi scan bắt đầu.'
+            '- OCR Auto dùng Predict → Probe → Commit: kiểm tra live RAM/VRAM trước từng bậc 1 → 2 → 4 → 8 → 16.',
+            '- Mức N chỉ PASS khi đủ đúng N Python + N FFmpeg/OCR pipeline và throughput tăng ít nhất 10%.',
+            '- Mức thiếu tài nguyên/không tăng tốc/lỗi/OOM/timeout tự quay về mức PASS gần nhất rồi mới quét.',
+            '- Hủy OCR thu hồi toàn bộ Python và cây FFmpeg do lần quét sở hữu trước khi xóa checkpoint và trở về Quét từ đầu.'
           ) | Set-Content $notes -Encoding UTF8
 
           gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
@@ -199,10 +199,10 @@ jobs:
             size = $portableSize
             payload_kind = "winui3-portable-zip"
             notes = @(
-              "OCR Auto benchmark đủ 1 → 2 → 4 → 8 → 16 trước khi quét.",
-              "Mức N yêu cầu N Python worker và N FFmpeg + OCR pipeline thật.",
-              "Mức lỗi/OOM/timeout tự quay về mức PASS gần nhất rồi mới bắt đầu scan.",
-              "Telemetry hiển thị candidate, last PASS và topology đã commit."
+              "OCR Auto kiểm tra live RAM/VRAM trước từng bậc 1 → 2 → 4 → 8 → 16.",
+              "Mức N yêu cầu đủ N Python + N FFmpeg/OCR pipeline và gain throughput tối thiểu 10%.",
+              "Mức không an toàn hoặc không còn tăng tốc tự quay về PASS gần nhất.",
+              "Hủy OCR thu hồi sạch Python/FFmpeg rồi xóa checkpoint và trở về Quét từ đầu."
             )
           }
           $manifest | ConvertTo-Json -Depth 4 | Set-Content "update/beta.json" -Encoding UTF8

@@ -1,5 +1,7 @@
 # OCR full-pipeline Auto benchmark
 
+> Superseded on 2026-08-23 by `2026-08-23-ocr-resource-safe-topology-cancel.md`. Public 4.0.9 implemented exact-count probes but could still commit 16 without a live RAM/VRAM reserve or meaningful-throughput gate; its Cancel path also retained the Python pool.
+
 Pinned baseline: `b833960744aa0572a3646e579554cb066971e572` (`main`, public 4.0.8 / technical beta 22).
 
 Field status: **4.0.8 FAIL** for Auto topology. It separates FFmpeg segment lanes from Python workers and statically caps how far each selector may probe. That does not implement the required meaning of an OCR “luồng”.

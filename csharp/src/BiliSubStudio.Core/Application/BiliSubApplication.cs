@@ -515,6 +515,11 @@ public sealed class BiliSubApplication : IAsyncDisposable
             if (!job.Snapshot().Done)
                 await job.Completion.WaitAsync(TimeSpan.FromSeconds(120), cancellationToken);
         }
+        await _ocr.StopAsync(cancellationToken);
+        if (_ocr.Status.Workers != 0)
+            throw new IOException($"OCR vẫn còn {_ocr.Status.Workers} Python worker sau khi Hủy.");
+        if (_ocrScanner.ActiveProcessCount != 0)
+            throw new IOException($"OCR vẫn còn {_ocrScanner.ActiveProcessCount} FFmpeg/process tree sau khi Hủy.");
         await _ocrScanner.RemoveCheckpointAsync(request, cancellationToken);
         var checkpoint = await _ocrScanner.InspectCheckpointAsync(request, cancellationToken);
         if (checkpoint.Exists)

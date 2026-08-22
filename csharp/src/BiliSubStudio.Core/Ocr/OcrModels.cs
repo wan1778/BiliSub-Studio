@@ -32,7 +32,8 @@ public sealed record OcrBenchmarkTelemetry(
     int Maximum,
     int WorkerCount,
     string WorkerKinds,
-    string Phase);
+    string Phase,
+    string ResourceSummary = "");
 
 public sealed record OcrScanTelemetry(
     int SegmentLanes,

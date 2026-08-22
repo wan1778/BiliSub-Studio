@@ -169,11 +169,19 @@ internal sealed class OcrWorkerClient : IAsyncDisposable
     {
         Kill();
         await _requestGate.WaitAsync();
+        Exception? stopFailure = null;
         try
         {
             if (_process is not null)
             {
                 try { await _process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(3)); } catch { }
+                if (IsAlive)
+                {
+                    Kill();
+                    try { await _process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(3)); } catch { }
+                }
+                if (IsAlive)
+                    stopFailure = new IOException($"Không dừng được OCR Python worker PID {_process.Id} và cây tiến trình con.");
                 if (_stderr is not null)
                 {
                     try { _ = await _stderr.WaitAsync(TimeSpan.FromSeconds(1)); } catch { }
@@ -186,6 +194,7 @@ internal sealed class OcrWorkerClient : IAsyncDisposable
             _stderr = null;
         }
         finally { _requestGate.Release(); }
+        if (stopFailure is not null) throw stopFailure;
     }
 
     private void Kill()

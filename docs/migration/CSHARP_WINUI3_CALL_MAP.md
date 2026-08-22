@@ -223,16 +223,21 @@ OCRPage.Scan
   -> JobManager/AppJob -> shared ApplicationLog
   -> OcrScanner.RunAsync
   -> HardwareService.BenchmarkAsync
-       -> CPU/RAM telemetry only; never caps Auto
+       -> baseline CPU/RAM throughput telemetry
   -> OcrTopologyBenchmark.SelectAsync
        -> exact ladder 1 -> 2 -> 4 -> 8 -> 16
+  -> OcrAutoResourcePolicy.Evaluate(N)
+       -> HardwareService.ResourceSnapshot
+       -> Windows GlobalMemoryStatusEx: live physical RAM
+       -> native NVIDIA NVML: live free/total VRAM when available
+       -> preserve RAM/VRAM reserve before worker expansion
   -> OcrScanner.ProbeTopologyLevelAsync(N)
        -> OcrManager.ConfigureWorkerPoolAsync(N)
        -> require exactly N live Python workers
-       -> N concurrent FFmpeg captures at distinct real video positions
-       -> N concurrent PaddleOCR inferences
-       -> PASS advances to the next level
-       -> startup/error/OOM/three-minute timeout restores the immediately preceding PASS level
+       -> one N-way warm-up plus two timed N-way FFmpeg/PaddleOCR rounds
+       -> re-check exactly N live workers after inference
+       -> PASS advances only with >= 10% throughput gain
+       -> resource/startup/error/OOM/timeout/no-gain restores the immediately preceding PASS level
   -> commit only after the benchmark finishes
        -> selected N means N deterministic FFmpeg segments + N Python workers
        -> require checkpoint segment count == selected lanes
@@ -253,7 +258,12 @@ OCRPage.Pause
 OCRPage.Cancel (running, pausing or paused)
   -> BiliSubApplication.CancelOcrScanAsync(exact active/checkpoint request)
   -> pausable AppJob stays cancelling while Core stops work
-  -> OcrScanner cancellation cleanup + OcrCheckpointStore.RemoveAsync
+  -> OcrScanner.OwnedProcessGroup.StopAsync
+       -> kill/reap each app-owned FFmpeg process tree
+  -> OcrManager.StopAsync
+       -> kill/reap every private Python worker tree
+  -> require 0 FFmpeg/process tree + 0 Python worker
+  -> OcrCheckpointStore.RemoveAsync
   -> propagate delete errors and verify schema-4/schema-3 files are absent
   -> AppJob.CancelComplete only after cleanup
   -> UI returns to Fresh / Quét từ đầu and clears partial cues/progress/telemetry

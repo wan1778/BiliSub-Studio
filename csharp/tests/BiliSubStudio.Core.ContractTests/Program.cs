@@ -35,6 +35,7 @@ internal static class Program
         ("completed range resume reports terminal transport progress", RangeCompletedResumeTelemetryAsync),
         ("range cancellation removes unfinished temp artifacts", RangeCancellationCleanupAsync),
         ("process runner reaps child when output callback fails", ProcessRunnerCleanupAsync),
+        ("owned process group reaps nested child on cancellation", OwnedProcessGroupCleanupAsync),
         ("media probe parses native preview contract", MediaProbeContractAsync),
         ("subtitle JSON exports deterministic SRT", SubtitleContractAsync),
         ("subtitle VTT and SRT normalize before export", SubtitleTimedTextContractAsync),
@@ -42,6 +43,7 @@ internal static class Program
         ("Chinese OCR validator rejects foreign scripts", ChineseOcrContractAsync),
         ("Paddle GPU wheel follows numeric CUDA compatibility", OcrGpuWheelContractAsync),
         ("OCR Auto benchmarks 1 2 4 8 16 and restores last PASS", OcrAutoBenchmarkContractAsync),
+        ("OCR Auto resource guard keeps safe 8 and rejects unsafe 16", OcrAutoResourceGuardContractAsync),
         ("QR encoder produces fixed version 10 matrix", QrContractAsync),
         ("session cookie normalization matches legacy", SessionCookieContractAsync),
         ("cookie normalization rejects control-character injection", SessionCookieInjectionContractAsync),
@@ -66,6 +68,28 @@ internal static class Program
             await Console.Out.FlushAsync();
             await Task.Delay(TimeSpan.FromSeconds(30));
             return 0;
+        }
+        if (arguments is ["--fixture-spawn-child"])
+        {
+            var executable = Environment.ProcessPath ?? throw new InvalidOperationException("missing fixture process path");
+            var childStart = new System.Diagnostics.ProcessStartInfo(executable)
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            if (string.Equals(Path.GetFileNameWithoutExtension(executable), "dotnet", StringComparison.OrdinalIgnoreCase))
+                childStart.ArgumentList.Add(Assembly.GetExecutingAssembly().Location);
+            childStart.ArgumentList.Add("--fixture-hold-open");
+            using var child = System.Diagnostics.Process.Start(childStart)
+                ?? throw new InvalidOperationException("could not start nested fixture child");
+            var reported = await child.StandardOutput.ReadLineAsync()
+                ?? throw new InvalidOperationException("nested fixture child did not report its pid");
+            Console.WriteLine("nested:" + reported);
+            await Console.Out.FlushAsync();
+            await child.WaitForExitAsync();
+            return child.ExitCode;
         }
 
         var failures = 0;
@@ -394,6 +418,41 @@ internal static class Program
         }
     }
 
+    private static async Task OwnedProcessGroupCleanupAsync()
+    {
+        var executable = Environment.ProcessPath ?? throw new InvalidOperationException("missing current process path");
+        var arguments = new List<string>();
+        if (string.Equals(Path.GetFileNameWithoutExtension(executable), "dotnet", StringComparison.OrdinalIgnoreCase))
+            arguments.Add(Assembly.GetExecutingAssembly().Location);
+        arguments.Add("--fixture-spawn-child");
+        await using var owner = new OwnedProcessGroup();
+        using var cancellation = new CancellationTokenSource();
+        var nestedPid = 0;
+        await ThrowsAsync<OperationCanceledException>(() => new ProcessRunner().RunAsync(
+            executable, arguments, cancellation.Token, standardOutputLine: line =>
+            {
+                if (!line.StartsWith("nested:", StringComparison.Ordinal)) return;
+                nestedPid = int.Parse(line["nested:".Length..], System.Globalization.CultureInfo.InvariantCulture);
+                cancellation.Cancel();
+            }, owner: owner));
+        await owner.StopAsync();
+        Equal(0, owner.ActiveCount);
+        True(nestedPid > 0, "nested fixture did not report a process id");
+        try
+        {
+            using var nested = System.Diagnostics.Process.GetProcessById(nestedPid);
+            if (!nested.HasExited)
+            {
+                await nested.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(3));
+            }
+            True(nested.HasExited, "owned process group abandoned a live nested child");
+        }
+        catch (ArgumentException)
+        {
+            // Reaped processes disappear from the process table on Unix.
+        }
+    }
+
     private static Task MediaProbeContractAsync()
     {
         var info = MediaPreviewService.ParseProbe("""
@@ -516,6 +575,47 @@ internal static class Program
             (_, _, _) => throw new InvalidOperationException("all-pass benchmark unexpectedly rejected a level"));
         if (selected != 16 || !attempted.SequenceEqual([1, 2, 4, 8, 16]) || restored.Count != 0)
             throw new InvalidOperationException("OCR Auto did not retain level 16 after every real probe passed");
+    }
+
+    private static Task OcrAutoResourceGuardContractAsync()
+    {
+        var policy = typeof(OcrScanRequest).Assembly.GetType("BiliSubStudio.Core.Ocr.OcrAutoResourcePolicy")
+            ?? throw new InvalidOperationException("missing OCR Auto resource policy");
+        var evaluate = policy.GetMethod("Evaluate", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing OCR Auto resource evaluator");
+        var usefulGain = policy.GetMethod("HasUsefulThroughputGain", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing OCR throughput gain gate");
+
+        static long GiB(double value) => checked((long)(value * 1024 * 1024 * 1024));
+        static bool Allowed(object decision) => (bool)(decision.GetType().GetProperty("Allowed")?.GetValue(decision)
+            ?? throw new InvalidOperationException("resource decision has no Allowed property"));
+        static string Reason(object decision) => (string)(decision.GetType().GetProperty("Reason")?.GetValue(decision)
+            ?? throw new InvalidOperationException("resource decision has no Reason property"));
+        object Evaluate(HardwareSnapshot hardware, HardwareResourceSnapshot live, int current, int candidate) =>
+            evaluate.Invoke(null, [hardware, live, "gpu", current, candidate])
+            ?? throw new InvalidOperationException("resource evaluator returned null");
+
+        var laptop = new HardwareSnapshot("fixture", 16, GiB(32), true, "RTX laptop fixture", "CUDA 12.8", GiB(3.75));
+        var beforeEight = new HardwareResourceSnapshot(GiB(32), GiB(20), true, GiB(3.75), GiB(2.30));
+        var eight = Evaluate(laptop, beforeEight, 4, 8);
+        True(Allowed(eight), "safe eight-worker expansion was rejected: " + Reason(eight));
+
+        var beforeSixteen = new HardwareResourceSnapshot(GiB(32), GiB(16), true, GiB(3.75), GiB(0.65));
+        var sixteen = Evaluate(laptop, beforeSixteen, 8, 16);
+        True(!Allowed(sixteen) && Reason(sixteen).Contains("VRAM", StringComparison.OrdinalIgnoreCase),
+            "4 GB-class GPU did not reject unsafe 16-worker expansion by live VRAM headroom");
+
+        var ramBound = new HardwareSnapshot("fixture", 32, GiB(16), true, "NVIDIA fixture", "CUDA 12.8", GiB(24));
+        var lowRam = new HardwareResourceSnapshot(GiB(16), GiB(3), true, GiB(24), GiB(20));
+        var ramDecision = Evaluate(ramBound, lowRam, 8, 16);
+        True(!Allowed(ramDecision) && Reason(ramDecision).Contains("RAM", StringComparison.OrdinalIgnoreCase),
+            "unsafe 16-worker expansion ignored live RAM headroom");
+
+        True(!(bool)(usefulGain.Invoke(null, [100d, 105d]) ?? true),
+            "five-percent throughput gain incorrectly advanced the OCR ladder");
+        True((bool)(usefulGain.Invoke(null, [100d, 111d]) ?? false),
+            "eleven-percent throughput gain incorrectly stopped the OCR ladder");
+        return Task.CompletedTask;
     }
 
     private static Task QrContractAsync()
