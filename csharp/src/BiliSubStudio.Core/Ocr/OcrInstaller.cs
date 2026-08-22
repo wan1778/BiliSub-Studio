@@ -46,7 +46,8 @@ internal sealed class OcrInstaller
             Directory.CreateDirectory(Path.Combine(_paths.Ocr, "models"));
             var worker = await EnsureWorkerAsync(cancellationToken);
             var runtimeRoot = Path.Combine(_paths.Ocr, "runtime", kind);
-            var python = Path.Combine(runtimeRoot, "venv", "Scripts", "python.exe");
+            var venvRoot = Path.Combine(runtimeRoot, "venv");
+            var python = Path.Combine(venvRoot, "Scripts", "python.exe");
             var manifestPath = Path.Combine(runtimeRoot, "install.json");
             var expected = new InstallManifest(2, UvVersion, PythonVersion, PaddleVersion, PaddleOcrVersion,
                 DetectionModel, RecognitionModel, await Sha256Async(worker, cancellationToken), kind, spec.Package, spec.Index);
@@ -55,13 +56,18 @@ internal sealed class OcrInstaller
                 return new OcrRuntime(python, worker, Path.Combine(_paths.Ocr, "models"), spec.Device, kind);
             }
 
-            var uv = await EnsureUvAsync(cancellationToken);
+            // An interrupted uv/python/pip operation can leave a partially populated venv.
+            // Never try to layer a new runtime over it: models/cache are outside runtimeRoot
+            // and are preserved, while this device-specific private venv is rebuilt cleanly.
+            if (Directory.Exists(runtimeRoot)) Directory.Delete(runtimeRoot, recursive: true);
             Directory.CreateDirectory(runtimeRoot);
+
+            var uv = await EnsureUvAsync(cancellationToken);
             var environment = ManagedEnvironment();
             foreach (var arguments in new[]
             {
                 new[] { "python", "install", PythonVersion, "--install-dir", Path.Combine(_paths.Ocr, "python"), "--managed-python", "--no-registry", "--no-bin", "--no-config" },
-                new[] { "venv", Path.Combine(runtimeRoot, "venv"), "--python", PythonVersion, "--managed-python", "--no-config" },
+                new[] { "venv", venvRoot, "--python", PythonVersion, "--managed-python", "--no-config" },
                 new[] { "pip", "install", "--python", python, $"{spec.Package}=={PaddleVersion}", "--index-url", spec.Index, "--no-config" },
                 new[] { "pip", "install", "--python", python, $"paddleocr=={PaddleOcrVersion}", "--no-config" },
             })
