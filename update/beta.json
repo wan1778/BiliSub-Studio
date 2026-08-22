@@ -1,14 +1,14 @@
 {
-  "version": "4.0.0-beta.23-csharp-p5",
+  "version": "4.0.0-beta.24-csharp-p5",
   "channel_ready": true,
-  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.9/BiliSubStudio_4.0.9_Windows-x64-portable.zip",
-  "sha256": "7da75040c147e214012ba6b249217bc8726b0f525d43154253f429282f7d409c",
-  "size": 94438926,
+  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.10/BiliSubStudio_4.0.10_Windows-x64-portable.zip",
+  "sha256": "c39ac2c08e2d177a21bb370c77faceb9caee1ee1da3c52ab3412917697df0897",
+  "size": 94449168,
   "payload_kind": "winui3-portable-zip",
   "notes": [
-    "OCR Auto benchmark đủ 1 → 2 → 4 → 8 → 16 trước khi quét.",
-    "Mức N yêu cầu N Python worker và N FFmpeg + OCR pipeline thật.",
-    "Mức lỗi/OOM/timeout tự quay về mức PASS gần nhất rồi mới bắt đầu scan.",
-    "Telemetry hiển thị candidate, last PASS và topology đã commit."
+    "OCR Auto kiểm tra live RAM/VRAM trước từng bậc 1 → 2 → 4 → 8 → 16.",
+    "Mức N yêu cầu đủ N Python + N FFmpeg/OCR pipeline và gain throughput tối thiểu 10%.",
+    "Mức không an toàn hoặc không còn tăng tốc tự quay về PASS gần nhất.",
+    "Hủy OCR thu hồi sạch Python/FFmpeg rồi xóa checkpoint và trở về Quét từ đầu."
   ]
 }
