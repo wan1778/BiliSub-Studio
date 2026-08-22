@@ -87,8 +87,10 @@ public sealed class BiliSubApplication : IAsyncDisposable
 
     public string StartVideo(VideoDownloadRequest request)
     {
-        var bundledSubtitle = request.BundleSubtitleIfAvailable || !string.IsNullOrWhiteSpace(request.BundleSubtitleTrack);
-        var bundledMedia = request.BundleThumbnail || bundledSubtitle;
+        var bundledMedia = request.MediaBundle;
+        var bundledVideo = !bundledMedia || request.BundleVideo;
+        var bundledThumbnail = bundledMedia && request.BundleThumbnail;
+        var bundledSubtitle = bundledMedia && (request.BundleSubtitleIfAvailable || !string.IsNullOrWhiteSpace(request.BundleSubtitleTrack));
         var job = Jobs.Create(bundledMedia ? "media" : "video");
         _ = RunJobAsync(job, async () =>
         {
@@ -119,22 +121,44 @@ public sealed class BiliSubApplication : IAsyncDisposable
                 return;
             }
 
-            var metadata = await Resolver.GetMetadataAsync(request.Url, cookie, job.CancellationToken);
-            var subtitleTrack = string.IsNullOrWhiteSpace(request.BundleSubtitleTrack)
-                ? null
-                : metadata.Subtitles.FirstOrDefault(x => string.Equals(x.Language, request.BundleSubtitleTrack, StringComparison.Ordinal));
-            if (bundledSubtitle && subtitleTrack is null && metadata.Subtitles.Count > 0)
+            if (!bundledVideo && !bundledThumbnail && !bundledSubtitle)
             {
-                subtitleTrack = metadata.Subtitles
-                    .OrderBy(track =>
-                    {
-                        var chinese = track.Language.StartsWith("zh", StringComparison.OrdinalIgnoreCase)
-                            || track.Language.Contains("chi", StringComparison.OrdinalIgnoreCase);
-                        return track.Official && chinese ? 0 : chinese ? 1 : track.Official ? 2 : 3;
-                    })
-                    .ThenBy(track => track.DisplayName, StringComparer.OrdinalIgnoreCase)
-                    .First();
+                throw new InvalidOperationException("Tác vụ media không có nội dung nào được chọn.");
             }
+
+            VideoMetadata? metadata = null;
+            if (bundledThumbnail || bundledSubtitle)
+            {
+                metadata = await Resolver.GetMetadataAsync(request.Url, cookie, job.CancellationToken);
+            }
+
+            SubtitleTrack? subtitleTrack = null;
+            if (bundledSubtitle && metadata is not null)
+            {
+                subtitleTrack = string.IsNullOrWhiteSpace(request.BundleSubtitleTrack)
+                    ? null
+                    : metadata.Subtitles.FirstOrDefault(x => string.Equals(x.Language, request.BundleSubtitleTrack, StringComparison.Ordinal));
+                if (subtitleTrack is null && metadata.Subtitles.Count > 0)
+                {
+                    subtitleTrack = metadata.Subtitles
+                        .OrderBy(track =>
+                        {
+                            var separator = track.Language.IndexOf(':');
+                            var language = separator >= 0 ? track.Language[(separator + 1)..] : track.Language;
+                            var chinese = language.StartsWith("zh", StringComparison.OrdinalIgnoreCase)
+                                || language.Contains("chi", StringComparison.OrdinalIgnoreCase);
+                            return track.Official && chinese ? 0 : chinese ? 1 : track.Official ? 2 : 3;
+                        })
+                        .ThenBy(track => track.DisplayName, StringComparer.OrdinalIgnoreCase)
+                        .First();
+                }
+            }
+
+            var thumbnailWeight = bundledThumbnail ? 5d : 0d;
+            var videoWeight = bundledVideo ? 85d : 0d;
+            var subtitleWeight = bundledSubtitle ? 10d : 0d;
+            var totalWeight = Math.Max(1d, thumbnailWeight + videoWeight + subtitleWeight);
+            var phaseCursor = 0d;
 
             async Task<T> RunPhaseAsync<T>(
                 string phase,
@@ -181,11 +205,15 @@ public sealed class BiliSubApplication : IAsyncDisposable
 
             string? thumbnailPath = null;
             string? thumbnailWarning = null;
-            if (request.BundleThumbnail)
+            if (bundledThumbnail)
             {
-                if (string.IsNullOrWhiteSpace(metadata.ThumbnailUrl))
+                var thumbnailSpan = thumbnailWeight * 100d / totalWeight;
+                if (metadata is null || string.IsNullOrWhiteSpace(metadata.ThumbnailUrl))
                 {
+                    thumbnailWarning = "Nguồn không cung cấp thumbnail.";
                     job.Log("Thumbnail · nguồn không cung cấp thumbnail; bỏ qua.");
+                    phaseCursor += thumbnailSpan;
+                    job.Set("bundle-thumbnail-skip", phaseCursor, "Thumbnail: nguồn không có, đã bỏ qua.");
                 }
                 else
                 {
@@ -194,8 +222,8 @@ public sealed class BiliSubApplication : IAsyncDisposable
                         thumbnailPath = await RunPhaseAsync(
                             "bundle-thumbnail",
                             "Thumbnail",
-                            0,
-                            5,
+                            phaseCursor,
+                            thumbnailSpan,
                             async child =>
                             {
                                 var url = metadata.ThumbnailUrl.StartsWith("//", StringComparison.Ordinal)
@@ -284,71 +312,95 @@ public sealed class BiliSubApplication : IAsyncDisposable
                         thumbnailWarning = error.Message;
                         job.Log("Thumbnail · cảnh báo: " + error.Message);
                     }
+                    finally
+                    {
+                        phaseCursor += thumbnailSpan;
+                    }
                 }
             }
 
-            var videoStart = request.BundleThumbnail ? 5d : 0d;
-            var videoEnd = subtitleTrack is null ? 100d : 90d;
-            var video = await RunPhaseAsync(
-                "bundle-video",
-                "Video",
-                videoStart,
-                Math.Max(1, videoEnd - videoStart),
-                child => _video.RunAsync(child, request with
-                {
-                    OutputDirectory = outputDirectory,
-                    CookieFile = cookie,
-                }));
-
-            job.SetTransport(0, 0, null);
+            VideoDownloadResult? video = null;
+            if (bundledVideo)
+            {
+                var videoSpan = videoWeight * 100d / totalWeight;
+                video = await RunPhaseAsync(
+                    "bundle-video",
+                    "Video",
+                    phaseCursor,
+                    videoSpan,
+                    child => _video.RunAsync(child, request with
+                    {
+                        OutputDirectory = outputDirectory,
+                        CookieFile = cookie,
+                    }));
+                phaseCursor += videoSpan;
+                job.SetTransport(0, 0, null);
+            }
 
             SubtitleResult? subtitle = null;
             string? subtitleWarning = null;
-            if (subtitleTrack is null)
+            if (bundledSubtitle)
             {
-                job.Log("Phụ đề · nguồn không có track phù hợp; video vẫn hoàn tất bình thường.");
-            }
-            else
-            {
-                try
+                var subtitleSpan = subtitleWeight * 100d / totalWeight;
+                if (subtitleTrack is null)
                 {
-                    subtitle = await RunPhaseAsync(
-                        "bundle-subtitle",
-                        "Phụ đề",
-                        90,
-                        10,
-                        child => _subtitle.RunAsync(child, new SubtitleRequest(
-                            request.Url,
-                            string.IsNullOrWhiteSpace(request.BundleSubtitleFormat) ? Config.SubtitleFormat : request.BundleSubtitleFormat,
-                            subtitleTrack.Language,
-                            outputDirectory,
-                            cookie,
-                            Sessions.Cookie)));
+                    subtitleWarning = "Nguồn không có track phụ đề phù hợp.";
+                    job.Log("Phụ đề · nguồn không có track phù hợp; đã bỏ qua.");
+                    phaseCursor += subtitleSpan;
+                    job.Set("bundle-subtitle-skip", phaseCursor, "Phụ đề: nguồn không có, đã bỏ qua.");
                 }
-                catch (OperationCanceledException)
+                else
                 {
-                    throw;
-                }
-                catch (Exception error)
-                {
-                    subtitleWarning = error.Message;
-                    job.Log("Phụ đề · cảnh báo: " + error.Message);
+                    try
+                    {
+                        subtitle = await RunPhaseAsync(
+                            "bundle-subtitle",
+                            "Phụ đề",
+                            phaseCursor,
+                            subtitleSpan,
+                            child => _subtitle.RunAsync(child, new SubtitleRequest(
+                                request.Url,
+                                string.IsNullOrWhiteSpace(request.BundleSubtitleFormat) ? Config.SubtitleFormat : request.BundleSubtitleFormat,
+                                subtitleTrack.Language,
+                                outputDirectory,
+                                cookie,
+                                Sessions.Cookie)));
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
+                    catch (Exception error)
+                    {
+                        subtitleWarning = error.Message;
+                        job.Log("Phụ đề · cảnh báo: " + error.Message);
+                    }
+                    finally
+                    {
+                        phaseCursor += subtitleSpan;
+                    }
                 }
             }
 
-            job.Log($"Video hoàn tất: {video.OutputPath}");
+            if (video is not null) job.Log($"Video hoàn tất: {video.OutputPath}");
             if (thumbnailPath is not null) job.Log($"Thumbnail hoàn tất: {thumbnailPath}");
             if (subtitle is not null) job.Log($"Phụ đề hoàn tất: {subtitle.OutputPath}");
-            if (thumbnailWarning is not null || subtitleWarning is not null)
-                job.Set("bundle-complete", 100, "Video đã hoàn tất; media phụ có cảnh báo, xem nhật ký.");
-            else
-                job.Set("bundle-complete", 100, "Video và media đi kèm đã hoàn tất.");
 
-            var completed = new List<string> { "video" };
+            var hasWarning = thumbnailWarning is not null || subtitleWarning is not null;
+            var completed = new List<string>();
+            if (video is not null) completed.Add("video");
             if (thumbnailPath is not null) completed.Add("thumbnail");
             if (subtitle is not null) completed.Add("phụ đề");
-            var warningSuffix = thumbnailWarning is not null || subtitleWarning is not null ? " · có cảnh báo" : string.Empty;
-            job.Finish(null, $"Hoàn tất media · {string.Join(" + ", completed)}{warningSuffix}: {outputDirectory}", video);
+
+            if (hasWarning)
+                job.Set("bundle-complete", 100, "Tác vụ đã hoàn tất; có mục bị bỏ qua/cảnh báo, xem nhật ký.");
+            else
+                job.Set("bundle-complete", 100, "Các mục media đã chọn đều hoàn tất.");
+
+            var completedLabel = completed.Count > 0 ? string.Join(" + ", completed) : "không có file phù hợp";
+            var warningSuffix = hasWarning ? " · có cảnh báo" : string.Empty;
+            object? result = video ?? (object?)subtitle ?? thumbnailPath;
+            job.Finish(null, $"Hoàn tất media · {completedLabel}{warningSuffix}: {outputDirectory}", result);
         });
         return job.Id;
     }
