@@ -10,7 +10,9 @@ public sealed class OcrManager : IAsyncDisposable
     private readonly HardwareService _hardware;
     private readonly OcrInstaller _installer;
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly object _lifecycleSync = new();
     private readonly List<OcrWorkerClient> _workers = [];
+    private CancellationTokenSource _preparationCancellation = new();
     private Channel<OcrWorkerClient>? _available;
     private string _deviceMode = "auto";
     private string _activeMode = string.Empty;
@@ -52,34 +54,54 @@ public sealed class OcrManager : IAsyncDisposable
 
     public async Task EnsureAsync(CancellationToken cancellationToken)
     {
-        await _gate.WaitAsync(cancellationToken);
-        try
+        CancellationTokenSource linked;
+        lock (_lifecycleSync)
         {
-            if (Status.Ready) return;
-            _state = "starting";
-            _error = null;
-            var hardware = _hardware.Snapshot();
+            if (_preparationCancellation.IsCancellationRequested)
+            {
+                _preparationCancellation.Dispose();
+                _preparationCancellation = new CancellationTokenSource();
+            }
+            linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _preparationCancellation.Token);
+        }
+        using (linked)
+        {
+            var operationToken = linked.Token;
+            await _gate.WaitAsync(operationToken);
             try
             {
-                var mode = _deviceMode;
-                if (mode == "auto") mode = hardware.NvidiaDetected ? "gpu" : "cpu";
-                await BuildPoolLockedAsync(mode, mode == "hybrid" ? 2 : 1, hardware, cancellationToken);
+                if (Status.Ready) return;
+                _state = "starting";
+                _error = null;
+                var hardware = _hardware.Snapshot();
+                try
+                {
+                    var mode = _deviceMode;
+                    if (mode == "auto") mode = hardware.NvidiaDetected ? "gpu" : "cpu";
+                    await BuildPoolLockedAsync(mode, mode == "hybrid" ? 2 : 1, hardware, operationToken);
+                }
+                catch (Exception gpuError) when (_deviceMode == "auto" && gpuError is not OperationCanceledException)
+                {
+                    await StopWorkersLockedAsync();
+                    _error = "GPU không khởi tạo được, đã chuyển CPU: " + gpuError.Message;
+                    await BuildPoolLockedAsync("cpu", 1, hardware, operationToken);
+                }
+                _state = "ready";
             }
-            catch (Exception gpuError) when (_deviceMode == "auto")
+            catch (OperationCanceledException)
             {
-                await StopWorkersLockedAsync();
-                _error = "GPU không khởi tạo được, đã chuyển CPU: " + gpuError.Message;
-                await BuildPoolLockedAsync("cpu", 1, hardware, cancellationToken);
+                _state = "stopped";
+                _error = null;
+                throw;
             }
-            _state = "ready";
+            catch (Exception error)
+            {
+                _state = "failed";
+                _error = error.Message;
+                throw;
+            }
+            finally { _gate.Release(); }
         }
-        catch (Exception error)
-        {
-            _state = "failed";
-            _error = error.Message;
-            throw;
-        }
-        finally { _gate.Release(); }
     }
 
     public async Task<int> ConfigureScanWorkersAsync(int target, CancellationToken cancellationToken)
@@ -128,20 +150,29 @@ public sealed class OcrManager : IAsyncDisposable
         }
     }
 
-    public async Task StopAsync()
+    public async Task StopAsync(CancellationToken cancellationToken = default)
     {
-        await _gate.WaitAsync();
+        lock (_lifecycleSync)
+        {
+            if (!_preparationCancellation.IsCancellationRequested) _preparationCancellation.Cancel();
+        }
+        await _gate.WaitAsync(cancellationToken);
         try
         {
             await StopWorkersLockedAsync();
             _state = "stopped";
             _activeMode = string.Empty;
+            _error = null;
         }
         finally { _gate.Release(); }
     }
 
     public async Task RemoveAsync(CancellationToken cancellationToken)
     {
+        lock (_lifecycleSync)
+        {
+            if (!_preparationCancellation.IsCancellationRequested) _preparationCancellation.Cancel();
+        }
         await _gate.WaitAsync(cancellationToken);
         try
         {
@@ -209,6 +240,7 @@ public sealed class OcrManager : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         await StopAsync();
+        lock (_lifecycleSync) _preparationCancellation.Dispose();
         _gate.Dispose();
     }
 }
