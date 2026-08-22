@@ -110,7 +110,8 @@ require('x:Name="MainColumns"' in media_xaml, "Media must use the horizontal mai
 require('<ColumnDefinition Width="1.35*" />' in media_xaml and '<ColumnDefinition Width="0.95*" />' in media_xaml,
         "Media horizontal space allocation drifted")
 require('x:Name="LogBox"' not in media_xaml, "Media must not restore a page-local log box")
-require('Nhật ký đã gộp' in media_xaml, "Media must explain that diagnostics moved to the shared log")
+require('Nhật ký đã gộp' not in media_xaml,
+        "Media must not waste layout space on the redundant shared-log notice card")
 require('Resume + Range' not in media_xaml, "technical Resume + Range badge must not leak into the user UI")
 require('Text="Tải tiếp an toàn"' in media_xaml, "safe-resume badge must be localized")
 require('Phụ đề ưu tiên track có sẵn; chỉ dùng Bilibili AI khi không có track có sẵn.' in media_xaml,
@@ -129,4 +130,4 @@ require('if (track.Ai) return chinese ? 2 : 3;' in subtitle_policy,
 require('["application"] = string.Join' in support_code and '_log.Snapshot().TakeLast(500)' in support_code,
         "Bug reports must include the sanitized shared application log")
 
-print("PASS: four-item shell / embedded settings / shared log error-state / localized media / subtitle-priority contracts")
+print("PASS: four-item shell / embedded settings / shared log error-state / compact media / subtitle-priority contracts")
