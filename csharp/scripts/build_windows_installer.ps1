@@ -70,6 +70,10 @@ $identity = Get-Content $identityPath -Raw | ConvertFrom-Json
 if ($identity.checkpoint -ne "CSharp-P5-WindowsBuildCandidate") {
     throw "installer input must be the matching P5 Windows publish"
 }
+$version = ([string]$identity.informational_version).Trim()
+if ([string]::IsNullOrWhiteSpace($version) -or $version -notmatch '^4\.0\.0-beta\.\d+-csharp-p5$') {
+    throw "unexpected informational version for beta installer: $version"
+}
 Assert-ChecksumFile $publishFull $publishSums
 
 if ([string]::IsNullOrWhiteSpace($IsccPath)) {
@@ -91,7 +95,7 @@ $sourceTag = if ([string]$identity.source_revision -and [string]$identity.source
 else {
     ([string]$identity.source_tree_sha256).Substring(0, 12).ToLowerInvariant()
 }
-$outputBase = "BiliSubStudio_Setup_v4.0.0-beta.12-csharp-p5_$($sourceTag)_x64"
+$outputBase = "BiliSubStudio_Setup_v${version}_${sourceTag}_x64"
 # Compatibility marker retained for the static P5 gate: BiliSubStudio_Setup_v4.0.0-beta.12-csharp-p5_x64
 
 # Build a tiny native-AOT launcher that lives in the user-visible install root.

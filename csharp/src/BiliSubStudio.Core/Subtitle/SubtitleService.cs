@@ -8,7 +8,14 @@ using BiliSubStudio.Core.Video;
 
 namespace BiliSubStudio.Core.Subtitle;
 
-public sealed record SubtitleRequest(string Url, string Format, string Track, string OutputDirectory, string? CookieFile = null, string? CookieRaw = null);
+public sealed record SubtitleRequest(
+    string Url,
+    string Format,
+    string Track,
+    string OutputDirectory,
+    string? CookieFile = null,
+    string? CookieRaw = null,
+    SubtitleTrack? ResolvedTrack = null);
 public sealed record SubtitleCue(double Start, double End, string Text);
 public sealed record SubtitleResult(string OutputPath, int CueCount);
 
@@ -26,9 +33,10 @@ public sealed class SubtitleService
     public async Task<SubtitleResult> RunAsync(AppJob job, SubtitleRequest request)
     {
         var token = job.CancellationToken;
-        job.Set("resolving", 5, "Đang lấy danh sách phụ đề...");
+        job.Set("resolving", 5, "Đang lấy thông tin phụ đề...");
         var metadata = await _resolver.GetMetadataAsync(request.Url, request.CookieFile, token);
-        var track = metadata.Subtitles.FirstOrDefault(x => string.Equals(x.Language, request.Track, StringComparison.Ordinal))
+        var track = request.ResolvedTrack
+            ?? metadata.Subtitles.FirstOrDefault(x => string.Equals(x.Language, request.Track, StringComparison.Ordinal))
             ?? throw new InvalidOperationException($"Không tìm thấy track {request.Track}.");
         job.Log($"Track: {track.DisplayName} ({track.Language})");
         job.Set("downloading", 30, "Đang tải phụ đề...");

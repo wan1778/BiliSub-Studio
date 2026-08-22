@@ -28,7 +28,8 @@ public sealed record VideoMetadata(
     string Id,
     IReadOnlyList<string> Qualities,
     IReadOnlyList<SubtitleTrack> Subtitles,
-    string ThumbnailUrl = "");
+    string ThumbnailUrl = "",
+    string SubtitleDiscoveryWarning = "");
 
 public sealed record VideoResolveRequest(
     string Url,

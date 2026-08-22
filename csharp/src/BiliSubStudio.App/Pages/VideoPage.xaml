@@ -30,7 +30,7 @@
                         <TextBlock FontSize="10" Foreground="{ThemeResource AccentPrimaryBrush}" Text="Bilibili" />
                     </Border>
                     <Border Padding="10,5" Background="{ThemeResource SuccessSoftBrush}" BorderBrush="{ThemeResource SuccessBrush}" BorderThickness="1" CornerRadius="14">
-                        <TextBlock FontSize="10" Foreground="{ThemeResource SuccessBrush}" Text="Resume + Range" />
+                        <TextBlock FontSize="10" Foreground="{ThemeResource SuccessBrush}" Text="Tải tiếp an toàn" />
                     </Border>
                 </StackPanel>
             </Grid>
@@ -114,7 +114,7 @@
 
                         <StackPanel Spacing="3">
                             <TextBlock Style="{StaticResource CardTitleStyle}" Text="3. Chất lượng và định dạng" />
-                            <TextBlock Style="{StaticResource MutedTextStyle}" Text="Best ưu tiên chất lượng cao nhất mà nguồn/tài khoản hiện tại cho phép." />
+                            <TextBlock Style="{StaticResource MutedTextStyle}" Text="Best ưu tiên chất lượng cao nhất mà nguồn/tài khoản hiện tại cho phép. Phụ đề ưu tiên track có sẵn; chỉ dùng Bilibili AI khi không có track có sẵn." TextWrapping="Wrap" />
                         </StackPanel>
 
                         <Grid ColumnSpacing="12" RowSpacing="10">

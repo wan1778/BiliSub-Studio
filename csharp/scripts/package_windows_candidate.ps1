@@ -63,6 +63,10 @@ if ($identity.checkpoint -ne "CSharp-P5-WindowsBuildCandidate") { throw "unexpec
 if ($identity.release_candidate -ne $false -or $identity.promotion_allowed -ne $false) {
     throw "build identity must remain non-promotable until field QA is complete"
 }
+$version = ([string]$identity.informational_version).Trim()
+if ([string]::IsNullOrWhiteSpace($version) -or $version -notmatch '^4\.0\.0-beta\.\d+-csharp-p5$') {
+    throw "unexpected informational version for beta package: $version"
+}
 Assert-ChecksumFile $publishFull $publishSumsPath
 
 # This directory contains generated evidence only and is safe to recreate for the exact build.
@@ -74,7 +78,7 @@ $candidateFolder = Join-Path $stagingRoot $candidateFolderName
 New-Item $candidateFolder -ItemType Directory -Force | Out-Null
 Get-ChildItem $publishFull -Force | Copy-Item -Destination $candidateFolder -Recurse -Force
 
-$candidateArchiveName = "BiliSubStudio_v4.0.0-beta.12-csharp-p5-Windows-x64-BUILD-CANDIDATE.zip"
+$candidateArchiveName = "BiliSubStudio_v$version-Windows-x64-BUILD-CANDIDATE.zip"
 $candidateArchive = Join-Path $outputFull $candidateArchiveName
 Compress-Archive -Path $candidateFolder -DestinationPath $candidateArchive -CompressionLevel Optimal
 $candidateArchiveHash = Get-Sha256 $candidateArchive
@@ -110,7 +114,7 @@ $sourceTag = if ([string]$identity.source_revision -ne "unversioned-archive-chec
 else {
     ([string]$identity.source_tree_sha256).Substring(0, 12).ToLowerInvariant()
 }
-$sourceArchiveName = "BiliSubStudio_v4.0.0-beta.12-csharp-p5-source-$sourceTag.zip"
+$sourceArchiveName = "BiliSubStudio_v$version-source-$sourceTag.zip"
 $sourceArchive = Join-Path $outputFull $sourceArchiveName
 Compress-Archive -Path $sourceFolder -DestinationPath $sourceArchive -CompressionLevel Optimal
 $sourceArchiveHash = Get-Sha256 $sourceArchive
@@ -132,8 +136,8 @@ if (-not (Test-Path $installerStatusPath -PathType Leaf) -or
 }
 $installerStatus = Get-Content $installerStatusPath -Raw | ConvertFrom-Json
 $installerName = [string]$installerStatus.primary_user_artifact
-if ([string]::IsNullOrWhiteSpace($installerName) -or $installerName -notlike "BiliSubStudio_Setup_v4.0.0-beta.12-csharp-p5_$($sourceTag)_x64.exe") {
-    throw "installer artifact name does not identify the exact source revision: $installerName"
+if ([string]::IsNullOrWhiteSpace($installerName) -or $installerName -notlike "BiliSubStudio_Setup_v$version`_$($sourceTag)_x64.exe") {
+    throw "installer artifact name does not identify the exact version/source revision: $installerName"
 }
 $installerPath = Join-Path $outputFull $installerName
 if (-not (Test-Path $installerPath -PathType Leaf)) {
@@ -203,4 +207,4 @@ if ($env:GITHUB_OUTPUT) {
 
 Write-Host "PASS: candidate ZIP readback, exact source archive and top-level checksums"
 Write-Host "Candidate archive SHA-256: $candidateArchiveHash"
-Write-Host "Status remains field-QA pending; promotion is forbidden"
+Write-Host "Status remains field-QA pending; stable promotion is forbidden"
