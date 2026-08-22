@@ -49,7 +49,5 @@ internal static class OcrTrackerModeRegression
             ?? throw new InvalidOperationException("similarity returned null"));
         if (reversed >= 0.82)
             throw new InvalidOperationException("reordered Chinese text can still be merged at a lane boundary");
-
-        Console.WriteLine("PASS  OCR mode confidence and boundary similarity contracts");
     }
 }
