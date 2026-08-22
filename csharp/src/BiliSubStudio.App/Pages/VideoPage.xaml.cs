@@ -75,41 +75,43 @@ public sealed partial class VideoPage : Page
                 return;
             }
 
+            if (!string.IsNullOrWhiteSpace(metadata.SubtitleDiscoveryWarning))
+                _log.Warning("Media", metadata.SubtitleDiscoveryWarning);
+
             foreach (var quality in metadata.Qualities) QualityBox.Items.Add(quality);
             if (QualityBox.Items.Count == 0) QualityBox.Items.Add("best");
             QualityBox.SelectedIndex = 0;
 
             foreach (var track in metadata.Subtitles) TrackBox.Items.Add(track);
-            if (TrackBox.Items.Count > 0)
+            var preferred = SubtitleTrackPolicy.Preferred(metadata.Subtitles);
+            if (preferred is not null)
             {
-                var preferredIndex = 0;
-                var bestRank = int.MaxValue;
                 for (var index = 0; index < metadata.Subtitles.Count; index++)
                 {
-                    var track = metadata.Subtitles[index];
-                    var separator = track.Language.IndexOf(':');
-                    var language = separator >= 0 ? track.Language[(separator + 1)..] : track.Language;
-                    var chinese = language.StartsWith("zh", StringComparison.OrdinalIgnoreCase)
-                        || language.Contains("chi", StringComparison.OrdinalIgnoreCase);
-                    var rank = track.Official && chinese ? 0 : chinese ? 1 : track.Official ? 2 : 3;
-                    if (rank < bestRank)
+                    if (string.Equals(metadata.Subtitles[index].Language, preferred.Language, StringComparison.Ordinal))
                     {
-                        bestRank = rank;
-                        preferredIndex = index;
+                        TrackBox.SelectedIndex = index;
+                        break;
                     }
                 }
-                TrackBox.SelectedIndex = preferredIndex;
             }
 
             _metadataUrl = url;
             var hasThumbnail = !string.IsNullOrWhiteSpace(metadata.ThumbnailUrl);
             var hasOutput = !string.IsNullOrWhiteSpace(OutputPathBox.Text);
-            MetadataText.Text = $"{metadata.Title}\nVideo: {QualityBox.Items.Count} lựa chọn · Thumbnail: {(hasThumbnail ? "Có" : "Không")} · Phụ đề: {TrackBox.Items.Count} track";
+            var normalCount = metadata.Subtitles.Count(track => track.Official);
+            var aiCount = metadata.Subtitles.Count(track => track.Ai);
+            var subtitleSummary = normalCount > 0
+                ? $"{normalCount} có sẵn"
+                : aiCount > 0
+                    ? $"{aiCount} Bilibili AI"
+                    : "Không";
+            MetadataText.Text = $"{metadata.Title}\nVideo: {QualityBox.Items.Count} lựa chọn · Thumbnail: {(hasThumbnail ? "Có" : "Không")} · Phụ đề: {subtitleSummary}";
             StartButton.IsEnabled = hasOutput;
             StatusText.Text = !hasOutput
                 ? "Nguồn hợp lệ. Chọn thư mục lưu để tiếp tục."
                 : "Nguồn hợp lệ. Không chọn mục tải riêng = tải Video + Thumbnail + Phụ đề nếu có.";
-            _log.Info("Media", $"Metadata hợp lệ · {QualityBox.Items.Count} chất lượng · {(hasThumbnail ? "có" : "không có")} thumbnail · {TrackBox.Items.Count} track phụ đề.");
+            _log.Info("Media", $"Metadata hợp lệ · {QualityBox.Items.Count} chất lượng · {(hasThumbnail ? "có" : "không có")} thumbnail · phụ đề {subtitleSummary}.");
         }
         catch (OperationCanceledException)
         {
