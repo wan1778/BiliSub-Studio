@@ -23,8 +23,14 @@ public sealed partial class BilibiliPlayurlClient
         37, 48, 7, 16, 24, 55, 40, 61, 26, 17, 0, 1, 60, 51, 30, 4,
         22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11, 36, 20, 34, 44, 52,
     ];
+    private static readonly HttpClient SharedHttp = new()
+    {
+        Timeout = TimeSpan.FromSeconds(45),
+    };
 
     private readonly HttpClient _http;
+
+    public BilibiliPlayurlClient() : this(SharedHttp) { }
 
     public BilibiliPlayurlClient(HttpClient http) => _http = http;
 
