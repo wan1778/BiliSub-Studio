@@ -68,9 +68,17 @@ internal static class YtDlpNumericMetadataContract
 
         var toStream = resolverType.GetMethod("ToStream", BindingFlags.Static | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("missing yt-dlp stream conversion");
-        var stream = toStream.Invoke(null, [StreamKind.Video, items[0], 1L]) as ResolvedStream
+        var endpoints = new[]
+        {
+            "https://primary.invalid/video?token=one",
+            "https://backup.invalid/video?token=two",
+        };
+        var stream = toStream.Invoke(null, [StreamKind.Video, items[0], 1L, endpoints, 1]) as ResolvedStream
             ?? throw new InvalidOperationException("yt-dlp stream conversion returned null");
         if (stream.Size != 123L)
             throw new InvalidOperationException($"yt-dlp floating filesize must normalize safely; got {stream.Size}");
+        if (stream.EndpointUrls is null || stream.EndpointUrls.Count != 2 || stream.EndpointIndex != 1 ||
+            !string.Equals(stream.Url, endpoints[1], StringComparison.Ordinal))
+            throw new InvalidOperationException("yt-dlp stream conversion lost the selected CDN endpoint/index");
     }
 }
