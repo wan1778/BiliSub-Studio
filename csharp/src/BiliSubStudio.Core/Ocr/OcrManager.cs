@@ -180,6 +180,7 @@ public sealed class OcrManager : IAsyncDisposable
         {
             await StopWorkersLockedAsync();
             if (Directory.Exists(_paths.Ocr)) Directory.Delete(_paths.Ocr, recursive: true);
+            _installer.RemoveBootstrap();
             _state = "stopped";
             _activeMode = string.Empty;
             _error = null;
