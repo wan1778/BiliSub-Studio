@@ -35,7 +35,8 @@ public sealed record VideoResolveRequest(
     string Quality,
     string Mode,
     string Container,
-    string? CookieFile = null);
+    string? CookieFile = null,
+    int EndpointOffset = 0);
 
 public sealed record VideoDownloadRequest(
     string Url,
