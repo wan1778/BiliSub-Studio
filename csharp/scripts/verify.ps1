@@ -186,6 +186,23 @@ if (-not (Test-Path $startupLog -PathType Leaf)) {
 }
 Copy-Item $startupLog (Join-Path $publish "STARTUP_SMOKE_LOG.txt") -Force
 
+# Portable-mode startup intentionally creates persistent roots beside the executable.
+# The smoke test runs from the publish directory, so those roots are test byproducts,
+# not runtime payload. Remove them before checksumming/packaging so installer/update
+# artifacts can never carry Data/Tools/Temp/Cache/Downloads into Runtime.
+$protectedPublishRoots = @("Data", "Tools", "Temp", "Cache", "Downloads")
+foreach ($protected in $protectedPublishRoots) {
+    $generatedRoot = Join-Path $publish $protected
+    if (Test-Path $generatedRoot) {
+        Remove-Item $generatedRoot -Recurse -Force
+    }
+}
+foreach ($protected in $protectedPublishRoots) {
+    if (Test-Path (Join-Path $publish $protected)) {
+        throw "startup smoke contaminated publish payload with protected root: $protected"
+    }
+}
+
 $exeHash = Get-Sha256 $exe
 $workerHash = Get-Sha256 $worker
 $sourceIdentity.Inventory | Set-Content "$publish/SOURCE_SHA256SUMS.txt" -Encoding UTF8
