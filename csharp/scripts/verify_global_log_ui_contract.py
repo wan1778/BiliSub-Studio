@@ -23,6 +23,7 @@ log_code = read("csharp/src/BiliSubStudio.Core/Diagnostics/ApplicationLog.cs")
 job_code = read("csharp/src/BiliSubStudio.Core/Jobs/AppJob.cs")
 manager_code = read("csharp/src/BiliSubStudio.Core/Jobs/JobManager.cs")
 support_code = read("csharp/src/BiliSubStudio.App/Pages/SupportPage.xaml.cs")
+subtitle_policy = read("csharp/src/BiliSubStudio.Core/Video/SubtitleTrackPolicy.cs")
 
 nav = re.findall(r'<NavigationViewItem\s+Content="([^"]+)"\s+Tag="([^"]+)"\s*/>', main_xaml)
 require(nav == [
@@ -47,8 +48,14 @@ for marker in (
     'DangerSoftBrush',
     'Click="OpenLogFile_Click"',
     'Click="ClearLogView_Click"',
+    'x:Name="LogHealthyCountBorder"',
+    'x:Name="LogErrorCountBorder"',
 ):
     require(marker in main_xaml, f"shared log shell missing {marker}")
+require('x:Name="LogHealthyCountBorder"' in main_xaml and 'Text="0 lỗi"' in main_xaml,
+        "zero-error state must render through the healthy badge")
+require('x:Name="LogErrorCountBorder"' in main_xaml and 'Background="{ThemeResource DangerSoftBrush}"' in main_xaml,
+        "nonzero-error state must retain the danger badge")
 
 for marker in (
     'new ApplicationLog(paths.Data)',
@@ -56,6 +63,9 @@ for marker in (
     'if (entry.Level == AppLogLevel.Error)',
     'ShowGlobalLog(true)',
     'await _settingsPage.RunLayoutSmokeAsync()',
+    'private void UpdateErrorBadge()',
+    'LogHealthyCountBorder.Visibility = hasErrors ? Visibility.Collapsed : Visibility.Visible',
+    'LogErrorCountBorder.Visibility = hasErrors ? Visibility.Visible : Visibility.Collapsed',
 ):
     require(marker in main_code, f"shared log/layout behavior missing {marker}")
 
@@ -101,9 +111,22 @@ require('<ColumnDefinition Width="1.35*" />' in media_xaml and '<ColumnDefinitio
         "Media horizontal space allocation drifted")
 require('x:Name="LogBox"' not in media_xaml, "Media must not restore a page-local log box")
 require('Nhật ký đã gộp' in media_xaml, "Media must explain that diagnostics moved to the shared log")
+require('Resume + Range' not in media_xaml, "technical Resume + Range badge must not leak into the user UI")
+require('Text="Tải tiếp an toàn"' in media_xaml, "safe-resume badge must be localized")
+require('Phụ đề ưu tiên track có sẵn; chỉ dùng Bilibili AI khi không có track có sẵn.' in media_xaml,
+        "Media must explain normal-subtitle-first policy")
+require('SubtitleTrackPolicy.Preferred(metadata.Subtitles)' in media_code,
+        "Media default subtitle selection must use the shared policy")
+require('metadata.SubtitleDiscoveryWarning' in media_code,
+        "Media must surface native Bilibili subtitle discovery warnings to the shared log")
 require('GetSnapshot(_jobId, int.MaxValue)' in media_code, "Media must not re-render job log lines locally")
+
+require('if (track.Official) return chinese ? 0 : 1;' in subtitle_policy,
+        "all available/official subtitles must rank before Bilibili AI")
+require('if (track.Ai) return chinese ? 2 : 3;' in subtitle_policy,
+        "AI subtitles must remain the fallback source class")
 
 require('["application"] = string.Join' in support_code and '_log.Snapshot().TakeLast(500)' in support_code,
         "Bug reports must include the sanitized shared application log")
 
-print("PASS: four-item shell / embedded settings / shared persistent colored log / compact media contracts")
+print("PASS: four-item shell / embedded settings / shared log error-state / localized media / subtitle-priority contracts")
