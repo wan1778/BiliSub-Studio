@@ -221,10 +221,31 @@ OCRPage.Scan
   -> BiliSubApplication.StartOcrScan
   -> JobManager/AppJob -> shared ApplicationLog
   -> OcrScanner.RunAsync
+  -> HardwareService.RecommendedOcrLanes
+       -> conservative CPU/RAM/GPU/VRAM starting prediction
+  -> HardwareService.RecommendedOcrProbeCeiling
+       -> at most one topology level above the prediction
+  -> Auto live probe 1/2/4/8/16 up to duration/resource ceiling
+       -> create the requested worker pool
+       -> run concurrent inference on one real video frame
+       -> OOM/worker error/under-10% gain keeps the last stable level
   -> deterministic lane topology + shared PaddleOCR pool
   -> SubtitleTracker + ChineseSubtitleNormalizer
   -> schema-4 safe pause/resume checkpoint
   -> ExportOcrAsync -> SRT
+
+OCRPage.Pause
+  -> BiliSubApplication.PauseJobAsync
+  -> all lanes stop at safe tracker boundaries
+  -> OcrCheckpointStore.SaveAsync + write-through fsync
+  -> OcrScanResult(Paused=true)
+  -> page retains the exact OcrScanRequest
+  -> Continue + Cancel remain enabled; partial Export remains disabled
+
+OCRPage.Cancel (paused)
+  -> BiliSubApplication.RemoveOcrCheckpointAsync(exact paused request)
+  -> OcrCheckpointStore.RemoveAsync
+  -> clear partial cues/progress/telemetry
 ```
 
 ## Video editor

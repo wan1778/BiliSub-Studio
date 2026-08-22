@@ -121,7 +121,9 @@ Any replacement candidate must have a different SHA-256 and must preserve the 37
 - [ ] OCR Auto preflight plus manual 1/2/4/8; 16 only when resource headroom is sufficient.
 - [ ] CPU/GPU/RAM/VRAM and lane/decoder/timing telemetry update while scanning.
 - [ ] Auto topology evaluates actual machine/video capability before raising lanes/batch; UI must not remain `measuring` while CPU/GPU/RAM have fallen idle and the benchmark has hung.
+- [ ] On a nominal 4 GB NVIDIA laptop GPU with sufficient CPU/RAM, Auto live-probes 1 → 2 → 4 lanes instead of stopping at 1 solely because CUDA reports slightly less than 4 GiB; OOM/error safely retains the last stable level.
 - [ ] Pause reaches safe schema-4 checkpoint; active lanes become zero; Resume preserves topology and progress.
+- [ ] After Pause reaches `paused`, Cancel remains enabled; pressing it deletes the paused checkpoint and clears partial cues/progress, so the next Scan starts from zero.
 - [ ] Close during OCR waits for safe checkpoint or refuses unsafe close.
 - [ ] Completed cue list/timeline synchronization works and Chinese SRT rejects foreign standalone OCR garbage such as the previously observed `A N...` family.
 - [ ] Editor multi-region Blur/Mosaic/Cover validation, export and cancellation work end-to-end.

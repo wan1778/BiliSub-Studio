@@ -175,11 +175,10 @@ jobs:
           @(
             "# BiliSub Studio $publicVersion",
             "",
-            '- Sửa lỗi Windows `os error 448` / `untrusted mount point` khi Chuẩn bị OCR bằng cách tách uv/Python bootstrap sang LocalAppData.',
-            '- Không còn phụ thuộc vào minor-version junction `Python 3.12`; OCR dùng trực tiếp `python.exe` của patch-version đã xác minh.',
-            '- Nếu 4.0.4 đã tải Python xong nhưng chết ở bước tạo junction, 4.0.5 có thể nhận lại interpreter hợp lệ thay vì tải lại vô ích.',
-            '- Private OCR venv được dựng từ đường dẫn Python chính xác; các bước cài Paddle/PaddleOCR bị cấm tự tải Python khác.',
-            '- Xóa OCR runtime cũng dọn bootstrap uv/Python trong LocalAppData.'
+            '- OCR Auto không còn dùng dự đoán VRAM làm trần tuyệt đối; app thăm dò worker/inference đồng thời từng mức và chỉ giữ topology thực sự ổn định.',
+            '- Card 4 GB không còn bị tụt về 1 lane chỉ vì CUDA báo VRAM thấp hơn dung lượng quảng cáo một chút.',
+            '- Auto có thể thử 1 → 2 → 4 lane trên máy đủ CPU/RAM; OOM, worker error hoặc throughput không tăng sẽ quay về mức ổn định trước đó.',
+            '- Sau khi Tạm dừng, nút Hủy vẫn hoạt động và xóa đúng checkpoint/lần quét dở; dữ liệu tạm dừng không được xuất nhầm như kết quả hoàn tất.'
           ) | Set-Content $notes -Encoding UTF8
 
           gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
@@ -200,10 +199,10 @@ jobs:
             size = $portableSize
             payload_kind = "winui3-portable-zip"
             notes = @(
-              "Sửa Windows OCR os error 448 / untrusted mount point.",
-              "uv/Python bootstrap chuyển sang LocalAppData thay vì phụ thuộc thư mục cài ứng dụng.",
-              "Dùng trực tiếp Python patch-version hợp lệ, không phụ thuộc minor-version junction 3.12.",
-              "Có thể phục hồi Python đã tải dở từ lần Chuẩn bị OCR thất bại của 4.0.4."
+              "OCR Auto thăm dò live 1/2/4 lane thay vì khóa cứng theo dự đoán VRAM.",
+              "Card 4 GB không còn bị xếp nhầm vào mức 1 lane khi CUDA báo thiếu một phần VRAM.",
+              "Auto fallback về topology ổn định trước đó khi OOM, worker lỗi hoặc throughput không tăng.",
+              "Nút Hủy vẫn hoạt động sau Tạm dừng và xóa đúng checkpoint OCR dở."
             )
           }
           $manifest | ConvertTo-Json -Depth 4 | Set-Content "update/beta.json" -Encoding UTF8

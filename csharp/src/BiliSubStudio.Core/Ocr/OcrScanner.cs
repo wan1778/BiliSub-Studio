@@ -150,7 +150,7 @@ public sealed class OcrScanner
             job.Set("benchmark", 0.5, "OCR Safety · kiểm tra headroom cho số luồng đã chọn...");
             _ = await _hardware.BenchmarkAsync(cancellationToken);
             var safeMaximum = Math.Min(maximumForDuration,
-                HardwareService.RecommendedOcrLanes(_hardware.Snapshot(), effectiveDevice));
+                HardwareService.RecommendedOcrProbeCeiling(_hardware.Snapshot(), effectiveDevice));
             var selected = Math.Min(explicitValue, safeMaximum);
             if (selected < explicitValue)
                 job.Warn($"Đã giới hạn {explicitValue} → {selected} lane cho {effectiveDevice} theo CPU/RAM/GPU/VRAM và thời lượng video.");
@@ -159,13 +159,14 @@ public sealed class OcrScanner
 
         job.Set("benchmark", 0.5, "OCR Auto · Predict → Probe → Commit...");
         _ = await _hardware.BenchmarkAsync(cancellationToken);
-        var predicted = Math.Min(maximumForDuration,
-            HardwareService.RecommendedOcrLanes(_hardware.Snapshot(), effectiveDevice));
-        job.Log($"Auto Predict: tối đa {predicted} lane cho {effectiveDevice} theo CPU/RAM/GPU/VRAM.");
+        var hardware = _hardware.Snapshot();
+        var predicted = Math.Min(maximumForDuration, HardwareService.RecommendedOcrLanes(hardware, effectiveDevice));
+        var probeCeiling = Math.Min(maximumForDuration, HardwareService.RecommendedOcrProbeCeiling(hardware, effectiveDevice));
+        job.Log($"Auto Predict: đề xuất {predicted} lane; live probe được thử tới {probeCeiling} lane cho {effectiveDevice} theo CPU/RAM/GPU/VRAM.");
         var probeFrame = Convert.ToBase64String(await CaptureFrameAsync(request.Path, Math.Min(5, request.Duration / 2), request.Region, false, cancellationToken));
         var best = 1;
         var previousThroughput = 0d;
-        foreach (var level in new[] { 1, 2, 4, 8, 16 }.Where(x => x <= predicted))
+        foreach (var level in new[] { 1, 2, 4, 8, 16 }.Where(x => x <= probeCeiling))
         {
             try
             {
