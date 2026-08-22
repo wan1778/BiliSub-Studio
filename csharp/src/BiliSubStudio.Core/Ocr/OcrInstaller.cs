@@ -164,7 +164,6 @@ internal sealed class OcrInstaller
         ["UV_PYTHON_INSTALL_BIN"] = "0",
         ["UV_PYTHON_INSTALL_REGISTRY"] = "0",
         ["UV_CACHE_DIR"] = Path.Combine(_paths.Ocr, "cache", "uv"),
-        ["UV_LINK_MODE"] = "copy",
         ["UV_MANAGED_PYTHON"] = "1",
         ["UV_NO_PROGRESS"] = "1",
         ["PYTHONUTF8"] = "1",
