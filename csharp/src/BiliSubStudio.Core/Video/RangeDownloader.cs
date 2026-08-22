@@ -83,7 +83,7 @@ public sealed class RangeDownloader
                 try
                 {
                     Exception? last = null;
-                    var noProgressFailures = 0;
+                    var weakProgressFailures = 0;
                     for (var attempt = 1; attempt <= MaxSegmentAttempts; attempt++)
                     {
                         workerToken.ThrowIfCancellationRequested();
@@ -137,23 +137,25 @@ public sealed class RangeDownloader
                         catch (Exception error)
                         {
                             var partialAfter = PartialLength(temporary, segment.Length);
-                            var progressed = partialAfter > partialBefore;
+                            var gained = Math.Max(0, partialAfter - partialBefore);
                             inFlight[segment.Index] = partialAfter;
                             completed.TryRemove(segment.Index, out _);
                             Interlocked.Exchange(ref committedBytes, completed.Keys.Sum(index => segments[index].Length));
                             last = error;
 
-                            // A short body that actually delivered bytes is not a reason to throw away
-                            // the partial segment or immediately rotate the signed URL. Continue exactly
-                            // from the missing byte. Refresh only after repeated failures with zero progress.
-                            if (progressed)
+                            // Preserve every byte. Normal short reads (hundreds of KiB+) continue on the
+                            // same URL. Pathological tiny reads like the real 379-byte incident still
+                            // continue from the missing byte, but also trigger a signed-URL/CDN refresh.
+                            var remainingBefore = Math.Max(1, segment.Length - partialBefore);
+                            var meaningfulProgress = Math.Min(64L * 1024, remainingBefore);
+                            if (gained >= meaningfulProgress)
                             {
-                                noProgressFailures = 0;
+                                weakProgressFailures = 0;
                             }
                             else
                             {
-                                noProgressFailures++;
-                                if (refresh is not null && noProgressFailures % 2 == 0)
+                                weakProgressFailures++;
+                                if (refresh is not null && weakProgressFailures % 2 == 0)
                                 {
                                     await currentGate.WaitAsync(workerToken);
                                     try
@@ -167,9 +169,9 @@ public sealed class RangeDownloader
                                 }
                             }
 
-                            var delay = progressed
+                            var delay = gained > 0
                                 ? Math.Min(750, 100 * attempt)
-                                : Math.Min(4_000, 250 * Math.Max(1, noProgressFailures) * Math.Max(1, noProgressFailures));
+                                : Math.Min(4_000, 250 * Math.Max(1, weakProgressFailures) * Math.Max(1, weakProgressFailures));
                             await Task.Delay(TimeSpan.FromMilliseconds(delay), workerToken);
                         }
                     }
