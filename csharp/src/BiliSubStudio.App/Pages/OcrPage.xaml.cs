@@ -76,7 +76,7 @@ public sealed partial class OcrPage : Page
             MediaText.Text = $"{_media.Width}×{_media.Height} · {_media.Duration:0.0}s · {_media.Codec} · {(_media.DirectCompatible ? "player native + frame FFmpeg" : "frame FFmpeg fallback")}";
             await UpdateFrameAsync();
             ApplyRegionVisual();
-            StatusText.Text = "Video đã sẵn sàng. Bật Chỉnh ROI để tạo hoặc di chuyển vùng phụ đề.";
+            StatusText.Text = "Video đã sẵn sàng. Bật Chỉnh ROI để tạo, di chuyển hoặc đổi kích thước vùng phụ đề.";
             Timeline.IsEnabled = true;
             SelectRegionButton.IsEnabled = true;
             RefreshFrameButton.IsEnabled = true;
@@ -147,7 +147,7 @@ public sealed partial class OcrPage : Page
             if (selecting && _playerMode) await SetPlaybackModeAsync(false, play: false);
             PreviewCanvas.IsHitTestVisible = selecting;
             StatusText.Text = selecting
-                ? "Chỉnh ROI: kéo vùng trống để tạo khung mới; kéo bên trong khung xanh để di chuyển."
+                ? "Chỉnh ROI: kéo giữa khung để di chuyển · kéo mép/góc để resize · kéo ngoài khung để tạo mới."
                 : "Đã thoát chế độ chỉnh ROI.";
         }
         catch (Exception error)
@@ -207,6 +207,8 @@ public sealed partial class OcrPage : Page
         _jobId = _application.StartOcrScan(BuildRequest());
         ScanButton.IsEnabled = false;
         TestFrameButton.IsEnabled = false;
+        SelectRegionButton.IsOn = false;
+        SelectRegionButton.IsEnabled = false;
         PauseButton.IsEnabled = true;
         CancelButton.IsEnabled = true;
         CueList.Items.Clear();
@@ -340,11 +342,14 @@ public sealed partial class OcrPage : Page
         if (!point.Properties.IsLeftButtonPressed) return;
         _dragStart = point.Position;
         _dragOriginRegion = _region;
-        _roiDragMode = IsInsideRoi(point.Position) ? RoiDragMode.Move : RoiDragMode.Create;
+        _roiDragMode = HitTestRoi(point.Position);
         PreviewCanvas.CapturePointer(e.Pointer);
-        StatusText.Text = _roiDragMode == RoiDragMode.Move
-            ? "Đang di chuyển vùng OCR..."
-            : "Đang tạo vùng OCR mới...";
+        StatusText.Text = _roiDragMode switch
+        {
+            RoiDragMode.Move => "Đang di chuyển vùng OCR...",
+            RoiDragMode.Create => "Đang tạo vùng OCR mới...",
+            _ => "Đang thay đổi kích thước vùng OCR...",
+        };
     }
 
     private void PreviewCanvas_PointerMoved(object sender, PointerRoutedEventArgs e)
@@ -360,9 +365,12 @@ public sealed partial class OcrPage : Page
         {
             UpdateDrag(_dragStart.Value, e.GetCurrentPoint(PreviewCanvas).Position, commit: true);
             await _application.SetOcrRegionAsync(ReadRegion(), CancellationToken.None);
-            StatusText.Text = _roiDragMode == RoiDragMode.Move
-                ? "Đã di chuyển và lưu vùng OCR."
-                : "Đã tạo và lưu vùng OCR.";
+            StatusText.Text = _roiDragMode switch
+            {
+                RoiDragMode.Move => "Đã di chuyển và lưu vùng OCR.",
+                RoiDragMode.Create => "Đã tạo và lưu vùng OCR.",
+                _ => "Đã đổi kích thước và lưu vùng OCR.",
+            };
         }
         catch (Exception error)
         {
@@ -397,37 +405,76 @@ public sealed partial class OcrPage : Page
             return;
         }
 
-        var x1 = Math.Clamp(Math.Min(start.X, end.X), video.X, video.X + video.Width);
-        var x2 = Math.Clamp(Math.Max(start.X, end.X), video.X, video.X + video.Width);
-        var y1 = Math.Clamp(Math.Min(start.Y, end.Y), video.Y, video.Y + video.Height);
-        var y2 = Math.Clamp(Math.Max(start.Y, end.Y), video.Y, video.Y + video.Height);
-        if (x2 - x1 < 6 || y2 - y1 < 6)
+        if (_roiDragMode == RoiDragMode.Create)
         {
-            if (commit)
+            var x1 = Math.Clamp(Math.Min(start.X, end.X), video.X, video.X + video.Width);
+            var x2 = Math.Clamp(Math.Max(start.X, end.X), video.X, video.X + video.Width);
+            var y1 = Math.Clamp(Math.Min(start.Y, end.Y), video.Y, video.Y + video.Height);
+            var y2 = Math.Clamp(Math.Max(start.Y, end.Y), video.Y, video.Y + video.Height);
+            if (x2 - x1 < 6 || y2 - y1 < 6)
             {
-                _region = _dragOriginRegion;
-                ApplyRegionVisual();
+                if (commit)
+                {
+                    _region = _dragOriginRegion;
+                    ApplyRegionVisual();
+                }
+                return;
             }
+            _region = OcrCheckpointStoreProxy.Normalize(new OcrRegion(
+                (x1 - video.X) / video.Width,
+                (y1 - video.Y) / video.Height,
+                (x2 - x1) / video.Width,
+                (y2 - y1) / video.Height));
+            ApplyRegionVisual();
             return;
         }
 
-        _region = OcrCheckpointStoreProxy.Normalize(new OcrRegion(
-            (x1 - video.X) / video.Width,
-            (y1 - video.Y) / video.Height,
-            (x2 - x1) / video.Width,
-            (y2 - y1) / video.Height));
+        var left = _dragOriginRegion.X;
+        var top = _dragOriginRegion.Y;
+        var right = left + _dragOriginRegion.Width;
+        var bottom = top + _dragOriginRegion.Height;
+        var pointerX = Math.Clamp((end.X - video.X) / video.Width, 0, 1);
+        var pointerY = Math.Clamp((end.Y - video.Y) / video.Height, 0, 1);
+        var minimumWidth = Math.Min(0.25, 6 / video.Width);
+        var minimumHeight = Math.Min(0.25, 6 / video.Height);
+
+        if (_roiDragMode is RoiDragMode.ResizeLeft or RoiDragMode.ResizeTopLeft or RoiDragMode.ResizeBottomLeft)
+            left = Math.Clamp(pointerX, 0, right - minimumWidth);
+        if (_roiDragMode is RoiDragMode.ResizeRight or RoiDragMode.ResizeTopRight or RoiDragMode.ResizeBottomRight)
+            right = Math.Clamp(pointerX, left + minimumWidth, 1);
+        if (_roiDragMode is RoiDragMode.ResizeTop or RoiDragMode.ResizeTopLeft or RoiDragMode.ResizeTopRight)
+            top = Math.Clamp(pointerY, 0, bottom - minimumHeight);
+        if (_roiDragMode is RoiDragMode.ResizeBottom or RoiDragMode.ResizeBottomLeft or RoiDragMode.ResizeBottomRight)
+            bottom = Math.Clamp(pointerY, top + minimumHeight, 1);
+
+        _region = OcrCheckpointStoreProxy.Normalize(new OcrRegion(left, top, right - left, bottom - top));
         ApplyRegionVisual();
     }
 
-    private bool IsInsideRoi(Point point)
+    private RoiDragMode HitTestRoi(Point point)
     {
         var video = VideoRect();
-        if (video.Width <= 0 || video.Height <= 0) return false;
+        if (video.Width <= 0 || video.Height <= 0) return RoiDragMode.Create;
         var left = video.X + _region.X * video.Width;
         var top = video.Y + _region.Y * video.Height;
         var right = left + _region.Width * video.Width;
         var bottom = top + _region.Height * video.Height;
-        return point.X >= left && point.X <= right && point.Y >= top && point.Y <= bottom;
+        const double tolerance = 10;
+        var nearLeft = Math.Abs(point.X - left) <= tolerance && point.Y >= top - tolerance && point.Y <= bottom + tolerance;
+        var nearRight = Math.Abs(point.X - right) <= tolerance && point.Y >= top - tolerance && point.Y <= bottom + tolerance;
+        var nearTop = Math.Abs(point.Y - top) <= tolerance && point.X >= left - tolerance && point.X <= right + tolerance;
+        var nearBottom = Math.Abs(point.Y - bottom) <= tolerance && point.X >= left - tolerance && point.X <= right + tolerance;
+
+        if (nearLeft && nearTop) return RoiDragMode.ResizeTopLeft;
+        if (nearRight && nearTop) return RoiDragMode.ResizeTopRight;
+        if (nearLeft && nearBottom) return RoiDragMode.ResizeBottomLeft;
+        if (nearRight && nearBottom) return RoiDragMode.ResizeBottomRight;
+        if (nearLeft) return RoiDragMode.ResizeLeft;
+        if (nearRight) return RoiDragMode.ResizeRight;
+        if (nearTop) return RoiDragMode.ResizeTop;
+        if (nearBottom) return RoiDragMode.ResizeBottom;
+        if (point.X >= left && point.X <= right && point.Y >= top && point.Y <= bottom) return RoiDragMode.Move;
+        return RoiDragMode.Create;
     }
 
     private void ApplyRegionVisual()
@@ -558,6 +605,14 @@ public sealed partial class OcrPage : Page
         None,
         Create,
         Move,
+        ResizeLeft,
+        ResizeRight,
+        ResizeTop,
+        ResizeBottom,
+        ResizeTopLeft,
+        ResizeTopRight,
+        ResizeBottomLeft,
+        ResizeBottomRight,
     }
 
     private static class OcrCheckpointStoreProxy
