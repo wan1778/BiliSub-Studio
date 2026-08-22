@@ -1,3 +1,5 @@
+using BiliSubStudio.Core.Diagnostics;
+
 namespace BiliSubStudio.Core.Jobs;
 
 public sealed class AppJob : IDisposable
@@ -5,7 +7,8 @@ public sealed class AppJob : IDisposable
     private readonly object _gate = new();
     private readonly CancellationTokenSource _cancellation = new();
     private readonly List<string> _logs = [];
-    private readonly TaskCompletionSource _pauseCompletion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource<bool> _pauseCompletion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly ApplicationLog? _applicationLog;
     private string _status = "queued";
     private double _progress;
     private string _message = "Đang chờ.";
@@ -17,13 +20,15 @@ public sealed class AppJob : IDisposable
     private int _activeConnections;
     private bool? _rangeSupported;
 
-    public AppJob(string id, string kind, bool pauseSupported = false)
+    public AppJob(string id, string kind, bool pauseSupported = false, ApplicationLog? applicationLog = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(id);
         ArgumentException.ThrowIfNullOrWhiteSpace(kind);
         Id = id;
         Kind = kind;
         PauseSupported = pauseSupported;
+        _applicationLog = applicationLog;
+        _applicationLog?.Info(Kind, "Bắt đầu tác vụ.", Id);
     }
 
     public string Id { get; }
@@ -34,6 +39,7 @@ public sealed class AppJob : IDisposable
     public void Cancel()
     {
         _cancellation.Cancel();
+        var changed = false;
         lock (_gate)
         {
             if (_done)
@@ -43,8 +49,10 @@ public sealed class AppJob : IDisposable
             _status = "cancelled";
             _message = "Đã hủy tác vụ.";
             _done = true;
+            changed = true;
             _pauseCompletion.TrySetResult();
         }
+        if (changed) _applicationLog?.Info(Kind, "Đã hủy tác vụ.", Id);
     }
 
     public Task RequestPauseAsync()
@@ -73,6 +81,7 @@ public sealed class AppJob : IDisposable
 
     public void PauseComplete(string? message = null)
     {
+        string finalMessage;
         lock (_gate)
         {
             if (_done)
@@ -81,16 +90,36 @@ public sealed class AppJob : IDisposable
             }
             _status = "paused";
             _message = string.IsNullOrWhiteSpace(message) ? "Đã tạm dừng tại checkpoint an toàn." : message;
+            finalMessage = _message;
             _done = true;
             _pauseCompletion.TrySetResult();
         }
+        _applicationLog?.Info(Kind, finalMessage, Id);
     }
 
-    public void Log(string message)
+    public void Log(string message) => AddLog(AppLogLevel.Info, message);
+
+    public void Warn(string message) => AddLog(AppLogLevel.Warning, message);
+
+    public void Error(string message) => AddLog(AppLogLevel.Error, message);
+
+    private void AddLog(AppLogLevel level, string message)
     {
         lock (_gate)
         {
             _logs.Add($"{DateTime.Now:HH:mm:ss}  {message}");
+        }
+        switch (level)
+        {
+            case AppLogLevel.Warning:
+                _applicationLog?.Warning(Kind, message, Id);
+                break;
+            case AppLogLevel.Error:
+                _applicationLog?.Error(Kind, message, Id);
+                break;
+            default:
+                _applicationLog?.Info(Kind, message, Id);
+                break;
         }
     }
 
@@ -131,6 +160,7 @@ public sealed class AppJob : IDisposable
 
     public void Finish(Exception? error, string message, object? result = null)
     {
+        string finalMessage;
         lock (_gate)
         {
             if (_done)
@@ -151,7 +181,13 @@ public sealed class AppJob : IDisposable
                 _error = error.Message;
             }
             _message = string.IsNullOrWhiteSpace(message) ? error?.Message ?? "Hoàn tất." : message;
+            finalMessage = _message;
         }
+
+        if (error is null)
+            _applicationLog?.Info(Kind, finalMessage, Id);
+        else
+            _applicationLog?.Error(Kind, finalMessage, Id);
     }
 
     public JobSnapshot Snapshot(int after = 0)
