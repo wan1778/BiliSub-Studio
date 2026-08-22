@@ -98,6 +98,14 @@ $sdk = (& dotnet --version).Trim()
 if ($LASTEXITCODE -ne 0) { throw "dotnet --version failed with exit code $LASTEXITCODE" }
 if ($sdk -ne "10.0.400") { throw "global.json requires exact .NET SDK 10.0.400; got $sdk" }
 
+$propsPath = Join-Path $root "csharp/Directory.Build.props"
+[xml]$props = Get-Content $propsPath -Raw
+$informationalVersion = [string]$props.Project.PropertyGroup.InformationalVersion
+$informationalVersion = $informationalVersion.Trim()
+if ([string]::IsNullOrWhiteSpace($informationalVersion) -or $informationalVersion -notmatch '^4\.0\.0-beta\.\d+-csharp-p5$') {
+    throw "Directory.Build.props has an unexpected public-beta InformationalVersion: $informationalVersion"
+}
+
 # Compute this before restore/build so generated obj/bin files can never affect source identity.
 $sourceRevision = "unversioned-archive-checkpoint"
 if (Test-Path (Join-Path $root ".git") -PathType Container) {
@@ -185,7 +193,7 @@ $sourceIdentity.Inventory | Set-Content "$publish/SOURCE_SHA256SUMS.txt" -Encodi
 $identity = [ordered]@{
     schema = 1
     checkpoint = "CSharp-P5-WindowsBuildCandidate"
-    informational_version = "4.0.0-beta.12-csharp-p5"
+    informational_version = $informationalVersion
     created_utc = [DateTime]::UtcNow.ToString("o")
     candidate_status = "build_verified_field_qa_pending"
     release_candidate = $false
@@ -240,5 +248,6 @@ if ($env:GITHUB_OUTPUT) {
 }
 
 Write-Host "PASS: Windows C# compile, global-log/shell contract, contract runner, short-read regression, self-contained WinUI publish, real startup smoke, worker identity, PE32+ x64 and checksum readback"
+Write-Host "Version: $informationalVersion"
 Write-Host "BiliSubStudio.exe SHA-256: $exeHash"
 Write-Host "Source tree SHA-256: $($sourceIdentity.Hash)"
