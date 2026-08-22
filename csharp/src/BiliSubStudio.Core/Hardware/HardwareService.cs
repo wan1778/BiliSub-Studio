@@ -53,13 +53,30 @@ public sealed class HardwareService
             {
                 if (snapshot.LogicalProcessors >= level * 2 && snapshot.MemoryBytes >= level * 768L * 1024 * 1024) lanes = level;
             }
-            if (!snapshot.NvidiaDetected) lanes = Math.Min(lanes, 4);
+            if (snapshot.NvidiaDetected)
+            {
+                lanes = Math.Min(lanes, RecommendedGpuOcrLanes(snapshot.VramBytes));
+            }
+            else
+            {
+                lanes = Math.Min(lanes, 4);
+            }
             return new BenchmarkResult(
                 cpuBytes / 1024d / 1024d / cpuWatch.Elapsed.TotalSeconds,
                 memoryBytes / 1024d / 1024d / memoryWatch.Elapsed.TotalSeconds,
                 lanes,
                 overall.Elapsed);
         }, cancellationToken);
+    }
+
+    internal static int RecommendedGpuOcrLanes(long vramBytes)
+    {
+        const long gib = 1024L * 1024 * 1024;
+        if (vramBytes < 4 * gib) return 1;
+        if (vramBytes < 8 * gib) return 2;
+        if (vramBytes < 16 * gib) return 4;
+        if (vramBytes < 32 * gib) return 8;
+        return 16;
     }
 
     private static class NvidiaProbe
