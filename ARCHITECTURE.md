@@ -85,6 +85,12 @@ WinUI pages own direct region interaction: create, select, move and resize over 
 
 Core media services own ffprobe, exact processed-frame extraction and FFmpeg render orchestration. Preview and export use the same `VideoEditorService.BuildFilter` effect graph and time guards. Final outputs are non-destructive and never share downloader concurrency/CDN/resume ownership. Editor export jobs use cleanup-aware cancellation: Cancel is not terminal until the FFmpeg process tree has exited and the partial `.rendering` artifact has been removed.
 
+The common subtitle path is native Editor state, not the downloader's normalizing subtitle path. `EditorSubtitleDocument` strictly preserves every imported SRT block number, order and timing line. `TranslationSkillBundle` loads the exact bundled `Dịch Trung Tu Tiên` ZIP only after SHA-256, entry-count, expanded-size, required-file and path-traversal checks; core rules are always present and reference sections are retrieved by the current Chinese source terms.
+
+`LocalSubtitleTranslationService` owns a pinned, app-managed Qwen3-8B Q4_K_M GGUF and pinned llama.cpp Vulkan/CPU runtime under `Tools/Translation`. Both downloads are exact-size/SHA-256 verified; the model URL is commit-pinned and partial downloads are resumable. Inference is an owned `llama-cli` child over files/stdout with strict cue-ID JSON, never Ollama, localhost or a second BiliSub backend. A whole-SRT terminology/character bible is accumulated before bounded translation batches. Completed batches are atomically checkpointed under `Data/Projects/Translation`; cancellation reaps the process but preserves completed cues.
+
+Subtitle placement is a distinct normalized video-space rectangle rendered over the native preview. Resizing the preview only recomputes its display geometry. Vietnamese SRT export preserves the source timecode/order; Editor render converts the completed cues and placement into a temporary ASS file and applies it in the same FFmpeg graph for real hardsub output.
+
 ## Jobs, shutdown and logs
 
 `JobManager` / `AppJob` own cancellation/progress/result state. Application-wide logging is centralized and persisted under the app data/log location. Safe shutdown coordinates active jobs and OCR checkpoint state before process teardown.

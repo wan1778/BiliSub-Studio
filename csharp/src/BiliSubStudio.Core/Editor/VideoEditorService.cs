@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 using BiliSubStudio.Core.IO;
 using BiliSubStudio.Core.Jobs;
 using BiliSubStudio.Core.Processes;
@@ -15,7 +16,10 @@ public sealed record VideoEditRequest(
     int SourceWidth,
     int SourceHeight,
     double Duration,
-    IReadOnlyList<EditRegion> Regions);
+    IReadOnlyList<EditRegion> Regions,
+    EditorSubtitleBurn? Subtitle = null);
+
+public sealed record EditorSubtitleBurn(IReadOnlyList<EditorSubtitleCue> Cues, EditorSubtitlePlacement Placement);
 
 public sealed record VideoEditResult(string OutputPath);
 
@@ -35,7 +39,6 @@ public sealed class VideoEditorService
         var token = job.CancellationToken;
         var input = Path.GetFullPath(request.InputPath.Trim());
         if (!File.Exists(input) || new FileInfo(input).Length <= 0) throw new FileNotFoundException("Video nguồn không hợp lệ.", input);
-        var graph = BuildFilter(request);
         var outputDirectory = string.IsNullOrWhiteSpace(request.OutputDirectory) ? Path.GetDirectoryName(input)! : Path.GetFullPath(request.OutputDirectory.Trim());
         Directory.CreateDirectory(outputDirectory);
         var defaultExtension = Path.GetExtension(input).ToLowerInvariant() is ".mkv" or ".mp4" ? Path.GetExtension(input).ToLowerInvariant() : ".mp4";
@@ -45,7 +48,11 @@ public sealed class VideoEditorService
         if (Path.GetExtension(fileName).ToLowerInvariant() is not (".mp4" or ".mkv")) fileName += ".mp4";
         var output = FileNamePolicy.UniquePath(Path.Combine(outputDirectory, fileName), input);
         var temporary = output + ".rendering" + Path.GetExtension(output);
+        var subtitleAss = request.Subtitle is null ? null : Path.Combine(Path.GetTempPath(), "bilisub-editor-sub-" + Guid.NewGuid().ToString("N") + ".ass");
         TryDelete(temporary);
+        if (subtitleAss is not null)
+            await File.WriteAllTextAsync(subtitleAss, BuildAss(request.Subtitle!, request.SourceWidth, request.SourceHeight), new UTF8Encoding(encoderShouldEmitUTF8Identifier: true), token);
+        var graph = BuildFilter(request, subtitleAss);
         var ffmpeg = await _tools.EnsureFfmpegAsync(token);
         var args = new List<string>
         {
@@ -75,7 +82,7 @@ public sealed class VideoEditorService
             File.Move(temporary, output);
             return new VideoEditResult(output);
         }
-        finally { TryDelete(temporary); }
+        finally { TryDelete(temporary); if (subtitleAss is not null) TryDelete(subtitleAss); }
     }
 
     public async Task<byte[]> GetPreviewFrameJpegAsync(
@@ -117,10 +124,10 @@ public sealed class VideoEditorService
         return frame.Length > 0 ? frame : throw new InvalidDataException("Frame preview Editor rỗng.");
     }
 
-    public static string BuildFilter(VideoEditRequest request)
+    public static string BuildFilter(VideoEditRequest request, string? subtitleAssPath = null)
     {
         if (request.SourceWidth <= 0 || request.SourceHeight <= 0) throw new ArgumentException("Không đọc được kích thước video.");
-        if (request.Regions.Count == 0) throw new ArgumentException("Hãy khoanh ít nhất một vùng cần xử lý.");
+        if (request.Regions.Count == 0 && request.Subtitle is null) throw new ArgumentException("Hãy tạo vùng hiệu ứng hoặc nạp bản Vietsub để xuất video.");
         if (request.Regions.Count > 32) throw new ArgumentException("Tối đa 32 vùng chỉnh video.");
         var parts = new List<string>();
         var current = "0:v";
@@ -154,8 +161,58 @@ public sealed class VideoEditorService
             else throw new ArgumentException($"Hiệu ứng {region.Effect} không hỗ trợ.");
             current = output;
         }
-        parts.Add($"[{current}]null[vout]");
+        if (request.Subtitle is not null)
+        {
+            if (string.IsNullOrWhiteSpace(subtitleAssPath))
+                parts.Add($"[{current}]null[vout]");
+            else
+            {
+                var escaped = EscapeFilterPath(subtitleAssPath);
+                parts.Add($"[{current}]ass=filename='{escaped}'[vout]");
+            }
+        }
+        else parts.Add($"[{current}]null[vout]");
         return string.Join(";", parts);
+    }
+
+    public static string BuildAss(EditorSubtitleBurn subtitle, int width, int height)
+    {
+        ArgumentNullException.ThrowIfNull(subtitle);
+        if (width <= 0 || height <= 0) throw new ArgumentException("Kích thước video không hợp lệ.");
+        if (subtitle.Cues.Count == 0 || subtitle.Cues.Any(x => string.IsNullOrWhiteSpace(x.VietnameseText)))
+            throw new InvalidDataException("Bản Vietsub chưa hoàn tất nên chưa thể hardsub.");
+        var placement = subtitle.Placement;
+        if (placement.X < 0 || placement.Y < 0 || placement.Width < .05 || placement.Height < .04 ||
+            placement.X + placement.Width > 1.0001 || placement.Y + placement.Height > 1.0001)
+            throw new InvalidDataException("Vị trí phụ đề không hợp lệ.");
+        var fontSize = Math.Clamp((int)Math.Round(height * Math.Min(.06, placement.Height * .33)), 20, Math.Max(20, height / 8));
+        var marginL = Math.Max(0, (int)Math.Round(placement.X * width));
+        var marginR = Math.Max(0, (int)Math.Round((1 - placement.X - placement.Width) * width));
+        var marginV = Math.Max(0, (int)Math.Round((1 - placement.Y - placement.Height * .82) * height));
+        var builder = new StringBuilder(subtitle.Cues.Count * 128);
+        builder.AppendLine("[Script Info]")
+            .AppendLine("ScriptType: v4.00+")
+            .Append("PlayResX: ").AppendLine(width.ToString(CultureInfo.InvariantCulture))
+            .Append("PlayResY: ").AppendLine(height.ToString(CultureInfo.InvariantCulture))
+            .AppendLine("WrapStyle: 0")
+            .AppendLine("ScaledBorderAndShadow: yes")
+            .AppendLine()
+            .AppendLine("[V4+ Styles]")
+            .AppendLine("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding")
+            .Append("Style: Vietsub,Arial,").Append(fontSize.ToString(CultureInfo.InvariantCulture))
+            .Append(",&H00FFFFFF,&H000000FF,&H00101010,&H78000000,-1,0,0,0,100,100,0,0,1,2.2,0.8,2,")
+            .Append(marginL.ToString(CultureInfo.InvariantCulture)).Append(',')
+            .Append(marginR.ToString(CultureInfo.InvariantCulture)).Append(',')
+            .Append(marginV.ToString(CultureInfo.InvariantCulture)).AppendLine(",1")
+            .AppendLine()
+            .AppendLine("[Events]")
+            .AppendLine("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text");
+        foreach (var cue in subtitle.Cues)
+        {
+            builder.Append("Dialogue: 0,").Append(AssTime(cue.Start)).Append(',').Append(AssTime(cue.End))
+                .Append(",Vietsub,,0,0,0,,").AppendLine(EscapeAssText(cue.VietnameseText));
+        }
+        return builder.ToString();
     }
 
     public static bool IsActiveAt(EditRegion region, double seconds) =>
@@ -181,6 +238,28 @@ public sealed class VideoEditorService
         if (end <= start) throw new ArgumentException("Thời gian kết thúc phải lớn hơn bắt đầu.");
         return $":enable='between(t,{start.ToString("0.000", CultureInfo.InvariantCulture)},{end.ToString("0.000", CultureInfo.InvariantCulture)})'";
     }
+
+    private static string AssTime(double seconds)
+    {
+        var value = TimeSpan.FromMilliseconds(Math.Round(Math.Max(0, seconds) * 1000));
+        return $"{(int)value.TotalHours}:{value.Minutes:00}:{value.Seconds:00}.{value.Milliseconds / 10:00}";
+    }
+
+    private static string EscapeAssText(string value) => value.Trim()
+        .Replace("\\", "\\\\", StringComparison.Ordinal)
+        .Replace("{", "\\{", StringComparison.Ordinal)
+        .Replace("}", "\\}", StringComparison.Ordinal)
+        .Replace("\r\n", "\\N", StringComparison.Ordinal)
+        .Replace("\r", "\\N", StringComparison.Ordinal)
+        .Replace("\n", "\\N", StringComparison.Ordinal);
+
+    private static string EscapeFilterPath(string value) => Path.GetFullPath(value).Replace('\\', '/')
+        .Replace(":", "\\:", StringComparison.Ordinal)
+        .Replace("'", "\\'", StringComparison.Ordinal)
+        .Replace("[", "\\[", StringComparison.Ordinal)
+        .Replace("]", "\\]", StringComparison.Ordinal)
+        .Replace(",", "\\,", StringComparison.Ordinal)
+        .Replace(";", "\\;", StringComparison.Ordinal);
 
     private static void TryDelete(string path) { try { File.Delete(path); } catch { } }
 }

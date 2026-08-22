@@ -26,6 +26,7 @@
   </ItemGroup>
   <ItemGroup>
     <Content Include="..\..\..\internal\ocr\worker.py" Link="Assets\worker.py" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\..\internal\translation\dich-trung-tu-tien.zip" Link="Assets\Translation\dich-trung-tu-tien.zip" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
   <Target Name="CopyCompiledXamlResourcesToPublish" AfterTargets="Publish" Condition="'$(WindowsPackageType)' == 'None'">
     <ItemGroup>

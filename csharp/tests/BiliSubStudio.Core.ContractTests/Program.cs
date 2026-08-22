@@ -42,6 +42,9 @@ internal static class Program
         ("editor filter graph preserves normalized regions", EditorFilterContractAsync),
         ("editor document preserves identity through undo redo", EditorDocumentContractAsync),
         ("editor project persists and quarantines corrupt state", EditorProjectContractAsync),
+        ("editor SRT keeps exact blocks order and timecodes", EditorSubtitleDocumentContractAsync),
+        ("translation skill bundle is pinned and rejects path traversal", TranslationSkillBundleContractAsync),
+        ("local translation manifest and resource gate stay pinned", LocalTranslationManifestContractAsync),
         ("Chinese OCR validator rejects foreign scripts", ChineseOcrContractAsync),
         ("Paddle GPU wheel follows numeric CUDA compatibility", OcrGpuWheelContractAsync),
         ("OCR Auto benchmarks 1 2 4 8 16 and restores last PASS", OcrAutoBenchmarkContractAsync),
@@ -495,6 +498,13 @@ internal static class Program
             [new EditRegion(.1, .2, .3, .25, "mosaic", 12, false, 1, 5)]));
         True(graph.Contains("crop=576:270:192:216", StringComparison.Ordinal), "editor region pixel mapping drift");
         True(graph.Contains("enable='between(t,1.000,5.000)'", StringComparison.Ordinal), "editor timing guard missing");
+        var cue = new EditorSubtitleCue("stable-cue", "1", "00:00:01,000 --> 00:00:03,000", 1, 3, "你好", "Xin chào");
+        var subtitle = new EditorSubtitleBurn([cue], new EditorSubtitlePlacement(.1, .7, .8, .2));
+        var ass = VideoEditorService.BuildAss(subtitle, 1920, 1080);
+        True(ass.Contains("Dialogue: 0,0:00:01.00,0:00:03.00,Vietsub", StringComparison.Ordinal), "ASS hardsub timing drift");
+        True(ass.Contains("Xin chào", StringComparison.Ordinal), "ASS hardsub text missing");
+        graph = VideoEditorService.BuildFilter(new VideoEditRequest("in.mp4", ".", "out.mp4", 1920, 1080, 10, [], subtitle), "C:\\Temp\\sub.ass");
+        True(graph.Contains("ass=filename='C\\:/Temp/sub.ass'", StringComparison.Ordinal), "ASS filter path escaping drift");
         return Task.CompletedTask;
     }
 
@@ -532,13 +542,28 @@ internal static class Program
             var created = await store.LoadOrCreateAsync(video, 1920, 1080, 120, CancellationToken.None);
             Equal(0, created.Regions.Count);
             var region = new EditRegion(.1, .2, .3, .25, "blur", 18, false, 1, 5, "stable-region");
-            await store.SaveAsync(created with { FileName = "episode-edited.mp4", Regions = [region] }, CancellationToken.None);
+            var srt = Path.Combine(root, "source.zh.srt");
+            await File.WriteAllTextAsync(srt, "1\n00:00:01,000 --> 00:00:02,000\n你好\n");
+            var subtitle = await EditorSubtitleDocument.LoadAsync(srt, CancellationToken.None);
+            var subtitleProject = new EditorSubtitleProject(
+                subtitle.Path,
+                subtitle.Size,
+                subtitle.LastWriteUtcTicks,
+                subtitle.Sha256,
+                [subtitle.Cues[0] with { VietnameseText = "Xin chào" }],
+                new EditorSubtitlePlacement(.1, .72, .8, .18),
+                "Dịch Trung Tu Tiên",
+                TranslationSkillBundle.BuiltInSha256,
+                Path.Combine(root, "source.vi.srt"));
+            await store.SaveAsync(created with { FileName = "episode-edited.mp4", Regions = [region], Subtitle = subtitleProject }, CancellationToken.None);
 
             var reopened = await store.LoadOrCreateAsync(video, 1920, 1080, 120, CancellationToken.None);
             Equal("episode-edited.mp4", reopened.FileName);
             Equal(1, reopened.Regions.Count);
             Equal("stable-region", reopened.Regions[0].Id);
             Equal(.1, reopened.Regions[0].X);
+            Equal("Xin chào", reopened.Subtitle!.Cues[0].VietnameseText);
+            Equal(.72, reopened.Subtitle.Placement.Y);
 
             var projectPath = store.GetProjectPath(video);
             await File.WriteAllTextAsync(projectPath, "{broken-json");
@@ -547,6 +572,69 @@ internal static class Program
             True(Directory.GetFiles(Path.GetDirectoryName(projectPath)!, Path.GetFileName(projectPath) + ".corrupt-*").Length == 1,
                 "corrupt editor project was not quarantined");
         });
+    }
+
+    private static Task EditorSubtitleDocumentContractAsync()
+    {
+        var raw = "10\r\n00:00:01,250 --> 00:00:02,900 position:50%\r\n你是谁？\r\n\r\n20\r\n00:00:03,000 --> 00:00:04,500\r\n本座乃青云宗长老。\r\n";
+        var cues = EditorSubtitleDocument.Parse(raw);
+        Equal(2, cues.Count);
+        Equal("10", cues[0].Number);
+        Equal("00:00:01,250 --> 00:00:02,900 position:50%", cues[0].Timing);
+        Equal("20", cues[1].Number);
+        var translated = new[] { cues[0] with { VietnameseText = "Ngươi là ai?" }, cues[1] with { VietnameseText = "Bổn tọa là trưởng lão Thanh Vân Tông." } };
+        var rendered = EditorSubtitleDocument.RenderVietnamese(translated);
+        True(rendered.Contains("10\r\n00:00:01,250 --> 00:00:02,900 position:50%", StringComparison.Ordinal), "editor SRT changed original numbering/timing");
+        True(rendered.Contains("20\r\n00:00:03,000 --> 00:00:04,500", StringComparison.Ordinal), "editor SRT changed second timing");
+        EditorSubtitleDocument.ValidateUnchangedTimeline(cues, translated);
+        return Task.CompletedTask;
+    }
+
+    private static async Task TranslationSkillBundleContractAsync()
+    {
+        var fixture = Path.Combine(AppContext.BaseDirectory, "Fixtures", "dich-trung-tu-tien.zip");
+        var bundle = TranslationSkillBundle.Load(fixture, requireBuiltInHash: true);
+        Equal("Dịch Trung Tu Tiên", bundle.Info.Name);
+        Equal(TranslationSkillBundle.BuiltInSha256, bundle.Info.Sha256);
+        var prompt = bundle.BuildInstructions(["青云宗长老突破金丹境"], 56_000);
+        True(prompt.Contains("QUY TẮC SKILL BẮT BUỘC", StringComparison.Ordinal), "skill core rules missing from prompt");
+        True(prompt.Contains("青云宗", StringComparison.Ordinal) || prompt.Contains("金丹", StringComparison.Ordinal), "relevant glossary was not retrieved");
+
+        await WithTemporaryRootAsync(async root =>
+        {
+            var malicious = Path.Combine(root, "bad.zip");
+            await using (var stream = File.Create(malicious))
+            using (var zip = new System.IO.Compression.ZipArchive(stream, System.IO.Compression.ZipArchiveMode.Create))
+            {
+                var entry = zip.CreateEntry("dich-trung-tu-tien/../escape/SKILL.md");
+                await using var writer = new StreamWriter(entry.Open());
+                await writer.WriteAsync("bad");
+            }
+            try { _ = TranslationSkillBundle.Load(malicious); }
+            catch (InvalidDataException) { return; }
+            throw new InvalidOperationException("translation skill ZIP path traversal was accepted");
+        });
+    }
+
+    private static Task LocalTranslationManifestContractAsync()
+    {
+        var service = typeof(LocalSubtitleTranslationService);
+        static object? Constant(Type type, string name) => type.GetField(name, BindingFlags.Static | BindingFlags.NonPublic)?.GetRawConstantValue();
+        Equal(5_027_783_488L, (long)(Constant(service, "ModelBytes") ?? 0L));
+        Equal("d98cdcbd03e17ce47681435b5150e34c1417f50b5c0019dd560e4882c5745785", Constant(service, "ModelSha256")?.ToString());
+        Equal(34_937_857L, (long)(Constant(service, "RuntimeArchiveBytes") ?? 0L));
+        Equal("68e15a0a0d07df55a695ec4d81465cf57400431d54ae19fadcb51dc919724042", Constant(service, "RuntimeArchiveSha256")?.ToString());
+        var recommend = service.GetMethod("RecommendedGpuLayers", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing local translation resource gate");
+        var extract = service.GetMethod("ExtractJson", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing local translation JSON parser");
+        var low = new HardwareResourceSnapshot(16L << 30, 10L << 30, true, 8L << 30, 2L << 30);
+        var safe = new HardwareResourceSnapshot(32L << 30, 20L << 30, true, 8L << 30, 7L << 30);
+        Equal(0, (int)recommend.Invoke(null, [low])!);
+        Equal(99, (int)recommend.Invoke(null, [safe])!);
+        var parsed = (JsonElement)extract.Invoke(null, ["echo prompt {\"id\":\"source\"}\nanswer: {\"bible\":\"Thanh Vân Tông\"}\n[end]"])!;
+        Equal("Thanh Vân Tông", parsed.GetProperty("bible").GetString());
+        return Task.CompletedTask;
     }
 
     private static Task ChineseOcrContractAsync()

@@ -7,5 +7,6 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\BiliSubStudio.Core\BiliSubStudio.Core.csproj" />
+    <Content Include="..\..\..\internal\translation\dich-trung-tu-tien.zip" Link="Fixtures\dich-trung-tu-tien.zip" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

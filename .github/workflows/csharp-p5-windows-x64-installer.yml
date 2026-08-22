@@ -8,6 +8,7 @@ on:
       - "global.json"
       - "csharp/**"
       - "internal/ocr/worker.py"
+      - "internal/translation/**"
       - "docs/migration/**"
       - "docs/engineering/**"
   push:
@@ -18,6 +19,7 @@ on:
       - "global.json"
       - "csharp/**"
       - "internal/ocr/worker.py"
+      - "internal/translation/**"
       - "docs/migration/**"
       - "docs/engineering/**"
 
@@ -78,6 +80,9 @@ jobs:
 
       - name: Verify long-media bundle contracts
         run: python csharp/scripts/verify_media_bundle_contract.py
+
+      - name: Verify local translation model and skill contracts
+        run: python csharp/scripts/verify_translation_skill_contract.py
 
       - name: Verify raw Bilibili CDN endpoint discovery
         run: dotnet run --project csharp/tests/BiliSubStudio.CdnRegression/BiliSubStudio.CdnRegression.csproj -c Release -p:NuGetAudit=false

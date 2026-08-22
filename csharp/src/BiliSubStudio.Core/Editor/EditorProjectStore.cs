@@ -13,6 +13,22 @@ public sealed record EditorSourceFingerprint(
     int Height,
     double Duration);
 
+public sealed record EditorSubtitlePlacement(double X, double Y, double Width, double Height)
+{
+    public static EditorSubtitlePlacement Default { get; } = new(.08, .70, .84, .22);
+}
+
+public sealed record EditorSubtitleProject(
+    string SourcePath,
+    long SourceSize,
+    long SourceLastWriteUtcTicks,
+    string SourceSha256,
+    IReadOnlyList<EditorSubtitleCue> Cues,
+    EditorSubtitlePlacement Placement,
+    string SkillName,
+    string SkillSha256,
+    string OutputPath);
+
 public sealed record EditorProject(
     int Schema,
     string Id,
@@ -20,12 +36,13 @@ public sealed record EditorProject(
     EditorSourceFingerprint Source,
     string FileName,
     IReadOnlyList<EditRegion> Regions,
+    EditorSubtitleProject? Subtitle,
     DateTimeOffset UpdatedUtc);
 
 public sealed class EditorProjectStore
 {
-    public const int CurrentSchema = 1;
-    private const long MaxProjectBytes = 8L * 1024 * 1024;
+    public const int CurrentSchema = 2;
+    private const long MaxProjectBytes = 64L * 1024 * 1024;
     private readonly string _directory;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly JsonSerializerOptions _json = new()
@@ -61,10 +78,10 @@ public sealed class EditorProjectStore
                 await using var stream = new FileStream(projectPath, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
                 var loaded = await JsonSerializer.DeserializeAsync<EditorProject>(stream, _json, cancellationToken)
                     ?? throw new InvalidDataException("Project Editor rỗng.");
-                if (loaded.Schema != CurrentSchema || !string.Equals(loaded.Id, id, StringComparison.Ordinal))
+                if (loaded.Schema is not (1 or CurrentSchema) || !string.Equals(loaded.Id, id, StringComparison.Ordinal))
                     throw new InvalidDataException("Project Editor không đúng phiên bản hoặc nguồn.");
                 var regions = NormalizeRegions(loaded.Regions);
-                return loaded with { Source = source, Regions = regions };
+                return loaded with { Schema = CurrentSchema, Source = source, Regions = regions, Subtitle = NormalizeSubtitle(loaded.Subtitle) };
             }
             catch (OperationCanceledException) { throw; }
             catch
@@ -80,6 +97,7 @@ public sealed class EditorProjectStore
             source,
             Path.GetFileNameWithoutExtension(source.Path) + "_edited.mp4",
             [],
+            null,
             DateTimeOffset.UtcNow);
     }
 
@@ -94,6 +112,7 @@ public sealed class EditorProjectStore
             Source = Fingerprint(project.Source.Path, project.Source.Width, project.Source.Height, project.Source.Duration),
             FileName = string.IsNullOrWhiteSpace(project.FileName) ? project.Name + "_edited.mp4" : project.FileName.Trim(),
             Regions = NormalizeRegions(project.Regions),
+            Subtitle = NormalizeSubtitle(project.Subtitle),
             UpdatedUtc = DateTimeOffset.UtcNow,
         };
 
@@ -166,6 +185,37 @@ public sealed class EditorProjectStore
             });
         }
         return normalized;
+    }
+
+    private static EditorSubtitleProject? NormalizeSubtitle(EditorSubtitleProject? subtitle)
+    {
+        if (subtitle is null) return null;
+        var path = Path.GetFullPath(subtitle.SourcePath.Trim());
+        if (!File.Exists(path) || subtitle.SourceSize <= 0 || subtitle.SourceLastWriteUtcTicks <= 0 ||
+            subtitle.SourceSha256.Length != 64 || subtitle.SourceSha256.Any(x => !Uri.IsHexDigit(x)))
+            throw new InvalidDataException("Project Editor chứa nguồn SRT không hợp lệ.");
+        if (subtitle.Cues is null || subtitle.Cues.Count is 0 or > EditorSubtitleDocument.MaxCues)
+            throw new InvalidDataException("Project Editor chứa số cue SRT không hợp lệ.");
+        var ids = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var cue in subtitle.Cues)
+        {
+            if (cue.Id.Length is < 8 or > 64 || !ids.Add(cue.Id) || string.IsNullOrWhiteSpace(cue.Number) ||
+                string.IsNullOrWhiteSpace(cue.Timing) || string.IsNullOrWhiteSpace(cue.SourceText) || cue.End <= cue.Start)
+                throw new InvalidDataException("Project Editor chứa cue SRT không hợp lệ.");
+        }
+        var placement = subtitle.Placement ?? EditorSubtitlePlacement.Default;
+        if (!double.IsFinite(placement.X) || !double.IsFinite(placement.Y) || !double.IsFinite(placement.Width) || !double.IsFinite(placement.Height) ||
+            placement.X < 0 || placement.Y < 0 || placement.Width < .05 || placement.Height < .04 ||
+            placement.X + placement.Width > 1.0001 || placement.Y + placement.Height > 1.0001)
+            throw new InvalidDataException("Project Editor chứa vị trí phụ đề không hợp lệ.");
+        return subtitle with
+        {
+            SourcePath = path,
+            Placement = placement,
+            SkillName = subtitle.SkillName?.Trim() ?? string.Empty,
+            SkillSha256 = subtitle.SkillSha256?.Trim().ToLowerInvariant() ?? string.Empty,
+            OutputPath = subtitle.OutputPath?.Trim() ?? string.Empty,
+        };
     }
 
     private static string ProjectId(string inputPath)

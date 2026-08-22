@@ -1,6 +1,6 @@
 # Editor All-in-One for Chinese film localization
 
-Status: approved product scope and implementation plan. This document does not change production behavior and does not authorize a release.
+Status: M1 foundation and the requested M2 common path are implemented on the draft Editor branch; Windows candidate and real-machine field gates are still required. This does not authorize a public release.
 
 Date: 2026-08-23
 
@@ -125,13 +125,14 @@ BiliSubStudio.Core / Speech
   -> StemSeparationManager + private StemWorkerClient
   -> worker manifests, model manifests, resource policies, process groups
 
-BiliSubStudio.Core / Translation
-  -> GlossaryCompiler
-  -> TranslationBatchPlanner
-  -> ITranslationProvider
-       -> OllamaTranslationProvider
-       -> optional API providers later
-  -> TranslationValidator
+BiliSubStudio.Core / Editor translation
+  -> EditorSubtitleDocument (strict SRT; no cue merge/normalization)
+  -> TranslationSkillBundle (exact bundled skill + contextual reference retrieval)
+  -> LocalSubtitleTranslationService
+       -> app-managed llama.cpp CLI process; no HTTP/localhost
+       -> pinned Qwen3-8B Q4_K_M GGUF
+       -> bounded analysis/batch planner + validator + checkpoint
+  -> optional provider abstractions later, only after the local path passes field test
 
 BiliSubStudio.Core / Tts
   -> ITtsProvider
@@ -270,14 +271,14 @@ All modes expose the actual selected model/device and estimated disk requirement
 
 The translation layer preserves stable cue IDs and timing. It never asks an LLM to return raw SRT as the primary protocol.
 
-`GlossaryCompiler` parses `.md` into:
+`TranslationSkillBundle` compiles the supplied `Dịch Trung Tu Tiên` skill into:
 
 - character names, aliases, titles, relationships, and gender when supplied;
 - sects, realms, cultivation stages, techniques, artifacts, places, and fixed translations;
 - address/pronoun rules and do-not-translate entries;
 - tone/style constraints.
 
-`TranslationBatchPlanner` sends overlapping scene context while requesting a strict JSON schema keyed by cue ID. Local Ollama structured output is the first provider contract. Validation rejects:
+`LocalSubtitleTranslationService` first reads the complete source in bounded analysis pages and accumulates a per-film character/terminology/address bible. It then sends overlapping scene context while requesting a strict JSON schema keyed by cue ID from the private app-managed `llama-cli` process. Validation rejects:
 
 - missing, duplicate, or unknown cue IDs;
 - changed timing/ordering;
@@ -333,12 +334,14 @@ Before atomic promotion, Core verifies through ffprobe and bounded decode checks
 - Processed-frame preview, timeline region spans, Undo/Redo/presets.
 - Current Blur/Mosaic/Cover export preserved and hardened.
 
-### M2 - Common path: Video + SRT + glossary -> Vietnamese SRT
+### M2 - Common path: Video + SRT + translation skill -> Vietnamese SRT/hardsub
 
-- SRT import/validation and cue editor.
-- `.md` glossary compiler.
-- local Ollama provider abstraction and deterministic structured result validation.
-- translation checkpoint/resume/selective retry.
+- Strict SRT import preserves source block count/order/timecode and stable cue IDs.
+- Direct normalized subtitle placement box on preview; resize-safe and project-persisted.
+- Exact supplied skill ZIP is bundled, SHA/path/size validated and compiled into core rules + contextual glossary/reference layers.
+- Pinned app-managed llama.cpp Vulkan/CPU runtime and Qwen3-8B Q4_K_M model; no manual Ollama/Python install and no localhost server.
+- Whole-source terminology/character analysis, overlapping cue batches, strict JSON validation and atomic checkpoint/resume.
+- Separate Vietnamese SRT output plus real ASS/FFmpeg hardsub using the selected placement.
 
 This is the first useful vertical slice and should be field-tested before adding speech synthesis.
 
@@ -405,4 +408,3 @@ M2:
 5. Close/reopen and continue the project.
 
 Later milestones add ASR, speaker/TTS, stem/mix, and four-hour resume checks only after their automated Windows gates pass.
-

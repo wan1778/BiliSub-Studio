@@ -25,6 +25,7 @@ public sealed class BiliSubApplication : IAsyncDisposable
     private readonly SubtitleService _subtitle;
     private readonly VideoEditorService _editor;
     private readonly EditorProjectStore _editorProjects;
+    private readonly LocalSubtitleTranslationService _translation;
     private readonly WindowsProcessContainment _containment;
 
     public BiliSubApplication(AppPaths paths)
@@ -54,6 +55,11 @@ public sealed class BiliSubApplication : IAsyncDisposable
         _subtitle = new SubtitleService(Resolver, _http);
         _editor = new VideoEditorService(Tools, Processes);
         _editorProjects = new EditorProjectStore(paths);
+        _translation = new LocalSubtitleTranslationService(
+            paths,
+            Processes,
+            Hardware,
+            Path.Combine(AppContext.BaseDirectory, "Assets", "Translation", "dich-trung-tu-tien.zip"));
         _ocr = new OcrManager(paths, Hardware, new OcrInstaller(paths, _http, Processes));
         _ocrScanner = new OcrScanner(Tools, Processes, _ocr, Hardware, new OcrCheckpointStore(paths));
     }
@@ -72,6 +78,7 @@ public sealed class BiliSubApplication : IAsyncDisposable
     public YtDlpResolver Resolver { get; }
     public AppConfig Config => _configStore.Snapshot;
     public OcrStatus OcrStatus => _ocr.Status;
+    public LocalTranslationStatus LocalTranslationStatus => _translation.Status;
     public PreparedUpdate? PendingUpdate { get; private set; }
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
@@ -445,6 +452,33 @@ public sealed class BiliSubApplication : IAsyncDisposable
     public Task SaveEditorProjectAsync(EditorProject project, CancellationToken cancellationToken) =>
         _editorProjects.SaveAsync(project, cancellationToken);
 
+    public Task<EditorSubtitleSource> LoadEditorSubtitleAsync(string path, CancellationToken cancellationToken) =>
+        EditorSubtitleDocument.LoadAsync(path, cancellationToken);
+
+    public string StartLocalTranslationPreparation()
+    {
+        if (Jobs.HasActiveJobs) throw new InvalidOperationException("Hãy hoàn tất hoặc hủy tác vụ Media/OCR/Editor đang chạy trước khi chuẩn bị AI dịch.");
+        var job = Jobs.Create("translation-prepare", cleanupAwareCancel: true);
+        _ = RunJobAsync(job, async () =>
+        {
+            await _translation.PrepareAsync(job);
+            job.Finish(null, "AI local và skill dịch đã sẵn sàng.", _translation.Status);
+        });
+        return job.Id;
+    }
+
+    public string StartEditorTranslation(EditorTranslationRequest request)
+    {
+        if (Jobs.HasActiveJobs) throw new InvalidOperationException("Hãy hoàn tất hoặc hủy tác vụ Media/OCR/Editor đang chạy trước khi Vietsub.");
+        var job = Jobs.Create("translation", cleanupAwareCancel: true);
+        _ = RunJobAsync(job, async () =>
+        {
+            var result = await _translation.TranslateAsync(job, request);
+            job.Finish(null, "Đã Vietsub và lưu: " + result.OutputPath, result);
+        });
+        return job.Id;
+    }
+
     public Task<byte[]> GetEditorPreviewFrameJpegAsync(
         string path,
         double seconds,
@@ -548,7 +582,10 @@ public sealed class BiliSubApplication : IAsyncDisposable
         {
             await PauseJobAsync(snapshot.Id, cancellationToken);
         }
+        var cleanupJobs = Jobs.ActiveSnapshots().Where(x => x.PauseSupported || x.Kind is "editor" or "translation" or "translation-prepare").Select(x => x.Id).ToArray();
         Jobs.CancelAll();
+        var completions = cleanupJobs.Select(id => Jobs.TryGet(id, out var job) && job is not null ? job.Completion : Task.CompletedTask).ToArray();
+        if (completions.Length > 0) await Task.WhenAll(completions).WaitAsync(cancellationToken);
         await _ocr.StopAsync();
         await Sessions.DeleteTemporaryAsync(cancellationToken);
     }
@@ -609,6 +646,7 @@ public sealed class BiliSubApplication : IAsyncDisposable
         await _ocr.DisposeAsync();
         await Sessions.DeleteTemporaryAsync();
         Jobs.Dispose();
+        _translation.Dispose();
         _configStore.Dispose();
         _http.Dispose();
         _containment.Dispose();

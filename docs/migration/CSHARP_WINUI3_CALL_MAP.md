@@ -300,6 +300,49 @@ EditorPage direct overlay
        -> serialized write-through temporary file
        -> replace project only after complete JSON write
 
+EditorPage.ImportSrt_Click
+  -> native FileOpenPicker (.srt)
+  -> EditorSubtitleDocument.LoadAsync
+       -> UTF-8/GBK decode with 32 MiB bound
+       -> strict stable cue IDs; preserve block number/order/timing line
+  -> EditorProjectStore.SaveAsync
+       -> source SRT fingerprint + cues + normalized subtitle placement
+
+EditorPage subtitle placement overlay
+  -> current cue follows timeline timecode
+  -> translated text when available; otherwise Chinese source text
+  -> drag center / eight edges-corners in normalized video coordinates
+  -> playback, render and translation jobs lock interaction
+  -> preview/window resize changes display geometry only
+
+EditorPage.PrepareAi_Click
+  -> BiliSubApplication.StartLocalTranslationPreparation
+  -> LocalSubtitleTranslationService.PrepareAsync
+       -> verify integrated Dịch Trung Tu Tiên skill ZIP SHA/path/size/required entries
+       -> resume pinned llama.cpp b10566 Vulkan runtime download
+       -> exact size + SHA-256 -> safe extraction under Tools/Translation
+       -> resume pinned Qwen3-8B Q4_K_M GGUF download (~5.03 GB)
+       -> exact size + SHA-256 -> verified model stamp
+
+EditorPage.Translate_Click
+  -> BiliSubApplication.StartEditorTranslation
+  -> JobManager.Create(kind=translation, cleanupAwareCancel=true)
+  -> LocalSubtitleTranslationService.TranslateAsync
+       -> live RAM/VRAM preflight and safe GPU-layer policy
+       -> whole-SRT bounded analysis -> locked character/term/address bible
+       -> skill core + source-relevant references
+       -> bounded overlapping batches -> llama-cli stdout JSON
+       -> reject missing/duplicate/unknown cue IDs, empty/long/internal-marker text
+       -> atomic per-batch checkpoint under Data/Projects/Translation
+       -> validate unchanged cue count/order/timecode
+       -> atomic UTF-8 BOM Vietnamese SRT output
+
+EditorPage.CancelTranslation_Click
+  -> AppJob.Cancel stays cancelling during process cleanup
+  -> ProcessRunner kills/reaps the exact llama-cli tree
+  -> completed batch checkpoint remains resumable
+  -> AppJob.CancelComplete only after cleanup
+
 EditorPage processed preview
   -> current timeline position + active saved/draft regions
   -> BiliSubApplication.GetEditorPreviewFrameJpegAsync
@@ -311,7 +354,8 @@ EditorPage.Render_Click
   -> BiliSubApplication.StartEditor
   -> JobManager.Create(kind=editor, cleanupAwareCancel=true)
   -> VideoEditorService.RunAsync
-  -> same FFmpeg Blur/Mosaic/Cover graph and time guards
+  -> completed Vietsub cues + placement -> temporary ASS with exact cue timing
+  -> same FFmpeg Blur/Mosaic/Cover graph and time guards + ASS hardsub
   -> temporary `.rendering` output
   -> non-empty verification -> final output
 
