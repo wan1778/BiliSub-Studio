@@ -118,6 +118,7 @@ Invoke-Checked python @("csharp/scripts/generate_csharp_code_map.py", "--check")
 Invoke-Checked dotnet @("restore", "csharp/BiliSubStudio.sln", "-p:Platform=x64", "-p:NuGetAudit=false")
 Invoke-Checked dotnet @("build", "csharp/BiliSubStudio.sln", "-c", "Release", "-p:Platform=x64", "-p:UseSharedCompilation=false", "-p:ContinuousIntegrationBuild=true", "--no-restore")
 Invoke-Checked dotnet @("run", "--project", "csharp/tests/BiliSubStudio.Core.ContractTests/BiliSubStudio.Core.ContractTests.csproj", "-c", "Release", "--no-build", "--no-restore")
+Invoke-Checked dotnet @("run", "--project", "csharp/tests/BiliSubStudio.RangeRegression/BiliSubStudio.RangeRegression.csproj", "-c", "Release", "-p:NuGetAudit=false")
 
 $publish = "csharp/src/BiliSubStudio.App/bin/x64/Release/net10.0-windows10.0.26100.0/win-x64/publish"
 if (Test-Path $publish) { Remove-Item $publish -Recurse -Force }
@@ -239,6 +240,6 @@ if ($env:GITHUB_OUTPUT) {
     "source_tree_sha256=$($sourceIdentity.Hash)" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
 }
 
-Write-Host "PASS: Windows C# compile, contract runner, self-contained WinUI publish, real startup smoke, worker identity, PE32+ x64 and checksum readback"
+Write-Host "PASS: Windows C# compile, contract runner, short-read regression, self-contained WinUI publish, real startup smoke, worker identity, PE32+ x64 and checksum readback"
 Write-Host "BiliSubStudio.exe SHA-256: $exeHash"
 Write-Host "Source tree SHA-256: $($sourceIdentity.Hash)"
