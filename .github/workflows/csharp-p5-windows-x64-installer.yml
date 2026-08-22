@@ -175,11 +175,12 @@ jobs:
           @"
           # BiliSub Studio $publicVersion
 
-          - Sửa WBI anonymous để lấy được backup CDN thật trước khi Range fallback.
-          - Tải phụ đề ưu tiên track có sẵn; nếu không có thì lấy Bilibili AI bằng session hiện tại khi nguồn hỗ trợ.
-          - Sửa trạng thái `0 lỗi` không còn hiển thị màu đỏ và Việt hóa badge tải tiếp.
-          - Downloader tiếp tục giữ Range offset khi đổi CDN; yt-dlp chỉ là fallback cuối.
-          - Các bản sửa tiếp theo tiếp tục được phân phối qua Cài đặt > Cập nhật & hỗ trợ.
+          - Sửa parser PaddleOCR 3.x để đọc đúng kết quả `res`, tránh nhận diện được nhưng UI báo không có chữ.
+          - OCR Auto/luồng thủ công được giới hạn theo CPU, RAM, GPU và VRAM; probe lỗi/OOM quay về topology an toàn.
+          - Sửa lỗi worker/lane bị che thành trạng thái hủy; lỗi OCR thật được báo đúng nguyên nhân.
+          - Runtime OCR cài dở được dựng lại sạch; worker mới không ép cài lại Paddle/Python nếu venv hiện tại còn tương thích.
+          - Khóa đổi video/engine/topology khi đang scan; reset kết quả cũ để không xuất nhầm SRT.
+          - Bổ sung timeout worker, shutdown an toàn và regression gate cho contract PaddleOCR 3.x.
           "@ | Set-Content $notes -Encoding UTF8
 
           gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
@@ -200,10 +201,10 @@ jobs:
             size = $portableSize
             payload_kind = "winui3-portable-zip"
             notes = @(
-              "Sửa WBI/CDN failover cho video Bilibili dài.",
-              "Phụ đề ưu tiên track có sẵn; Bilibili AI là fallback khi không có track thường.",
-              "Sửa hai chi tiết trạng thái giao diện Media/Nhật ký.",
-              "Các bản sửa tiếp theo tiếp tục đi qua kênh cập nhật beta trong app."
+              "Sửa parser PaddleOCR 3.x và nhận diện phụ đề cứng.",
+              "Auto lanes có safety gate theo CPU/RAM/GPU/VRAM và fallback topology an toàn.",
+              "Sửa worker timeout, lỗi lane, checkpoint/shutdown và race khi đang quét.",
+              "Runtime OCR cài dở được phục hồi sạch; worker update không cài lại Paddle/Python không cần thiết."
             )
           }
           $manifest | ConvertTo-Json -Depth 4 | Set-Content "update/beta.json" -Encoding UTF8
