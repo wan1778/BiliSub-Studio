@@ -62,6 +62,11 @@ public sealed partial class OcrPage : Page
 
     private async void PickVideo_Click(object sender, RoutedEventArgs e)
     {
+        if (_jobId is not null)
+        {
+            StatusText.Text = "Đang quét OCR; hãy Tạm dừng hoặc Hủy trước khi đổi video.";
+            return;
+        }
         var selected = await _picker.PickVideoAsync();
         if (selected is null) return;
         try
@@ -218,6 +223,7 @@ public sealed partial class OcrPage : Page
         Progress.Value = 0;
         TelemetryText.Text = "Đang chờ kết quả OCR...";
         _jobId = _application.StartOcrScan(BuildRequest());
+        PickVideoButton.IsEnabled = false;
         ScanButton.IsEnabled = false;
         TestFrameButton.IsEnabled = false;
         SelectRegionButton.IsOn = false;
@@ -238,6 +244,7 @@ public sealed partial class OcrPage : Page
             if (snapshot.Done)
             {
                 _jobId = null;
+                PickVideoButton.IsEnabled = true;
                 PauseButton.IsEnabled = false;
                 CancelButton.IsEnabled = false;
                 ExportButton.IsEnabled = _cues.Count > 0;
