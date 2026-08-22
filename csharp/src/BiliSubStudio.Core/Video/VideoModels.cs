@@ -10,9 +10,16 @@ public sealed record ResolvedStream(
     long Size,
     int Height,
     string Extension,
-    long Generation);
+    long Generation,
+    IReadOnlyList<string>? EndpointUrls = null,
+    int EndpointIndex = 0);
 
-public sealed record StreamSelection(string Title, string Id, ResolvedStream? Video, ResolvedStream? Audio);
+public sealed record StreamSelection(
+    string Title,
+    string Id,
+    ResolvedStream? Video,
+    ResolvedStream? Audio,
+    string EndpointDiscoveryWarning = "");
 
 public sealed record SubtitleTrack(string Language, string DisplayName, bool Official, bool Ai, string Url, string Extension);
 
