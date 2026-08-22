@@ -85,6 +85,7 @@ public sealed partial class MainWindow : Window
         AppWindow.Closing += OnAppWindowClosing;
         Navigation.SelectedItem = Navigation.MenuItems[0];
         ContentFrame.Content = _pages["video"];
+        UpdateErrorBadge();
     }
 
     public ObservableCollection<GlobalLogItem> GlobalLogEntries { get; } = [];
@@ -202,9 +203,17 @@ public sealed partial class MainWindow : Window
         if (entry.Level == AppLogLevel.Error)
         {
             _errorCount++;
-            LogErrorCount.Text = $"{_errorCount} lỗi";
+            UpdateErrorBadge();
             ShowGlobalLog(true);
         }
+    }
+
+    private void UpdateErrorBadge()
+    {
+        var hasErrors = _errorCount > 0;
+        LogHealthyCountBorder.Visibility = hasErrors ? Visibility.Collapsed : Visibility.Visible;
+        LogErrorCountBorder.Visibility = hasErrors ? Visibility.Visible : Visibility.Collapsed;
+        LogErrorCount.Text = $"{_errorCount} lỗi";
     }
 
     private void GlobalLogToggle_Click(object sender, RoutedEventArgs e) =>
@@ -216,7 +225,7 @@ public sealed partial class MainWindow : Window
     {
         GlobalLogEntries.Clear();
         _errorCount = 0;
-        LogErrorCount.Text = "0 lỗi";
+        UpdateErrorBadge();
         _globalLog.Info("Nhật ký", "Đã xóa phần hiển thị; file log bền vững vẫn được giữ.");
     }
 
