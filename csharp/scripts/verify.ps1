@@ -139,7 +139,7 @@ $worker = "$publish/Assets/worker.py"
 if (-not (Test-Path $worker -PathType Leaf)) { throw "publish missing Assets/worker.py" }
 $sourceWorker = "internal/ocr/worker.py"
 if ((Get-Sha256 $worker) -ne (Get-Sha256 $sourceWorker)) {
-    throw "published OCR worker differs from frozen source"
+    throw "published OCR worker differs from embedded source"
 }
 
 Assert-Pe32PlusX64 $exe
@@ -205,8 +205,6 @@ $identity = [ordered]@{
     pri_resource = [System.IO.Path]::GetFileName($publishedPri[0])
     exe_sha256 = $exeHash
     worker_sha256 = $workerHash
-    frozen_go_source = "9be4abd8184d2d7d24159dd736b6accfbe1cda90"
-    frozen_source_archive_sha256 = "d4acd9ed2b9237f5b20f187e750059d17802d00fc5d3cd81fe6a4387e458d4da"
     github = [ordered]@{
         repository = $env:GITHUB_REPOSITORY
         workflow = $env:GITHUB_WORKFLOW
