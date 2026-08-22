@@ -9,6 +9,7 @@ on:
       - "csharp/**"
       - "internal/ocr/worker.py"
       - "docs/migration/**"
+      - "docs/engineering/**"
   push:
     branches:
       - main
@@ -18,6 +19,7 @@ on:
       - "csharp/**"
       - "internal/ocr/worker.py"
       - "docs/migration/**"
+      - "docs/engineering/**"
 
 permissions:
   contents: read
@@ -76,6 +78,9 @@ jobs:
 
       - name: Verify long-media bundle contracts
         run: python csharp/scripts/verify_media_bundle_contract.py
+
+      - name: Verify raw Bilibili CDN endpoint discovery
+        run: dotnet run --project csharp/tests/BiliSubStudio.CdnRegression/BiliSubStudio.CdnRegression.csproj -c Release -p:NuGetAudit=false
 
       - name: Verify tidy installer runtime layout
         run: python csharp/scripts/verify_installer_runtime_layout_contract.py
