@@ -1,32 +1,23 @@
-# BiliSub Studio — C# + WinUI 3 migration lane
+# BiliSub Studio — C# + WinUI 3 production tree
 
-This tree migrates BiliSub Studio incrementally from the frozen Go + Win32 reference into C#/.NET 10 + WinUI 3. It is not a replacement release yet.
+This is the active production implementation of BiliSub Studio.
 
-Current checkpoint: **CSharp-P5-InstallerReady**.
+## Stack
 
-Implemented source owners:
+- C# / .NET 10
+- WinUI 3 / Windows App SDK 2.4.0
+- unpackaged self-contained Windows x64 runtime
+- app-managed FFmpeg / ffprobe / yt-dlp helpers
+- private Python/PaddleOCR worker embedded from `internal/ocr/worker.py`
 
-- Portable Settings/Config with the exact twelve-field Go JSON schema.
-- Native WinUI shell, file/folder pickers, DPAPI session storage and Bilibili QR login.
-- App-owned FFmpeg/ffprobe/yt-dlp lifecycle, media probe and frame preview.
-- Native H.264/HEVC playback with transport controls/full-window mode, FFmpeg frame fallback, and OCR cue↔timeline synchronization.
-- Strict HTTP Range video transport with Stable 1 / Fast 8 / Turbo 16 budgets, durable completed segments, URL refresh, fallback and immediate cancellation.
-- Official and AI subtitle tracks with JSON3/VTT/SRT normalization and SRT/TXT/JSON export.
-- Native hardware/CUDA probe and benchmark.
-- Private uv/Python/PaddleOCR runtime, CPU/GPU/Hybrid pools, Auto Predict→Probe→Commit, 1/2/4/8/16 lanes, NVDEC fallback, Chinese-only cues and schema-4 pause/resume.
-- Direct-manipulation editor regions and non-destructive FFmpeg render.
-- Kill-on-close job containment, safe shutdown, maintenance, sanitized reports and a transactional/rollback-safe WinUI portable updater.
+No Go toolchain or Go production source is required.
 
-Using the exact official .NET SDK `10.0.400` pinned by `global.json`, Core and the full WinUI code-behind compile-contract pass with zero warnings/errors, and all 32 package-free Core contracts pass on Linux. The real WinUI XAML/XBF/PRI toolchain and one-file installer compiler are Windows-only; `verify.ps1` remains the mandatory Windows compile/test/publish gate.
+## Solution ownership
 
-## Toolchain
-
-- Windows 10 version 1809 or later.
-- .NET 10 SDK.
-- Visual Studio 2026 with the WinUI application development workload, or the WinUI .NET CLI templates.
-- Windows App SDK `2.4.0` stable, pinned centrally in `Directory.Packages.props`.
-
-The app is unpackaged, `win-x64`, and Windows App SDK self-contained. Do not enable single-file publishing: WinUI deployment contains required framework/runtime files.
+- `BiliSubStudio.App` — WinUI application, pages, pickers and visual state.
+- `BiliSubStudio.Core` — application/core logic and services.
+- `BiliSubStudio.Launcher` — NativeAOT root launcher used by the installed layout.
+- `tests/*` — Core, Range, CDN discovery and CDN failover regression executables.
 
 ## Verify on Windows
 
@@ -34,30 +25,44 @@ The app is unpackaged, `win-x64`, and Windows App SDK self-contained. Do not ena
 powershell -ExecutionPolicy Bypass -File csharp/scripts/verify.ps1
 ```
 
-The script fails immediately on any non-zero external command, runs the static migration contract, restores/builds the solution, runs the package-free Core contract suite, and publishes the WinUI app. It then verifies `BiliSubStudio.exe` as PE32+ x64, reads back every published-file checksum, and records the exact source-tree digest and executable hash in `BUILD_IDENTITY.json`.
+The verification gate checks the exact .NET SDK, source/code-map contracts, C# build, Core contracts, Range regressions, self-contained WinUI publish, XBF/PRI resources, PE32+ x64 identity, OCR worker checksum and real startup/layout smoke.
 
-To package only after that gate passes:
+Targeted CDN/media gates also run in the Windows workflow before the full build:
+
+- primary + backup CDN discovery for the selected DASH format;
+- primary short-read to backup CDN continuation at the exact missing-byte Range offset;
+- long-media/default-all/separate-asset transport contracts.
+
+## Package
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File csharp/scripts/package_windows_candidate.ps1
 ```
 
-Packaging creates a read-back-verified portable build ZIP, reconstructs an exact source ZIP, and compiles `BiliSubStudio_Setup_v4.0.0-beta.12-csharp-p5_x64.exe` as the primary user artifact. The installer is per-user, requests no administrator rights, installs below `%LOCALAPPDATA%\Programs`, creates Start-menu/optional desktop shortcuts, and preserves `Data/Tools/Temp/Cache/Downloads` across upgrade and uninstall. Every generated manifest remains non-promotable until field QA.
+The installer is per-user, x64, requires no administrator rights and uses this installed layout:
 
-The scripts run on `windows-2025` through `.github/workflows/csharp-p5-windows-x64-installer.yml`. The workflow verifies the official Inno Setup compiler before generating the single installer EXE, then uploads a short-lived CI artifact only. It has no GitHub Release, deployment, Drive upload, or update-channel permission/step.
-
-On a non-Windows authoring host, the narrower code-behind gate is reproducible with:
-
-```bash
-python3 csharp/scripts/compile_app_codebehind_contract.py --dotnet /path/to/dotnet
+```text
+BiliSub Studio\
+├─ BiliSubStudio.exe
+├─ Runtime\
+├─ Data\
+├─ Tools\
+├─ Temp\
+├─ Cache\
+├─ Downloads\
+└─ Uninstall\
 ```
 
-That command checks C# APIs and generated XAML fields only; it cannot produce XBF/PRI or a runnable WinUI binary.
+The root launcher is a real EXE. The full self-contained WinUI/.NET runtime stays under `Runtime\` to keep the user-visible root clean.
 
-## Run during development
+## Development run
 
 ```powershell
 dotnet run --project csharp/src/BiliSubStudio.App/BiliSubStudio.App.csproj -c Debug -p:Platform=x64
 ```
 
-The published app must still pass native visual QA and Windows runtime field testing before it can replace the Go candidate.
+## Release
+
+Pull requests verify/package without publishing. Main-branch publication creates a GitHub public beta only for a new version and writes the corresponding exact portable payload URL/SHA-256/size into `update/beta.json`.
+
+See the repository root `ARCHITECTURE.md`, `BUILD.md` and `docs/migration/PUBLIC_BETA_RELEASE_POLICY.md` for current contracts.
