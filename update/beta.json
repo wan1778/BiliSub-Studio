@@ -1,14 +1,14 @@
 {
-  "version": "4.0.0-beta.16-csharp-p5",
+  "version": "4.0.0-beta.18-csharp-p5",
   "channel_ready": true,
-  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.2/BiliSubStudio_4.0.2_Windows-x64-portable.zip",
-  "sha256": "b787c6fb1e24c5ebcf8be132a996452b41107820664ed3c8fbfcb1f802b63221",
-  "size": 94415786,
+  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.4/BiliSubStudio_4.0.4_Windows-x64-portable.zip",
+  "sha256": "c2237a8036dec874f6d7acc2464015117ec1ab8da908e51df27425d8fba58663",
+  "size": 94421203,
   "payload_kind": "winui3-portable-zip",
   "notes": [
-    "Sửa WBI/CDN failover cho video Bilibili dài.",
-    "Phụ đề ưu tiên track có sẵn; Bilibili AI là fallback khi không có track thường.",
-    "Sửa hai chi tiết trạng thái giao diện Media/Nhật ký.",
-    "Các bản sửa tiếp theo tiếp tục đi qua kênh cập nhật beta trong app."
+    "Sửa parser PaddleOCR 3.x và nhận diện phụ đề cứng.",
+    "Auto lanes có safety gate theo CPU/RAM/GPU/VRAM và fallback topology an toàn.",
+    "Sửa worker timeout, lỗi lane, checkpoint/shutdown và race khi đang quét.",
+    "Runtime OCR cài dở được phục hồi sạch; worker update không cài lại Paddle/Python không cần thiết."
   ]
 }
