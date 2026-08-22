@@ -6,6 +6,7 @@ namespace BiliSubStudio.Core.Ocr;
 
 internal sealed class OcrWorkerClient : IAsyncDisposable
 {
+    private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(90);
     private readonly OcrRuntime _runtime;
     private readonly SemaphoreSlim _requestGate = new(1, 1);
     private Process? _process;
@@ -65,17 +66,20 @@ internal sealed class OcrWorkerClient : IAsyncDisposable
     public async Task<OcrResult> RunAsync(string imageBase64, CancellationToken cancellationToken)
     {
         await _requestGate.WaitAsync(cancellationToken);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(RequestTimeout);
+        var requestToken = timeout.Token;
         try
         {
             if (!IsAlive || _input is null || _output is null) throw new InvalidOperationException("OCR worker chưa sẵn sàng.");
             var id = Interlocked.Increment(ref _requestId);
             var request = JsonSerializer.Serialize(new { id, image_base64 = imageBase64 });
-            await _input.WriteLineAsync(request.AsMemory(), cancellationToken);
-            await _input.FlushAsync(cancellationToken);
-            using var registration = cancellationToken.Register(() => Kill());
+            await _input.WriteLineAsync(request.AsMemory(), requestToken);
+            await _input.FlushAsync(requestToken);
+            using var registration = requestToken.Register(() => Kill());
             while (true)
             {
-                var line = await _output.ReadLineAsync(cancellationToken)
+                var line = await _output.ReadLineAsync(requestToken)
                     ?? throw new EndOfStreamException("OCR worker đóng khi đang xử lý.");
                 using var document = JsonDocument.Parse(line);
                 var root = document.RootElement;
@@ -100,6 +104,10 @@ internal sealed class OcrWorkerClient : IAsyncDisposable
                 }
                 return new OcrResult(ok, detected, text, confidence, lines, error);
             }
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new TimeoutException($"OCR worker không phản hồi trong {RequestTimeout.TotalSeconds:0} giây; worker đã được dừng để tránh treo tác vụ.");
         }
         finally { _requestGate.Release(); }
     }
