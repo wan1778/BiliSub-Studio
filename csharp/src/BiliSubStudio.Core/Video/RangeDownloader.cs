@@ -192,7 +192,7 @@ public sealed class RangeDownloader
                             }
 
                             var immediateRefresh = error is HttpRequestException;
-                            if (refresh is not null && (immediateRefresh || weakProgressFailures % 2 == 0))
+                            if (refresh is not null && (immediateRefresh || (weakProgressFailures > 0 && weakProgressFailures % 2 == 0)))
                             {
                                 await currentGate.WaitAsync(workerToken);
                                 try
