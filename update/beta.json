@@ -1,14 +1,14 @@
 {
-  "version": "4.0.0-beta.19-csharp-p5",
+  "version": "4.0.0-beta.20-csharp-p5",
   "channel_ready": true,
-  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.5/BiliSubStudio_4.0.5_Windows-x64-portable.zip",
-  "sha256": "899102c4140bcb5df7293480a0b0d030054d2b5c4f448e428c76d7be9733a11d",
-  "size": 94424689,
+  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.6/BiliSubStudio_4.0.6_Windows-x64-portable.zip",
+  "sha256": "6683fc76ecbb6ac9de877caa8252d04dd73d1eb17889a908ee653496df4b101b",
+  "size": 94425582,
   "payload_kind": "winui3-portable-zip",
   "notes": [
-    "Sửa Windows OCR os error 448 / untrusted mount point.",
-    "uv/Python bootstrap chuyển sang LocalAppData thay vì phụ thuộc thư mục cài ứng dụng.",
-    "Dùng trực tiếp Python patch-version hợp lệ, không phụ thuộc minor-version junction 3.12.",
-    "Có thể phục hồi Python đã tải dở từ lần Chuẩn bị OCR thất bại của 4.0.4."
+    "OCR Auto thăm dò live 1/2/4 lane thay vì khóa cứng theo dự đoán VRAM.",
+    "Card 4 GB không còn bị xếp nhầm vào mức 1 lane khi CUDA báo thiếu một phần VRAM.",
+    "Auto fallback về topology ổn định trước đó khi OOM, worker lỗi hoặc throughput không tăng.",
+    "Nút Hủy vẫn hoạt động sau Tạm dừng và xóa đúng checkpoint OCR dở."
   ]
 }
