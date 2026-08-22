@@ -50,7 +50,7 @@ public sealed class AppJob : IDisposable
             _message = "Đã hủy tác vụ.";
             _done = true;
             changed = true;
-            _pauseCompletion.TrySetResult();
+            _pauseCompletion.TrySetResult(true);
         }
         if (changed) _applicationLog?.Info(Kind, "Đã hủy tác vụ.", Id);
     }
@@ -92,7 +92,7 @@ public sealed class AppJob : IDisposable
             _message = string.IsNullOrWhiteSpace(message) ? "Đã tạm dừng tại checkpoint an toàn." : message;
             finalMessage = _message;
             _done = true;
-            _pauseCompletion.TrySetResult();
+            _pauseCompletion.TrySetResult(true);
         }
         _applicationLog?.Info(Kind, finalMessage, Id);
     }
@@ -169,7 +169,7 @@ public sealed class AppJob : IDisposable
             }
             _done = true;
             _result = result;
-            _pauseCompletion.TrySetResult();
+            _pauseCompletion.TrySetResult(true);
             if (error is null)
             {
                 _status = "done";
