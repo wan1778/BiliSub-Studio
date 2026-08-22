@@ -1,7 +1,7 @@
 {
   "version": "4.0.0-beta.15-csharp-p5",
   "channel_ready": true,
-  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.0-beta.15-csharp-p5/BiliSubStudio_4.0.0-beta.15-csharp-p5_Windows-x64-portable.zip",
+  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.1/BiliSubStudio_4.0.1_Windows-x64-portable.zip",
   "sha256": "2528a374b87d0c954875e034268af1388b048c6bcfb6b70c1c5d61432f8e149c",
   "size": 94415253,
   "payload_kind": "winui3-portable-zip",
