@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import difflib
 import re
 from pathlib import Path
 
@@ -56,8 +57,15 @@ def main() -> int:
     args = parser.parse_args()
     expected = generate()
     if args.check:
-        if not OUTPUT.exists() or OUTPUT.read_text(encoding="utf-8") != expected:
+        actual = OUTPUT.read_text(encoding="utf-8") if OUTPUT.exists() else ""
+        if actual != expected:
             print(f"STALE: {OUTPUT.relative_to(ROOT)}")
+            print("".join(difflib.unified_diff(
+                actual.splitlines(keepends=True),
+                expected.splitlines(keepends=True),
+                fromfile="checked-in",
+                tofile="generated",
+            )))
             return 1
         print("PASS: generated C# code map is current")
         return 0
