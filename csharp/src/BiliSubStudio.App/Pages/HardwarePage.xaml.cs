@@ -59,6 +59,12 @@ public sealed partial class HardwarePage : Page
 
     private async void PrepareOcr_Click(object sender, RoutedEventArgs e)
     {
+        if (_application.Jobs.ActiveSnapshots().Any(job => string.Equals(job.Kind, "ocrscan", StringComparison.Ordinal)))
+        {
+            ResultText.Text = "OCR đang quét; hãy Tạm dừng hoặc Hủy trước khi chuẩn bị lại engine.";
+            _log.Warning("Hiệu năng", "Đã chặn chuẩn bị lại OCR vì đang có tác vụ ocrscan.");
+            return;
+        }
         try
         {
             SetBusy(true);
