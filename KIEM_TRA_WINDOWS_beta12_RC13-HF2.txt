@@ -1,0 +1,96 @@
+BILISUB STUDIO v4.0.0-beta.12 RC13-HF2 — WINDOWS FIELD TEST
+=============================================================
+
+MUC TIEU HF2
+------------
+Auto KHONG duoc tao muc luong tiep theo truoc khi kiem tra headroom cua may.
+Trinh tu dung:
+  do muc hien tai
+  -> kiem tra tai nguyen cho muc ke tiep
+  -> chi neu PASS moi mo them worker/lane
+  -> benchmark co watchdog HF1
+  -> commit/fallback
+
+PHAN CUNG MAY TEST CHINH
+-----------------------
+Ryzen 7 4800H
+RTX 3050 Laptop 4 GB
+RAM 32 GB
+Windows
+
+TEST 1 — AUTO RESOURCE PREFLIGHT (UU TIEN DAU TIEN)
+--------------------------------------------------
+1. Cung video + cung ROI + Can bang 2.5 fps + OCR GPU.
+2. Chon Luong quet OCR = Tu dong.
+3. Quan sat status. Giua moi muc phai co buoc:
+   "Dang kiem tra kha nang chay N luong OCR..."
+   TRUOC KHI status chuyen sang:
+   "Dang do N luong quet OCR tren video that..."
+4. Neu may khong con headroom, Auto phai dung TRUOC KHI mo muc N va hien y nghia nhu:
+   "N luong vuot gioi han an toan · giu M luong"
+5. Khong duoc treo vo han o bat ky muc nao. Benchmark mot muc bi ket van co hard timeout ~15 giay va fallback ve muc on dinh truoc.
+6. Ghi muc da test va muc Auto cuoi cung chon.
+
+TEST 2 — TASK MANAGER TRONG AUTO
+--------------------------------
+Tai tung muc 1/2/4/8 neu Auto cho phep:
+- CPU %
+- GPU %
+- Dedicated GPU memory cua python.exe
+- RAM tong / RAM con trong
+- so python.exe OCR worker
+- so ffmpeg.exe lane
+- GPU engine
+- Video Decode/NVDEC
+
+Quan trong:
+- Neu Auto chan 8, khong duoc thay pool 8 python/ffmpeg duoc tao truoc roi moi bao chan.
+- Neu Auto chan 16, tuong tu: 16 khong duoc spawn truoc resource gate.
+
+TEST 3 — PERFORMANCE SAU KHI AUTO CHON
+--------------------------------------
+Cung video + ROI:
+- 1 lane baseline
+- 2 lane
+- 4 lane
+- Auto selected N
+Ghi:
+Realtime speed
+OCR images
+Inference count
+Selected/active/completed lanes
+CPU/GPU/VRAM/RAM
+Decoder
+OCR/cue
+Visual confirmations
+Cue count
+
+TEST 4 — CORRECTNESS
+--------------------
+- Khong mat subtitle.
+- Khong duplicate o segment boundary.
+- Khong rac A/W/OV.
+- Timestamp tang dung thu tu.
+- Cue span qua boundary khong bi cat thanh hai cue sai.
+
+TEST 5 — PAUSE / RESUME
+-----------------------
+1. Pause -> cho PAUSED that -> Resume.
+2. Pause -> dong app -> mo lai -> Resume.
+3. Completed lanes khong scan lai.
+4. Resume giu topology da chon, khong Auto benchmark lai.
+
+TEST 6 — QUET LAI TU DAU
+------------------------
+Quet lai tu dau phai xoa checkpoint phu hop va tao scan moi sach.
+
+TEST 7 — PROCESS CLEANUP
+------------------------
+Sau Cancel / Finish / Exit:
+- khong con orphan python.exe do BiliSub tao;
+- khong con orphan ffmpeg.exe do BiliSub tao;
+- tai nguyen GPU/RAM phai thu hoi ve baseline hop ly.
+
+GOOGLE DRIVE
+------------
+KHONG upload/promote RC13-HF2 cho toi khi Windows field test tren binary chinh xac nay PASS.

@@ -1,0 +1,11 @@
+{
+  "version": "4.0.0-beta.12-csharp-p5",
+  "channel_ready": false,
+  "download_url": "",
+  "sha256": "",
+  "size": 0,
+  "payload_kind": "winui3-portable-zip",
+  "notes": [
+    "Kênh beta trên GitHub chưa được công bố. Candidate hiện tại vẫn phải hoàn tất field QA trước khi tạo GitHub Release."
+  ]
+}

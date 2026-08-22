@@ -1,0 +1,222 @@
+<Page
+    x:Class="BiliSubStudio.App.Pages.SettingsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Background="{ThemeResource CanvasBrush}">
+    <Grid Padding="24,18,24,0" RowSpacing="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <StackPanel Spacing="3">
+                <TextBlock x:Name="BreadcrumbText" FontSize="10" Foreground="{ThemeResource MutedTextBrush}" Text="BiliSub Studio / Cài đặt / Chung" />
+                <StackPanel Orientation="Horizontal" Spacing="14">
+                    <TextBlock Style="{StaticResource PageTitleStyle}" Text="Cài đặt" />
+                    <TextBlock x:Name="SectionSubtitle" Margin="0,8,0,0" FontSize="11" Foreground="{ThemeResource MutedTextBrush}" Text="Giao diện, thư mục, dung lượng và cấu hình portable" />
+                </StackPanel>
+            </StackPanel>
+            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                <Border Padding="10,5" Background="{ThemeResource RaisedSurfaceBrush}" BorderBrush="{ThemeResource StrongBorderBrush}" BorderThickness="1" CornerRadius="14">
+                    <TextBlock FontSize="10" Foreground="{ThemeResource SecondaryTextBrush}" Text="Native UI" />
+                </Border>
+                <Border Padding="10,5" Background="{ThemeResource SuccessSoftBrush}" BorderBrush="{ThemeResource SuccessBrush}" BorderThickness="1" CornerRadius="14">
+                    <TextBlock x:Name="ThemeChip" FontSize="10" Foreground="{ThemeResource SuccessBrush}" Text="Dark" />
+                </Border>
+            </StackPanel>
+        </Grid>
+
+        <Border Grid.Row="1" Background="{ThemeResource TopbarBrush}" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="1" CornerRadius="10" Padding="3">
+            <Grid ColumnSpacing="4">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <ToggleButton x:Name="GeneralTab" Grid.Column="0" Height="38" Tag="general" IsChecked="True" Content="Chung" Click="SectionTab_Click" />
+                <ToggleButton x:Name="HardwareTab" Grid.Column="1" Height="38" Tag="hardware" Content="Hiệu năng" Click="SectionTab_Click" />
+                <ToggleButton x:Name="AccountTab" Grid.Column="2" Height="38" Tag="account" Content="Đăng nhập" Click="SectionTab_Click" />
+                <ToggleButton x:Name="SupportTab" Grid.Column="3" Height="38" Tag="support" Content="Cập nhật &amp; hỗ trợ" Click="SectionTab_Click" />
+            </Grid>
+        </Border>
+
+        <InfoBar
+            Grid.Row="2"
+            IsClosable="False"
+            IsOpen="{x:Bind ViewModel.IsStatusOpen, Mode=OneWay}"
+            Message="{x:Bind ViewModel.StatusMessage, Mode=OneWay}"
+            Severity="{x:Bind ViewModel.StatusSeverity, Mode=OneWay}" />
+
+        <ScrollViewer x:Name="GeneralScroll" Grid.Row="3" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+            <Grid x:Name="SettingsGrid" Padding="0,0,0,28" ColumnSpacing="16" RowSpacing="16">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="1.1*" />
+                    <ColumnDefinition Width="1*" />
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <StackPanel x:Name="LeftColumn" Grid.Column="0" Spacing="14">
+                    <Border Style="{StaticResource CardBorderStyle}">
+                        <StackPanel Spacing="13">
+                            <StackPanel Spacing="2">
+                                <TextBlock Style="{StaticResource CardTitleStyle}" Text="Giao diện" />
+                                <TextBlock Style="{StaticResource MutedTextStyle}" Text="Theme áp dụng cho toàn bộ cây WinUI; cấu hình được giữ tương thích khi nâng cấp." />
+                            </StackPanel>
+                            <TextBlock FontSize="12" FontWeight="SemiBold" Foreground="{ThemeResource SecondaryTextBrush}" Text="Theme" />
+                            <Grid ColumnSpacing="8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <RadioButton x:Name="DarkThemeRadio" Grid.Column="0" GroupName="Theme" Tag="dark" Checked="Theme_Checked" Content="Dark" />
+                                <RadioButton x:Name="LightThemeRadio" Grid.Column="1" GroupName="Theme" Tag="light" Checked="Theme_Checked" Content="Light" />
+                            </Grid>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock FontSize="12" FontWeight="SemiBold" Foreground="{ThemeResource SecondaryTextBrush}" Text="Tự kiểm tra cập nhật" />
+                                    <TextBlock Style="{StaticResource MutedTextStyle}" Text="Tùy chọn được lưu; updater chỉ bật sau Windows release gate của candidate C#." />
+                                </StackPanel>
+                                <ToggleSwitch x:Name="AutoUpdateToggle" Grid.Column="1" Toggled="AutoUpdate_Toggled" />
+                            </Grid>
+                            <Border Padding="12,9" Background="{ThemeResource SuccessSoftBrush}" BorderBrush="{ThemeResource SuccessBrush}" BorderThickness="1" CornerRadius="8">
+                                <TextBlock FontSize="11" Foreground="{ThemeResource SuccessBrush}" Text="Sẵn sàng: WinUI 3 render trực tiếp bằng XAML." />
+                            </Border>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource CardBorderStyle}">
+                        <StackPanel Spacing="12">
+                            <StackPanel Spacing="2">
+                                <TextBlock Style="{StaticResource CardTitleStyle}" Text="Thư mục mặc định" />
+                                <TextBlock Style="{StaticResource MutedTextStyle}" Text="Dùng xuyên suốt Media, OCR và Editor." />
+                            </StackPanel>
+                            <TextBlock FontSize="12" FontWeight="SemiBold" Foreground="{ThemeResource SecondaryTextBrush}" Text="Thư mục" />
+                            <Grid ColumnSpacing="8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBox Grid.Column="0" IsReadOnly="True" Style="{StaticResource InputTextBoxStyle}" Text="{x:Bind ViewModel.OutputDirectory, Mode=OneWay}" />
+                                <Button Grid.Column="1" Command="{x:Bind ViewModel.ChooseOutputDirectoryCommand}" Content="Chọn" Style="{StaticResource SecondaryButtonStyle}" />
+                                <Button Grid.Column="2" Command="{x:Bind ViewModel.OpenOutputDirectoryCommand}" Content="Mở" Style="{StaticResource SecondaryButtonStyle}" />
+                            </Grid>
+                            <Border Padding="12,9" Background="{ThemeResource AccentSoftBrush}" BorderBrush="{ThemeResource AccentPrimaryBrush}" BorderThickness="1" CornerRadius="8">
+                                <TextBlock FontSize="11" Foreground="{ThemeResource AccentPrimaryBrush}" Text="Media dài dùng chính ổ đầu ra cho cache/resume để tránh làm đầy ổ cài app." />
+                            </Border>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource CardBorderStyle}">
+                        <StackPanel Spacing="12">
+                            <StackPanel Spacing="2">
+                                <TextBlock Style="{StaticResource CardTitleStyle}" Text="Portable runtime" />
+                                <TextBlock Style="{StaticResource MutedTextStyle}" Text="Đường dẫn thực lấy từ thư mục executable; không dựa vào PATH hệ thống." />
+                            </StackPanel>
+                            <Grid RowSpacing="9" ColumnSpacing="14">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="116" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <TextBlock Grid.Row="0" Foreground="{ThemeResource MutedTextBrush}" Text="Root" />
+                                <TextBlock Grid.Row="0" Grid.Column="1" Foreground="{ThemeResource SecondaryTextBrush}" Text="{x:Bind ViewModel.Root, Mode=OneWay}" TextTrimming="CharacterEllipsis" />
+                                <TextBlock Grid.Row="1" Foreground="{ThemeResource MutedTextBrush}" Text="Drive" />
+                                <TextBlock Grid.Row="1" Grid.Column="1" Foreground="{ThemeResource SecondaryTextBrush}" Text="{x:Bind ViewModel.Drive, Mode=OneWay}" />
+                                <TextBlock Grid.Row="2" Foreground="{ThemeResource MutedTextBrush}" Text="OCR runtime" />
+                                <TextBlock Grid.Row="2" Grid.Column="1" Foreground="{ThemeResource SecondaryTextBrush}" Text="Tools/OCR · private uv/Python/PaddleOCR" />
+                                <TextBlock Grid.Row="3" Foreground="{ThemeResource MutedTextBrush}" Text="Production UI" />
+                                <TextBlock Grid.Row="3" Grid.Column="1" Foreground="{ThemeResource SuccessBrush}" Text="WinUI 3 · native XAML" />
+                            </Grid>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+
+                <StackPanel x:Name="RightColumn" Grid.Column="1" Spacing="14">
+                    <Border Style="{StaticResource CardBorderStyle}">
+                        <StackPanel Spacing="12">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Spacing="2">
+                                    <TextBlock Style="{StaticResource CardTitleStyle}" Text="Dung lượng ứng dụng" />
+                                    <TextBlock Style="{StaticResource MutedTextStyle}" Text="Đọc trực tiếp theo từng vùng app-owned." />
+                                </StackPanel>
+                                <Button Grid.Column="1" Command="{x:Bind ViewModel.RefreshCommand}" Content="Làm mới" Style="{StaticResource SecondaryButtonStyle}" />
+                            </Grid>
+                            <Grid RowSpacing="10" ColumnSpacing="10">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="54" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="70" />
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <TextBlock Grid.Row="0" Foreground="{ThemeResource MutedTextBrush}" Text="Data" /><ProgressBar Grid.Row="0" Grid.Column="1" Maximum="1" Value="{x:Bind ViewModel.DataRatio, Mode=OneWay}" /><TextBlock Grid.Row="0" Grid.Column="2" HorizontalAlignment="Right" Foreground="{ThemeResource SecondaryTextBrush}" Text="{x:Bind ViewModel.DataSize, Mode=OneWay}" />
+                                <TextBlock Grid.Row="1" Foreground="{ThemeResource MutedTextBrush}" Text="Tools" /><ProgressBar Grid.Row="1" Grid.Column="1" Maximum="1" Value="{x:Bind ViewModel.ToolsRatio, Mode=OneWay}" /><TextBlock Grid.Row="1" Grid.Column="2" HorizontalAlignment="Right" Foreground="{ThemeResource SecondaryTextBrush}" Text="{x:Bind ViewModel.ToolsSize, Mode=OneWay}" />
+                                <TextBlock Grid.Row="2" Foreground="{ThemeResource MutedTextBrush}" Text="OCR" /><ProgressBar Grid.Row="2" Grid.Column="1" Maximum="1" Value="{x:Bind ViewModel.OcrRatio, Mode=OneWay}" /><TextBlock Grid.Row="2" Grid.Column="2" HorizontalAlignment="Right" Foreground="{ThemeResource SecondaryTextBrush}" Text="{x:Bind ViewModel.OcrSize, Mode=OneWay}" />
+                                <TextBlock Grid.Row="3" Foreground="{ThemeResource MutedTextBrush}" Text="Temp" /><ProgressBar Grid.Row="3" Grid.Column="1" Maximum="1" Value="{x:Bind ViewModel.TempRatio, Mode=OneWay}" /><TextBlock Grid.Row="3" Grid.Column="2" HorizontalAlignment="Right" Foreground="{ThemeResource SecondaryTextBrush}" Text="{x:Bind ViewModel.TempSize, Mode=OneWay}" />
+                                <TextBlock Grid.Row="4" Foreground="{ThemeResource MutedTextBrush}" Text="Cache" /><ProgressBar Grid.Row="4" Grid.Column="1" Maximum="1" Value="{x:Bind ViewModel.CacheRatio, Mode=OneWay}" /><TextBlock Grid.Row="4" Grid.Column="2" HorizontalAlignment="Right" Foreground="{ThemeResource SecondaryTextBrush}" Text="{x:Bind ViewModel.CacheSize, Mode=OneWay}" />
+                            </Grid>
+                            <Grid Margin="0,4,0,0">
+                                <TextBlock Foreground="{ThemeResource MutedTextBrush}" Text="Tổng app-owned" />
+                                <TextBlock HorizontalAlignment="Right" FontWeight="SemiBold" Foreground="{ThemeResource PrimaryTextBrush}" Text="{x:Bind ViewModel.TotalSize, Mode=OneWay}" />
+                            </Grid>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource CardBorderStyle}">
+                        <StackPanel Spacing="12">
+                            <StackPanel Spacing="2">
+                                <TextBlock Style="{StaticResource CardTitleStyle}" Text="Bảo trì nâng cao" />
+                                <TextBlock Style="{StaticResource MutedTextStyle}" Text="Các thao tác có xác nhận và bị chặn khi đang có job." />
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Spacing="10">
+                                <Button Click="Cleanup_Click" Content="Dọn Temp/Cache" Style="{StaticResource SecondaryButtonStyle}" />
+                                <Button Click="ResetTools_Click" Content="Reset Tools" Style="{StaticResource DangerButtonStyle}" />
+                                <Button Click="RemoveOcr_Click" Content="Xóa OCR runtime" Style="{StaticResource DangerButtonStyle}" />
+                            </StackPanel>
+                            <Border Padding="12,9" Background="{ThemeResource WarningSoftBrush}" BorderBrush="{ThemeResource WarningBrush}" BorderThickness="1" CornerRadius="8">
+                                <TextBlock FontSize="11" Foreground="{ThemeResource WarningBrush}" Text="Data/session.bin và file đầu ra hoàn tất không bị xóa bởi các thao tác này." />
+                            </Border>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource CardBorderStyle}">
+                        <StackPanel Spacing="9">
+                            <TextBlock Style="{StaticResource CardTitleStyle}" Text="Nhật ký chẩn đoán" />
+                            <TextBlock Style="{StaticResource MutedTextStyle}" Text="Một nhật ký chung cho Media, OCR, Editor, Hiệu năng, Đăng nhập, Cập nhật và lỗi shell. Màu xanh = bình thường; vàng = cảnh báo; đỏ = lỗi." />
+                            <Border Padding="12,9" Background="{ThemeResource SuccessSoftBrush}" BorderBrush="{ThemeResource SuccessBrush}" BorderThickness="1" CornerRadius="8">
+                                <TextBlock x:Name="LogPathText" FontSize="11" Foreground="{ThemeResource SuccessBrush}" TextTrimming="CharacterEllipsis" />
+                            </Border>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </Grid>
+        </ScrollViewer>
+
+        <ContentControl x:Name="SectionHost" Grid.Row="3" Visibility="Collapsed" />
+    </Grid>
+</Page>

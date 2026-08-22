@@ -1,0 +1,127 @@
+BILISUB STUDIO v4.0.0-beta.12 RC13-HF5 — WINDOWS FIELD TEST
+=============================================================
+
+
+0C. CHINESE-ONLY OUTPUT + FULL QC LIST HF5 (BAT BUOC)
+------------------------------------------------------
+- Dung dung video/ROI da xuat SRT co ILLC / AIYI / "铺 U 碎" / "2/" hoac text ngoai tieng Trung.
+- Live cue va SRT cuoi KHONG duoc con cue khong co chu Han hoac cue co chu cai script khac (Latin/Kana/Hangul...).
+- Cue hop le nhu "第3集", "2026年", dau cau/so di kem chu Han van phai duoc giu.
+- Mau OCR ngoai tieng Trung KHONG duoc lam dong/cat som cue Trung dang active.
+- Kiem tra artifact dau cau lap "， ，": SRT moi phai normalize thanh "，".
+- Khi dang quet: danh sach co the chi hien toi da 120 cue gan preview, nhung UI phai ghi ro "dang hien / tong" de khong nham voi tong cue.
+- Khi quet HOAN TAT: danh sach phai render TOAN BO cue (vi du 3155/3155), khong chi 100-120 cue cuoi.
+- Sau khi quet xong, keo timeline video nguon den timestamp bat ky: danh sach phu de phai highlight + scroll toi cue gan moc do.
+- Click mot cue trong danh sach phai dua preview video ve start time cua cue.
+
+
+
+0B. TELEMETRY / PAUSE UI HF4 (BAT BUOC)
+-----------------------------------------
+- Khi dang quet parallel, preview va danh sach cue ben phai phai o cung moc an toan; KHONG duoc preview 00:02:xx nhung list nhay sang 01:xx:xx.
+- Sau Pause an toan: Lane hoat dong = 0.
+- Checkpoint parallel phai hien "% tong cong viec" dua tren tong core da xu ly cua tat ca lane; "moc lien tuc" duoc hien rieng va co the thap hon %.
+- Progress bar sau Pause KHONG duoc tut ve % cua rieng lane dau/moc lien tuc.
+- Neu da co cue gan moc preview, Do tin cay KHONG duoc dung o dau gach; text/confidence phai khop cue dang hien.
+- Nhan telemetry phai ghi "Tong cho FFmpeg" va "Tong phan tich anh" de the hien day la so cong don.
+- Pause/Resume xong van giu dung cue count, progress tong, A/N/W/OV guard va timestamp.
+
+0A. LEGACY A/N/W/OV REGRESSION (VAN BAT BUOC)
+-------------------------------------------
+- Dung dung video/ROI da tung lo A, N hoac ky tu Latin ngan.
+- Chay Auto va it nhat 1 mode manual (2 hoac 4 lane) toi qua doan loi cu.
+- Live cues va SRT cuoi KHONG duoc co A / N / W / OV dung mot minh.
+- Mot cue tieng Trung dang active KHONG duoc bi cat ngan chi vi OCR thoang tra A/N/W/OV.
+- HF5 strict: cue phai co chu Han va KHONG co chu cai script khac; chi so/dau cau/symbol di kem chu Han duoc giu.
+- Pause -> Resume tren checkpoint tao boi HF3 va kiem tra lai khong xuat hien short-Latin garbage.
+
+MUC TIEU HF5
+------------
+1. Loai regression subtitle rac A/N/W/OV dung mot minh trong duong OCR tieng Trung.
+2. Khong de short-Latin noise dong/cat cue tieng Trung dang active.
+3. Giu nguyen Auto resource preflight + watchdog cua HF2/HF1.
+4. Khong regression parallel lanes, boundary reconciliation, Pause/Resume va NVDEC.
+
+PHAN CUNG MAY TEST CHINH
+-----------------------
+Ryzen 7 4800H
+RTX 3050 Laptop 4 GB
+RAM 32 GB
+Windows
+
+TEST 1 — AUTO RESOURCE PREFLIGHT (UU TIEN DAU TIEN)
+--------------------------------------------------
+1. Cung video + cung ROI + Can bang 2.5 fps + OCR GPU.
+2. Chon Luong quet OCR = Tu dong.
+3. Quan sat status. Giua moi muc phai co buoc:
+   "Dang kiem tra kha nang chay N luong OCR..."
+   TRUOC KHI status chuyen sang:
+   "Dang do N luong quet OCR tren video that..."
+4. Neu may khong con headroom, Auto phai dung TRUOC KHI mo muc N va hien y nghia nhu:
+   "N luong vuot gioi han an toan · giu M luong"
+5. Khong duoc treo vo han o bat ky muc nao. Benchmark mot muc bi ket van co hard timeout ~15 giay va fallback ve muc on dinh truoc.
+6. Ghi muc da test va muc Auto cuoi cung chon.
+
+TEST 2 — TASK MANAGER TRONG AUTO
+--------------------------------
+Tai tung muc 1/2/4/8 neu Auto cho phep:
+- CPU %
+- GPU %
+- Dedicated GPU memory cua python.exe
+- RAM tong / RAM con trong
+- so python.exe OCR worker
+- so ffmpeg.exe lane
+- GPU engine
+- Video Decode/NVDEC
+
+Quan trong:
+- Neu Auto chan 8, khong duoc thay pool 8 python/ffmpeg duoc tao truoc roi moi bao chan.
+- Neu Auto chan 16, tuong tu: 16 khong duoc spawn truoc resource gate.
+
+TEST 3 — PERFORMANCE SAU KHI AUTO CHON
+--------------------------------------
+Cung video + ROI:
+- 1 lane baseline
+- 2 lane
+- 4 lane
+- Auto selected N
+Ghi:
+Realtime speed
+OCR images
+Inference count
+Selected/active/completed lanes
+CPU/GPU/VRAM/RAM
+Decoder
+OCR/cue
+Visual confirmations
+Cue count
+
+TEST 4 — CORRECTNESS
+--------------------
+- Khong mat subtitle.
+- Khong duplicate o segment boundary.
+- Khong rac A/W/OV.
+- Timestamp tang dung thu tu.
+- Cue span qua boundary khong bi cat thanh hai cue sai.
+
+TEST 5 — PAUSE / RESUME
+-----------------------
+1. Pause -> cho PAUSED that -> Resume.
+2. Pause -> dong app -> mo lai -> Resume.
+3. Completed lanes khong scan lai.
+4. Resume giu topology da chon, khong Auto benchmark lai.
+
+TEST 6 — QUET LAI TU DAU
+------------------------
+Quet lai tu dau phai xoa checkpoint phu hop va tao scan moi sach.
+
+TEST 7 — PROCESS CLEANUP
+------------------------
+Sau Cancel / Finish / Exit:
+- khong con orphan python.exe do BiliSub tao;
+- khong con orphan ffmpeg.exe do BiliSub tao;
+- tai nguyen GPU/RAM phai thu hoi ve baseline hop ly.
+
+GOOGLE DRIVE
+------------
+KHONG upload/promote RC13-HF5 cho toi khi Windows field test tren binary chinh xac nay PASS.

@@ -1,0 +1,70 @@
+<Page
+    x:Class="BiliSubStudio.App.Pages.AccountPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Background="{ThemeResource CanvasBrush}"
+    AutomationProperties.Name="Đăng nhập Bilibili">
+    <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+        <Grid x:Name="PageRoot" Padding="0,0,0,28">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="350" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <Border Style="{StaticResource CardBorderStyle}">
+                <StackPanel Spacing="12" HorizontalAlignment="Stretch">
+                    <Grid>
+                        <TextBlock Style="{StaticResource CardTitleStyle}" Text="QR đăng nhập" />
+                        <Border HorizontalAlignment="Right" Padding="9,4" Background="{ThemeResource AccentSoftBrush}" CornerRadius="10">
+                            <TextBlock FontSize="10" Foreground="{ThemeResource AccentPrimaryBrush}" Text="Native QR" />
+                        </Border>
+                    </Grid>
+                    <Border Padding="10" HorizontalAlignment="Center" Background="White" CornerRadius="12">
+                        <Canvas x:Name="QrCanvas" Width="260" Height="260" Background="White" AutomationProperties.Name="Mã QR đăng nhập Bilibili" />
+                    </Border>
+                    <StackPanel Orientation="Horizontal" Spacing="10" HorizontalAlignment="Center">
+                        <Button x:Name="QrButton" AccessKey="Q" Click="Qr_Click" Content="Tạo mã QR" />
+                        <ProgressRing x:Name="QrProgress" Width="22" Height="22" IsActive="False" Visibility="Collapsed" AutomationProperties.Name="Đang chờ đăng nhập QR" />
+                    </StackPanel>
+                    <Border Padding="11,8" Background="{ThemeResource RaisedSurfaceBrush}" CornerRadius="8">
+                        <TextBlock x:Name="QrStatusText" TextAlignment="Center" Style="{StaticResource MutedTextStyle}" Text="Mở Bilibili trên điện thoại để quét." AutomationProperties.LiveSetting="Polite" />
+                    </Border>
+                </StackPanel>
+            </Border>
+
+            <StackPanel x:Name="AccountInspector" Grid.Column="1" Margin="14,0,0,0" Spacing="14">
+                <Border Style="{StaticResource CardBorderStyle}">
+                    <StackPanel Spacing="11">
+                        <Grid>
+                            <TextBlock Style="{StaticResource CardTitleStyle}" Text="Trạng thái phiên" />
+                            <Border HorizontalAlignment="Right" Padding="9,4" Background="{ThemeResource SuccessSoftBrush}" CornerRadius="10">
+                                <TextBlock FontSize="10" Foreground="{ThemeResource SuccessBrush}" Text="DPAPI protected" />
+                            </Border>
+                        </Grid>
+                        <Border Padding="12,10" Background="{ThemeResource SuccessSoftBrush}" BorderBrush="{ThemeResource SuccessBrush}" BorderThickness="1" CornerRadius="9">
+                            <TextBlock x:Name="LoginStatusText" Style="{StaticResource BodyTextStyle}" Foreground="{ThemeResource SuccessBrush}" Text="Đang kiểm tra..." AutomationProperties.LiveSetting="Polite" />
+                        </Border>
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Button x:Name="ValidateButton" Click="Validate_Click" Content="Kiểm tra lại" Style="{StaticResource SecondaryButtonStyle}" />
+                            <Button x:Name="DeleteButton" Click="Delete_Click" Content="Đăng xuất / xóa cookie" Style="{StaticResource DangerButtonStyle}" />
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+
+                <Border Style="{StaticResource CardBorderStyle}">
+                    <StackPanel Spacing="10">
+                        <StackPanel Spacing="2">
+                            <TextBlock Style="{StaticResource CardTitleStyle}" Text="Nhập cookie thủ công" />
+                            <TextBlock Style="{StaticResource MutedTextStyle}" Text="Chỉ lưu sau khi endpoint Bilibili xác nhận phiên hợp lệ; giá trị cookie không được ghi vào nhật ký." />
+                        </StackPanel>
+                        <PasswordBox x:Name="CookieBox" PlaceholderText="SESSDATA hoặc chuỗi Cookie" PasswordChanged="CookieBox_PasswordChanged" AutomationProperties.Name="Cookie Bilibili" />
+                        <Button x:Name="SaveCookieButton" HorizontalAlignment="Left" Click="SaveCookie_Click" Content="Xác minh và lưu DPAPI" IsEnabled="False" />
+                        <Border Padding="11,8" Background="{ThemeResource WarningSoftBrush}" BorderBrush="{ThemeResource WarningBrush}" BorderThickness="1" CornerRadius="8">
+                            <TextBlock FontSize="11" Foreground="{ThemeResource WarningBrush}" Text="Không dán cookie vào báo lỗi hoặc ảnh chụp nhật ký." TextWrapping="Wrap" />
+                        </Border>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </Grid>
+    </ScrollViewer>
+</Page>
