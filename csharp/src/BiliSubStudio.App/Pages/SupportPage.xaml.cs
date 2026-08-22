@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using BiliSubStudio.Core.Application;
 using BiliSubStudio.Core.Diagnostics;
 using BiliSubStudio.Core.Maintenance;
@@ -8,6 +9,14 @@ namespace BiliSubStudio.App.Pages;
 
 public sealed partial class SupportPage : Page
 {
+    private static readonly Func<string, string> DisplayVersion = version =>
+    {
+        var match = Regex.Match(version, @"^4\.0\.0-beta\.(\d+)-csharp-p5$");
+        if (match.Success && int.TryParse(match.Groups[1].Value, out var beta) && beta >= 14)
+            return $"4.0.{beta - 14}";
+        return version;
+    };
+
     private readonly BiliSubApplication _application;
     private readonly ApplicationLog _log;
     private bool _updateAvailable;
@@ -24,7 +33,9 @@ public sealed partial class SupportPage : Page
     public void ApplyUpdateInfo(UpdateInfo info)
     {
         _updateAvailable = info.Available && info.ChannelReady;
-        UpdateText.Text = $"Hiện tại {info.Current} · kênh {info.Latest} · {info.Message}\n{string.Join("\n", info.Notes)}";
+        var current = DisplayVersion(info.Current);
+        var latest = DisplayVersion(info.Latest);
+        UpdateText.Text = $"Hiện tại {current} · bản mới {latest} · {info.Message}\n{string.Join("\n", info.Notes)}";
         SyncControls();
     }
 
@@ -70,8 +81,9 @@ public sealed partial class SupportPage : Page
             _log.Info("Cập nhật", "Đang tải và xác minh gói cập nhật.");
             var prepared = await _application.PrepareUpdateAsync(CancellationToken.None);
             _updateAvailable = false;
-            UpdateText.Text = $"Đã xác minh và staging {prepared.Version}. Đóng ứng dụng để cập nhật an toàn.";
-            _log.Info("Cập nhật", $"Đã xác minh và staging {prepared.Version}.");
+            var displayVersion = DisplayVersion(prepared.Version);
+            UpdateText.Text = $"Đã tải và xác minh {displayVersion}. Hãy đóng BiliSub Studio để áp dụng; ứng dụng sẽ tự mở lại sau khi cập nhật.";
+            _log.Info("Cập nhật", $"Đã xác minh và staging {displayVersion}; chờ người dùng đóng ứng dụng để áp dụng.");
         }
         catch (Exception error)
         {
