@@ -1,4 +1,4 @@
-name: C# P5 Windows x64 beta build
+name: C# P5 Windows x64 installer candidate
 
 on:
   workflow_dispatch:
