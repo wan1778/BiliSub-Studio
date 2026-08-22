@@ -9,6 +9,10 @@ App.OnLaunched
   -> UpdateService.TryApplyFromCommandLineAsync (updater mode only)
   -> MainWindow
       -> AppPaths.FromExecutableDirectory
+           installed layout: ...\BiliSub Studio\Runtime\BiliSubStudio.exe
+             -> data root resolves to parent ...\BiliSub Studio
+           portable layout: BiliSubStudio.exe at root
+             -> data root remains executable root
       -> ApplicationLog(Data/Logs/application.log)
       -> BiliSubApplication
           -> WindowsProcessContainment (KILL_ON_JOB_CLOSE + updater BREAKAWAY_OK)
@@ -37,6 +41,25 @@ AppWindow.Closing
   -> ApplicationLog.Info/Error
   -> Window.Close
 ```
+
+## Installed directory ownership
+
+The installer keeps framework/runtime implementation details out of the user-visible application root.
+
+```text
+BiliSub Studio\
+  Runtime\        verified self-contained WinUI/.NET publish
+                  EXE / DLL / XBF / PRI / locale resource folders
+  Data\           persistent config/session/logs
+  Tools\          app-owned yt-dlp / FFmpeg / OCR runtime
+  Temp\           temporary/update/rollback data
+  Cache\          cache
+  Downloads\      legacy/default protected download root
+```
+
+Start Menu, desktop shortcut, uninstall display icon and post-install launch point to `Runtime\BiliSubStudio.exe`. `AppPaths.FromExecutableDirectory` recognizes the exact `Runtime` directory name and resolves the parent as the persistent app root, so `Data/Tools/Temp/Cache/Downloads` never move inside the runtime folder.
+
+Installer upgrade from the previous flat layout is checksum-owned: if root `BiliSubStudio.exe` plus root `SHA256SUMS.txt` exist, Inno removes only runtime files named by that verified inventory, then collapses empty runtime directories before installing the new publish under `Runtime\`. The migration explicitly does not delete unknown root files and never deletes `Data/Tools/Temp/Cache/Downloads`.
 
 ## Shared diagnostic log
 
@@ -220,19 +243,25 @@ SupportPage.Prepare
   -> verify byte size + SHA-256 while streaming
   -> safe ZIP extraction
   -> reject protected Data/Tools/Temp/Cache/Downloads roots
-  -> validate root BiliSubStudio.exe as PE x86-64 / PE32+
-  -> copy current runtime to breakaway updater staging
+  -> validate payload BiliSubStudio.exe as PE x86-64 / PE32+
+  -> copy current Runtime directory to breakaway updater staging
 
 App close after prepared update
   -> BreakawayLauncher (CREATE_BREAKAWAY_FROM_JOB)
+  -> target = AppContext.BaseDirectory
+       installed app => ...\BiliSub Studio\Runtime
+       portable app  => current portable root
   -> wait old PID
   -> ApplyPayloadTransactionalAsync
-       -> backup unprotected runtime entries
-       -> durable copy new payload
+       -> nested installed layout: rollback backup under parent Temp/Update
+       -> backup current runtime entries only
+       -> durable copy new payload into Runtime
        -> revalidate PE
        -> delete backup on success
-       -> restore backup + relaunch old app on failure
+       -> restore runtime + relaunch old app on failure
 ```
+
+The update transaction therefore replaces implementation/runtime bytes only. Persistent parent `Data/Tools/Temp/Cache/Downloads` are outside the update target in the installed layout.
 
 Channel publication policy is documented in `docs/migration/GITHUB_UPDATE_CHANNEL.md`. During field QA both repository manifests remain `channel_ready=false`; no GitHub Release is created automatically.
 
@@ -254,11 +283,24 @@ verify.ps1
        -> Settings internal Chung / Hiệu năng / Đăng nhập / Cập nhật & hỗ trợ
        -> global log drawer open / closed
 
+workflow pre-gates
+  -> verify_media_bundle_contract.py
+  -> verify_installer_runtime_layout_contract.py
+       -> Runtime destination/shortcuts
+       -> AppPaths parent-root resolution
+       -> runtime-only updater target
+       -> checksum-owned legacy migration contract
+
 package_windows_candidate.ps1
   -> Inno Setup x64 current-user installer
-  -> custom-directory install smoke
-  -> exact installed-EXE startup/layout smoke
-  -> uninstall + protected-root preservation
+  -> create legacy flat-layout fixture from the exact verified publish
+  -> add protected Data/Tools/Temp/Cache/Downloads markers + unknown root file
+  -> install over fixture
+  -> require old root BiliSubStudio.exe removed
+  -> require Runtime/BiliSubStudio.exe + full publish checksums
+  -> require protected markers + unknown root file preserved
+  -> startup smoke from Runtime
+  -> uninstall + protected-root/unknown-file preservation
 ```
 
 ## Ownership exclusions
@@ -269,3 +311,4 @@ package_windows_candidate.ps1
 - Go production directories are not imported or invoked by the C# application.
 - Update discovery and payload hosting are GitHub-only; transactional update safety remains owned by `UpdateService`.
 - The shared log refactor does not alter Range downloader, OCR scanner topology or editor render algorithms; it changes diagnostic routing and shell/page composition.
+- The tidy installer layout changes only installed runtime placement and path ownership; the verified publish bytes themselves remain unchanged inside `Runtime\`.
