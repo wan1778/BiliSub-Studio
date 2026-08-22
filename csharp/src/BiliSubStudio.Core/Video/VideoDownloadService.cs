@@ -78,6 +78,9 @@ public sealed class VideoDownloadService
 
         static int EndpointCount(ResolvedStream stream) => Math.Max(1, stream.EndpointUrls?.Count ?? 0);
 
+        static IReadOnlyList<string> EndpointUrls(ResolvedStream stream) =>
+            stream.EndpointUrls is { Count: > 0 } endpoints ? endpoints : new[] { stream.Url };
+
         if (selection.Video is not null)
         {
             job.Log($"Video format {selection.Video.FormatId} · {selection.Video.Height}p · {selection.Video.Size} bytes");
@@ -130,36 +133,74 @@ public sealed class VideoDownloadService
         var transportGate = new object();
         var transports = new Dictionary<StreamKind, RangeDownloadStatus>();
         using var selectionGate = new SemaphoreSlim(1, 1);
-        var current = selection;
-        var endpointOffset = 0;
+        var currentStreams = new Dictionary<StreamKind, ResolvedStream>();
+        if (selection.Video is not null) currentStreams[StreamKind.Video] = selection.Video;
+        if (selection.Audio is not null) currentStreams[StreamKind.Audio] = selection.Audio;
+        var routeGeneration = currentStreams.Count == 0 ? 0L : currentStreams.Values.Max(x => x.Generation);
+        var refreshRounds = new Dictionary<StreamKind, int>();
 
         async Task<ResolvedStream> RefreshAsync(StreamKind kind, long seen, CancellationToken token)
         {
             await selectionGate.WaitAsync(token);
             try
             {
-                var existing = kind == StreamKind.Video ? current.Video : current.Audio;
-                if (existing is not null && existing.Generation != seen) return existing;
+                if (!currentStreams.TryGetValue(kind, out var existing))
+                    throw new InvalidOperationException("Không có stream hiện tại để phục hồi CDN.");
+                if (existing.Generation != seen) return existing;
 
-                endpointOffset++;
+                var endpoints = EndpointUrls(existing);
+                var nextIndex = existing.EndpointIndex + 1;
+                if (nextIndex >= 0 && nextIndex < endpoints.Count)
+                {
+                    routeGeneration++;
+                    var rotated = existing with
+                    {
+                        Url = endpoints[nextIndex],
+                        EndpointIndex = nextIndex,
+                        Generation = routeGeneration,
+                    };
+                    currentStreams[kind] = rotated;
+                    job.Warn($"CDN {kind}: chuyển {Host(existing)} → {Host(rotated)} · endpoint {nextIndex + 1}/{endpoints.Count} · dùng backup đã có, giữ nguyên Range resume.");
+                    return rotated;
+                }
+
+                var refreshRound = refreshRounds.TryGetValue(kind, out var round) ? round + 1 : 1;
+                refreshRounds[kind] = refreshRound;
                 var previousFingerprint = Fingerprint(existing);
                 var previousHost = Host(existing);
-                current = await _resolver.ResolveAsync(resolveRequest with { EndpointOffset = endpointOffset }, token);
-                if (!string.IsNullOrWhiteSpace(current.EndpointDiscoveryWarning)) job.Warn(current.EndpointDiscoveryWarning);
-                var refreshed = (kind == StreamKind.Video ? current.Video : current.Audio)
-                    ?? throw new InvalidOperationException("URL mới thiếu stream cần làm mới.");
+                job.Warn($"CDN {kind}: đã thử hết {endpoints.Count} endpoint; refetch playurl vòng {refreshRound}.");
+
+                var freshSelection = await _resolver.ResolveAsync(resolveRequest with { EndpointOffset = 0 }, token);
+                if (!string.IsNullOrWhiteSpace(freshSelection.EndpointDiscoveryWarning)) job.Warn(freshSelection.EndpointDiscoveryWarning);
+                var fresh = (kind == StreamKind.Video ? freshSelection.Video : freshSelection.Audio)
+                    ?? throw new InvalidOperationException("Playurl mới thiếu stream cần làm mới.");
+
+                if (!string.Equals(fresh.FormatId, existing.FormatId, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException($"CDN refresh đổi format {existing.FormatId} → {fresh.FormatId}; dừng để tránh trộn dữ liệu khác stream.");
+                if (existing.Size > 0 && fresh.Size > 0 && existing.Size != fresh.Size)
+                    throw new InvalidDataException($"CDN refresh đổi kích thước stream {existing.Size} → {fresh.Size}; dừng để tránh hỏng file resume.");
+
+                var freshEndpoints = EndpointUrls(fresh);
+                routeGeneration = Math.Max(routeGeneration, fresh.Generation) + 1;
+                fresh = fresh with
+                {
+                    Url = freshEndpoints[0],
+                    EndpointIndex = 0,
+                    Generation = routeGeneration,
+                };
+                currentStreams[kind] = fresh;
 
                 var sameRoute = previousFingerprint.Length > 0 &&
-                    string.Equals(previousFingerprint, Fingerprint(refreshed), StringComparison.OrdinalIgnoreCase);
+                    string.Equals(previousFingerprint, Fingerprint(fresh), StringComparison.OrdinalIgnoreCase);
                 if (sameRoute)
                 {
-                    job.Warn($"CDN {kind}: playurl refresh vẫn trả cùng tuyến {Host(refreshed)} · endpoint {refreshed.EndpointIndex + 1}/{EndpointCount(refreshed)}.");
+                    job.Warn($"CDN {kind}: playurl refresh vẫn trả cùng tuyến {Host(fresh)} · endpoint 1/{freshEndpoints.Count}; chỉ chữ ký URL được làm mới.");
                 }
                 else
                 {
-                    job.Warn($"CDN {kind}: chuyển {previousHost} → {Host(refreshed)} · endpoint {refreshed.EndpointIndex + 1}/{EndpointCount(refreshed)} · giữ nguyên Range resume.");
+                    job.Warn($"CDN {kind}: playurl refresh đổi {previousHost} → {Host(fresh)} · endpoint 1/{freshEndpoints.Count} · giữ nguyên Range resume.");
                 }
-                return refreshed;
+                return fresh;
             }
             finally { selectionGate.Release(); }
         }
@@ -218,7 +259,7 @@ public sealed class VideoDownloadService
                         await selectionGate.WaitAsync(cancellationToken);
                         try
                         {
-                            stableStream = (stream.Kind == StreamKind.Video ? current.Video : current.Audio) ?? stream;
+                            stableStream = currentStreams.TryGetValue(stream.Kind, out var latest) ? latest : stream;
                         }
                         finally { selectionGate.Release(); }
                         job.Warn($"Range {stream.Kind}: thử lại 1 kết nối từ CDN {Host(stableStream)} · endpoint {stableStream.EndpointIndex + 1}/{EndpointCount(stableStream)}.");
