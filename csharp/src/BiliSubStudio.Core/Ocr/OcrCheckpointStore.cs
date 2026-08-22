@@ -83,7 +83,9 @@ internal sealed class OcrCheckpointStore
 
     public async Task<OcrParallelCheckpoint> NewAsync(OcrScanRequest request, int parallelism, CancellationToken cancellationToken)
     {
-        var segments = BuildSegments(request.Duration, parallelism, 8);
+        var scanMode = ModeFor(request.Mode, request.Sensitivity);
+        var overlap = Math.Max(scanMode.Guard, scanMode.ActiveGuard);
+        var segments = BuildSegments(request.Duration, parallelism, overlap);
         var key = await KeyAsync(request, Schema, cancellationToken);
         return new OcrParallelCheckpoint(Schema, key, segments.Count,
             segments.Select(x => new OcrLaneCheckpoint(x, x.ScanStart, [], null, 0, 0, false)).ToList());
