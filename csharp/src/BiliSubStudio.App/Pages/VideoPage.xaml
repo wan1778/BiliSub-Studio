@@ -2,213 +2,237 @@
     x:Class="BiliSubStudio.App.Pages.VideoPage"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Background="{ThemeResource CanvasBrush}"
     AutomationProperties.Name="Tải media Bilibili">
-    <ScrollViewer>
-        <Grid x:Name="PageRoot" Padding="28" MaxWidth="1180" HorizontalAlignment="Left">
+    <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto" HorizontalContentAlignment="Stretch">
+        <Grid x:Name="PageRoot" Padding="24,18,24,28" RowSpacing="14" MaxWidth="1420" HorizontalAlignment="Stretch">
             <Grid.RowDefinitions>
-                <RowDefinition Height="Auto"/>
-                <RowDefinition Height="Auto"/>
-                <RowDefinition Height="Auto"/>
-                <RowDefinition Height="Auto"/>
-                <RowDefinition Height="Auto"/>
-                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
-            <StackPanel Spacing="6">
-                <TextBlock Style="{StaticResource PageTitleStyle}" Text="Tải media"/>
-                <TextBlock
-                    MaxWidth="860"
-                    TextWrapping="Wrap"
-                    Style="{StaticResource BodyTextStyle}"
-                    Text="Dán liên kết Bilibili, kiểm tra nguồn rồi chọn nơi lưu. Mặc định app tải Video + Thumbnail + Phụ đề nếu nguồn có."/>
-            </StackPanel>
-
-            <Border Grid.Row="1" Margin="0,22,0,0" Style="{StaticResource CardBorderStyle}">
-                <StackPanel Spacing="12">
-                    <StackPanel Spacing="3">
-                        <TextBlock Style="{StaticResource CardTitleStyle}" Text="1. Nguồn Bilibili"/>
-                        <TextBlock Style="{StaticResource MutedTextStyle}" Text="Dán link rồi bấm Kiểm tra để đọc chất lượng, thumbnail và phụ đề."/>
-                    </StackPanel>
-                    <Grid ColumnSpacing="10">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-                        <TextBox
-                            x:Name="UrlBox"
-                            Style="{StaticResource InputTextBoxStyle}"
-                            PlaceholderText="https://www.bilibili.com/video/..."
-                            TextChanged="UrlBox_TextChanged"/>
-                        <Button
-                            x:Name="LoadMetadataButton"
-                            Grid.Column="1"
-                            MinWidth="104"
-                            AccessKey="I"
-                            Click="LoadMetadata_Click"
-                            Content="Kiểm tra"/>
-                    </Grid>
-                    <TextBlock
-                        x:Name="MetadataText"
-                        TextWrapping="Wrap"
-                        Style="{StaticResource BodyTextStyle}"
-                        Text="Chưa kiểm tra nguồn."/>
-                </StackPanel>
-            </Border>
-
-            <Border Grid.Row="2" Margin="0,14,0,0" Style="{StaticResource CardBorderStyle}">
-                <StackPanel Spacing="12">
-                    <StackPanel Spacing="3">
-                        <TextBlock Style="{StaticResource CardTitleStyle}" Text="2. Nội dung cần tải"/>
-                        <TextBlock
-                            TextWrapping="Wrap"
-                            Style="{StaticResource MutedTextStyle}"
-                            Text="Không chọn mục nào = tải đủ cả 3. Chọn một hoặc nhiều mục bên dưới = chỉ tải đúng các mục đã chọn."/>
-                    </StackPanel>
-                    <StackPanel Orientation="Horizontal" Spacing="28">
-                        <CheckBox x:Name="VideoAssetCheckBox" Content="Video"/>
-                        <CheckBox x:Name="ThumbnailAssetCheckBox" Content="Thumbnail"/>
-                        <CheckBox x:Name="SubtitleAssetCheckBox" Content="Phụ đề"/>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Spacing="3">
+                    <TextBlock FontSize="10" Foreground="{ThemeResource MutedTextBrush}" Text="BiliSub Studio / Tải media" />
+                    <StackPanel Orientation="Horizontal" Spacing="14">
+                        <TextBlock Style="{StaticResource PageTitleStyle}" Text="Tải media" />
+                        <TextBlock Margin="0,8,0,0" FontSize="11" Foreground="{ThemeResource MutedTextBrush}" Text="Một URL → Video + Thumbnail + Phụ đề trong cùng workflow" />
                     </StackPanel>
                 </StackPanel>
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="9" VerticalAlignment="Center">
+                    <Border Padding="10,5" Background="{ThemeResource AccentSoftBrush}" BorderBrush="{ThemeResource AccentPrimaryBrush}" BorderThickness="1" CornerRadius="14">
+                        <TextBlock FontSize="10" Foreground="{ThemeResource AccentPrimaryBrush}" Text="Bilibili" />
+                    </Border>
+                    <Border Padding="10,5" Background="{ThemeResource SuccessSoftBrush}" BorderBrush="{ThemeResource SuccessBrush}" BorderThickness="1" CornerRadius="14">
+                        <TextBlock FontSize="10" Foreground="{ThemeResource SuccessBrush}" Text="Resume + Range" />
+                    </Border>
+                </StackPanel>
+            </Grid>
+
+            <Border Grid.Row="1" Style="{StaticResource CardBorderStyle}">
+                <Grid ColumnSpacing="14">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="175" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Spacing="3">
+                        <TextBlock Style="{StaticResource CardTitleStyle}" Text="1. Nguồn Bilibili" />
+                        <TextBlock Style="{StaticResource MutedTextStyle}" Text="Kiểm tra một lần để lấy video, thumbnail và track phụ đề." />
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" Spacing="9">
+                        <Grid ColumnSpacing="10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBox
+                                x:Name="UrlBox"
+                                Style="{StaticResource InputTextBoxStyle}"
+                                PlaceholderText="https://www.bilibili.com/video/..."
+                                TextChanged="UrlBox_TextChanged" />
+                            <Button
+                                x:Name="LoadMetadataButton"
+                                Grid.Column="1"
+                                MinWidth="108"
+                                AccessKey="I"
+                                Click="LoadMetadata_Click"
+                                Content="Kiểm tra" />
+                        </Grid>
+                        <Border Padding="10,7" Background="{ThemeResource RaisedSurfaceBrush}" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="1" CornerRadius="8">
+                            <TextBlock
+                                x:Name="MetadataText"
+                                TextWrapping="Wrap"
+                                Style="{StaticResource BodyTextStyle}"
+                                Text="Chưa kiểm tra nguồn." />
+                        </Border>
+                    </StackPanel>
+                </Grid>
             </Border>
 
-            <Border Grid.Row="3" Margin="0,14,0,0" Style="{StaticResource CardBorderStyle}">
-                <StackPanel Spacing="14">
-                    <StackPanel Spacing="3">
-                        <TextBlock Style="{StaticResource CardTitleStyle}" Text="3. Chất lượng và định dạng"/>
-                        <TextBlock Style="{StaticResource MutedTextStyle}" Text="Best ưu tiên chất lượng cao nhất mà nguồn/tài khoản hiện tại cho phép."/>
-                    </StackPanel>
+            <Grid x:Name="MainColumns" Grid.Row="2" ColumnSpacing="14">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="1.35*" />
+                    <ColumnDefinition Width="0.95*" />
+                </Grid.ColumnDefinitions>
 
-                    <Grid ColumnSpacing="18" RowSpacing="14">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="*"/>
-                        </Grid.ColumnDefinitions>
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                        </Grid.RowDefinitions>
+                <Border Style="{StaticResource CardBorderStyle}">
+                    <StackPanel Spacing="14">
+                        <Grid ColumnSpacing="12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Spacing="3">
+                                <TextBlock Style="{StaticResource CardTitleStyle}" Text="2. Nội dung cần tải" />
+                                <TextBlock
+                                    Style="{StaticResource MutedTextStyle}"
+                                    Text="Không chọn mục nào = Video + Thumbnail + Phụ đề nếu nguồn có. Chọn một hoặc nhiều mục = chỉ tải đúng các mục đã chọn." />
+                            </StackPanel>
+                            <Border Grid.Column="1" Padding="9,4" VerticalAlignment="Top" Background="{ThemeResource SuccessSoftBrush}" CornerRadius="10">
+                                <TextBlock FontSize="10" Foreground="{ThemeResource SuccessBrush}" Text="Mặc định: đủ bộ" />
+                            </Border>
+                        </Grid>
 
-                        <StackPanel Spacing="5">
-                            <TextBlock FontWeight="SemiBold" Text="Chất lượng video"/>
-                            <ComboBox x:Name="QualityBox"/>
+                        <Grid ColumnSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Border Padding="10,7" Background="{ThemeResource RaisedSurfaceBrush}" CornerRadius="8"><CheckBox x:Name="VideoAssetCheckBox" Content="Video" /></Border>
+                            <Border Grid.Column="1" Padding="10,7" Background="{ThemeResource RaisedSurfaceBrush}" CornerRadius="8"><CheckBox x:Name="ThumbnailAssetCheckBox" Content="Thumbnail" /></Border>
+                            <Border Grid.Column="2" Padding="10,7" Background="{ThemeResource RaisedSurfaceBrush}" CornerRadius="8"><CheckBox x:Name="SubtitleAssetCheckBox" Content="Phụ đề" /></Border>
+                        </Grid>
+
+                        <Border Height="1" Background="{ThemeResource BorderBrush}" />
+
+                        <StackPanel Spacing="3">
+                            <TextBlock Style="{StaticResource CardTitleStyle}" Text="3. Chất lượng và định dạng" />
+                            <TextBlock Style="{StaticResource MutedTextStyle}" Text="Best ưu tiên chất lượng cao nhất mà nguồn/tài khoản hiện tại cho phép." />
                         </StackPanel>
-                        <StackPanel Grid.Column="1" Spacing="5">
-                            <TextBlock FontWeight="SemiBold" Text="Nội dung video"/>
-                            <ComboBox x:Name="ModeBox" SelectedIndex="0">
+
+                        <Grid ColumnSpacing="12" RowSpacing="10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+
+                            <ComboBox x:Name="QualityBox" Header="Chất lượng video" />
+                            <ComboBox x:Name="ModeBox" Grid.Column="1" Header="Nội dung video" SelectedIndex="0">
                                 <x:String>video+audio</x:String>
                                 <x:String>video-only</x:String>
                                 <x:String>audio-only</x:String>
                             </ComboBox>
-                        </StackPanel>
+                            <ComboBox x:Name="ContainerBox" Grid.Column="2" Header="Định dạng video" SelectedIndex="0">
+                                <x:String>mp4</x:String>
+                                <x:String>mkv</x:String>
+                            </ComboBox>
 
-                        <StackPanel Grid.Row="1" Spacing="5">
-                            <TextBlock FontWeight="SemiBold" Text="Tốc độ tải"/>
-                            <ComboBox x:Name="SpeedBox" SelectedIndex="1">
+                            <ComboBox x:Name="SpeedBox" Grid.Row="1" Header="Tốc độ tải" SelectedIndex="1">
                                 <x:String>stable</x:String>
                                 <x:String>fast</x:String>
                                 <x:String>turbo</x:String>
                             </ComboBox>
-                        </StackPanel>
-                        <StackPanel Grid.Row="1" Grid.Column="1" Spacing="5">
-                            <TextBlock FontWeight="SemiBold" Text="Định dạng video"/>
-                            <ComboBox x:Name="ContainerBox" SelectedIndex="0">
-                                <x:String>mp4</x:String>
-                                <x:String>mkv</x:String>
-                            </ComboBox>
-                        </StackPanel>
-
-                        <StackPanel Grid.Row="2" Spacing="5">
-                            <TextBlock FontWeight="SemiBold" Text="Track phụ đề (nếu có)"/>
-                            <ComboBox x:Name="TrackBox" DisplayMemberPath="DisplayName"/>
-                        </StackPanel>
-                        <StackPanel Grid.Row="2" Grid.Column="1" Spacing="5">
-                            <TextBlock FontWeight="SemiBold" Text="Định dạng phụ đề"/>
-                            <ComboBox x:Name="FormatBox" SelectedIndex="0">
+                            <ComboBox x:Name="TrackBox" Grid.Row="1" Grid.Column="1" Header="Track phụ đề" DisplayMemberPath="DisplayName" />
+                            <ComboBox x:Name="FormatBox" Grid.Row="1" Grid.Column="2" Header="Định dạng phụ đề" SelectedIndex="0">
                                 <x:String>srt</x:String>
                                 <x:String>txt</x:String>
                                 <x:String>json</x:String>
                             </ComboBox>
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <StackPanel Grid.Column="1" Spacing="14">
+                    <Border Style="{StaticResource CardBorderStyle}">
+                        <StackPanel Spacing="12">
+                            <StackPanel Spacing="3">
+                                <TextBlock Style="{StaticResource CardTitleStyle}" Text="4. Nơi lưu và bắt đầu" />
+                                <TextBlock Style="{StaticResource MutedTextStyle}" Text="File tạm/resume của video dài nằm cùng ổ đầu ra để không làm đầy ổ cài app." />
+                            </StackPanel>
+                            <TextBox
+                                x:Name="OutputPathBox"
+                                Style="{StaticResource InputTextBoxStyle}"
+                                IsReadOnly="True"
+                                PlaceholderText="Chưa chọn thư mục lưu" />
+                            <Button
+                                x:Name="ChooseOutputButton"
+                                HorizontalAlignment="Stretch"
+                                Click="Start_Click"
+                                Content="Chọn thư mục lưu…"
+                                Style="{StaticResource SecondaryButtonStyle}" />
+                            <Border Padding="11,9" Background="{ThemeResource AccentSoftBrush}" BorderBrush="{ThemeResource AccentPrimaryBrush}" BorderThickness="1" CornerRadius="8">
+                                <TextBlock FontSize="11" Foreground="{ThemeResource AccentPrimaryBrush}" Text="Thư mục đã chọn được dùng cho output + cache/resume của tác vụ Media." TextWrapping="Wrap" />
+                            </Border>
+                            <Grid ColumnSpacing="9">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <Button
+                                    x:Name="StartButton"
+                                    HorizontalAlignment="Stretch"
+                                    MinHeight="42"
+                                    Click="Start_Click"
+                                    Content="Tải media"
+                                    IsEnabled="False" />
+                                <Button
+                                    x:Name="CancelButton"
+                                    Grid.Column="1"
+                                    MinHeight="42"
+                                    Click="Cancel_Click"
+                                    Content="Hủy"
+                                    IsEnabled="False"
+                                    Style="{StaticResource DangerButtonStyle}" />
+                            </Grid>
                         </StackPanel>
-                    </Grid>
-                </StackPanel>
-            </Border>
+                    </Border>
 
-            <Border Grid.Row="4" Margin="0,14,0,0" Style="{StaticResource CardBorderStyle}">
-                <StackPanel Spacing="12">
+                    <Border Background="{ThemeResource SuccessSoftBrush}" BorderBrush="{ThemeResource SuccessBrush}" BorderThickness="1" CornerRadius="13" Padding="16">
+                        <StackPanel Spacing="7">
+                            <TextBlock FontSize="13" FontWeight="SemiBold" Foreground="{ThemeResource SuccessBrush}" Text="Nhật ký đã gộp" />
+                            <TextBlock FontSize="11" Foreground="{ThemeResource SuccessBrush}" Text="Media không còn có ô log riêng. Mọi log, cảnh báo và lỗi đi vào Nhật ký toàn ứng dụng ở thanh dưới." TextWrapping="Wrap" />
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </Grid>
+
+            <Border Grid.Row="3" Style="{StaticResource CardBorderStyle}">
+                <Grid ColumnSpacing="14">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="110" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
                     <StackPanel Spacing="3">
-                        <TextBlock Style="{StaticResource CardTitleStyle}" Text="4. Nơi lưu và bắt đầu"/>
-                        <TextBlock
-                            TextWrapping="Wrap"
-                            Style="{StaticResource MutedTextStyle}"
-                            Text="Bạn phải chọn nơi lưu. File tạm/resume của video dài cũng nằm trên ổ này để không làm đầy ổ cài app."/>
+                        <TextBlock Style="{StaticResource CardTitleStyle}" Text="Tiến độ" />
+                        <TextBlock x:Name="PercentText" Style="{StaticResource MutedTextStyle}" Text="0%" />
                     </StackPanel>
-                    <Grid ColumnSpacing="10">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-                        <TextBox
-                            x:Name="OutputPathBox"
-                            Style="{StaticResource InputTextBoxStyle}"
-                            IsReadOnly="True"
-                            PlaceholderText="Chưa chọn thư mục lưu"/>
-                        <Button
-                            x:Name="ChooseOutputButton"
-                            Grid.Column="1"
-                            MinWidth="132"
-                            Click="Start_Click"
-                            Content="Chọn thư mục…"/>
-                    </Grid>
-                    <StackPanel Orientation="Horizontal" Spacing="10">
-                        <Button
-                            x:Name="StartButton"
-                            MinWidth="130"
-                            Click="Start_Click"
-                            Content="Tải media"
-                            IsEnabled="False"/>
-                        <Button
-                            x:Name="CancelButton"
-                            Click="Cancel_Click"
-                            Content="Hủy"
-                            IsEnabled="False"
-                            Style="{StaticResource DangerButtonStyle}"/>
-                    </StackPanel>
-                </StackPanel>
-            </Border>
-
-            <Border Grid.Row="5" Margin="0,14,0,0" Style="{StaticResource CardBorderStyle}">
-                <StackPanel Spacing="10">
-                    <TextBlock Style="{StaticResource CardTitleStyle}" Text="Tiến độ"/>
-                    <Grid>
+                    <StackPanel Grid.Column="1" Spacing="8">
                         <ProgressBar
                             x:Name="Progress"
                             Height="8"
                             Minimum="0"
                             Maximum="100"
-                            AutomationProperties.Name="Tiến độ tải media"/>
+                            AutomationProperties.Name="Tiến độ tải media" />
                         <TextBlock
-                            x:Name="PercentText"
-                            HorizontalAlignment="Right"
-                            Margin="0,-22,0,0"
-                            Style="{StaticResource MutedTextStyle}"/>
-                    </Grid>
-                    <TextBlock
-                        x:Name="StatusText"
-                        TextWrapping="Wrap"
-                        Style="{StaticResource BodyTextStyle}"
-                        Text="Sẵn sàng."
-                        AutomationProperties.LiveSetting="Polite"/>
-                    <TextBox
-                        x:Name="LogBox"
-                        Height="150"
-                        IsReadOnly="True"
-                        AcceptsReturn="True"
-                        TextWrapping="Wrap"
-                        FontFamily="Cascadia Mono"
-                        AutomationProperties.Name="Nhật ký tải media"/>
-                </StackPanel>
+                            x:Name="StatusText"
+                            TextWrapping="Wrap"
+                            Style="{StaticResource BodyTextStyle}"
+                            Text="Sẵn sàng."
+                            AutomationProperties.LiveSetting="Polite" />
+                    </StackPanel>
+                </Grid>
             </Border>
         </Grid>
     </ScrollViewer>
