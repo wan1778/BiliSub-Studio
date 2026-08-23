@@ -271,6 +271,22 @@ require("LayoutUpdated += Subtitle" not in editor_partials and "SubtitleRetransl
 require("Loaded += EditorPage_Loaded;" in editor and "private void EditorPage_Loaded" in editor_partials,
         "Editor must use the actual Loaded event as its single feature initialization lifecycle")
 
+picker_source = read(CSHARP / "src/BiliSubStudio.App/Services/FilePickerService.cs")
+for picker_marker in ("GetOpenFileNameW", "CommDlgExtendedError", "catch (OperationCanceledException)", "Fallback Win32"):
+    require(picker_marker in picker_source, f"Editor picker fallback/cancel contract missing {picker_marker}")
+require('Click="OpenVideo_Click"' in editor and "private async void OpenVideo_Click" in editor_partials,
+        "Editor Open Video must have one XAML handler named OpenVideo_Click")
+require("Pick_Click(" not in editor_partials, "legacy Pick_Click handler returned")
+open_video = editor_partials.split("private async Task OpenVideoAsync()", 1)[1].split("private async Task SaveCurrentSourceStateForSwitchAsync()", 1)[0]
+require(open_video.count("SaveCurrentSourceStateForSwitchAsync();") == 1,
+        "OpenVideoAsync must save the old source state exactly once")
+require(open_video.count("DisposePreviewForSourceChangeAsync();") == 1,
+        "OpenVideoAsync must dispose the old preview exactly once")
+require("EditorSourceSelection.IsSameSource" in open_video, "same-source no-op guard missing")
+require("_application.Media.ProbeAsync(candidatePath" in open_video and "_path = candidatePath;" in open_video
+        and open_video.index("_application.Media.ProbeAsync(candidatePath") < open_video.index("_path = candidatePath;"),
+        "candidate video must be probed before mutating current Editor source state")
+
 for marker in (
     "SubtitleModeButton", "BlurModeButton", "AudioModeButton", "ExportModeButton",
     "SubtitleInspectorPanel", "BlurInspectorPanel", "AudioInspectorPanel", "ExportInspectorPanel",
