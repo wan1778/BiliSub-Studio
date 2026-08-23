@@ -209,7 +209,7 @@ public sealed partial class EditorPage : Page
         if (_translationJobId is not null || _project is null || _subtitleSource is null) return;
         try
         {
-            var outputName = Path.GetFileNameWithoutExtension(_subtitleSource.Path) + ".vi.srt";
+            var outputName = System.IO.Path.GetFileNameWithoutExtension(_subtitleSource.Path) + ".vi.srt";
             _translationJobId = _application.StartEditorTranslation(new EditorTranslationRequest(
                 _project.Id,
                 _subtitleSource,
@@ -273,7 +273,7 @@ public sealed partial class EditorPage : Page
         if (string.IsNullOrWhiteSpace(output) || !File.Exists(output)) return;
         try
         {
-            var directory = Path.GetDirectoryName(output) ?? throw new InvalidOperationException("Không xác định được thư mục SRT Việt.");
+            var directory = System.IO.Path.GetDirectoryName(output) ?? throw new InvalidOperationException("Không xác định được thư mục SRT Việt.");
             var folder = await StorageFolder.GetFolderFromPathAsync(directory);
             await Launcher.LaunchFolderAsync(folder);
         }
