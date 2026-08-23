@@ -25,6 +25,17 @@ jobs:
           python-version: "3.13"
       - name: Apply clean pre-source completion
         run: python csharp/scripts/editor_pre_source_completion.py
+      - name: Make XAML event validation aware of partial code-behind files
+        shell: python
+        run: |
+          from pathlib import Path
+          path = Path('csharp/scripts/validate_csharp_migration.py')
+          text = path.read_text(encoding='utf-8')
+          old = '''    code_file = Path(str(xaml_file) + ".cs")\n    code = read(code_file) if code_file.is_file() else ""\n'''
+          new = '''    code_file = Path(str(xaml_file) + ".cs")\n    partials = sorted(xaml_file.parent.glob(xaml_file.stem + "*.cs"))\n    code = "\\n".join(read(path) for path in partials) if partials else (read(code_file) if code_file.is_file() else "")\n'''
+          if old not in text:
+              raise SystemExit('XAML handler validator marker missing')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8', newline='\n')
       - name: Regenerate CSharp code map
         run: python csharp/scripts/generate_csharp_code_map.py
       - name: Run static migration contracts
