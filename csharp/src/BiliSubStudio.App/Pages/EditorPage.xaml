@@ -5,6 +5,7 @@
     Background="{ThemeResource CanvasBrush}"
     AutomationProperties.Name="Chỉnh video"
     IsTabStop="True"
+    Loaded="EditorParity_Loaded"
     KeyDown="Page_KeyDown">
     <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
         <Grid x:Name="PageRoot" Padding="24,18,24,28" RowSpacing="12">
@@ -144,7 +145,7 @@
                                         <ComboBoxItem Tag="mosaic" Content="Mosaic" />
                                         <ComboBoxItem Tag="cover" Content="Che đen" />
                                     </ComboBox>
-                                    <NumberBox Grid.Column="1" x:Name="StrengthBox" Header="Cường độ" Minimum="2" Maximum="64" Value="18" ValueChanged="EditInput_ValueChanged" />
+                                    <NumberBox Grid.Column="1" x:Name="StrengthBox" Header="Cường độ" Minimum="2" Maximum="40" Value="18" ValueChanged="EditInput_ValueChanged" />
                                 </Grid>
                                 <ToggleSwitch x:Name="WholeToggle" Header="Áp dụng toàn video" IsOn="True" Toggled="WholeToggle_Toggled" />
                                 <Grid ColumnSpacing="7">
