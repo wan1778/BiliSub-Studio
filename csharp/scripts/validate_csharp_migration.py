@@ -305,17 +305,27 @@ tts_worker = read(ROOT / "internal/tts/worker.py")
 for marker in (
     'PiperVersion = "1.4.2"',
     "9c4a3a11f5889ea9d0df4414dce2bd9bee5ce7d9cf604c8fd5e307441d4c031f",
-    'VoiceRevision = "62e57b18157ed213b3863a7a8a35b14d3404554b"',
-    'MaleVoice = "deepman3909"', 'FemaleVoice = "calmwoman3688"',
-    "1fb3a404e9927c87367d4175e8cad24ffc6d9959af29888c38682e5ec621056c",
-    "8db60d8afc50dc0921fd3a1b0b942813f44cc3744dbe2534617f2b8726096e7e",
+    'VoiceRepository = "rhasspy/piper-voices"',
+    'ModelRevision = "3d796cc2f2c884b3517c527507e084f7bb245aea"',
+    'VoiceRevision = "3d796cc2f2c884b3517c527507e084f7bb245aea-profile-v1"',
+    'BaseVoice = "vi_VN-vais1000-medium"',
+    'MaleVoice = "vais1000-male-profile-v1"', 'FemaleVoice = "vais1000-female-profile-v1"',
+    "ec7c89e2c85f4d1edc24b6120c18aaf1bda614f06b511567eb9c7c0de15e2dab",
+    "fafb9da1354ed4b77c31af228ed41fb41cd825c14cffa105454b25e6ae751ee0",
     "DownloadVerifiedAsync", "EnsurePrivatePythonAsync",
 ):
-    require(marker in tts_installer, f"local NghiTTS/Piper installer contract missing {marker}")
+    require(marker in tts_installer, f"licensed VAIS/Piper installer contract missing {marker}")
+for retired in ("sannht/vi_voice", "deepman3909", "calmwoman3688"):
+    require(retired not in tts_installer and retired not in tts_service and retired not in tts_worker,
+            f"retired ambiguous NghiTTS weight returned to production: {retired}")
 for marker in ("whisper-rhythm-v1", "BuildRhythmGroups", "SelectVoice", "EditorSpeechAnalysisDocument.MapToCues", "OwnedProcessGroup"):
     require(marker in tts_service, f"local TTS timing/cache/process contract missing {marker}")
-for marker in ("PiperVoice.load", "SynthesisConfig", "length_scale", "atempo=", "voice-master.flac", '"event": "cue"', '"event": "block"'):
-    require(marker in tts_worker, f"local TTS worker contract missing {marker}")
+for marker in (
+    "PiperVoice.load", "SynthesisConfig", "length_scale", "atempo=", "voice-master.flac",
+    'MALE_PITCH_FACTOR = 0.84', 'VOICE_PROFILE_REVISION = "3d796cc2f2c884b3517c527507e084f7bb245aea-profile-v1"',
+    "ensure_profile_cache(output_root)", '"engine": "piper-vais1000-profiles"', '"event": "cue"', '"event": "block"',
+):
+    require(marker in tts_worker, f"licensed VAIS TTS worker contract missing {marker}")
 
 main_xaml = read(CSHARP / "src/BiliSubStudio.App/MainWindow.xaml")
 main_code = read(CSHARP / "src/BiliSubStudio.App/MainWindow.xaml.cs")
