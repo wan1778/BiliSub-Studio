@@ -255,11 +255,13 @@ require('AreTransportControlsEnabled="False"' in editor, "Editor must own previe
 for forbidden in (
     "SubtitleModeButton.Click +=", "BlurModeButton.Click +=", "AudioModeButton.Click +=", "ExportModeButton.Click +=",
     "OpenVideoButton.Click +=", "RenderButton.Click -=", "RenderButton.IsEnabledChanged +=",
-    "OnNavigatedTo(", "Render_Click(sender, e)", "EditorParity_Loaded", "HookEditorLivePreviewEvents",
+    "OnNavigatedTo(", "OnApplyTemplate(", "Render_Click(sender, e)", "EditorParity_Loaded", "HookEditorLivePreviewEvents",
 ):
     require(forbidden not in editor_partials, f"Editor cleanup regression reintroduced {forbidden}")
 require("EnsureEditorParityInitialized();" in editor_partials and "EnsureImageFeatureInitialized();" in editor_partials,
         "Editor must initialize parity and image tools from one lifecycle owner")
+require("InitializeComponent();\n        InitializeEditorCore();" in editor,
+        "Editor constructor must own the single initialization lifecycle")
 
 for marker in (
     "SubtitleModeButton", "BlurModeButton", "AudioModeButton", "ExportModeButton",

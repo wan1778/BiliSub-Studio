@@ -71,7 +71,7 @@ public sealed partial class EditorPage : Page
         _application = application;
         _picker = picker;
         InitializeComponent();
-        PreviewPlayer.AreTransportControlsEnabled = false;
+        InitializeEditorCore();
         LayoutUpdated += EditorPage_LayoutUpdated;
         Unloaded += EditorPage_Unloaded;
         SetInspectorMode(InspectorMode.Subtitle);
