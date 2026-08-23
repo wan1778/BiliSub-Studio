@@ -40,6 +40,19 @@ internal static class Program
         ("subtitle JSON exports deterministic SRT", SubtitleContractAsync),
         ("subtitle VTT and SRT normalize before export", SubtitleTimedTextContractAsync),
         ("editor filter graph preserves normalized regions", EditorFilterContractAsync),
+        ("editor audio modes map to exact FFmpeg policy", EditorAudioContractAsync),
+        ("editor processed preview slices the exact render graph and audio policy", EditorProcessedPreviewContractAsync),
+        ("Whisper word timing maps pauses and karaoke ASS", EditorSpeechTimingKaraokeContractAsync),
+        ("local NghiTTS manifest and rhythm grouping stay pinned", LocalTtsContractAsync),
+        ("voice track mixes identically for keep duck mute", EditorVoiceMixContractAsync),
+        ("editor final render validates streams duration and audio policy", EditorRenderValidationContractAsync),
+        ("Vietnamese TTS text normalization stays deterministic", VietnameseTtsNormalizerContractAsync),
+        ("editor document preserves identity through undo redo", EditorDocumentContractAsync),
+        ("editor project persists, isolates source drift and quarantines corrupt state", EditorProjectContractAsync),
+        ("editor SRT keeps exact blocks order and timecodes", EditorSubtitleDocumentContractAsync),
+        ("translation skill bundle is pinned and rejects path traversal", TranslationSkillBundleContractAsync),
+        ("local translation manifest and resource gate stay pinned", LocalTranslationManifestContractAsync),
+        ("local Chinese ASR model manifest and source SRT stay pinned", LocalAsrManifestContractAsync),
         ("Chinese OCR validator rejects foreign scripts", ChineseOcrContractAsync),
         ("Paddle GPU wheel follows numeric CUDA compatibility", OcrGpuWheelContractAsync),
         ("OCR Auto benchmarks 1 2 4 8 16 and restores last PASS", OcrAutoBenchmarkContractAsync),
@@ -51,6 +64,7 @@ internal static class Program
         ("corrupt OCR checkpoint topology is ignored safely", InvalidOcrCheckpointContractAsync),
         ("job cancellation owns immediate terminal state", JobCancellationContractAsync),
         ("pausable OCR cancellation waits for cleanup completion", PausableJobCancellationContractAsync),
+        ("cleanup-aware Editor cancellation waits for FFmpeg cleanup", CleanupAwareJobCancellationContractAsync),
         ("Windows output filename policy rejects reserved names", FileNamePolicyContractAsync),
         ("update version ordering respects prerelease identifiers", UpdateVersionContractAsync),
         ("updater rejects incomplete x64 PE headers", UpdatePeValidationContractAsync),
@@ -492,6 +506,429 @@ internal static class Program
             [new EditRegion(.1, .2, .3, .25, "mosaic", 12, false, 1, 5)]));
         True(graph.Contains("crop=576:270:192:216", StringComparison.Ordinal), "editor region pixel mapping drift");
         True(graph.Contains("enable='between(t,1.000,5.000)'", StringComparison.Ordinal), "editor timing guard missing");
+        var cue = new EditorSubtitleCue("stable-cue", "1", "00:00:01,000 --> 00:00:03,000", 1, 3, "你好", "Xin chào");
+        var subtitle = new EditorSubtitleBurn([cue], new EditorSubtitlePlacement(.1, .7, .8, .2));
+        var ass = VideoEditorService.BuildAss(subtitle, 1920, 1080);
+        True(ass.Contains("Dialogue: 0,0:00:01.00,0:00:03.00,Vietsub", StringComparison.Ordinal), "ASS hardsub timing drift");
+        True(ass.Contains("Xin chào", StringComparison.Ordinal), "ASS hardsub text missing");
+        graph = VideoEditorService.BuildFilter(new VideoEditRequest("in.mp4", ".", "out.mp4", 1920, 1080, 10, [], subtitle), "C:\\Temp\\sub.ass");
+        True(graph.Contains("ass=filename='C\\:/Temp/sub.ass'", StringComparison.Ordinal), "ASS filter path escaping drift");
+        return Task.CompletedTask;
+    }
+
+    private static Task EditorAudioContractAsync()
+    {
+        var method = typeof(VideoEditorService).GetMethod("BuildAudioArguments", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing editor audio argument policy");
+        static string Arguments(MethodInfo method, EditorAudioSettings settings, bool mp4) =>
+            string.Join(' ', (IReadOnlyList<string>)method.Invoke(null, [settings, mp4])!);
+
+        var keep = Arguments(method, new EditorAudioSettings("keep", .2), mp4: false);
+        True(keep.Contains("-map 0:a?", StringComparison.Ordinal), "keep mode lost optional source audio map");
+        True(keep.Contains("-c:a copy", StringComparison.Ordinal), "MKV keep mode must copy source audio");
+        True(!keep.Contains("-af", StringComparison.Ordinal), "keep mode unexpectedly filters audio");
+
+        var duck = Arguments(method, new EditorAudioSettings("duck", .35), mp4: true);
+        True(duck.Contains("-af volume=0.350", StringComparison.Ordinal), "duck mode gain drift");
+        True(duck.Contains("-c:a aac -b:a 192k", StringComparison.Ordinal), "duck mode must encode filtered audio");
+
+        var mute = Arguments(method, new EditorAudioSettings("mute", 1), mp4: true);
+        Equal("-an", mute);
+        var graph = VideoEditorService.BuildFilter(new VideoEditRequest(
+            "in.mp4", ".", "out.mp4", 1920, 1080, 10, [], null, new EditorAudioSettings("mute", 0)));
+        Equal("[0:v]null[vout]", graph);
+        return Task.CompletedTask;
+    }
+
+    private static Task EditorProcessedPreviewContractAsync()
+    {
+        var sliceMethod = typeof(VideoEditorService).GetMethod("BuildPreviewSlice", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing editor processed-preview slice policy");
+        var argumentsMethod = typeof(VideoEditorService).GetMethod("BuildPreviewArguments", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing editor processed-preview FFmpeg policy");
+        var subtitle = new EditorSubtitleBurn(
+        [
+            new EditorSubtitleCue("cue-a", "1", "00:01:39,000 --> 00:01:42,000", 99, 102, "你好", "Xin chào"),
+            new EditorSubtitleCue("cue-b", "2", "00:01:45,000 --> 00:01:48,000", 105, 108, "再见", "Tạm biệt"),
+            new EditorSubtitleCue("cue-c", "3", "00:01:52,000 --> 00:01:55,000", 112, 115, "以后", "Sau này"),
+        ], new EditorSubtitlePlacement(.1, .7, .8, .2),
+        [
+            new EditorCueSpeechTiming("cue-a", 99, 102, 99.2, 101.8, .2, .2,
+                [new EditorWordTiming("你", 99.2, 99.8, .9), new EditorWordTiming("好", 100.2, 101.8, .9)],
+                [new EditorPauseTiming(99.8, 100.2)], "male_like", .8, 125),
+            new EditorCueSpeechTiming("cue-b", 105, 108, 105.1, 107.7, .1, .3,
+                [new EditorWordTiming("再", 105.1, 106, .9), new EditorWordTiming("见", 106.3, 107.7, .9)],
+                [new EditorPauseTiming(106, 106.3)], "female_like", .85, 215),
+        ], true);
+        var request = new VideoEditRequest(
+            "input.mp4", ".", "out.mp4", 3840, 2160, 300,
+            [
+                new EditRegion(.1, .2, .3, .25, "blur", 18, false, 98, 105, "crossing"),
+                new EditRegion(.6, .1, .2, .1, "cover", 8, false, 130, 140, "outside"),
+            ],
+            subtitle,
+            new EditorAudioSettings("duck", .35));
+        var sliced = (VideoEditRequest)sliceMethod.Invoke(null, [request, 100d, 12d, 1280, 720])!;
+        Equal(1280, sliced.SourceWidth);
+        Equal(720, sliced.SourceHeight);
+        Equal(12d, sliced.Duration);
+        Equal(1, sliced.Regions.Count);
+        Equal(0d, sliced.Regions[0].Start);
+        Equal(5d, sliced.Regions[0].End);
+        Equal(2, sliced.Subtitle?.Cues.Count ?? 0);
+        Equal(0d, sliced.Subtitle!.Cues[0].Start);
+        Equal(2d, sliced.Subtitle.Cues[0].End);
+        Equal(5d, sliced.Subtitle.Cues[1].Start);
+        Equal(8d, sliced.Subtitle.Cues[1].End);
+        Equal(2, sliced.Subtitle.SpeechTiming?.Count ?? 0);
+        Equal(0d, sliced.Subtitle.SpeechTiming![0].CueStart);
+        Equal(1.8d, Math.Round(sliced.Subtitle.SpeechTiming[0].SpeechEnd, 1));
+        Equal(.2d, Math.Round(sliced.Subtitle.SpeechTiming[0].Words[0].Start, 1));
+        var graph = VideoEditorService.BuildFilter(sliced, "C:\\Temp\\preview.ass");
+        True(graph.Contains("enable='between(t,0.000,5.000)'", StringComparison.Ordinal), "preview effect time was not shifted to proxy time");
+        var ffmpeg = string.Join(' ', (IReadOnlyList<string>)argumentsMethod.Invoke(null,
+            ["input.mp4", "preview.mp4", graph, sliced.Audio, 100d, 12d, null])!);
+        True(ffmpeg.Contains("-ss 100.000 -i input.mp4 -t 12.000", StringComparison.Ordinal), "preview source window drift");
+        True(ffmpeg.Contains("-filter_complex", StringComparison.Ordinal) && ffmpeg.Contains("-map [vout]", StringComparison.Ordinal), "preview bypassed render graph");
+        True(ffmpeg.Contains("-preset ultrafast", StringComparison.Ordinal) && ffmpeg.Contains("-pix_fmt yuv420p", StringComparison.Ordinal), "preview proxy is not native-player compatible");
+        True(ffmpeg.Contains("-af asetpts=PTS-STARTPTS,volume=0.350", StringComparison.Ordinal), "preview bypassed timestamp reset/source-audio duck policy");
+        True(ffmpeg.Contains("-movflags +faststart", StringComparison.Ordinal), "preview MP4 faststart contract missing");
+        return Task.CompletedTask;
+    }
+
+    private static async Task EditorSpeechTimingKaraokeContractAsync()
+    {
+        await WithTemporaryRootAsync(async root =>
+        {
+            var cue = new EditorSubtitleCue("timing-cue-0001", "1", "00:00:01,000 --> 00:00:04,000", 1, 4, "你 好", "Xin chào đạo hữu");
+            var analysis = new EditorSpeechAnalysis(
+                EditorSpeechAnalysisDocument.CurrentSchema,
+                new string('a', 64),
+                "faster-whisper-small",
+                "536b0662742c02347bc0e980a01041f333bce120",
+                "cpu",
+                "int8",
+                .8,
+                [new EditorSpeechSegment(1.1, 3.7, "你 好", -.2, .01,
+                    [new EditorWordTiming("你", 1.1, 1.6, .95), new EditorWordTiming("好", 2.0, 3.7, .93)],
+                    "male_like", .82, 126)]);
+            var path = Path.Combine(root, "speech.json");
+            var sha = await EditorSpeechAnalysisDocument.SaveAsync(path, analysis, CancellationToken.None);
+            var reopened = await EditorSpeechAnalysisDocument.LoadVerifiedAsync(path, sha, CancellationToken.None);
+            var timing = EditorSpeechAnalysisDocument.MapToCues(reopened, [cue]);
+            Equal(1, timing.Count);
+            Equal(2, timing[0].Words.Count);
+            Equal(1, timing[0].Pauses.Count);
+            Equal(.4d, Math.Round(timing[0].Pauses[0].Duration, 1));
+            Equal("male_like", timing[0].VoiceClass);
+            var ass = VideoEditorService.BuildAss(new EditorSubtitleBurn([cue], EditorSubtitlePlacement.Default, timing, true), 1920, 1080);
+            True(ass.Contains(@"{\kf", StringComparison.Ordinal), "karaoke ASS did not emit word highlight tags");
+            True(ass.Contains("Dialogue: 0,0:00:01.10,0:00:03.70,Vietsub", StringComparison.Ordinal), "karaoke ASS ignored speech envelope");
+        });
+    }
+
+    private static Task LocalTtsContractAsync()
+    {
+        var assembly = typeof(VideoEditorService).Assembly;
+        var installer = assembly.GetType("BiliSubStudio.Core.Editor.LocalTtsInstaller")
+            ?? throw new InvalidOperationException("missing LocalTtsInstaller type");
+        static object? Constant(Type type, string name) => type.GetField(name, BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public)?.GetRawConstantValue();
+        Equal("1.4.2", Constant(installer, "PiperVersion")?.ToString());
+        True((Constant(installer, "PiperWheel")?.ToString() ?? string.Empty).EndsWith("#sha256=9c4a3a11f5889ea9d0df4414dce2bd9bee5ce7d9cf604c8fd5e307441d4c031f", StringComparison.Ordinal),
+            "Piper Windows wheel hash drift");
+        Equal("62e57b18157ed213b3863a7a8a35b14d3404554b", Constant(installer, "VoiceRevision")?.ToString());
+        Equal("deepman3909", Constant(installer, "MaleVoice")?.ToString());
+        Equal("calmwoman3688", Constant(installer, "FemaleVoice")?.ToString());
+        Equal(63_516_050L, (long)(Constant(installer, "VoiceModelBytes") ?? 0L));
+        Equal("1fb3a404e9927c87367d4175e8cad24ffc6d9959af29888c38682e5ec621056c", Constant(installer, "MaleModelSha256")?.ToString());
+        Equal("8db60d8afc50dc0921fd3a1b0b942813f44cc3744dbe2534617f2b8726096e7e", Constant(installer, "FemaleModelSha256")?.ToString());
+
+        var service = assembly.GetType("BiliSubStudio.Core.Editor.LocalTtsService")
+            ?? throw new InvalidOperationException("missing LocalTtsService type");
+        var method = service.GetMethod("BuildRhythmGroups", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing TTS rhythm grouping policy");
+        var cue = new EditorSubtitleCue("rhythm-cue-0001", "1", "00:00:01,000 --> 00:00:05,000", 1, 5, "你好", "Xin chào đạo hữu");
+        var timing = new EditorCueSpeechTiming(cue.Id, 1, 5, 1.2, 4.7, .2, .3,
+            [new EditorWordTiming("你", 1.2, 2, .9), new EditorWordTiming("好", 3, 4.7, .9)],
+            [new EditorPauseTiming(2, 3)], "female_like", .8, 210);
+        var groups = ((System.Collections.IEnumerable)method.Invoke(null, [cue, timing, "Xin chào đạo hữu", "female"])!).Cast<object>().ToArray();
+        Equal(2, groups.Length);
+        var firstType = groups[0].GetType();
+        Equal(1.2d, (double)(firstType.GetProperty("Start")?.GetValue(groups[0]) ?? 0d));
+        Equal(2d, (double)(firstType.GetProperty("End")?.GetValue(groups[0]) ?? 0d));
+        True(!string.IsNullOrWhiteSpace(firstType.GetProperty("Text")?.GetValue(groups[0])?.ToString()), "TTS first rhythm group lost Vietnamese text");
+        return Task.CompletedTask;
+    }
+
+    private static Task EditorVoiceMixContractAsync()
+    {
+        var method = typeof(VideoEditorService).GetMethod("BuildVoiceAudioFilter", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing unified voice audio graph");
+        var track = new EditorVoiceTrack("voice.flac", 0, 60, .9);
+        string Graph(EditorAudioSettings audio) => (string)method.Invoke(null, [audio, track, 1, 0d])!;
+        var keep = Graph(new EditorAudioSettings("keep", 1));
+        True(keep.Contains("[0:a]asetpts=PTS-STARTPTS[sourcea]", StringComparison.Ordinal), "keep+voice lost source audio");
+        True(keep.Contains("[sourcea][voicea]amix=inputs=2", StringComparison.Ordinal), "keep+voice did not mix source and TTS");
+        var duck = Graph(new EditorAudioSettings("duck", .35));
+        True(duck.Contains("volume=0.350", StringComparison.Ordinal) && duck.Contains("amix=inputs=2", StringComparison.Ordinal), "duck+voice graph drift");
+        var mute = Graph(new EditorAudioSettings("mute", 0));
+        True(!mute.Contains("[0:a]", StringComparison.Ordinal), "mute+voice unexpectedly kept source audio");
+        True(mute.Contains("[voicea]anull[aout]", StringComparison.Ordinal), "mute+voice did not route TTS to output");
+        return Task.CompletedTask;
+    }
+
+    private static Task EditorRenderValidationContractAsync()
+    {
+        var method = typeof(VideoEditorService).GetMethod("ValidateRenderedProbe", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing Editor final-render validation policy");
+        const string withAudio = """
+            {"streams":[{"codec_type":"video","width":1920,"height":1080},{"codec_type":"audio"}],"format":{"duration":"120.040","size":"1000000"}}
+            """;
+        const string withoutAudio = """
+            {"streams":[{"codec_type":"video","width":1920,"height":1080}],"format":{"duration":"120.010","size":"900000"}}
+            """;
+        method.Invoke(null, [withAudio, 120d, true]);
+        method.Invoke(null, [withoutAudio, 120d, false]);
+
+        void Invalid(string json, double duration, bool expectAudio, string label)
+        {
+            try
+            {
+                method.Invoke(null, [json, duration, expectAudio]);
+                throw new InvalidOperationException(label + " was accepted");
+            }
+            catch (TargetInvocationException error) when (error.InnerException is InvalidDataException)
+            {
+            }
+        }
+
+        Invalid(withoutAudio, 120d, true, "missing required audio");
+        Invalid(withAudio, 120d, false, "unexpected muted audio");
+        Invalid(withAudio, 100d, true, "duration drift");
+        Invalid("""{"streams":[{"codec_type":"audio"}],"format":{"duration":"120","size":"1000"}}""", 120d, true, "missing video");
+        return Task.CompletedTask;
+    }
+
+    private static Task VietnameseTtsNormalizerContractAsync()
+    {
+        Equal("Hôm nay ngày hai tháng ba năm hai nghìn không trăm hai mươi sáu lúc chín giờ năm phút",
+            VietnameseTtsTextNormalizer.Normalize("Hôm nay 02/03/2026 lúc 09:05"));
+        Equal("ba phẩy hai phần trăm", VietnameseTtsTextNormalizer.Normalize("3,2%"));
+        Equal("một trăm hai mươi ba", VietnameseTtsTextNormalizer.Normalize("123"));
+        return Task.CompletedTask;
+    }
+
+    private static Task EditorDocumentContractAsync()
+    {
+        var document = new EditorRegionDocument();
+        document.Reset([]);
+        document.Add(new EditRegion(.1, .2, .3, .25, "blur", 18, true, 0, 10));
+        var identity = document.Selected?.Id ?? throw new InvalidOperationException("editor region did not receive an identity");
+        True(identity.Length > 0, "editor region identity is empty");
+        document.ReplaceSelected(document.Selected! with { X = .2 });
+        Equal(.2, document.Selected!.X);
+        True(document.Undo(), "editor edit could not be undone");
+        Equal(.1, document.Selected!.X);
+        Equal(identity, document.Selected.Id);
+        True(document.Redo(), "editor edit could not be redone");
+        Equal(.2, document.Selected!.X);
+        Equal(identity, document.Selected.Id);
+        True(document.RemoveSelected(), "editor region could not be removed");
+        Equal(0, document.Regions.Count);
+        True(document.Undo(), "editor removal could not be undone");
+        Equal(identity, document.Selected!.Id);
+        return Task.CompletedTask;
+    }
+
+    private static async Task EditorProjectContractAsync()
+    {
+        await WithTemporaryRootAsync(async root =>
+        {
+            var paths = AppPaths.FromRoot(root);
+            paths.EnsureBootstrapDirectories();
+            var video = Path.Combine(root, "source.mp4");
+            await File.WriteAllBytesAsync(video, [1, 2, 3]);
+            var store = new EditorProjectStore(paths);
+            var created = await store.LoadOrCreateAsync(video, 1920, 1080, 120, CancellationToken.None);
+            Equal(0, created.Regions.Count);
+            var region = new EditRegion(.1, .2, .3, .25, "blur", 18, false, 1, 5, "stable-region");
+            var srt = Path.Combine(root, "source.zh.srt");
+            await File.WriteAllTextAsync(srt, "1\n00:00:01,000 --> 00:00:02,000\n你好\n");
+            var subtitle = await EditorSubtitleDocument.LoadAsync(srt, CancellationToken.None);
+            var subtitleProject = new EditorSubtitleProject(
+                subtitle.Path,
+                subtitle.Size,
+                subtitle.LastWriteUtcTicks,
+                subtitle.Sha256,
+                [subtitle.Cues[0] with { VietnameseText = "Xin chào" }],
+                new EditorSubtitlePlacement(.1, .72, .8, .18),
+                "Dịch Trung Tu Tiên",
+                TranslationSkillBundle.BuiltInSha256,
+                Path.Combine(root, "source.vi.srt"));
+            var speechPath = Path.Combine(root, "speech.json");
+            var speechAnalysis = new EditorSpeechAnalysis(
+                EditorSpeechAnalysisDocument.CurrentSchema, new string('b', 64), "fixture Whisper",
+                "536b0662742c02347bc0e980a01041f333bce120", "cpu", "int8", .75, []);
+            var speechSha = await EditorSpeechAnalysisDocument.SaveAsync(speechPath, speechAnalysis, CancellationToken.None);
+            var voicePath = Path.Combine(root, "voice.flac");
+            await File.WriteAllBytesAsync(voicePath, Enumerable.Repeat((byte)1, 128).ToArray());
+            var ttsManifest = Path.Combine(root, "tts-result.json");
+            await File.WriteAllTextAsync(ttsManifest, "{\"schema\":1}");
+            var ttsManifestSha = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(await File.ReadAllBytesAsync(ttsManifest)));
+            await store.SaveAsync(created with
+            {
+                FileName = "episode-edited.mp4",
+                Regions = [region],
+                Subtitle = subtitleProject,
+                Audio = new EditorAudioSettings("duck", .35),
+                Asr = new EditorAsrProject("complete", "fixture ASR", "536b0662742c02347bc0e980a01041f333bce120",
+                    "cpu", "int8", srt, 1, .75),
+                Speech = new EditorSpeechProject("complete", "fixture Whisper", "536b0662742c02347bc0e980a01041f333bce120",
+                    "cpu", "int8", speechPath, speechSha, 1, 2, .75),
+                Tts = new EditorTtsProject("complete", "piper-nghitts", "1.4.2", "deepman3909", "calmwoman3688",
+                    ttsManifest, ttsManifestSha, new EditorVoiceTrack(voicePath, 0, 120), 1, 0),
+                VoiceOverrides = new Dictionary<string, string> { [subtitle.Cues[0].Id] = "female" },
+            }, CancellationToken.None);
+
+            var reopened = await store.LoadOrCreateAsync(video, 1920, 1080, 120, CancellationToken.None);
+            Equal("episode-edited.mp4", reopened.FileName);
+            Equal(1, reopened.Regions.Count);
+            Equal("stable-region", reopened.Regions[0].Id);
+            Equal(.1, reopened.Regions[0].X);
+            Equal("Xin chào", reopened.Subtitle!.Cues[0].VietnameseText);
+            Equal(.72, reopened.Subtitle.Placement.Y);
+            Equal("duck", reopened.Audio!.SourceMode);
+            Equal(.35, reopened.Audio.SourceGain);
+            Equal("complete", reopened.Asr!.Status);
+            Equal("cpu", reopened.Asr.Device);
+            Equal(.75, reopened.Asr.ProbeRealtimeFactor);
+            Equal("complete", reopened.Speech!.Status);
+            Equal(speechSha, reopened.Speech.AnalysisSha256);
+            Equal("complete", reopened.Tts!.Status);
+            Equal("female", reopened.VoiceOverrides![subtitle.Cues[0].Id]);
+
+            File.Delete(voicePath);
+            var selectivelyRecovered = await store.LoadOrCreateAsync(video, 1920, 1080, 120, CancellationToken.None);
+            True(selectivelyRecovered.Tts is null, "missing TTS cache should invalidate only TTS state");
+            Equal("complete", selectivelyRecovered.Speech!.Status);
+            Equal("episode-edited.mp4", selectivelyRecovered.FileName);
+
+            await File.WriteAllBytesAsync(voicePath, Enumerable.Repeat((byte)1, 128).ToArray());
+            await store.SaveAsync(reopened, CancellationToken.None);
+            var projectPath = store.GetProjectPath(video);
+            await File.AppendAllTextAsync(video, "changed-source");
+            var sourceChanged = await store.LoadOrCreateAsync(video, 1920, 1080, 120, CancellationToken.None);
+            Equal("episode-edited.mp4", sourceChanged.FileName);
+            Equal(0, sourceChanged.Regions.Count);
+            True(sourceChanged.Subtitle is null, "changed source reused old subtitle state");
+            True(sourceChanged.Asr is null, "changed source reused old ASR state");
+            True(sourceChanged.Speech is null, "changed source reused old Whisper timing");
+            True(sourceChanged.Tts is null, "changed source reused old TTS state");
+            Equal(0, sourceChanged.VoiceOverrides?.Count ?? 0);
+            Equal("keep", sourceChanged.Audio!.SourceMode);
+            True(Directory.GetFiles(Path.GetDirectoryName(projectPath)!, Path.GetFileName(projectPath) + ".source-changed-*").Length == 1,
+                "source-changed Editor project was not archived");
+
+            await File.WriteAllTextAsync(projectPath, "{broken-json");
+            var recovered = await store.LoadOrCreateAsync(video, 1920, 1080, 120, CancellationToken.None);
+            Equal(0, recovered.Regions.Count);
+            True(Directory.GetFiles(Path.GetDirectoryName(projectPath)!, Path.GetFileName(projectPath) + ".corrupt-*").Length == 1,
+                "corrupt editor project was not quarantined");
+        });
+    }
+
+    private static Task EditorSubtitleDocumentContractAsync()
+    {
+        var raw = "10\r\n00:00:01,250 --> 00:00:02,900 position:50%\r\n你是谁？\r\n\r\n20\r\n00:00:03,000 --> 00:00:04,500\r\n本座乃青云宗长老。\r\n";
+        var cues = EditorSubtitleDocument.Parse(raw);
+        Equal(2, cues.Count);
+        Equal("10", cues[0].Number);
+        Equal("00:00:01,250 --> 00:00:02,900 position:50%", cues[0].Timing);
+        Equal("20", cues[1].Number);
+        var translated = new[] { cues[0] with { VietnameseText = "Ngươi là ai?" }, cues[1] with { VietnameseText = "Bổn tọa là trưởng lão Thanh Vân Tông." } };
+        var rendered = EditorSubtitleDocument.RenderVietnamese(translated);
+        True(rendered.Contains("10\r\n00:00:01,250 --> 00:00:02,900 position:50%", StringComparison.Ordinal), "editor SRT changed original numbering/timing");
+        True(rendered.Contains("20\r\n00:00:03,000 --> 00:00:04,500", StringComparison.Ordinal), "editor SRT changed second timing");
+        EditorSubtitleDocument.ValidateUnchangedTimeline(cues, translated);
+        var sourceRendered = EditorSubtitleDocument.RenderSource(cues);
+        True(sourceRendered.Contains("你是谁？", StringComparison.Ordinal), "ASR/source SRT renderer lost Chinese text");
+        Equal(2, EditorSubtitleDocument.Parse(sourceRendered).Count);
+        return Task.CompletedTask;
+    }
+
+    private static async Task TranslationSkillBundleContractAsync()
+    {
+        var fixture = Path.Combine(AppContext.BaseDirectory, "Fixtures", "dich-trung-tu-tien.zip");
+        var bundle = TranslationSkillBundle.Load(fixture, requireBuiltInHash: true);
+        Equal("Dịch Trung Tu Tiên", bundle.Info.Name);
+        Equal(TranslationSkillBundle.BuiltInSha256, bundle.Info.Sha256);
+        var prompt = bundle.BuildInstructions(["青云宗长老突破金丹境"], 56_000);
+        True(prompt.Contains("QUY TẮC SKILL BẮT BUỘC", StringComparison.Ordinal), "skill core rules missing from prompt");
+        True(prompt.Contains("青云宗", StringComparison.Ordinal) || prompt.Contains("金丹", StringComparison.Ordinal), "relevant glossary was not retrieved");
+
+        await WithTemporaryRootAsync(async root =>
+        {
+            var malicious = Path.Combine(root, "bad.zip");
+            await using (var stream = File.Create(malicious))
+            using (var zip = new System.IO.Compression.ZipArchive(stream, System.IO.Compression.ZipArchiveMode.Create))
+            {
+                var entry = zip.CreateEntry("dich-trung-tu-tien/../escape/SKILL.md");
+                await using var writer = new StreamWriter(entry.Open());
+                await writer.WriteAsync("bad");
+            }
+            try { _ = TranslationSkillBundle.Load(malicious); }
+            catch (InvalidDataException) { return; }
+            throw new InvalidOperationException("translation skill ZIP path traversal was accepted");
+        });
+    }
+
+    private static Task LocalTranslationManifestContractAsync()
+    {
+        var service = typeof(LocalSubtitleTranslationService);
+        static object? Constant(Type type, string name) => type.GetField(name, BindingFlags.Static | BindingFlags.NonPublic)?.GetRawConstantValue();
+        Equal(5_027_783_488L, (long)(Constant(service, "ModelBytes") ?? 0L));
+        Equal("d98cdcbd03e17ce47681435b5150e34c1417f50b5c0019dd560e4882c5745785", Constant(service, "ModelSha256")?.ToString());
+        Equal(34_937_857L, (long)(Constant(service, "RuntimeArchiveBytes") ?? 0L));
+        Equal("68e15a0a0d07df55a695ec4d81465cf57400431d54ae19fadcb51dc919724042", Constant(service, "RuntimeArchiveSha256")?.ToString());
+        var recommend = service.GetMethod("RecommendedGpuLayers", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing local translation resource gate");
+        var extract = service.GetMethod("ExtractJson", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing local translation JSON parser");
+        var low = new HardwareResourceSnapshot(16L << 30, 10L << 30, true, 8L << 30, 2L << 30);
+        var safe = new HardwareResourceSnapshot(32L << 30, 20L << 30, true, 8L << 30, 7L << 30);
+        Equal(0, (int)recommend.Invoke(null, [low])!);
+        Equal(99, (int)recommend.Invoke(null, [safe])!);
+        var parsed = (JsonElement)extract.Invoke(null, ["echo prompt {\"id\":\"source\"}\nanswer: {\"bible\":\"Thanh Vân Tông\"}\n[end]"])!;
+        Equal("Thanh Vân Tông", parsed.GetProperty("bible").GetString());
+        return Task.CompletedTask;
+    }
+
+    private static Task LocalAsrManifestContractAsync()
+    {
+        var installer = typeof(LocalSubtitleTranslationService).Assembly.GetType("BiliSubStudio.Core.Editor.LocalAsrInstaller")
+            ?? throw new InvalidOperationException("missing LocalAsrInstaller type");
+        static object? Constant(Type type, string name) => type.GetField(name, BindingFlags.Static | BindingFlags.NonPublic)?.GetRawConstantValue();
+        Equal("1.2.1", Constant(installer, "FasterWhisperVersion")?.ToString());
+        Equal("4.8.1", Constant(installer, "CTranslate2Version")?.ToString());
+        True((Constant(installer, "FasterWhisperWheel")?.ToString() ?? string.Empty).EndsWith("#sha256=79a66ad50688c0b794dd501dc340a736992a6342f7f95e5811be60b5224a26a7", StringComparison.Ordinal),
+            "faster-whisper wheel hash drift");
+        True((Constant(installer, "CTranslate2Wheel")?.ToString() ?? string.Empty).EndsWith("#sha256=49f96e861b57301f0b76a082109bde2cac8204a6b4fedc870883008271e82251", StringComparison.Ordinal),
+            "CTranslate2 Windows wheel hash drift");
+        Equal("536b0662742c02347bc0e980a01041f333bce120", Constant(installer, "ModelRevision")?.ToString());
+        var files = (Array?)(installer.GetField("ModelFiles", BindingFlags.Static | BindingFlags.NonPublic)?.GetValue(null))
+            ?? throw new InvalidOperationException("missing ASR model file manifest");
+        Equal(4, files.Length);
+        long total = 0;
+        var hashes = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var file in files)
+        {
+            var type = file!.GetType();
+            total += (long)(type.GetProperty("Size")?.GetValue(file) ?? 0L);
+            hashes.Add(type.GetProperty("Sha256")?.GetValue(file)?.ToString() ?? string.Empty);
+        }
+        Equal(486_212_372L, total);
+        True(hashes.Contains("3e305921506d8872816023e4c273e75d2419fb89b24da97b4fe7bce14170d671"), "ASR model.bin SHA-256 drift");
+        Equal(5, EditorProjectStore.CurrentSchema);
         return Task.CompletedTask;
     }
 
@@ -686,6 +1123,21 @@ internal static class Program
         Equal("cancelled", cancelled.Status);
         Equal(true, cancelled.Done);
         Equal("checkpoint removed", cancelled.Message);
+    }
+
+    private static async Task CleanupAwareJobCancellationContractAsync()
+    {
+        using var job = new AppJob("editor-test", "editor", cleanupAwareCancel: true);
+        job.Cancel();
+        var cancelling = job.Snapshot();
+        Equal("cancelling", cancelling.Status);
+        Equal(false, cancelling.Done);
+        True(job.CancellationToken.IsCancellationRequested, "Editor token did not cancel");
+        True(!job.Completion.IsCompleted, "Editor became terminal before FFmpeg cleanup");
+        job.CancelComplete("FFmpeg stopped and partial render removed");
+        await job.Completion;
+        Equal("cancelled", job.Snapshot().Status);
+        Equal("FFmpeg stopped and partial render removed", job.Snapshot().Message);
     }
 
     private static async Task InvalidOcrCheckpointContractAsync()

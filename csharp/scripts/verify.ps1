@@ -151,6 +151,18 @@ $sourceWorker = "internal/ocr/worker.py"
 if ((Get-Sha256 $worker) -ne (Get-Sha256 $sourceWorker)) {
     throw "published OCR worker differs from embedded source"
 }
+$asrWorker = "$publish/Assets/ASR/worker.py"
+if (-not (Test-Path $asrWorker -PathType Leaf)) { throw "publish missing integrated ASR worker" }
+$sourceAsrWorker = "internal/asr/worker.py"
+if ((Get-Sha256 $asrWorker) -ne (Get-Sha256 $sourceAsrWorker)) {
+    throw "published ASR worker differs from embedded source"
+}
+$translationSkill = "$publish/Assets/Translation/dich-trung-tu-tien.zip"
+if (-not (Test-Path $translationSkill -PathType Leaf)) { throw "publish missing integrated translation skill" }
+$sourceTranslationSkill = "internal/translation/dich-trung-tu-tien.zip"
+if ((Get-Sha256 $translationSkill) -ne (Get-Sha256 $sourceTranslationSkill)) {
+    throw "published translation skill differs from reviewed source"
+}
 
 Assert-Pe32PlusX64 $exe
 

@@ -24,6 +24,10 @@ public sealed class BiliSubApplication : IAsyncDisposable
     private readonly VideoDownloadService _video;
     private readonly SubtitleService _subtitle;
     private readonly VideoEditorService _editor;
+    private readonly EditorProjectStore _editorProjects;
+    private readonly LocalSubtitleTranslationService _translation;
+    private readonly LocalAsrService _asr;
+    private readonly LocalTtsService _tts;
     private readonly WindowsProcessContainment _containment;
 
     public BiliSubApplication(AppPaths paths)
@@ -51,9 +55,18 @@ public sealed class BiliSubApplication : IAsyncDisposable
         Resolver = new YtDlpResolver(Tools, Processes);
         _video = new VideoDownloadService(paths, Resolver, new RangeDownloader(_http), Tools, Processes);
         _subtitle = new SubtitleService(Resolver, _http);
-        _editor = new VideoEditorService(Tools, Processes);
-        _ocr = new OcrManager(paths, Hardware, new OcrInstaller(paths, _http, Processes));
+        _editor = new VideoEditorService(paths, Tools, Processes);
+        _editorProjects = new EditorProjectStore(paths);
+        _translation = new LocalSubtitleTranslationService(
+            paths,
+            Processes,
+            Hardware,
+            Path.Combine(AppContext.BaseDirectory, "Assets", "Translation", "dich-trung-tu-tien.zip"));
+        var pythonBootstrap = new OcrInstaller(paths, _http, Processes);
+        _ocr = new OcrManager(paths, Hardware, pythonBootstrap);
         _ocrScanner = new OcrScanner(Tools, Processes, _ocr, Hardware, new OcrCheckpointStore(paths));
+        _asr = new LocalAsrService(paths, new LocalAsrInstaller(paths, pythonBootstrap, Processes), Tools, Processes, Hardware);
+        _tts = new LocalTtsService(paths, new LocalTtsInstaller(paths, pythonBootstrap, Processes), Tools, Processes);
     }
 
     public AppPaths Paths { get; }
@@ -70,6 +83,9 @@ public sealed class BiliSubApplication : IAsyncDisposable
     public YtDlpResolver Resolver { get; }
     public AppConfig Config => _configStore.Snapshot;
     public OcrStatus OcrStatus => _ocr.Status;
+    public LocalTranslationStatus LocalTranslationStatus => _translation.Status;
+    public LocalAsrStatus LocalAsrStatus => _asr.Status;
+    public LocalTtsStatus LocalTtsStatus => _tts.Status;
     public PreparedUpdate? PendingUpdate { get; private set; }
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
@@ -425,7 +441,7 @@ public sealed class BiliSubApplication : IAsyncDisposable
 
     public string StartEditor(VideoEditRequest request)
     {
-        var job = Jobs.Create("editor");
+        var job = Jobs.Create("editor", cleanupAwareCancel: true);
         _ = RunJobAsync(job, async () =>
         {
             var result = await _editor.RunAsync(job, request with
@@ -435,6 +451,121 @@ public sealed class BiliSubApplication : IAsyncDisposable
             job.Finish(null, "Đã xuất: " + result.OutputPath, result);
         });
         return job.Id;
+    }
+
+    public Task<EditorProject> LoadEditorProjectAsync(string path, MediaPreviewInfo media, CancellationToken cancellationToken) =>
+        _editorProjects.LoadOrCreateAsync(path, media.Width, media.Height, media.Duration, cancellationToken);
+
+    public Task SaveEditorProjectAsync(EditorProject project, CancellationToken cancellationToken) =>
+        _editorProjects.SaveAsync(project, cancellationToken);
+
+    public Task<EditorSubtitleSource> LoadEditorSubtitleAsync(string path, CancellationToken cancellationToken) =>
+        EditorSubtitleDocument.LoadAsync(path, cancellationToken);
+
+    public string StartLocalTranslationPreparation()
+    {
+        if (Jobs.HasActiveJobs) throw new InvalidOperationException("Hãy hoàn tất hoặc hủy tác vụ Media/OCR/Editor đang chạy trước khi chuẩn bị AI dịch.");
+        var job = Jobs.Create("translation-prepare", cleanupAwareCancel: true);
+        _ = RunJobAsync(job, async () =>
+        {
+            await _translation.PrepareAsync(job);
+            job.Finish(null, "AI local và skill dịch đã sẵn sàng.", _translation.Status);
+        });
+        return job.Id;
+    }
+
+    public string StartEditorTranslation(EditorTranslationRequest request)
+    {
+        if (Jobs.HasActiveJobs) throw new InvalidOperationException("Hãy hoàn tất hoặc hủy tác vụ Media/OCR/Editor đang chạy trước khi Vietsub.");
+        var job = Jobs.Create("translation", cleanupAwareCancel: true);
+        _ = RunJobAsync(job, async () =>
+        {
+            var result = await _translation.TranslateAsync(job, request);
+            job.Finish(null, "Đã Vietsub và lưu: " + result.OutputPath, result);
+        });
+        return job.Id;
+    }
+
+    public string StartEditorAsr(EditorAsrRequest request)
+    {
+        if (Jobs.HasActiveJobs) throw new InvalidOperationException("Hãy hoàn tất hoặc hủy tác vụ Media/OCR/Editor đang chạy trước khi phân tích nhịp thoại.");
+        var job = Jobs.Create("editor-asr", cleanupAwareCancel: true);
+        _ = RunJobAsync(job, async () =>
+        {
+            var result = await _asr.TranscribeAsync(job, request);
+            job.Finish(null, $"Whisper timing hoàn tất: {result.SegmentCount} đoạn / {result.WordCount} từ.", result);
+        });
+        return job.Id;
+    }
+
+    public string StartEditorTts(EditorTtsRequest request)
+    {
+        if (Jobs.HasActiveJobs) throw new InvalidOperationException("Hãy hoàn tất hoặc hủy tác vụ Media/OCR/Editor đang chạy trước khi tạo voice Việt.");
+        var job = Jobs.Create("editor-tts", cleanupAwareCancel: true);
+        _ = RunJobAsync(job, async () =>
+        {
+            var result = await _tts.GenerateAsync(job, request);
+            job.Finish(null, result.ReviewCount == 0
+                ? "Đã tạo voice Việt local và fit toàn bộ timing."
+                : $"Đã tạo voice Việt local; {result.ReviewCount} câu cần xem lại.", result);
+        });
+        return job.Id;
+    }
+
+    public async Task<IReadOnlyList<EditorCueSpeechTiming>> LoadEditorCueSpeechTimingAsync(
+        string analysisPath,
+        string analysisSha256,
+        IReadOnlyList<EditorSubtitleCue> cues,
+        CancellationToken cancellationToken)
+    {
+        var analysis = await EditorSpeechAnalysisDocument.LoadVerifiedAsync(analysisPath, analysisSha256, cancellationToken);
+        return EditorSpeechAnalysisDocument.MapToCues(analysis, cues);
+    }
+
+    public Task<byte[]> GetEditorPreviewFrameJpegAsync(
+        string path,
+        double seconds,
+        MediaPreviewInfo media,
+        IReadOnlyList<EditRegion> regions,
+        CancellationToken cancellationToken) =>
+        _editor.GetPreviewFrameJpegAsync(path, seconds, media.Width, media.Height, media.Duration, regions, cancellationToken);
+
+    public Task<EditorPreviewSegment> CreateEditorPreviewSegmentAsync(
+        VideoEditRequest request,
+        double requestedStart,
+        CancellationToken cancellationToken) =>
+        _editor.CreatePreviewSegmentAsync(request, requestedStart, cancellationToken);
+
+    public Task DeleteEditorPreviewSegmentAsync(string? path, CancellationToken cancellationToken = default) =>
+        _editor.DeletePreviewSegmentAsync(path, cancellationToken);
+
+    public async Task<string> SaveEditorKaraokeAssAsync(
+        EditorSubtitleBurn subtitle,
+        int width,
+        int height,
+        string sourceSubtitlePath,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(subtitle);
+        if (!subtitle.Karaoke || subtitle.SpeechTiming is null || subtitle.SpeechTiming.Count == 0)
+            throw new InvalidOperationException("Chưa có Whisper word timing để tạo Caption ASS.");
+        var outputDirectory = string.IsNullOrWhiteSpace(Config.OutputDirectory) ? Paths.DefaultDownloads : Path.GetFullPath(Config.OutputDirectory);
+        Directory.CreateDirectory(outputDirectory);
+        var sourceName = Path.GetFileNameWithoutExtension(sourceSubtitlePath);
+        if (string.IsNullOrWhiteSpace(sourceName)) sourceName = "BiliSub";
+        var output = Path.Combine(outputDirectory, FileNamePolicy.Sanitize(sourceName + ".caption.ass", "BiliSub.caption.ass"));
+        var temporary = output + ".tmp-" + Guid.NewGuid().ToString("N");
+        try
+        {
+            var content = VideoEditorService.BuildAss(subtitle, width, height);
+            await File.WriteAllTextAsync(temporary, content, new UTF8Encoding(encoderShouldEmitUTF8Identifier: true), cancellationToken);
+            File.Move(temporary, output, overwrite: true);
+            return output;
+        }
+        finally
+        {
+            try { File.Delete(temporary); } catch { }
+        }
     }
 
     public async Task<OcrResult> RecognizeFrameAsync(string path, double at, OcrRegion region, string device, CancellationToken cancellationToken) =>
@@ -532,7 +663,10 @@ public sealed class BiliSubApplication : IAsyncDisposable
         {
             await PauseJobAsync(snapshot.Id, cancellationToken);
         }
+        var cleanupJobs = Jobs.ActiveSnapshots().Where(x => x.PauseSupported || x.Kind is "editor" or "editor-asr" or "editor-tts" or "translation" or "translation-prepare").Select(x => x.Id).ToArray();
         Jobs.CancelAll();
+        var completions = cleanupJobs.Select(id => Jobs.TryGet(id, out var job) && job is not null ? job.Completion : Task.CompletedTask).ToArray();
+        if (completions.Length > 0) await Task.WhenAll(completions).WaitAsync(cancellationToken);
         await _ocr.StopAsync();
         await Sessions.DeleteTemporaryAsync(cancellationToken);
     }
@@ -593,6 +727,9 @@ public sealed class BiliSubApplication : IAsyncDisposable
         await _ocr.DisposeAsync();
         await Sessions.DeleteTemporaryAsync();
         Jobs.Dispose();
+        _asr.Dispose();
+        _tts.Dispose();
+        _translation.Dispose();
         _configStore.Dispose();
         _http.Dispose();
         _containment.Dispose();

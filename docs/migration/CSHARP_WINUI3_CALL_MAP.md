@@ -277,13 +277,174 @@ OCRPage.Restart
 ## Video editor
 
 ```text
-EditorPage
-  -> MediaPreviewService/native player
+EditorPage icon rail
+  -> Subtitle / Blur / Audio / Export buttons keep the native preview fixed
+  -> SetInspectorMode exposes exactly one right-side inspector
+  -> Windows layout smoke cycles every mode and requires SRT picker + AI preparation enabled before video selection
+  -> mode is interaction ownership, not cosmetic state
+       Subtitle -> only subtitle placement accepts pointer edits
+       Blur -> only Blur/Mosaic/Cover regions accept pointer edits
+       Audio/Export -> preview overlay is read-only
+
+EditorPage.Pick_Click
+  -> MediaPreviewService.ProbeAsync
+  -> EditorProjectStore.LoadOrCreateAsync
+       -> Data/Projects/<source-path-sha256-prefix>.json
+       -> schema-5/source validation; schema 1/2/3/4 migrate with default speech/TTS/voice-override state
+       -> corrupt project quarantine
+  -> attach an SRT selected before the video, without discarding its validated cue document
+  -> restore source-audio mode/gain
+  -> EditorRegionDocument.Reset
+  -> native MediaPlayer reserved for app-owned processed-preview MP4 proxies
+  -> VideoEditorService.GetPreviewFrameJpegAsync for processed frame
+
+EditorPage direct overlay
+  -> drag outside a region -> create normalized source-space region
+  -> select + drag center -> move saved region
+  -> drag one of 8 handles/edges -> resize saved region
+  -> playback/export locks region interaction
+  -> preview/window resize recomputes display geometry only
+  -> EditorRegionDocument.BeginChange/Add/ReplaceSelected/RemoveSelected
+       -> stable region identity
+       -> bounded Undo/Redo history
+  -> debounced EditorProjectStore.SaveAsync
+       -> serialized write-through temporary file
+       -> replace project only after complete JSON write
+
+EditorPage.ImportSrt_Click
+  -> native FileOpenPicker (.srt)
+  -> remains available before a video/project is selected
+  -> EditorSubtitleDocument.LoadAsync
+       -> UTF-8/GBK decode with 32 MiB bound
+       -> strict stable cue IDs; preserve block number/order/timing line
+  -> pending in-memory SRT until a video is selected, then EditorProjectStore.SaveAsync
+       -> source SRT fingerprint + cues + normalized subtitle placement
+
+EditorPage subtitle placement overlay
+  -> current cue follows timeline timecode
+  -> translated text when available; otherwise Chinese source text
+  -> drag center / eight edges-corners in normalized video coordinates
+  -> playback, render and translation jobs lock interaction
+  -> preview/window resize changes display geometry only
+
+EditorPage.PrepareAi_Click
+  -> BiliSubApplication.StartLocalTranslationPreparation
+  -> LocalSubtitleTranslationService.PrepareAsync
+       -> verify integrated Dịch Trung Tu Tiên skill ZIP SHA/path/size/required entries
+       -> resume pinned llama.cpp b10566 Vulkan runtime download
+       -> exact size + SHA-256 -> safe extraction under Tools/Translation
+       -> resume pinned Qwen3-8B Q4_K_M GGUF download (~5.03 GB)
+       -> exact size + SHA-256 -> verified model stamp
+
+EditorPage.CreateAsr_Click
+  -> requires a video-backed Editor project; imported SRT path remains independent
+  -> BiliSubApplication.StartEditorAsr
+  -> JobManager.Create(kind=editor-asr, cleanupAwareCancel=true)
+  -> LocalAsrInstaller.PrepareAsync
+       -> reuse exact-patch Python 3.12 under the Windows error-448-safe LocalAppData bootstrap
+       -> separate Tools/ASR private venv
+       -> pin faster-whisper 1.2.1 + CTranslate2 4.8.1
+       -> immutable Systran/faster-whisper-small revision
+       -> exact size/SHA-256 for config/model/tokenizer/vocabulary; offline-only worker load
+  -> LocalAsrService.SelectRuntimeAsync
+       -> extract a bounded real 16 kHz mono sample with app-owned FFmpeg
+       -> live RAM/VRAM gate -> complete CUDA probe
+       -> CUDA/VRAM/cuDNN failure or poor throughput -> complete CPU/int8 probe
+       -> lock measured device/compute/threads before full transcription
+  -> full audio extraction from the safe checkpoint frontier
+  -> internal/asr/worker.py -> Chinese + VAD + word timestamps + bounded acoustic voice-class suggestion -> framed JSON segment events
+  -> atomic segment/word checkpoint under Data/Projects/ASR after every accepted segment
+  -> EditorSpeechAnalysisDocument -> verified speech-analysis JSON + SHA-256 under Data/Projects/Speech
+  -> if no SRT is loaded, strict fallback Chinese SRT render/load -> attach to EditorSubtitleProject
+  -> if imported SRT exists, preserve it and map Whisper words/pauses to its stable cue IDs
+  -> schema-5 EditorAsrProject + EditorSpeechProject record provenance, measured runtime and analysis fingerprint
+
+EditorPage.CancelTranslation_Click while ASR owns the subtitle job
+  -> AppJob.Cancel remains `cancelling`
+  -> ProcessRunner/OwnedProcessGroup kill and reap ASR Python + FFmpeg trees
+  -> temporary WAV tree removed; completed cue checkpoint preserved
+  -> rerun overlaps/reconciles the tail and resumes, never silently starts over
+
+EditorPage.Translate_Click
+  -> BiliSubApplication.StartEditorTranslation
+  -> JobManager.Create(kind=translation, cleanupAwareCancel=true)
+  -> LocalSubtitleTranslationService.TranslateAsync
+       -> live RAM/VRAM preflight and safe GPU-layer policy
+       -> whole-SRT bounded analysis -> locked character/term/address bible
+       -> skill core + source-relevant references
+       -> bounded overlapping batches -> llama-cli stdout JSON
+       -> reject missing/duplicate/unknown cue IDs, empty/long/internal-marker text
+       -> atomic per-batch checkpoint under Data/Projects/Translation
+       -> validate unchanged cue count/order/timecode
+       -> atomic UTF-8 BOM Vietnamese SRT output
+
+EditorPage.CancelTranslation_Click
+  -> AppJob.Cancel stays cancelling during process cleanup
+  -> ProcessRunner kills/reaps the exact llama-cli tree
+  -> completed batch checkpoint remains resumable
+  -> AppJob.CancelComplete only after cleanup
+
+EditorPage processed preview
+  -> editable mode: current timeline position + active saved/draft regions
+       -> BiliSubApplication.GetEditorPreviewFrameJpegAsync
+       -> VideoEditorService.GetPreviewFrameJpegAsync
+       -> exact VideoEditorService.BuildFilter Blur/Mosaic/Cover graph
+       -> app-owned FFmpeg MJPEG pipe
+  -> Xem bản chỉnh: CurrentEditRequest is shared with Render_Click
+       -> translated cue when available; Chinese source text is the explicit pre-translation fallback
+       -> BiliSubApplication.CreateEditorPreviewSegmentAsync
+       -> VideoEditorService.CreatePreviewSegmentAsync
+            -> bounded 12-second source window from current playhead
+            -> BuildPreviewSlice shifts/clips timed regions, subtitle cues and Whisper word/pause timing into proxy time
+            -> app-owned Temp/Editor/Preview only
+            -> exact BuildFilterCore + BuildAss + source/TTS audio graph used by final render
+            -> H.264/AAC yuv420p MP4 proxy for deterministic WinUI playback
+       -> MediaPlayer position + source-window offset -> main source timeline
+       -> playback hides handles/locks all edit inputs
+       -> MediaEnded or Về khung chỉnh -> release source, delete proxy, refresh processed frame, unlock ROI
+       -> page unload cancels proxy FFmpeg and removes the current proxy
+
+EditorPage.Audio inspector
+  -> PreviewMute/PreviewVolume -> local monitor gain/mute only
+  -> source output mode keep / duck / mute
+  -> EditorAudioSettings normalized and autosaved in schema-5 project (schema 1-4 migration retained)
+  -> Phân tích nhịp + Nam/Nữ
+       -> BiliSubApplication.StartEditorAsr
+       -> LocalAsrService.TranscribeAsync
+       -> faster-whisper word timestamps + VAD + bounded acoustic male_like/female_like/uncertain suggestion
+       -> EditorSpeechAnalysisDocument persists words/pauses/provenance and maps them onto imported or generated SRT cues
+       -> imported SRT remains authoritative; Whisper fallback SRT is attached only when no source SRT is loaded
+  -> Tạo voice Việt local
+       -> BiliSubApplication.StartEditorTts
+       -> LocalTtsService.GenerateAsync
+       -> app-managed Piper 1.4.2 + pinned NghiTTS-compatible ONNX male/female voices
+       -> Whisper pause windows -> bounded rhythm groups -> synthesize/measure/Piper length-scale/bounded FFmpeg atempo
+       -> unresolved fit or uncertain voice route is marked for review, never hidden
+       -> cached 300-second blocks -> one seekable voice-master FLAC
+  -> per-cue manual male/female override persists and invalidates only stale TTS
+  -> VideoEditorService.BuildVoiceAudioFilter is shared by preview and final render
+       keep + voice -> source mix + TTS
+       duck + voice -> reduced complete source mix + TTS
+       mute + voice -> TTS only
+  -> no stem separation/Demucs path
+  -> same source/TTS mix is audible in Xem bản chỉnh before final export
+
+EditorPage.Render_Click
   -> BiliSubApplication.StartEditor
-  -> JobManager/AppJob -> shared ApplicationLog
+  -> JobManager.Create(kind=editor, cleanupAwareCancel=true)
   -> VideoEditorService.RunAsync
-  -> FFmpeg Blur/Mosaic/Cover graph
-  -> temporary render -> non-empty verification -> atomic final output
+  -> completed Vietsub cues + placement + optional Whisper rhythm -> temporary ASS with exact cue/karaoke timing
+  -> same FFmpeg Blur/Mosaic/Cover graph and time guards + ASS hardsub
+  -> exact persisted keep/duck/mute source-audio policy + optional cached TTS master track
+  -> temporary `.rendering` output
+  -> non-empty verification -> final output
+
+EditorPage.Cancel_Click
+  -> AppJob.Cancel -> status `cancelling`, Done=false
+  -> ProcessRunner cancels and reaps app-owned FFmpeg tree
+  -> VideoEditorService finally deletes partial `.rendering` file
+  -> BiliSubApplication.RunJobAsync -> AppJob.CancelComplete
+  -> only then UI enables a new export
 ```
 
 ## GitHub update channel

@@ -111,6 +111,8 @@ public sealed partial class MainWindow : Window
                 await Task.Delay(120);
                 if (string.Equals(tag, "settings", StringComparison.Ordinal))
                     await _settingsPage.RunLayoutSmokeAsync();
+                else if (string.Equals(tag, "editor", StringComparison.Ordinal) && page is EditorPage editorPage)
+                    await editorPage.RunLayoutSmokeAsync();
             }
             ShowGlobalLog(true);
             await Task.Delay(100);

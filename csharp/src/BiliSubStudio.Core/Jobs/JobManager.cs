@@ -18,10 +18,10 @@ public sealed class JobManager : IDisposable
         _applicationLog = applicationLog;
     }
 
-    public AppJob Create(string kind, bool pausable = false)
+    public AppJob Create(string kind, bool pausable = false, bool cleanupAwareCancel = false)
     {
         var id = $"{kind}-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}-{Guid.NewGuid():N}";
-        var job = new AppJob(id, kind, pausable, _applicationLog);
+        var job = new AppJob(id, kind, pausable, _applicationLog, cleanupAwareCancel);
         if (!_jobs.TryAdd(id, job))
         {
             job.Dispose();

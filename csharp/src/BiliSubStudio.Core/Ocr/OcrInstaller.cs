@@ -10,6 +10,7 @@ using BiliSubStudio.Core.Processes;
 namespace BiliSubStudio.Core.Ocr;
 
 internal sealed record OcrRuntime(string Python, string Worker, string Models, string Device, string Kind);
+internal sealed record ManagedPythonEnvironment(string Uv, string Python, IReadOnlyDictionary<string, string?> Environment);
 
 internal sealed class OcrInstaller
 {
@@ -92,6 +93,22 @@ internal sealed class OcrInstaller
             await WriteManifestAsync(manifestPath, expected, cancellationToken);
             if (!File.Exists(python)) throw new FileNotFoundException("Cài OCR không tạo private Python.", python);
             return new OcrRuntime(python, worker, Path.Combine(_paths.Ocr, "models"), spec.Device, kind);
+        }
+        finally { _gate.Release(); }
+    }
+
+    internal async Task<ManagedPythonEnvironment> EnsurePrivatePythonAsync(string venvRoot, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(venvRoot);
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            var uv = await EnsureUvAsync(cancellationToken);
+            var basePython = await EnsureBasePythonAsync(uv, ManagedEnvironment(), cancellationToken);
+            var python = Path.Combine(venvRoot, "Scripts", "python.exe");
+            if (!File.Exists(python)) await CreatePrivateVenvAsync(uv, basePython, venvRoot, cancellationToken);
+            if (!File.Exists(python)) throw new FileNotFoundException("Private Python không được tạo hoàn chỉnh.", python);
+            return new ManagedPythonEnvironment(uv, python, ExplicitPythonEnvironment());
         }
         finally { _gate.Release(); }
     }

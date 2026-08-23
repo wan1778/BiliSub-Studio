@@ -18,4 +18,31 @@ public sealed class FilePickerService(Func<Window> window) : IFilePickerService
         WinRT.Interop.InitializeWithWindow.Initialize(picker, hwnd);
         return (await picker.PickSingleFileAsync())?.Path;
     }
+
+    public async Task<string?> PickSubtitleAsync()
+    {
+        var picker = new FileOpenPicker
+        {
+            ViewMode = PickerViewMode.List,
+            SuggestedStartLocation = PickerLocationId.DocumentsLibrary,
+        };
+        picker.FileTypeFilter.Add(".srt");
+        var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(window());
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, hwnd);
+        return (await picker.PickSingleFileAsync())?.Path;
+    }
+
+    public async Task<string?> PickImageAsync()
+    {
+        var picker = new FileOpenPicker
+        {
+            ViewMode = PickerViewMode.Thumbnail,
+            SuggestedStartLocation = PickerLocationId.PicturesLibrary,
+        };
+        foreach (var extension in new[] { ".png", ".jpg", ".jpeg" })
+            picker.FileTypeFilter.Add(extension);
+        var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(window());
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, hwnd);
+        return (await picker.PickSingleFileAsync())?.Path;
+    }
 }

@@ -233,7 +233,7 @@ for marker in ("available subtitle > Bilibili AI subtitle", "normal metadata emp
     require(marker in subtitle_fixture, f"subtitle regression fixture missing {marker}")
 
 composition = read(CSHARP / "src/BiliSubStudio.Core/Application/BiliSubApplication.cs")
-for marker in ("PrepareShutdownAsync", "PauseJobAsync", "WindowsProcessContainment", "StartOcrScan", "StartEditor", "StartSubtitle", "StartVideo"):
+for marker in ("PrepareShutdownAsync", "PauseJobAsync", "WindowsProcessContainment", "StartOcrScan", "StartEditor", "StartEditorAsr", "StartEditorTts", "SaveEditorKaraokeAssAsync", "StartSubtitle", "StartVideo"):
     require(marker in composition, f"application composition root missing {marker}")
 
 worker_client = read(CSHARP / "src/BiliSubStudio.Core/Ocr/OcrWorkerClient.cs")
@@ -249,6 +249,83 @@ editor = read(CSHARP / "src/BiliSubStudio.App/Pages/EditorPage.xaml") + read(CSH
 for owner, source in (("OCR", ocr), ("Editor", editor)):
     for marker in ("MediaPlayerElement", 'AreTransportControlsEnabled="True"', "IsFullWindow", "MediaSource.CreateFromStorageFile", "PositionChanged"):
         require(marker in source, f"{owner} native playback/fullscreen contract missing {marker}")
+for marker in (
+    "SubtitleModeButton", "BlurModeButton", "AudioModeButton", "ExportModeButton",
+    "SubtitleInspectorPanel", "BlurInspectorPanel", "AudioInspectorPanel", "ExportInspectorPanel",
+    "RunLayoutSmokeAsync", "ImportSrtButton.IsEnabled = idle && !_playerMode;", "PrepareAiButton.IsEnabled = idle && !_playerMode;",
+    "_inspectorMode == InspectorMode.Blur", "_inspectorMode == InspectorMode.Subtitle",
+    "Xem bản chỉnh (12 giây)", "CreateEditorPreviewSegmentAsync", "Overlay.Visibility = Visibility.Collapsed",
+):
+    require(marker in editor, f"Editor icon-mode/action-state contract missing {marker}")
+require("ImportSrtButton.IsEnabled = idle && hasMedia" not in editor,
+        "Editor SRT picker regressed to requiring a selected video")
+require("PrepareAiButton.IsEnabled = idle && hasMedia" not in editor,
+        "Editor AI preparation regressed to requiring a selected video")
+for marker in (
+    "CreateAsrButton", "CreateAsr_Click", "CreateAsrButton.IsEnabled = editable;", "PollAsrJobAsync",
+    "GenerateTtsButton", "GenerateTts_Click", "KaraokeToggle", "CurrentCueVoiceBox", "SaveKaraokeAssButton",
+    "EditorSpeechProject", "EditorTtsProject",
+):
+    require(marker in editor, f"Editor Whisper timing/TTS UI-state contract missing {marker}")
+
+editor_service = read(CSHARP / "src/BiliSubStudio.Core/Editor/VideoEditorService.cs")
+for marker in (
+    "CreatePreviewSegmentAsync", "BuildPreviewSlice", "BuildPreviewArguments", "BuildFilterCore",
+    'Path.Combine(paths.Temp, "Editor", "Preview")', '"-preset", "ultrafast"',
+    "BuildAudioArgumentsCore(audio, mp4: true, resetTimestamps: true)", "BuildVoiceAudioFilter", "BuildKaraokeText", "DeletePreviewSegmentAsync",
+):
+    require(marker in editor_service, f"Editor processed-preview/render parity contract missing {marker}")
+
+asr_installer = read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalAsrInstaller.cs")
+asr_service = read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalAsrService.cs")
+asr_worker = read(ROOT / "internal/asr/worker.py")
+attributes = read(ROOT / ".gitattributes")
+for worker_path in ("internal/ocr/worker.py text eol=lf", "internal/asr/worker.py text eol=lf", "internal/tts/worker.py text eol=lf"):
+    require(worker_path in attributes, f"Windows worker byte provenance missing {worker_path}")
+for marker in (
+    'FasterWhisperVersion = "1.2.1"', 'CTranslate2Version = "4.8.1"',
+    "79a66ad50688c0b794dd501dc340a736992a6342f7f95e5811be60b5224a26a7",
+    "49f96e861b57301f0b76a082109bde2cac8204a6b4fedc870883008271e82251",
+    'ModelRevision = "536b0662742c02347bc0e980a01041f333bce120"',
+    "3e305921506d8872816023e4c273e75d2419fb89b24da97b4fe7bce14170d671",
+    "EnsurePrivatePythonAsync", "SHA-256 model ASR", "HF_HUB_OFFLINE",
+):
+    require(marker in asr_installer, f"ASR pinned installer contract missing {marker}")
+for marker in ("SelectRuntimeAsync", "ProbeRealtimeFactor", "asr-probe-gpu", "asr-probe-cpu", "SaveCheckpointAsync", "RunStreamingAsync", "OwnedProcessGroup"):
+    require(marker in asr_service, f"ASR benchmark/checkpoint/process contract missing {marker}")
+for marker in ('local_files_only=True', 'language="zh"', "word_timestamps=True", "vad_filter=True", '"event": "segment"', '"voice_class"', '"median_pitch_hz"'):
+    require(marker in asr_worker, f"ASR worker offline/Chinese/timestamp contract missing {marker}")
+require("WhisperModel(" in asr_worker and "str(model_dir)" in asr_worker,
+        "ASR worker must load only the verified local model directory")
+
+
+tts_installer = read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalTtsInstaller.cs")
+tts_service = read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalTtsService.cs")
+tts_worker = read(ROOT / "internal/tts/worker.py")
+for marker in (
+    'PiperVersion = "1.4.2"',
+    "9c4a3a11f5889ea9d0df4414dce2bd9bee5ce7d9cf604c8fd5e307441d4c031f",
+    'VoiceRepository = "rhasspy/piper-voices"',
+    'ModelRevision = "3d796cc2f2c884b3517c527507e084f7bb245aea"',
+    'VoiceRevision = ModelRevision + "-profile-v1"',
+    'BaseVoice = "vi_VN-vais1000-medium"',
+    'MaleVoice = "vais1000-male-profile-v1"', 'FemaleVoice = "vais1000-female-profile-v1"',
+    "ec7c89e2c85f4d1edc24b6120c18aaf1bda614f06b511567eb9c7c0de15e2dab",
+    "fafb9da1354ed4b77c31af228ed41fb41cd825c14cffa105454b25e6ae751ee0",
+    "DownloadVerifiedAsync", "EnsurePrivatePythonAsync",
+):
+    require(marker in tts_installer, f"licensed VAIS/Piper installer contract missing {marker}")
+for retired in ("sannht/vi_voice", "deepman3909", "calmwoman3688"):
+    require(retired not in tts_installer and retired not in tts_service and retired not in tts_worker,
+            f"retired ambiguous NghiTTS weight returned to production: {retired}")
+for marker in ("whisper-rhythm-v1", "BuildRhythmGroups", "SelectVoice", "EditorSpeechAnalysisDocument.MapToCues", "OwnedProcessGroup"):
+    require(marker in tts_service, f"local TTS timing/cache/process contract missing {marker}")
+for marker in (
+    "PiperVoice.load", "SynthesisConfig", "length_scale", "atempo=", "voice-master.flac",
+    'MALE_PITCH_FACTOR = 0.84', 'VOICE_PROFILE_REVISION = "3d796cc2f2c884b3517c527507e084f7bb245aea-profile-v1"',
+    "ensure_profile_cache(output_root)", '"engine": "piper-vais1000-profiles"', '"event": "cue"', '"event": "block"',
+):
+    require(marker in tts_worker, f"licensed VAIS TTS worker contract missing {marker}")
 
 main_xaml = read(CSHARP / "src/BiliSubStudio.App/MainWindow.xaml")
 main_code = read(CSHARP / "src/BiliSubStudio.App/MainWindow.xaml.cs")
@@ -258,6 +335,8 @@ for marker in ('IsPaneToggleButtonVisible="True"', 'PaneDisplayMode="Left"', 'Op
     require(marker in main_xaml, f"stable navigation contract missing {marker}")
 for marker in ("RunLayoutSmokeAsync", "layout-smoke-page", "new SizeInt32(800, 600)", "new SizeInt32(1_500, 900)"):
     require(marker in main_code, f"multi-viewport layout smoke contract missing {marker}")
+require("await editorPage.RunLayoutSmokeAsync()" in main_code,
+        "multi-viewport layout smoke no longer exercises Editor icon rail/action state")
 
 app_xaml = read(CSHARP / "src/BiliSubStudio.App/App.xaml")
 require("ResourceDictionary.ThemeDictionaries" in app_xaml and 'x:Key="Light"' in app_xaml and "XamlControlsResources" in app_xaml,
