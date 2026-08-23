@@ -1,81 +1,98 @@
-# NghiTTS integration audit
+# NghiTTS audit and final local voice-pin decision
 
-Reference: https://github.com/nghimestudio/nghitts
 Audit date: 2026-08-23
+Status: production model decision closed for the Editor field candidate.
 
-## What is useful for BiliSub Studio
+## What NghiTTS contributed
 
-NghiTTS demonstrates a fully local Vietnamese TTS path based on Piper-compatible ONNX models. The repository documents:
+Reference: `nghimestudio/nghitts`.
 
-- Vietnamese text normalization for numbers, dates, time, currency, percentages, decimals, phone numbers, ordinals, Roman numerals and ranges;
-- Piper-compatible ONNX model + JSON configuration pairs;
-- local inference;
-- multi-speaker model support;
-- adjustable speed;
-- WAV output;
-- chunked synthesis;
-- about 5x realtime as the repository's own stated example performance.
+NghiTTS demonstrated a useful fully local Vietnamese TTS design based on Piper-compatible ONNX models, Vietnamese text preprocessing, adjustable synthesis speed and WAV output. BiliSub Studio used that work as an architecture/reference input only.
 
-Its current web implementation uses ONNX Runtime Web/WASM and a browser Web Worker. BiliSub Studio must not copy that runtime architecture into production because the app is native WinUI 3. The reusable parts are the reviewed preprocessing behavior, model/config format and model candidates.
+BiliSub Studio does **not** embed the NghiTTS Vue/Vite app, browser Web Worker, WebView, Node runtime, localhost API or cloud inference service. The native application owns its local runtime, worker lifecycle, checksums, cache, timing fit and preview/export audio graph.
 
-## Initial generic model candidates
+## Rejected production weights
 
-The repository README documents these generic candidates:
+The initially evaluated generic pair was:
 
-- `calmwoman3688` - female voice - roughly 60.6 MB ONNX plus JSON
-- `deepman3909` - male voice - roughly 60.6 MB ONNX plus JSON
+- `deepman3909`
+- `calmwoman3688`
+- source: `sannht/vi_voice`
 
-These are the preferred first evaluation pair because the product only needs a male-like/female-like routing choice.
+Although the exact files could be pinned by revision, size and SHA-256, the reviewed weight index identifies their model license as `unknown` and the repository/model card did not establish a sufficiently clear redistribution/downloader license for release.
 
-The repository also mentions celebrity-named voices. Those are excluded from the default integration audit until separate model-weight/dataset/voice-likeness rights are established.
+Decision: these weights are **not** downloaded or distributed by the production path. Celebrity/reference-person voice models are also excluded from default production use.
 
-## Licensing boundary
+## Final production voice source
 
-The GitHub repository contains an Apache-2.0 LICENSE for the source code. The README also states that the project is free/open source and allowed for commercial use.
+BiliSub Studio uses the official Piper voice collection:
 
-However, the TTS model files are described as separately downloadable from external storage. Therefore BiliSub Studio must not infer that every externally hosted model weight or training dataset automatically inherits the repository source-code license.
+- repository: `rhasspy/piper-voices`
+- exact model revision: `3d796cc2f2c884b3517c527507e084f7bb245aea`
+- voice: `vi_VN-vais1000-medium`
+- model collection license: MIT as declared by the upstream repository metadata
+- training dataset: VAIS-1000
+- dataset license: CC BY 4.0
+- speaker profile documented for the dataset/model: one Vietnamese female/Northern voice
+- sample rate: 22,050 Hz
 
-Before a model is distributed or downloaded by BiliSub Studio, record:
+Pinned files:
 
-- source URL/repository
-- model name/revision
-- model/config sizes
-- SHA-256 for every required file
-- model/data license or explicit redistribution permission
-- whether any real-person voice likeness is involved
+- `vi_VN-vais1000-medium.onnx`
+  - size: 63,201,294 bytes
+  - SHA-256: `ec7c89e2c85f4d1edc24b6120c18aaf1bda614f06b511567eb9c7c0de15e2dab`
+- `vi_VN-vais1000-medium.onnx.json`
+  - size: 4,860 bytes
+  - SHA-256: `fafb9da1354ed4b77c31af228ed41fb41cd825c14cffa105454b25e6ae751ee0`
 
-## Production integration direction
+The Windows app downloads these exact immutable files once, verifies byte size and SHA-256, and then runs synthesis locally/offline.
 
-Preferred native path:
+## Male/female routing without a second ambiguous model
 
-```text
-C# Editor
-  -> Vietnamese text normalization port/reimplementation
-  -> native/local ONNX inference owner
-  -> reviewed Piper-compatible ONNX + JSON model
-  -> WAV clip
-  -> measured duration / timing fit
-  -> shared preview/render FFmpeg mix
-```
+The product still needs two acoustic routes because the owner requested only practical Nam/Nữ voice selection, not speaker identity.
 
-Do not require:
+BiliSub Studio therefore exposes two deterministic profiles from the one licensed VAIS-1000 base model:
 
-- Vue
-- Vite
-- Node.js on the user's machine
-- browser/WebView
-- Cloudflare R2 at inference time
-- localhost API
+- `vais1000-female-profile-v1`: original base synthesis.
+- `vais1000-male-profile-v1`: synthetic lower-pitch profile generated locally.
 
-A first-time app-managed model download is acceptable only when free, version-pinned and checksum-verified. Once downloaded, synthesis must run locally.
+For the male profile, `internal/tts/worker.py` applies a fixed pitch factor `0.84` (approximately -3 semitones) using FFmpeg `asetrate` + `aresample`, then compensates tempo by `1 / 0.84` so the transform itself does not intentionally lengthen the cue. The normal timing-fit stage measures the transformed WAV afterwards.
 
-## Open items before production pin
+This route is described as a synthetic acoustic profile. It is not presented as a recording, identity or likeness of a real male speaker.
 
-1. Obtain the exact generic model files/configs.
-2. Verify explicit model-weight license/provenance.
-3. Record exact sizes and SHA-256.
-4. Compare quality on actual translated Chinese-film dialogue.
-5. Benchmark CPU/RAM and synthesis speed on Windows.
-6. Validate pronunciation after BiliSub's Vietnamese text normalization.
-7. Establish safe speed range for timing fit.
-8. Confirm preview and final export consume the identical generated WAV clips.
+The worker detects that both routes point to the same ONNX/config pair and loads the Piper model only once to avoid duplicate model RAM.
+
+## Timing fit and cache identity
+
+The production sequence remains:
+
+1. normalize Vietnamese text locally;
+2. map cue to Whisper speech/pause timing;
+3. choose automatic acoustic route or authoritative manual override;
+4. synthesize baseline Piper WAV;
+5. apply the selected VAIS acoustic profile;
+6. measure actual decoded WAV duration;
+7. retry Piper `length_scale` only within 0.86–1.16;
+8. measure again;
+9. apply bounded `atempo` only within 0.92–1.08 when needed;
+10. measure final duration;
+11. mark `fit` or `review` instead of forcing extreme speed.
+
+No SRT order or timecode is silently rewritten.
+
+The TTS cache fingerprint includes a voice revision string containing both the immutable model revision and `profile-v1`. Therefore the beta.36 NghiTTS clip cache cannot be reused after the production voice-source change, and a future acoustic-profile change must increment the profile revision.
+
+## Attribution
+
+`THIRD_PARTY_NOTICES.md` records the Piper/VAIS source, exact model revision, hashes and CC BY 4.0 dataset attribution. The App project packages this notice into the Windows publish output.
+
+## Final production constraints
+
+- local/offline inference after first verified download;
+- no paid TTS API;
+- no localhost service;
+- no WebView/browser TTS runtime;
+- no celebrity/reference-person default voice;
+- no pyannote/diarization;
+- no Demucs/stem separation;
+- preview and export consume the same generated `voice-master.flac` semantics.
