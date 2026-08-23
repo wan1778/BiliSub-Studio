@@ -85,6 +85,7 @@ public sealed partial class EditorPage
         ImageOverlayCanvas.PointerMoved += ImageOverlay_PointerMoved;
         ImageOverlayCanvas.PointerReleased += ImageOverlay_PointerReleased;
         ImageOverlayCanvas.PointerCanceled += ImageOverlay_PointerCanceled;
+        ImageOverlayCanvas.SizeChanged += ImageOverlay_SizeChanged;
         AddImageButton.Click += AddImage_Click;
         RemoveImageButton.Click += RemoveImage_Click;
         ImageTopLeftButton.Click += ImageTopLeft_Click;
@@ -101,12 +102,9 @@ public sealed partial class EditorPage
         EditorChooseOutputButton.Click += EditorChooseOutput_Click;
         EditorOpenOutputButton.Click += EditorOpenOutput_Click;
 
+        // Do not mutate visual content from LayoutUpdated. That event participates in
+        // WinUI measure/arrange and previously caused a LayoutCycleException at 800x600.
         PlaybackButton.IsEnabledChanged += (_, _) => SyncShellPlayerControls();
-        LayoutUpdated += (_, _) =>
-        {
-            SyncShellPlayerControls();
-            RenderImageOverlays();
-        };
 
         // UI-11: MainWindow startup smoke resizes to 800x600, 1000x700 and 1500x900.
         // Validate the real shell at those layouts without affecting normal user resize.
