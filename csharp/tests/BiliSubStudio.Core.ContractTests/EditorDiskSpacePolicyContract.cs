@@ -26,6 +26,10 @@ internal static class EditorDiskSpacePolicyContract
         if (interval != 3000)
             throw new InvalidOperationException($"Editor render disk check interval drifted: {interval}");
 
-        Console.WriteLine("PASS  editor render disk-space guard policy stays pinned");
+        var fixtureProcess = Environment.GetCommandLineArgs()
+            .Skip(1)
+            .Any(argument => argument.StartsWith("--fixture-", StringComparison.Ordinal));
+        if (!fixtureProcess)
+            Console.WriteLine("PASS  editor render disk-space guard policy stays pinned");
     }
 }
