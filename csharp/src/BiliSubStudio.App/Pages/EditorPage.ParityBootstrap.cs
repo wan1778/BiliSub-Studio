@@ -8,5 +8,7 @@ public sealed partial class EditorPage
     {
         base.OnApplyTemplate();
         EditorParity_Loaded(this, new RoutedEventArgs());
+        EnsureImageFeatureInitialized();
+        EnsureInteractionRepairInitialized();
     }
 }
