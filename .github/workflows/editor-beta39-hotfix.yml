@@ -42,7 +42,9 @@ jobs:
             Write-Host "Patch already consumed."
             exit 0
           }
-          $expectedPatch = "b0a6faf50db69c1184dffc33bac93f2c87de02d9da8f70ae72d6b7df0665e33f"
+          # Git checks out this text patch with CRLF on Windows. This is the exact CRLF hash
+          # of the reviewed LF patch b0a6faf50db69c1184dffc33bac93f2c87de02d9da8f70ae72d6b7df0665e33f.
+          $expectedPatch = "63c3712206c7f3da1c566e959d3890380e8183534dfffd1df3a81d2ebc17bb8e"
           $actualPatch = (Get-FileHash ".beta39-hotfix.patch" -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($actualPatch -ne $expectedPatch) { throw "beta39 patch checksum mismatch: $actualPatch" }
 
