@@ -8,9 +8,9 @@ public sealed partial class EditorPage
 {
     private bool _editorCoreInitialized;
 
-    // These are compatibility objects only. They are not attached to the visual tree.
-    // Existing core logic can continue to own preview/cache state while the new Player
-    // exposes only its compact in-preview controls.
+    // Compatibility objects only. They are never attached to the visual tree.
+    // Retained core logic can keep owning processed-preview/cache state while the
+    // user-facing Player exposes only the compact controls declared in XAML.
     private readonly Button PlaybackButton = new() { Content = "Xem bản chỉnh" };
     private readonly Button RefreshFrameButton = new();
     private readonly Canvas RegionTimelineCanvas = new();
@@ -31,8 +31,8 @@ public sealed partial class EditorPage
 
     void BindStaticUiShell()
     {
-        // UI-02: all user-facing controls already exist in EditorPage.xaml.
-        // No parent walking and no runtime insertion into Source/Player/Details.
+        // UI-02: every user-facing shell element already exists in EditorPage.xaml.
+        // This method binds state/events only; it never reparents or inserts controls.
         _editorParityInitialized = true;
         _editorOutputPathText = EditorOutputPathText;
         _editorUseCurrentStartButton = EditorUseCurrentStartButton;
@@ -58,6 +58,38 @@ public sealed partial class EditorPage
         _imageHeightBox = ImageHeightBox;
         _imageOpacitySlider = ImageOpacitySlider;
 
+        // Handlers implemented in partial files are attached here so the static XAML
+        // remains independent from the old verifier assumption that every handler
+        // must live in EditorPage.xaml.cs.
+        SubtitleModeButton.Click += ShellTool_Click;
+        BlurModeButton.Click += ShellTool_Click;
+        AudioModeButton.Click += ShellTool_Click;
+        VoiceModeButton.Click += ShellTool_Click;
+        ImageModeButton.Click += ShellTool_Click;
+        ExportModeButton.Click += ShellTool_Click;
+        PlayerPlayPauseButton.Click += PlayerPlayPause_Click;
+
+        ImageSourceList.SelectionChanged += ImageList_SelectionChanged;
+        ImageOverlayCanvas.PointerPressed += ImageOverlay_PointerPressed;
+        ImageOverlayCanvas.PointerMoved += ImageOverlay_PointerMoved;
+        ImageOverlayCanvas.PointerReleased += ImageOverlay_PointerReleased;
+        ImageOverlayCanvas.PointerCanceled += ImageOverlay_PointerCanceled;
+        AddImageButton.Click += AddImage_Click;
+        RemoveImageButton.Click += RemoveImage_Click;
+        ImageTopLeftButton.Click += ImageTopLeft_Click;
+        ImageTopRightButton.Click += ImageTopRight_Click;
+        ImageXBox.ValueChanged += ImageGeometry_ValueChanged;
+        ImageYBox.ValueChanged += ImageGeometry_ValueChanged;
+        ImageWidthBox.ValueChanged += ImageGeometry_ValueChanged;
+        ImageHeightBox.ValueChanged += ImageGeometry_ValueChanged;
+        ImageOpacitySlider.ValueChanged += ImageOpacity_ValueChanged;
+
+        EditorAutoCompositeToggle.Toggled += EditorAutoComposite_Toggled;
+        EditorUseCurrentStartButton.Click += EditorUseCurrentStart_Click;
+        EditorUseCurrentEndButton.Click += EditorUseCurrentEnd_Click;
+        EditorChooseOutputButton.Click += EditorChooseOutput_Click;
+        EditorOpenOutputButton.Click += EditorOpenOutput_Click;
+
         PlaybackButton.IsEnabledChanged += (_, _) => SyncShellPlayerControls();
         LayoutUpdated += (_, _) =>
         {
@@ -66,13 +98,10 @@ public sealed partial class EditorPage
         };
 
         // UI-11: MainWindow startup smoke resizes to 800x600, 1000x700 and 1500x900.
-        // Validate the actual shell at those runtime layouts, but never throw during normal use.
+        // Validate the real shell at those layouts without affecting normal user resize.
         var layoutSmoke = Environment.GetCommandLineArgs()
             .Any(arg => arg.StartsWith("--startup-smoke-test=", StringComparison.OrdinalIgnoreCase));
-        if (layoutSmoke)
-        {
-            WorkspaceGrid.SizeChanged += (_, _) => ValidateUiShellLayoutForSmoke();
-        }
+        if (layoutSmoke) WorkspaceGrid.SizeChanged += (_, _) => ValidateUiShellLayoutForSmoke();
 
         SelectShellTool("Subtitle");
         RefreshImageControls();
@@ -94,8 +123,8 @@ public sealed partial class EditorPage
         var export = string.Equals(tag, "Export", StringComparison.OrdinalIgnoreCase);
         if (!subtitle && !blur && !audio && !voice && !image && !export) return;
 
-        // The core ROI state remains authoritative. Audio and Voice are separate
-        // Details tools but both are non-ROI core modes.
+        // Core ROI state remains authoritative. Audio and Voice are separate Details
+        // tools but both are intentionally non-ROI core modes.
         _inspectorMode = subtitle ? InspectorMode.Subtitle
             : blur ? InspectorMode.Blur
             : image ? InspectorMode.Image
