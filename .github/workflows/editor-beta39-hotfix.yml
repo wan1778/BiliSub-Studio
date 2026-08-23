@@ -1,0 +1,86 @@
+name: Apply beta39 translation hotfix
+
+on:
+  pull_request:
+    types: [synchronize, reopened]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: editor-beta39-hotfix-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  apply:
+    if: github.head_ref == 'editor-all-in-one'
+    runs-on: windows-2025
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out exact PR head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install exact .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.400"
+
+      - name: Apply, compile and verify beta39 patch
+        run: |
+          if (-not (Test-Path ".beta39-hotfix.patch" -PathType Leaf)) {
+            Write-Host "Patch already consumed."
+            exit 0
+          }
+          $expectedPatch = "b0a6faf50db69c1184dffc33bac93f2c87de02d9da8f70ae72d6b7df0665e33f"
+          $actualPatch = (Get-FileHash ".beta39-hotfix.patch" -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualPatch -ne $expectedPatch) { throw "beta39 patch checksum mismatch: $actualPatch" }
+
+          git apply --check .beta39-hotfix.patch
+          if ($LASTEXITCODE -ne 0) { throw "beta39 patch check failed" }
+          git apply .beta39-hotfix.patch
+          if ($LASTEXITCODE -ne 0) { throw "beta39 patch apply failed" }
+          Remove-Item .beta39-hotfix.patch -Force
+
+          python csharp/scripts/validate_csharp_migration.py
+          if ($LASTEXITCODE -ne 0) { throw "migration/static contract failed" }
+          python csharp/scripts/generate_csharp_code_map.py --check
+          if ($LASTEXITCODE -ne 0) { throw "generated code map check failed" }
+
+          dotnet restore csharp/BiliSubStudio.sln -p:Platform=x64 -p:NuGetAudit=false
+          if ($LASTEXITCODE -ne 0) { throw "restore failed" }
+          dotnet build csharp/BiliSubStudio.sln -c Release -p:Platform=x64 -p:UseSharedCompilation=false -p:ContinuousIntegrationBuild=true --no-restore
+          if ($LASTEXITCODE -ne 0) { throw "build failed" }
+          dotnet run --project csharp/tests/BiliSubStudio.Core.ContractTests/BiliSubStudio.Core.ContractTests.csproj -c Release --no-build --no-restore
+          if ($LASTEXITCODE -ne 0) { throw "core contracts failed" }
+
+          $props = Get-Content "csharp/Directory.Build.props" -Raw
+          if (-not $props.Contains("4.0.0-beta.39-csharp-p5")) { throw "beta39 version missing" }
+          $service = Get-Content "csharp/src/BiliSubStudio.Core/Editor/LocalSubtitleTranslationService.cs" -Raw
+          if ($service.Contains("/no_think")) { throw "legacy /no_think remains" }
+          foreach ($marker in @(
+            '"--chat-template-kwargs", ThinkingTemplateKwargs',
+            '"--reasoning", ReasoningMode',
+            '"--output", responseFile',
+            'enforceSchema: false'
+          )) {
+            if (-not $service.Contains($marker)) { throw "translation compatibility marker missing: $marker" }
+          }
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix: make Qwen3 JSON translation compatible"
+          if ($LASTEXITCODE -ne 0) { throw "commit failed" }
+          git push origin HEAD:editor-all-in-one
+          if ($LASTEXITCODE -ne 0) { throw "push failed" }
