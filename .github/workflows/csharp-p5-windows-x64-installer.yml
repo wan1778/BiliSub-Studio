@@ -34,6 +34,7 @@ jobs:
         env:
           TARGET_BRANCH: editor-all-in-one
           BASE_SHA: b5c78223c5d5835199bb2ed6be09301fabe379d8
+          PARTS_COMMIT: bba2d8e0b8dcef5b71dd86d828811fdf1696e3c5
           PATCH_SHA256: a11bfed8108c4bc9441095ab468dbab0c00a37eda93bccf18f59271bbcad4b0b
         run: |
           $ErrorActionPreference = "Stop"
@@ -42,6 +43,8 @@ jobs:
           git fetch origin $env:TARGET_BRANCH --depth=100
           $current = (git rev-parse "origin/$env:TARGET_BRANCH").Trim()
           if (-not $current) { throw "Cannot resolve branch head" }
+          git cat-file -e "$env:PARTS_COMMIT`^{commit}"
+          if ($LASTEXITCODE -ne 0) { throw "Original patch commit unavailable" }
 
           $workflowTemp = Join-Path $env:RUNNER_TEMP "bootstrap.yml"
           git show --output=$workflowTemp "$current`:.github/workflows/csharp-p5-windows-x64-installer.yml"
@@ -50,8 +53,8 @@ jobs:
           $encoded = ""
           foreach ($index in 0..5) {
             $name = "part-{0:D2}" -f $index
-            $piece = git show "$current`:.beta33-bootstrap/$name"
-            if ($LASTEXITCODE -ne 0 -or -not $piece) { throw "Missing $name" }
+            $piece = git show "$env:PARTS_COMMIT`:.beta33-bootstrap/$name"
+            if ($LASTEXITCODE -ne 0 -or -not $piece) { throw "Missing original $name" }
             $encoded += ($piece -join "").Trim()
           }
 
