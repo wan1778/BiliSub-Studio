@@ -1,127 +1,146 @@
-# Editor voice classification and TTS ownership
+# Editor Whisper timing, voice routing and local TTS ownership
 
-Status: owner-revised M4 direction, superseding the earlier speaker-diarization/stem plan.
+Status: M4 production implementation on `editor-all-in-one`; Windows verification pending for this checkpoint.
 Date: 2026-08-23
 
 ## Product decision
 
-BiliSub Studio does not need to identify persistent speakers such as SPEAKER_00/SPEAKER_01. The Editor only needs a practical acoustic voice class for choosing a Vietnamese TTS voice:
+Whisper is a timeline-analysis dependency, not merely a fallback SRT generator. For every source video that will use karaoke/TTS, the Editor analyzes the original audio and persists:
 
-- male-like voice
-- female-like voice
-- uncertain
+- word-level start/end timing;
+- speech envelope per segment;
+- pauses between words/speech groups;
+- an advisory acoustic voice class: `male_like`, `female_like`, or `uncertain`;
+- confidence and median pitch used only for TTS routing.
 
-This is a voice/timbre classification used for TTS routing. It must not be presented as a claim about a person's gender identity.
+If an external Chinese SRT is supplied, that SRT remains authoritative for cue text/order/timecodes. Whisper timing is mapped onto the imported cue windows. If no SRT exists, Whisper may additionally produce a fallback Chinese SRT, but that is secondary to timing analysis.
 
-## Removed scope
+The voice class is a timbre/pitch routing signal. It is not a claim about a person's biological sex or gender identity. A manual per-cue `male`/`female` override is authoritative.
 
-The following are removed from the Editor plan:
+## Explicitly removed scope
 
-- pyannote diarization
-- speaker clustering / persistent anonymous speaker IDs
-- Hugging Face gated diarization setup
-- Demucs or any other source/stem separation stage
-- preserve-music/remove-original-dialogue mode
+The Editor does not implement:
 
-Source audio remains only the existing keep / duck / mute policy. If source audio is muted, the complete original mix is muted. The product must not imply that dialogue alone was removed.
+- pyannote diarization;
+- SPEAKER_00/SPEAKER_01 identity clustering;
+- gated diarization tokens/models;
+- Demucs/stem separation;
+- a “remove Chinese dialogue but preserve original music” promise.
 
-## Voice-class analysis
+Source audio remains `keep`, `duck`, or `mute`. `mute` means the complete original mix is muted.
 
-The source SRT/ASR cue timing already supplies the speech windows. For each usable cue, Core may extract a bounded mono analysis segment and estimate an acoustic voice class.
+## Whisper timing implementation
 
-Required output per cue:
+`internal/asr/worker.py` runs the pinned local faster-whisper model with `word_timestamps=True` and VAD. It returns complete word records instead of letting C# discard them.
 
-- class: male | female | uncertain
-- confidence: 0..1
-- analysis version/fingerprint
-- optional manual override
+`LocalAsrService` persists checkpoint schema 2, then writes an app-owned speech-analysis document under `Data/Projects/Speech`. `EditorSpeechAnalysisDocument` verifies SHA-256 and maps the analysis to whichever SRT is active.
 
-The authoritative value is the user's override when present. Low-confidence analysis must never be silently forced to male/female.
+Per cue, the mapped result owns:
 
-The first implementation should prefer a small language-independent acoustic classifier/feature pipeline over a diarization stack. It must run locally, require no paid API and use app-owned FFmpeg/runtime components. The exact classifier is not pinned by this architecture checkpoint; it must be benchmarked on real Mandarin film dialogue before production pinning.
+- speech start/end inside the cue;
+- leading/trailing silence;
+- word timings;
+- internal pauses >= 180 ms;
+- voice-class suggestion/confidence/pitch.
 
-## NghiTTS audit and intended reuse
+Changing the SRT does not invalidate the video-level Whisper analysis; the timing is remapped. Changing the source video/model revision invalidates the analysis.
 
-Reference repository: https://github.com/nghimestudio/nghitts
+## Karaoke ASS
 
-The repository implements client-side Piper-compatible Vietnamese TTS using ONNX models, Vietnamese text normalization, phonemization, chunking, speed control and WAV generation. Its code repository is Apache-2.0.
+`VideoEditorService.BuildAss` is the single ASS owner for both render and user-exported karaoke ASS.
 
-BiliSub Studio remains native C# + WinUI 3. It must not embed the Vue/Vite web application or create a localhost/web backend. Reuse is limited to reviewed algorithms, model/config formats and compatible assets.
+When word timing exists and Karaoke is enabled:
 
-Initial generic Vietnamese voice candidates from the repository documentation:
+- dialogue start/end uses the detected speech envelope;
+- Vietnamese display tokens receive ASS `\\kf` durations derived from the original word/pause rhythm;
+- the duration allocator preserves total speech time even when Chinese and Vietnamese token counts differ.
 
-- calmwoman3688: female voice, about 60.6 MB ONNX + JSON
-- deepman3909: male voice, about 60.6 MB ONNX + JSON
+This is rhythm alignment, not a false one-to-one semantic claim between Chinese and Vietnamese words.
 
-Celebrity-named voices are not default candidates. The source-code license does not by itself prove that separately hosted model weights, datasets or a person's voice likeness are cleared for BiliSub Studio distribution. Each selected model must have explicit provenance/license review, exact size and SHA-256 before bundling or app-managed download.
+Preview slicing must shift cue, word and pause timestamps together. Final export and the saved `*.karaoke.ass` use the same builder.
 
-## TTS provider policy
+## Local NghiTTS/Piper implementation
 
-Primary direction: local NghiTTS/Piper-compatible ONNX inference.
+Reference repository: `nghimestudio/nghitts`.
 
-Fallback policy:
+BiliSub Studio does not embed its Vue/Vite application, Web Workers, Cloudflare endpoints, WebView or localhost server. The native app uses reviewed local Piper-compatible ONNX voice assets in an app-managed Python runtime.
 
-- the Editor must remain usable without paid APIs;
-- online TTS is optional only if free and not required for project recovery;
-- no API key, subscription or per-character billing may become a mandatory production dependency.
+Pinned runtime for this checkpoint:
 
-The production TTS owner will expose one provider-neutral contract so another local model can replace a voice without changing Editor project data.
+- Piper: `piper-tts 1.4.2` Windows x64 wheel;
+- wheel SHA-256: `9c4a3a11f5889ea9d0df4414dce2bd9bee5ce7d9cf604c8fd5e307441d4c031f`;
+- Python: app-managed 3.12 bootstrap already owned by BiliSub Studio.
 
-## Timing fit
+Pinned generic voice candidates:
 
-For each translated cue:
+- male: `deepman3909.onnx` — 63,516,050 bytes — SHA-256 `1fb3a404e9927c87367d4175e8cad24ffc6d9959af29888c38682e5ec621056c`;
+- female: `calmwoman3688.onnx` — 63,516,050 bytes — SHA-256 `8db60d8afc50dc0921fd3a1b0b942813f44cc3744dbe2534617f2b8726096e7e`;
+- both configs: 4,855 bytes — SHA-256 `971f57f8d504223fee5b40d664f503cf769baf7db21f7d2ae0554a75d07de2f8`;
+- voice source revision: `sannht/vi_voice@62e57b18157ed213b3863a7a8a35b14d3404554b`.
 
-1. synthesize the Vietnamese text;
-2. measure actual WAV duration;
-3. adjust the TTS speed within a safe voice-specific range;
-4. if needed, apply only bounded post time-stretch;
-5. if it still cannot fit the cue naturally, mark the cue for review.
+The mirror's index identifies the voice-weight license as `unknown`. Therefore these weights are allowed only for integration/field verification on this draft branch until redistribution rights are resolved. The public release gate must remain closed. Celebrity-named voice models are not production defaults.
 
-The system must not force extreme playback rates merely to fit a subtitle window.
+The Piper runtime is GPL-3.0-or-later and is executed as a separate app-managed local process. Third-party notices/license obligations must be completed before public distribution.
 
-## Cache and invalidation
+## Vietnamese text and rhythm fit
 
-TTS cache keys include at least:
+`VietnameseTtsTextNormalizer` normalizes common Vietnamese TTS forms locally (numbers, dates, time, decimals, percentages). No online API is required.
 
-- translated cue text
-- selected voice/model fingerprint
-- speed/rate settings
-- text-normalization version
-- timing-fit version
+`LocalTtsService` maps each translated cue to Whisper rhythm groups. The user override wins; otherwise a confident `male_like`/`female_like` suggestion selects the matching generic voice. Uncertain routing is marked for review.
 
-Changing one cue text invalidates only that cue's TTS. Changing the male/female default voice invalidates only cues routed to that class unless a cue has an explicit manual voice assignment.
+For each rhythm group, `internal/tts/worker.py`:
 
-## Preview/render contract
+1. synthesizes baseline audio;
+2. measures actual WAV duration;
+3. retries Piper `length_scale` inside 0.86–1.16;
+4. measures again;
+5. applies bounded pitch-preserving FFmpeg `atempo` inside 0.92–1.08 when needed;
+6. measures again;
+7. marks `fit` or `review` instead of forcing extreme speed.
 
-TTS is not a MediaPlayer-only effect.
+No SRT timecode/order is silently rewritten.
 
-Both `Xem bản chỉnh` and final export must consume the same audio render plan:
+## Cache and long-video behavior
 
-- source mix keep/duck/mute
-- timed Vietnamese TTS WAV clips
-- the same gain/timing settings
+TTS clip keys include timing algorithm version, Piper version, voice revision, cue/group identity, selected voice, group timing and normalized Vietnamese text.
 
-Preview slices must clip and shift TTS cue timing exactly as subtitle/region timing is already clipped and shifted.
+Clips are cached per rhythm group. The worker assembles app-owned 300-second block WAV caches and one seekable `voice-master.flac`. This avoids thousands of FFmpeg input arguments on long films while retaining selective clip/block regeneration.
 
-## User-facing behavior
+Changing translation text or a per-cue voice override invalidates the TTS state/track, not the source video, SRT translation, Blur regions, or Whisper analysis. Missing speech/TTS cache files invalidate only the corresponding derived state rather than quarantining the whole Editor project.
 
-The Audio/Voice inspector should remain simple:
+## Preview/render parity
 
-- Giọng nam: selected local voice
-- Giọng nữ: selected local voice
-- Phân loại tự động: on/off
-- per-cue override when needed
-- warning count for uncertain voice class or timing-fit failure
+Voice is not a MediaPlayer-volume approximation.
 
-No speaker identity list is required.
+`VideoEditRequest` carries the app-owned `EditorVoiceTrack`. `VideoEditorService` uses one source/TTS audio graph for both final render and `Xem bản chỉnh`:
+
+- `keep`: source + TTS;
+- `duck`: reduced complete source mix + TTS;
+- `mute`: TTS only.
+
+The 12-second proxy seeks the same source time in both the video and the seekable voice master. Karaoke cue/word/pause timing is shifted into proxy time by `BuildPreviewSlice`.
+
+## User-facing Audio inspector
+
+The compact Audio inspector owns:
+
+- `Phân tích nhịp + Nam/Nữ`;
+- `Tạo voice Việt local`;
+- Karaoke on/off;
+- current-cue automatic/male/female override;
+- progress/cancel/review state;
+- existing source Keep/Duck/Mute controls.
+
+No speaker identity list and no new long navigation tab are introduced.
 
 ## Release gate
 
-No M4 implementation is field-PASS until:
+This implementation is not field-PASS until all are true:
 
-- local voice-class analysis is measured on real Mandarin film dialogue;
-- selected generic NghiTTS/Piper model files have explicit provenance/license and exact SHA-256;
-- TTS cache/retry/timing-fit contracts pass;
-- processed preview audibly matches final render;
-- Windows build, contract tests, XAML/startup/layout smoke, installer smoke and candidate packaging all pass;
-- the consolidated Editor field test passes.
+- C# contract tests include word timing, pause mapping, karaoke, voice override persistence, NghiTTS manifest, timing grouping and Keep/Duck/Mute voice graph parity;
+- WinUI/XAML build and startup/layout smoke pass;
+- installer/custom-path/uninstall smoke and candidate packaging pass;
+- processed preview audibly matches final render on Windows;
+- male/female heuristic is measured on representative Mandarin film dialogue and uncertain cases remain reviewable;
+- selected voice-weight redistribution/provenance is resolved;
+- one consolidated Editor real-machine field test passes.

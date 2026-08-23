@@ -1,101 +1,153 @@
-# C# Editor M4 revised call map
+# C# Editor M4 implemented call map
 
-Status: owner-revised voice-class + local TTS plan. This supersedes the earlier pyannote diarization / stem-separation M4 assumptions.
+Status: production path implemented on `editor-all-in-one`; Windows CI/field verification gates remain.
 
 ```text
-EditorPage
-  -> translated subtitle cues + source timeline
-  -> Voice inspector
-       -> male default local voice
-       -> female default local voice
-       -> optional per-cue override
-       -> uncertain/review warnings
+Video + original audio
+  -> EditorPage.CreateAsr_Click
+  -> BiliSubApplication.StartEditorAsr
+  -> LocalAsrService.TranscribeAsync
+       -> LocalAsrInstaller (pinned faster-whisper model/runtime)
+       -> ToolManager.EnsureFfmpegAsync
+       -> extract mono 16 kHz source audio
+       -> GPU/CPU real benchmark
+       -> internal/asr/worker.py
+            faster_whisper(... local_files_only=True)
+            word_timestamps=True
+            VAD
+            per-segment F0 feature routing
+            -> words[] + male_like/female_like/uncertain + confidence
+       -> resumable checkpoint schema 2
+       -> EditorSpeechAnalysisDocument.SaveAsync
+            app-owned speech JSON + SHA-256
+       -> optional fallback .zh.srt only when project had no external SRT
 
-BiliSubApplication.StartEditorVoiceAnalysis
-  -> EditorVoiceClassService
-       -> use cue start/end as bounded analysis windows
-       -> app-owned FFmpeg extracts mono analysis audio
-       -> local acoustic classifier / feature pipeline
-       -> EditorVoiceClassResult
-            cue id
-            class = male | female | uncertain
-            confidence 0..1
-            analysis fingerprint
-       -> persist result in Editor project
+External/generated Chinese SRT
+  -> EditorSubtitleDocument
+  -> remains authoritative for cue text/order/timecode
+  -> EditorSpeechAnalysisDocument.MapToCues
+       map Whisper words by timeline overlap
+       derive speech envelope
+       derive leading/trailing silence
+       derive internal pauses
+       derive advisory voice routing per cue
 
-BiliSubApplication.StartEditorTts
-  -> LocalVietnameseTtsService
-       -> NghiTTS/Piper-compatible Vietnamese text normalization
-       -> resolve local ONNX model + JSON config by reviewed manifest
-       -> default route
-            male-like -> selected male voice
-            female-like -> selected female voice
-            uncertain -> configured fallback or user review
-       -> explicit per-cue override wins
-       -> synthesize cue WAV
-       -> measure real duration
-       -> TimingFitService
-            safe synthesis-rate retry
-            bounded post time-stretch when necessary
-            unresolved mismatch -> review warning
-       -> TtsClipCache
-            content/model/settings keyed
-            atomic completed clip promotion
+Chinese SRT
+  -> LocalSubtitleTranslationService
+       pinned local Qwen3-8B Q4_K_M + Dịch Trung Tu Tiên skill
+       -> VietnameseText without changing cue IDs/order/timecodes
+       -> translation change clears stale TTS state only
 
-EditorPage.XemBanChinh
-  -> CurrentEditRequest
-       -> source keep/duck/mute policy
-       -> timed TTS clip plan
-       -> subtitle / regions
+EditorPage.GenerateTts_Click
+  -> BiliSubApplication.StartEditorTts
+  -> LocalTtsService.GenerateAsync
+       -> verify speech-analysis SHA/source fingerprint
+       -> VietnameseTtsTextNormalizer
+       -> voice routing
+            manual cue override wins
+            male_like confidence >= threshold -> deepman3909
+            female_like confidence >= threshold -> calmwoman3688
+            uncertain -> closest fallback + review flag
+       -> BuildRhythmGroups from Whisper pauses
+       -> LocalTtsInstaller
+            app-managed Python 3.12
+            pinned piper-tts 1.4.2 Windows wheel + SHA-256
+            pinned NghiTTS-compatible ONNX/config files + SHA-256
+       -> internal/tts/worker.py
+            synth baseline
+            measure duration
+            bounded Piper length_scale
+            measure
+            bounded FFmpeg atempo
+            measure
+            fit/review
+            clip cache
+            300-second block cache
+            seekable voice-master.flac
+       -> EditorTtsProject + EditorVoiceTrack
+
+Karaoke
+  -> EditorSpeechAnalysisDocument.MapToCues
+  -> EditorSubtitleBurn(SpeechTiming, Karaoke=true)
+  -> VideoEditorService.BuildAss
+       speech envelope -> Dialogue start/end
+       original word/gap rhythm -> resampled Vietnamese token durations
+       ASS {\\kf...} tags
+  -> same builder used by:
+       final hardsub
+       Xem bản chỉnh proxy
+       BiliSubApplication.SaveEditorKaraokeAssAsync -> *.karaoke.ass
+
+Xem bản chỉnh
+  -> EditorPage.CurrentEditRequest
+       regions
+       subtitle + karaoke timing
+       source Keep/Duck/Mute
+       EditorVoiceTrack
   -> BiliSubApplication.CreateEditorPreviewSegmentAsync
   -> VideoEditorService.CreatePreviewSegmentAsync
-       -> BuildPreviewSlice
+       BuildPreviewSlice
             clip/shift regions
-            clip/shift subtitle cues
-            clip/shift TTS clips
-       -> shared video graph
-       -> shared audio graph
-            source mix keep/duck/mute
-            TTS clip inputs delayed to cue position
-            gain / mix / limiter policy
-       -> H.264/AAC preview proxy
+            clip/shift cues
+            clip/shift word timings + pauses
+       seek source video to sourceStart
+       seek voice-master.flac to same source time
+       shared BuildVoiceAudioFilter
+            keep -> source + voice
+            duck -> volume(source) + voice
+            mute -> voice only
+       H.264/AAC yuv420p faststart proxy
 
-EditorPage.Render_Click
-  -> same CurrentEditRequest / audio render plan
+Final export
+  -> same CurrentEditRequest
   -> BiliSubApplication.StartEditor
   -> VideoEditorService.RunAsync
-       -> same source/TTS audio graph as preview
-       -> final output validation
+       same BuildAss
+       same BuildVoiceAudioFilter
+       H.264 + AAC final output
 ```
 
-## Explicitly removed paths
+## Persistence (schema 5)
+
+```text
+EditorProject
+  Speech: EditorSpeechProject
+    model/revision/device/compute
+    analysis path + SHA-256
+    segment/word counts
+    benchmark RTF
+
+  Tts: EditorTtsProject
+    engine/version
+    male/female voice ids
+    result manifest + SHA-256
+    EditorVoiceTrack
+    cue/review counts
+
+  VoiceOverrides
+    cue id -> male | female
+
+  Subtitle.Karaoke
+    persisted switch
+```
+
+Missing speech/TTS cache files selectively invalidate those derived fields. A missing derived cache must not quarantine an otherwise valid Editor project.
+
+## Explicitly absent paths
 
 ```text
 NO pyannote
-NO SPEAKER_00 / SPEAKER_01 clustering
-NO gated diarization model/token requirement
-NO Demucs
-NO vocal/non-vocal stem cache
-NO "remove dialogue but keep music" promise
-NO MediaPlayer-only TTS preview approximation
+NO speaker identity clustering
+NO Hugging Face gated diarization token
+NO Demucs/stem separation
+NO paid TTS API
+NO localhost/WebView NghiTTS app
+NO MediaPlayer-only fake voice preview
 ```
 
-## Persistence target
+## Third-party gate
 
-A future schema revision will add per-cue voice metadata and TTS clip metadata. Exact production record names are deferred until implementation, but ownership is fixed:
-
-```text
-Cue voice state
-  auto class
-  confidence
-  manual class/voice override
-  selected local voice fingerprint
-  TTS clip key/path/duration
-  timing-fit state
-```
-
-Changing a cue translation or its selected voice invalidates that cue TTS only. Changing Blur/Subtitle placement does not invalidate voice analysis or TTS.
-
-## Native-app constraint
-
-NghiTTS is a reference implementation and model source candidate. BiliSub Studio remains native C# + .NET 10 + WinUI 3. The Vue/Vite frontend, browser Web Worker architecture and Cloudflare API endpoints are not production dependencies.
+- Piper runtime: GPL-3.0-or-later, separate local process.
+- NghiTTS reference source: Apache-2.0.
+- selected `sannht/vi_voice` weight index currently says `license: unknown` for the pinned generic weights.
+- therefore public release stays blocked until voice-weight redistribution/provenance is resolved.

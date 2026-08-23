@@ -233,7 +233,7 @@ for marker in ("available subtitle > Bilibili AI subtitle", "normal metadata emp
     require(marker in subtitle_fixture, f"subtitle regression fixture missing {marker}")
 
 composition = read(CSHARP / "src/BiliSubStudio.Core/Application/BiliSubApplication.cs")
-for marker in ("PrepareShutdownAsync", "PauseJobAsync", "WindowsProcessContainment", "StartOcrScan", "StartEditor", "StartEditorAsr", "StartSubtitle", "StartVideo"):
+for marker in ("PrepareShutdownAsync", "PauseJobAsync", "WindowsProcessContainment", "StartOcrScan", "StartEditor", "StartEditorAsr", "StartEditorTts", "SaveEditorKaraokeAssAsync", "StartSubtitle", "StartVideo"):
     require(marker in composition, f"application composition root missing {marker}")
 
 worker_client = read(CSHARP / "src/BiliSubStudio.Core/Ocr/OcrWorkerClient.cs")
@@ -261,14 +261,18 @@ require("ImportSrtButton.IsEnabled = idle && hasMedia" not in editor,
         "Editor SRT picker regressed to requiring a selected video")
 require("PrepareAiButton.IsEnabled = idle && hasMedia" not in editor,
         "Editor AI preparation regressed to requiring a selected video")
-for marker in ("CreateAsrButton", "CreateAsr_Click", "CreateAsrButton.IsEnabled = editable;", "PollAsrJobAsync", "EditorAsrProject"):
-    require(marker in editor, f"Editor video-only ASR UI/state contract missing {marker}")
+for marker in (
+    "CreateAsrButton", "CreateAsr_Click", "CreateAsrButton.IsEnabled = editable;", "PollAsrJobAsync",
+    "GenerateTtsButton", "GenerateTts_Click", "KaraokeToggle", "CurrentCueVoiceBox", "SaveKaraokeAssButton",
+    "EditorSpeechProject", "EditorTtsProject",
+):
+    require(marker in editor, f"Editor Whisper timing/TTS UI-state contract missing {marker}")
 
 editor_service = read(CSHARP / "src/BiliSubStudio.Core/Editor/VideoEditorService.cs")
 for marker in (
     "CreatePreviewSegmentAsync", "BuildPreviewSlice", "BuildPreviewArguments", "BuildFilterCore",
     'Path.Combine(paths.Temp, "Editor", "Preview")', '"-preset", "ultrafast"',
-    "BuildAudioArgumentsCore(audio, mp4: true, resetTimestamps: true)", "DeletePreviewSegmentAsync",
+    "BuildAudioArgumentsCore(audio, mp4: true, resetTimestamps: true)", "BuildVoiceAudioFilter", "BuildKaraokeText", "DeletePreviewSegmentAsync",
 ):
     require(marker in editor_service, f"Editor processed-preview/render parity contract missing {marker}")
 
@@ -276,7 +280,7 @@ asr_installer = read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalAsrInstaller.c
 asr_service = read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalAsrService.cs")
 asr_worker = read(ROOT / "internal/asr/worker.py")
 attributes = read(ROOT / ".gitattributes")
-for worker_path in ("internal/ocr/worker.py text eol=lf", "internal/asr/worker.py text eol=lf"):
+for worker_path in ("internal/ocr/worker.py text eol=lf", "internal/asr/worker.py text eol=lf", "internal/tts/worker.py text eol=lf"):
     require(worker_path in attributes, f"Windows worker byte provenance missing {worker_path}")
 for marker in (
     'FasterWhisperVersion = "1.2.1"', 'CTranslate2Version = "4.8.1"',
@@ -289,10 +293,29 @@ for marker in (
     require(marker in asr_installer, f"ASR pinned installer contract missing {marker}")
 for marker in ("SelectRuntimeAsync", "ProbeRealtimeFactor", "asr-probe-gpu", "asr-probe-cpu", "SaveCheckpointAsync", "RunStreamingAsync", "OwnedProcessGroup"):
     require(marker in asr_service, f"ASR benchmark/checkpoint/process contract missing {marker}")
-for marker in ('local_files_only=True', 'language="zh"', "word_timestamps=True", "vad_filter=True", '"event": "segment"'):
+for marker in ('local_files_only=True', 'language="zh"', "word_timestamps=True", "vad_filter=True", '"event": "segment"', '"voice_class"', '"median_pitch_hz"'):
     require(marker in asr_worker, f"ASR worker offline/Chinese/timestamp contract missing {marker}")
 require("WhisperModel(" in asr_worker and "str(model_dir)" in asr_worker,
         "ASR worker must load only the verified local model directory")
+
+
+tts_installer = read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalTtsInstaller.cs")
+tts_service = read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalTtsService.cs")
+tts_worker = read(ROOT / "internal/tts/worker.py")
+for marker in (
+    'PiperVersion = "1.4.2"',
+    "9c4a3a11f5889ea9d0df4414dce2bd9bee5ce7d9cf604c8fd5e307441d4c031f",
+    'VoiceRevision = "62e57b18157ed213b3863a7a8a35b14d3404554b"',
+    'MaleVoice = "deepman3909"', 'FemaleVoice = "calmwoman3688"',
+    "1fb3a404e9927c87367d4175e8cad24ffc6d9959af29888c38682e5ec621056c",
+    "8db60d8afc50dc0921fd3a1b0b942813f44cc3744dbe2534617f2b8726096e7e",
+    "DownloadVerifiedAsync", "EnsurePrivatePythonAsync",
+):
+    require(marker in tts_installer, f"local NghiTTS/Piper installer contract missing {marker}")
+for marker in ("whisper-rhythm-v1", "BuildRhythmGroups", "SelectVoice", "EditorSpeechAnalysisDocument.MapToCues", "OwnedProcessGroup"):
+    require(marker in tts_service, f"local TTS timing/cache/process contract missing {marker}")
+for marker in ("PiperVoice.load", "SynthesisConfig", "length_scale", "atempo=", "voice-master.flac", '"event": "cue"', '"event": "block"'):
+    require(marker in tts_worker, f"local TTS worker contract missing {marker}")
 
 main_xaml = read(CSHARP / "src/BiliSubStudio.App/MainWindow.xaml")
 main_code = read(CSHARP / "src/BiliSubStudio.App/MainWindow.xaml.cs")

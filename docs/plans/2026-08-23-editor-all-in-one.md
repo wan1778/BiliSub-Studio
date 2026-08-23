@@ -1,6 +1,8 @@
 # Editor All-in-One for Chinese film localization
 
-Status: M1 foundation, the requested M2 common path, the icon-mode workspace, the first persisted source-audio policy, video-only Chinese ASR and processed A/V preview are implemented on the draft Editor branch. The owner explicitly deferred incremental field testing until the requested Editor branch is complete. Windows candidate gates remain mandatory for every checkpoint; this does not authorize a merge or public release.
+Status: M1-M3 foundations are implemented and the M4 production path is now being completed on the draft Editor branch: Whisper word/pause timing, lightweight male/female voice routing, local NghiTTS/Piper voice generation, timing fit, karaoke ASS, cache persistence, and shared preview/export TTS mixing. The owner explicitly deferred incremental field testing until the requested Editor branch is complete. Windows candidate gates remain mandatory for every checkpoint; this does not authorize a merge or public release.
+
+> **Owner revision (binding, 2026-08-23):** Whisper is a timing/rhythm analyzer even when an SRT already exists; its fallback Chinese SRT is secondary. Persistent speaker diarization/pyannote is out of scope. Voice routing only needs `male_like` / `female_like` / `uncertain` with confidence and manual override. Required TTS is local/free NghiTTS-compatible Piper ONNX. Edge/paid APIs are not production dependencies. Demucs/stem separation is removed. Source audio remains Keep/Duck/Mute and generated TTS must use the exact same processed-preview/final-render graph.
 
 Date: 2026-08-23
 
@@ -10,8 +12,8 @@ The Editor is a guided Chinese-film localization workstation, not a generic nonl
 
 It must support two source paths:
 
-1. Video only: extract audio -> Chinese ASR -> timed Chinese cues -> Vietnamese translation -> speaker/audio analysis -> Vietnamese TTS -> subtitle/audio mix -> final render.
-2. Video plus source SRT: import and validate SRT -> Vietnamese translation -> speaker/audio analysis -> Vietnamese TTS -> subtitle/audio mix -> final render.
+1. Video only: Whisper timing/word analysis -> fallback Chinese cues when needed -> Vietnamese translation -> male/female voice routing -> local Vietnamese TTS -> karaoke/subtitle/audio mix -> final render.
+2. Video plus source SRT: import and validate SRT -> Whisper timing/word analysis without replacing the SRT -> Vietnamese translation -> male/female voice routing -> local Vietnamese TTS -> karaoke/subtitle/audio mix -> final render.
 
 The existing Blur/Mosaic/Cover region editor remains part of the workflow for masking burned-in source subtitles and watermarks.
 
@@ -22,7 +24,7 @@ The existing Blur/Mosaic/Cover region editor remains part of the workflow for ma
 - The user must not install system Python, pip, PowerShell modules, FFmpeg, or model dependencies.
 - Optional AI runtimes are app-managed, versioned, checksum-verified, and isolated under `Tools`.
 - Local/offline processing is the default because paid API budget cannot be assumed.
-- Provider APIs are optional accelerators and must never be required to open or recover a project.
+- The current Editor localization path has no paid/required API dependency; translation, timing analysis and TTS are local/app-managed.
 - Video commonly exceeds four hours. Every long stage is resumable and bounded in RAM/VRAM/disk use.
 - Do not dump a full video's frames to `%TEMP%` or the system drive.
 - Project data, artifacts, models, cache, and temporary output stay in the app-owned same-drive roots.
@@ -31,9 +33,9 @@ The existing Blur/Mosaic/Cover region editor remains part of the workflow for ma
 - Correctness and recoverability outrank peak throughput.
 - Every production change updates call/data maps, adds regression coverage, passes Windows CI/package gates, and then passes the exact real-machine field scenario before public release.
 
-## 3. Current-source audit and root cause
+## 3. Historical source audit and resolved root cause
 
-The current C# Editor is only a thin region/export surface:
+The migration baseline that started this branch was only a thin region/export surface:
 
 ```text
 EditorPage
@@ -44,55 +46,45 @@ EditorPage
   -> FFmpeg Blur/Mosaic/Cover render
 ```
 
-It does not yet own a persisted project, subtitle document, translation provider, ASR worker, speaker map, TTS clips, audio stems, render manifest, or pipeline checkpoint.
+That baseline did not own a persisted project, subtitle document, translation pipeline, timing analysis, TTS cache, or resumable localization checkpoint. It also omitted selected-region editing, Undo, presets, and processed-frame effect preview.
 
-The C# migration also omitted behavior that existed in the historical native editor model: selected-region editing, Undo, presets, and processed-frame effect preview. The current timeline does not show region spans, and saved regions cannot be moved/resized/edited directly.
-
-The root cause is therefore architectural, not one missing button: the migration preserved the final FFmpeg exporter but did not port an Editor domain model or a resumable localization pipeline.
+The root cause was architectural, not one missing button: the migration preserved the final FFmpeg exporter but had not ported an Editor domain model or a resumable localization pipeline. M1-M4 on this draft branch now add those ownership boundaries; the branch remains build/field gated until the complete Editor scenario passes.
 
 ## 4. Corrections to the proposed technology assumptions
 
-### 4.1 ASR
+### 4.1 Whisper timing and fallback ASR
 
-Use an app-managed `faster-whisper` worker as the initial local ASR implementation. It supports word-level timestamps and Silero VAD, and CTranslate2 offers practical CPU/GPU execution. Model and compute type are selected by a resource preflight; the user is not asked to understand CUDA or model formats.
+Use the app-managed `faster-whisper` worker as the local timing analyzer. It runs on the source audio whether the project imported an SRT or not. The worker preserves word-level timestamps, VAD-derived speech regions, pauses, confidence and source offsets. Imported SRT text/timecodes remain authoritative; Whisper-generated Chinese SRT is only the fallback path when no source SRT exists.
 
-ASR output is an internal cue document with stable IDs, word timing, confidence, language, and source offsets. SRT is an import/export format, not the only source of truth.
+The C# boundary must persist the worker's word records instead of collapsing them to segment timing. `EditorSpeechAnalysisDocument` maps source-audio words and pauses onto stable SRT cue IDs so karaoke and TTS fitting reuse the same timing evidence after restart.
 
-### 4.2 Diarization is not gender detection
+### 4.2 Lightweight voice routing, not speaker identity
 
-`pyannote.audio` answers "who spoke when" and returns anonymous speaker labels. It does not guarantee male/female classification.
+Persistent speaker identity is not required. There is no pyannote/diarization dependency. Each usable dialogue region receives only an advisory acoustic class:
 
-The product therefore separates three concepts:
+- `male_like`;
+- `female_like`;
+- `uncertain`.
 
-- diarization label: `SPEAKER_00`, `SPEAKER_01`, ...;
-- optional voice-class suggestion: a confidence-scored acoustic suggestion;
-- user voice assignment: the authoritative TTS voice for that speaker.
+The suggestion carries confidence and pitch evidence. A per-cue manual male/female override is authoritative and survives project reopen. The UI must not present the acoustic class as a factual biological-sex claim.
 
-Automatic suggestions are allowed, but the UI must expose a simple override and never present uncertain gender as fact.
+### 4.3 Source audio policy; no stem separation
 
-### 4.3 Preserving music requires source separation
+The product does not attempt to remove only Chinese dialogue while preserving music/effects. Demucs/stem separation is out of scope.
 
-Whisper, VAD, and diarization cannot remove only original dialogue while preserving music/effects. FFmpeg volume reduction alone lowers the whole source mix.
+The exact audio modes are:
 
-The audio modes are therefore explicit:
+1. `Giữ nguyên`: keep the complete source mix and add TTS.
+2. `Giảm âm lượng`: duck the complete source mix and add TTS.
+3. `Tắt tiếng gốc`: remove the source track and keep TTS.
 
-1. `Lồng trên tiếng gốc`: keep source mix and add TTS.
-2. `Giảm tiếng gốc`: duck the complete source mix under TTS; fast but also lowers music/effects.
-3. `Giữ nhạc nền`: run an optional local stem-separation stage, then mix TTS with the non-vocal stem. This is slower and may produce artifacts on film audio.
+The same policy is built by one FFmpeg audio graph for the 12-second processed preview and final export.
 
-The high-quality mode initially uses an app-managed two-stem Demucs-class worker. The UI must not promise perfect dialogue removal.
+### 4.4 Local Vietnamese TTS
 
-### 4.4 TTS provider stability
+Required TTS is local/free and app-managed. BiliSub Studio uses NghiTTS-compatible Vietnamese Piper ONNX voices without embedding the NghiTTS Vue/Web runtime, without WebView, localhost, or paid API.
 
-`edge-tts` uses Microsoft Edge's online speech service without a documented application API key. It is useful and free, but it is not a stable production contract controlled by BiliSub Studio.
-
-TTS is therefore provider-based:
-
-- `EdgeOnlineTtsProvider`: free online provider, runtime health check, retry/backoff, cache, and clear unavailable state;
-- `PiperLocalTtsProvider`: offline fallback, app-managed voice packages;
-- future official/API providers can be added without changing the project model.
-
-The voice catalog is discovered from the selected provider rather than hard-coded as "14+ voices". For Microsoft's current Vietnamese catalog, `HoaiMy` is female and `NamMinh` is male. `NgocChinh` must not be advertised as an Edge/Microsoft voice unless the active provider actually returns it.
+Initial generic routing candidates are `deepman3909` (male) and `calmwoman3688` (female). Runtime/model revision, size and SHA-256 are pinned before use. Celebrity-named voice packages are not defaults. The current mirror marks the generic weight license as unknown, so public redistribution remains blocked until model-weight provenance/redistribution rights are resolved even if Windows CI passes.
 
 ### 4.5 Timing fit
 
@@ -178,21 +170,22 @@ EditorProject
       stable id
       source start/end/text/words/confidence
       translated text/status/review flags
-      speaker id/voice assignment
-      synthesized clip key/duration/timing-fit status
+      Whisper word/pause timing and acoustic voice-class suggestion
+      manual male/female override
+      synthesized cache key/duration/timing-fit/review status
   Regions[]
       stable id, normalized geometry, effect, strength, time scope
-  AudioAnalysis
-      speech/silence turns, anonymous speaker turns, confidence, user overrides
+  SpeechAnalysis
+      Whisper segments/words/pauses, confidence, male_like/female_like/uncertain suggestion
   AudioMix
-      mode, source/stem levels, TTS level, ducking settings
+      source Keep/Duck/Mute, TTS track/gain and exact shared preview/export policy
   SubtitleRender
       off/soft/hard, style and safe-area settings
   StageManifests
       stage, input fingerprint, settings fingerprint, output artifacts, completion state
 ```
 
-API keys/tokens are stored through Windows DPAPI in the existing protected-data ownership boundary. Hugging Face acceptance/token requirements for gated pyannote models must be surfaced before download; a partially downloaded model is not a healthy installation.
+Required Editor AI/TTS stages do not require paid API keys or a gated diarization token. Any future optional provider credential must remain outside project JSON in the existing protected-data ownership boundary.
 
 ## 7. Dependency invalidation rules
 
@@ -204,8 +197,8 @@ Changing an upstream input invalidates only dependent work:
 | Region geometry/effect | ASR, translation, TTS | processed preview and final render |
 | Source SRT text/timing | source media and audio analysis | translation, TTS, final render |
 | Glossary `.md` | ASR and source cues | translation, TTS, final render |
-| Translation text | ASR, diarization, stems | affected TTS clips and final render |
-| Speaker voice | ASR, translation, stems | affected TTS clips and final render |
+| Translation text | Whisper timing/audio analysis | affected TTS cache and final render |
+| Manual male/female voice override | Whisper timing, translation | affected TTS cache and final render |
 | Audio-mix mode/levels | cues and TTS clips | mix and final render |
 | Source media fingerprint | project metadata only | every derived artifact |
 
@@ -216,15 +209,15 @@ No stage may reuse an artifact whose input/settings fingerprint no longer matche
 The Editor remains one top-level tab with a guided task flow:
 
 1. `Nguồn`: video, optional source SRT, glossary `.md`.
-2. `Phụ đề`: import validation or local Chinese ASR.
-3. `Dịch`: provider/model, glossary audit, per-cue review.
-4. `Giọng đọc`: speaker groups, voice assignment, timing/collision review.
-5. `Hoàn thiện`: mask regions, audio mode, hard/soft subtitle, output, render.
+2. `Phụ đề`: import validation plus Whisper word/pause timing; fallback Chinese SRT only when needed.
+3. `Dịch`: local model/skill, glossary audit, per-cue review.
+4. `Giọng đọc`: male/female suggestion/override, local voice generation, timing-fit review and karaoke ASS.
+5. `Hoàn thiện`: mask regions, Keep/Duck/Mute source audio, hard subtitle, output, render.
 
 The workspace is not a Premiere-style generic editor:
 
 - left/center: native preview with direct multi-region manipulation and processed-frame preview;
-- bottom: one timeline with cue, speaker, TTS, region, and warning lanes;
+- bottom: one timeline with cue, TTS/rhythm, region, and warning lanes;
 - right: current-stage inspector and one dominant next action;
 - persistent stage/progress/recovery state;
 - advanced model/provider/codec controls are collapsed by default.
@@ -247,23 +240,22 @@ Modes select a pipeline policy, not a cosmetic label:
 ### Nhanh
 
 - Prefer imported SRT.
-- Skip diarization and stem separation unless explicitly enabled.
-- One default male and one default female/manual voice mapping.
-- Whole-mix ducking or original-audio mix.
+- Run the same local Whisper timing pass with the safest measured device.
+- One default male and one default female voice with optional per-cue override.
+- Whole-source Keep/Duck/Mute mixing plus cached TTS.
 
 ### Cân bằng
 
-- Local ASR when SRT is absent.
-- Speaker diarization and silence analysis.
-- Per-speaker TTS mapping and measured timing fit.
+- Whisper word/pause timing for every source path; fallback Chinese SRT only when absent.
+- Lightweight male/female/uncertain routing with confidence.
+- Per-cue/rhythm-group TTS mapping and measured timing fit.
 - Cached translation/TTS artifacts and recoverable checkpoints.
 
 ### Chất lượng cao
 
-- Highest safe local ASR model selected by preflight.
-- Diarization plus overlap/collision review.
-- Optional two-stem separation for dialogue replacement.
-- Per-cue timing retries, stricter translation validation, and final stream/duration/decode verification.
+- Highest safe local timing/ASR configuration selected by preflight.
+- Stricter uncertain-voice and impossible-fit review instead of silent guesses.
+- Per-group timing retries, karaoke timing validation, stricter translation validation, and final stream/duration/decode verification.
 
 All modes expose the actual selected model/device and estimated disk requirement before starting.
 
@@ -343,34 +335,35 @@ Before atomic promotion, Core verifies through ffprobe and bounded decode checks
 - Whole-source terminology/character analysis, overlapping cue batches, strict JSON validation and atomic checkpoint/resume.
 - Separate Vietnamese SRT output plus real ASS/FFmpeg hardsub using the selected placement.
 
-The fixed preview now uses a compact Subtitle/Blur/Audio/Export icon rail. SRT selection and AI preparation no longer depend on choosing a video first; a preselected validated SRT is attached when the video project opens. Subtitle and Blur modes own separate pointer interaction so their rectangles cannot steal each other's gestures. Schema-4 projects persist ASR provenance plus source-audio keep/duck/mute and render maps the audio state to an exact FFmpeg policy.
+The fixed preview uses a compact Subtitle/Blur/Audio/Export icon rail. SRT selection and AI preparation no longer depend on choosing a video first; a preselected validated SRT is attached when the video project opens. Subtitle and Blur modes own separate pointer interaction so their rectangles cannot steal each other's gestures. Schema-5 projects persist source-audio Keep/Duck/Mute, Whisper speech-analysis provenance, TTS cache provenance and per-cue male/female overrides while retaining schema 1-4 migration.
 
-Preview is no longer allowed to switch to an unprocessed source playback path. The editable still frame remains the low-latency direct-manipulation surface; `Xem bản chỉnh` renders a bounded 12-second proxy from the playhead through the same effect/ASS/audio builders as final output. Its proxy clock is remapped to source time, all edit controls lock while playing, and returning/ending releases and deletes the app-owned temporary MP4 before the editable frame is refreshed. M4/M5 voice and stem work must plug into this same preview/render audio graph so users can hear the real mix before export.
+Preview is not allowed to switch to an unprocessed source playback path. The editable still frame remains the low-latency direct-manipulation surface; `Xem bản chỉnh` renders a bounded 12-second proxy from the playhead through the same effect/ASS/source+TTS audio builders as final output. Cue time, Whisper word timing and pause timing are all sliced and shifted into proxy-relative time. Its proxy clock is remapped to source time, all edit controls lock while playing, and returning/ending releases and deletes the app-owned temporary MP4 before the editable frame is refreshed.
 
 The previous incremental M2 field-test proposal is retained as an automated/regression acceptance target, but the owner requested one consolidated field test after the full Editor branch instead of testing each intermediate candidate.
 
-### M3 - Video-only Chinese ASR
+### M3 - Local Whisper timing / fallback Chinese ASR
 
 - Implemented app-managed faster-whisper 1.2.1/CTranslate2 4.8.1 in a separate private venv that reuses the Windows error-448-safe exact-patch Python bootstrap.
 - Implemented immutable multilingual small-model revision with exact per-file size/SHA-256, resumable download and offline-only loading.
-- Implemented real-video 16 kHz audio extraction, Chinese transcription, word timestamps, VAD, strict source-SRT output and automatic handoff to the existing Vietsub path.
+- Implemented real-video 16 kHz audio extraction, Chinese transcription, word timestamps and VAD. The same pass now persists word/pause timing even when the user imported an SRT; generated Chinese SRT is fallback only.
 - Implemented pre-run full GPU benchmark with live VRAM gate and measured CPU/int8 fallback; device/compute/threads are locked before the real scan.
 - Implemented atomic per-segment checkpoint/resume with overlap-tail reconciliation and owned Python/FFmpeg cleanup on cancel.
 
 M3 remains build-verified rather than field-PASS until the owner performs the single consolidated Editor test after later milestones.
 
-### M4 - Speaker analysis and TTS
+### M4 - Male/female routing, local TTS and karaoke
 
-- app-managed pyannote-compatible diarization runtime with gated-model setup.
-- anonymous speaker grouping, confidence and user voice override.
-- Edge online provider plus Piper local fallback.
-- per-cue cache, measured timing fit, collision review.
+- Preserve Whisper words/pauses in schema-5 project-linked speech analysis and map them to imported/generated SRT cues.
+- Lightweight `male_like` / `female_like` / `uncertain` acoustic routing with confidence; manual per-cue male/female override is authoritative.
+- App-managed Piper 1.4.2 and pinned generic NghiTTS-compatible ONNX male/female models; no API/WebView/localhost dependency.
+- Per-rhythm-group cache, synthesize/measure/length-scale/bounded time-stretch, review state, 300-second cache blocks and one seekable master voice track.
+- Karaoke ASS generated from the same Whisper timing evidence and the exact ASS builder used by render.
 
-### M5 - Audio separation, mix, subtitle render, final export
+### M5 - Source/TTS mix, subtitle render, final export
 
-- fast whole-mix ducking.
-- optional high-quality two-stem separation.
-- TTS mix, soft/hardsub, region filters, final validation and atomic promotion.
+- Keep/Duck/Mute complete source mix; no stem-separation path.
+- Shared source+TTS FFmpeg graph for processed 12-second preview and final export.
+- Hardsub/karaoke ASS, region filters, final validation and atomic promotion.
 
 ### M6 - Hardening and public beta
 
@@ -388,9 +381,10 @@ M3 remains build-verified rather than field-PASS until the owner performs the si
 - Glossary parsing, cue-ID structured translation, retry and locked-cue preservation.
 - Worker stdout-noise tolerance, request timeout, process-tree cleanup, model/runtime manifest mismatch.
 - ASR chunk overlap/reconciliation, VAD silence, long-duration timestamp continuity.
-- Diarization speaker IDs remain anonymous; user voice override survives restart.
-- TTS provider outage/fallback/cache, duration measurement and impossible-fit warning.
-- Audio modes map exactly to full-mix ducking versus separated-stem behavior.
+- Whisper words/pauses survive checkpoint/project reopen and remain aligned after preview slicing.
+- Male/female/uncertain suggestion is advisory; manual voice override survives restart and selectively invalidates only TTS.
+- Local NghiTTS/Piper cache, duration measurement, bounded fit and impossible-fit warning.
+- Audio modes map exactly to Keep/Duck/Mute plus the same TTS master track in preview/export; no stem behavior exists.
 - Multi-region filter correctness, processed preview parity, rotation/SAR/letterbox mapping.
 - Render cancel cleans partial output without deleting completed project artifacts.
 - Final output stream/duration/decode validation, collision-safe path and source preservation.
@@ -415,4 +409,4 @@ M2:
 4. Edit and lock one cue, retry the batch, confirm the locked cue survives.
 5. Close/reopen and continue the project.
 
-Later milestones add ASR, speaker/TTS, stem/mix, and four-hour resume checks only after their automated Windows gates pass.
+The consolidated final scenario adds Whisper word/karaoke timing, male/female override, local TTS, Keep/Duck/Mute mix and four-hour resume checks only after their automated Windows gates pass.

@@ -290,7 +290,7 @@ EditorPage.Pick_Click
   -> MediaPreviewService.ProbeAsync
   -> EditorProjectStore.LoadOrCreateAsync
        -> Data/Projects/<source-path-sha256-prefix>.json
-       -> schema-4/source validation; schema 1/2/3 migrate with default ASR/audio state
+       -> schema-5/source validation; schema 1/2/3/4 migrate with default speech/TTS/voice-override state
        -> corrupt project quarantine
   -> attach an SRT selected before the video, without discarding its validated cue document
   -> restore source-audio mode/gain
@@ -352,10 +352,12 @@ EditorPage.CreateAsr_Click
        -> CUDA/VRAM/cuDNN failure or poor throughput -> complete CPU/int8 probe
        -> lock measured device/compute/threads before full transcription
   -> full audio extraction from the safe checkpoint frontier
-  -> internal/asr/worker.py -> Chinese + VAD + word timestamps -> framed JSON segment events
-  -> atomic cue checkpoint under Data/Projects/ASR after every accepted segment
-  -> strict source SRT render/load -> attach to EditorSubtitleProject
-  -> schema-4 EditorAsrProject records model revision, device, compute and measured realtime factor
+  -> internal/asr/worker.py -> Chinese + VAD + word timestamps + bounded acoustic voice-class suggestion -> framed JSON segment events
+  -> atomic segment/word checkpoint under Data/Projects/ASR after every accepted segment
+  -> EditorSpeechAnalysisDocument -> verified speech-analysis JSON + SHA-256 under Data/Projects/Speech
+  -> if no SRT is loaded, strict fallback Chinese SRT render/load -> attach to EditorSubtitleProject
+  -> if imported SRT exists, preserve it and map Whisper words/pauses to its stable cue IDs
+  -> schema-5 EditorAsrProject + EditorSpeechProject record provenance, measured runtime and analysis fingerprint
 
 EditorPage.CancelTranslation_Click while ASR owns the subtitle job
   -> AppJob.Cancel remains `cancelling`
@@ -393,9 +395,9 @@ EditorPage processed preview
        -> BiliSubApplication.CreateEditorPreviewSegmentAsync
        -> VideoEditorService.CreatePreviewSegmentAsync
             -> bounded 12-second source window from current playhead
-            -> BuildPreviewSlice shifts/clips timed regions and subtitle cues into proxy time
+            -> BuildPreviewSlice shifts/clips timed regions, subtitle cues and Whisper word/pause timing into proxy time
             -> app-owned Temp/Editor/Preview only
-            -> exact BuildFilterCore + BuildAss + BuildAudioArguments used by final render
+            -> exact BuildFilterCore + BuildAss + source/TTS audio graph used by final render
             -> H.264/AAC yuv420p MP4 proxy for deterministic WinUI playback
        -> MediaPlayer position + source-window offset -> main source timeline
        -> playback hides handles/locks all edit inputs
@@ -405,21 +407,35 @@ EditorPage processed preview
 EditorPage.Audio inspector
   -> PreviewMute/PreviewVolume -> local monitor gain/mute only
   -> source output mode keep / duck / mute
-  -> EditorAudioSettings normalized and autosaved in schema-4 project (schema-3 migration retained)
-  -> VideoEditorService.BuildAudioArguments
-       keep -> optional source-audio map; MKV may stream-copy
-       duck -> exact volume filter + AAC encode
-       mute -> no output audio stream
-  -> same source policy is audible in Xem bản chỉnh before final export
-  -> later TTS/stem inputs must extend the same preview/render audio graph
+  -> EditorAudioSettings normalized and autosaved in schema-5 project (schema 1-4 migration retained)
+  -> Phân tích nhịp + Nam/Nữ
+       -> BiliSubApplication.StartEditorAsr
+       -> LocalAsrService.TranscribeAsync
+       -> faster-whisper word timestamps + VAD + bounded acoustic male_like/female_like/uncertain suggestion
+       -> EditorSpeechAnalysisDocument persists words/pauses/provenance and maps them onto imported or generated SRT cues
+       -> imported SRT remains authoritative; Whisper fallback SRT is attached only when no source SRT is loaded
+  -> Tạo voice Việt local
+       -> BiliSubApplication.StartEditorTts
+       -> LocalTtsService.GenerateAsync
+       -> app-managed Piper 1.4.2 + pinned NghiTTS-compatible ONNX male/female voices
+       -> Whisper pause windows -> bounded rhythm groups -> synthesize/measure/Piper length-scale/bounded FFmpeg atempo
+       -> unresolved fit or uncertain voice route is marked for review, never hidden
+       -> cached 300-second blocks -> one seekable voice-master FLAC
+  -> per-cue manual male/female override persists and invalidates only stale TTS
+  -> VideoEditorService.BuildVoiceAudioFilter is shared by preview and final render
+       keep + voice -> source mix + TTS
+       duck + voice -> reduced complete source mix + TTS
+       mute + voice -> TTS only
+  -> no stem separation/Demucs path
+  -> same source/TTS mix is audible in Xem bản chỉnh before final export
 
 EditorPage.Render_Click
   -> BiliSubApplication.StartEditor
   -> JobManager.Create(kind=editor, cleanupAwareCancel=true)
   -> VideoEditorService.RunAsync
-  -> completed Vietsub cues + placement -> temporary ASS with exact cue timing
+  -> completed Vietsub cues + placement + optional Whisper rhythm -> temporary ASS with exact cue/karaoke timing
   -> same FFmpeg Blur/Mosaic/Cover graph and time guards + ASS hardsub
-  -> exact persisted keep/duck/mute source-audio policy
+  -> exact persisted keep/duck/mute source-audio policy + optional cached TTS master track
   -> temporary `.rendering` output
   -> non-empty verification -> final output
 

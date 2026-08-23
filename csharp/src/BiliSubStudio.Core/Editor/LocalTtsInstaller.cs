@@ -322,8 +322,7 @@ internal sealed class LocalTtsInstaller : IDisposable
 
     private static void WriteStamp(string path, long size, string sha)
     {
-        var info = new FileInfo(path);
-        File.WriteAllText(path + ".verified", $"{sha}|{size}|{info.LastWriteTimeUtc.Ticks}\n", new UTF8Encoding(false));
+        File.WriteAllText(path + ".verified", $"{sha}|{size}|{new FileInfo(path).LastWriteTimeUtc.Ticks}\n", new UTF8Encoding(false));
     }
 
     private static string HashFile(string path)
@@ -336,11 +335,16 @@ internal sealed class LocalTtsInstaller : IDisposable
     {
         await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1024 * 1024,
             FileOptions.Asynchronous | FileOptions.SequentialScan);
-        using var sha = SHA256.Create();
-        return Convert.ToHexStringLower(await sha.ComputeHashAsync(stream, cancellationToken));
+        return Convert.ToHexStringLower(await SHA256.HashDataAsync(stream, cancellationToken));
     }
 
     private static void TryDelete(string path) { try { File.Delete(path); } catch { } }
-    public void Dispose() { _http.Dispose(); _gate.Dispose(); }
+
+    public void Dispose()
+    {
+        _gate.Dispose();
+        _http.Dispose();
+    }
+
     private sealed record RuntimeInstallManifest(int Schema, string Python, string Piper, string WorkerSha256);
 }

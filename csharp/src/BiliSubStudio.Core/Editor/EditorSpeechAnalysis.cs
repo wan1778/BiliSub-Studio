@@ -210,14 +210,13 @@ public static class EditorSpeechAnalysisDocument
         }
     }
 
-    private static double Midpoint(double start, double end) => start + (end - start) / 2;
-    private static double Overlap(double start, double end, double cueStart, double cueEnd) => Math.Max(0, Math.Min(end, cueEnd) - Math.Max(start, cueStart));
+    private static double Midpoint(double start, double end) => start + (end - start) * .5;
+    private static double Overlap(double a0, double a1, double b0, double b1) => Math.Max(0, Math.Min(a1, b1) - Math.Max(a0, b0));
     private static async Task<string> Sha256Async(string path, CancellationToken cancellationToken)
     {
         await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1024 * 1024,
             FileOptions.Asynchronous | FileOptions.SequentialScan);
-        using var sha = SHA256.Create();
-        return Convert.ToHexStringLower(await sha.ComputeHashAsync(stream, cancellationToken));
+        return Convert.ToHexStringLower(await SHA256.HashDataAsync(stream, cancellationToken));
     }
     private static void TryDelete(string path) { try { File.Delete(path); } catch { } }
 }

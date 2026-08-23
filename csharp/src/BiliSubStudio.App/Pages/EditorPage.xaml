@@ -100,13 +100,9 @@
                                     <Border HorizontalAlignment="Right" Padding="8,3" Background="{ThemeResource AccentSoftBrush}" CornerRadius="9"><TextBlock FontSize="10" Foreground="{ThemeResource AccentPrimaryBrush}" Text="AI local" /></Border>
                                 </Grid>
                                 <TextBlock Style="{StaticResource MutedTextStyle}" Text="Timecode, thứ tự và số block được khóa. Khung phụ đề trên preview luôn có thể kéo/resize khi không chạy tác vụ." TextWrapping="Wrap" />
-                                <Grid ColumnSpacing="7">
-                                    <Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
-                                    <Button x:Name="ImportSrtButton" Click="ImportSrt_Click" Content="Chọn SRT tiếng Trung" />
-                                    <Button Grid.Column="1" x:Name="CreateAsrButton" Click="CreateAsr_Click" Content="Tạo SRT từ giọng Trung" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />
-                                </Grid>
+                                <Button x:Name="ImportSrtButton" Click="ImportSrt_Click" Content="Chọn SRT tiếng Trung" />
                                 <TextBlock x:Name="SrtPathText" Style="{StaticResource MutedTextStyle}" Text="Chưa chọn SRT." TextTrimming="CharacterEllipsis" />
-                                <TextBlock x:Name="AsrStatusText" Style="{StaticResource MutedTextStyle}" Text="Nếu video chưa có SRT, ASR sẽ benchmark GPU/CPU thật rồi mới nhận giọng." TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
+                                <TextBlock x:Name="AsrStatusText" Style="{StaticResource MutedTextStyle}" Text="Whisper phân tích word timing và khoảng lặng từ audio gốc; không thay SRT đã chọn." TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
                                 <TextBlock x:Name="SrtSummaryText" Style="{StaticResource MutedTextStyle}" Text="Skill: Dịch Trung Tu Tiên (tích hợp, đã khóa SHA-256)." TextWrapping="Wrap" />
                                 <Grid ColumnSpacing="7">
                                     <Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
@@ -118,6 +114,7 @@
                                     <Button x:Name="CancelTranslationButton" Click="CancelTranslation_Click" Content="Hủy tác vụ AI" IsEnabled="False" Style="{StaticResource DangerButtonStyle}" />
                                     <Button Grid.Column="1" x:Name="OpenTranslatedSrtButton" Click="OpenTranslatedSrt_Click" Content="Mở thư mục SRT Việt" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />
                                 </Grid>
+                                <Button x:Name="SaveKaraokeAssButton" Click="SaveKaraokeAss_Click" Content="Lưu ASS karaoke" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />
                                 <ProgressBar x:Name="TranslationProgress" Minimum="0" Maximum="100" />
                                 <TextBlock x:Name="TranslationStatusText" Style="{StaticResource MutedTextStyle}" Text="Chưa chuẩn bị AI local." TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
                             </StackPanel>
@@ -183,11 +180,34 @@
                                 <Border Style="{StaticResource CardBorderStyle}">
                                     <StackPanel Spacing="9">
                                         <Grid>
-                                            <TextBlock Style="{StaticResource CardTitleStyle}" Text="Âm thanh" />
-                                            <Border HorizontalAlignment="Right" Padding="8,3" Background="{ThemeResource AccentSoftBrush}" CornerRadius="9"><TextBlock FontSize="10" Foreground="{ThemeResource AccentPrimaryBrush}" Text="Nguồn gốc" /></Border>
+                                            <TextBlock Style="{StaticResource CardTitleStyle}" Text="Nhịp thoại + Voice Việt" />
+                                            <Border HorizontalAlignment="Right" Padding="8,3" Background="{ThemeResource AccentSoftBrush}" CornerRadius="9"><TextBlock FontSize="10" Foreground="{ThemeResource AccentPrimaryBrush}" Text="Local" /></Border>
                                         </Grid>
-                                        <TextBlock Style="{StaticResource MutedTextStyle}" Text="Nút Xem bản chỉnh áp dụng đúng mức âm thanh gốc sẽ dùng khi xuất. Thiết lập này không thay đổi file nguồn." TextWrapping="Wrap" />
-                                        <ToggleSwitch x:Name="PreviewMuteToggle" Header="Tắt tiếng khi xem trước" Toggled="PreviewMute_Toggled" />
+                                        <TextBlock Style="{StaticResource MutedTextStyle}" Text="Whisper lấy thời gian từng từ, khoảng lặng và gợi ý chất giọng Nam/Nữ. NghiTTS tạo voice Việt rồi tự fit theo nhịp audio gốc." TextWrapping="Wrap" />
+                                        <Grid ColumnSpacing="7">
+                                            <Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
+                                            <Button x:Name="CreateAsrButton" Click="CreateAsr_Click" Content="Phân tích nhịp + Nam/Nữ" IsEnabled="False" />
+                                            <Button Grid.Column="1" x:Name="GenerateTtsButton" Click="GenerateTts_Click" Content="Tạo voice Việt local" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />
+                                        </Grid>
+                                        <ToggleSwitch x:Name="KaraokeToggle" Header="Karaoke theo word timing" IsOn="True" Toggled="Karaoke_Toggled" />
+                                        <ComboBox x:Name="CurrentCueVoiceBox" Header="Voice câu tại vị trí hiện tại" SelectedIndex="0" SelectionChanged="CurrentCueVoice_SelectionChanged">
+                                            <ComboBoxItem Tag="auto" Content="Tự động Nam/Nữ" />
+                                            <ComboBoxItem Tag="male" Content="Ép voice Nam" />
+                                            <ComboBoxItem Tag="female" Content="Ép voice Nữ" />
+                                        </ComboBox>
+                                        <ProgressBar x:Name="VoiceProgress" Minimum="0" Maximum="100" />
+                                        <TextBlock x:Name="VoiceStatusText" Style="{StaticResource MutedTextStyle}" Text="Chưa phân tích nhịp thoại." TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
+                                        <Button x:Name="CancelVoiceButton" Click="CancelVoice_Click" Content="Hủy phân tích / voice" IsEnabled="False" Style="{StaticResource DangerButtonStyle}" />
+                                    </StackPanel>
+                                </Border>
+                                <Border Style="{StaticResource CardBorderStyle}">
+                                    <StackPanel Spacing="9">
+                                        <Grid>
+                                            <TextBlock Style="{StaticResource CardTitleStyle}" Text="Âm thanh gốc" />
+                                            <Border HorizontalAlignment="Right" Padding="8,3" Background="{ThemeResource RaisedSurfaceBrush}" CornerRadius="9"><TextBlock FontSize="10" Foreground="{ThemeResource SecondaryTextBrush}" Text="Preview = Export" /></Border>
+                                        </Grid>
+                                        <TextBlock Style="{StaticResource MutedTextStyle}" Text="Xem bản chỉnh dùng đúng track voice Việt và mức tiếng gốc sẽ dùng khi xuất. Không thay đổi file nguồn." TextWrapping="Wrap" />
+                                        <ToggleSwitch x:Name="PreviewMuteToggle" Header="Tắt tiếng khi nghe thử" Toggled="PreviewMute_Toggled" />
                                         <Slider x:Name="PreviewVolumeSlider" Header="Âm lượng nghe thử (%)" Minimum="0" Maximum="100" Value="100" ValueChanged="PreviewVolume_ValueChanged" />
                                         <ComboBox x:Name="SourceAudioModeBox" Header="Âm thanh gốc trong bản chỉnh" SelectedIndex="0" SelectionChanged="SourceAudioMode_SelectionChanged">
                                             <ComboBoxItem Tag="keep" Content="Giữ nguyên" />

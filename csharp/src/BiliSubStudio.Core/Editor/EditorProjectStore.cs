@@ -33,6 +33,30 @@ public sealed record EditorAsrProject(
     int CueCount,
     double ProbeRealtimeFactor);
 
+public sealed record EditorSpeechProject(
+    string Status,
+    string ModelName,
+    string ModelRevision,
+    string Device,
+    string ComputeType,
+    string AnalysisPath,
+    string AnalysisSha256,
+    int SegmentCount,
+    int WordCount,
+    double ProbeRealtimeFactor);
+
+public sealed record EditorTtsProject(
+    string Status,
+    string Engine,
+    string EngineVersion,
+    string MaleVoice,
+    string FemaleVoice,
+    string ManifestPath,
+    string ManifestSha256,
+    EditorVoiceTrack VoiceTrack,
+    int CueCount,
+    int ReviewCount);
+
 public sealed record EditorSubtitleProject(
     string SourcePath,
     long SourceSize,
@@ -42,7 +66,8 @@ public sealed record EditorSubtitleProject(
     EditorSubtitlePlacement Placement,
     string SkillName,
     string SkillSha256,
-    string OutputPath);
+    string OutputPath,
+    bool Karaoke = true);
 
 public sealed record EditorProject(
     int Schema,
@@ -54,11 +79,14 @@ public sealed record EditorProject(
     EditorSubtitleProject? Subtitle,
     DateTimeOffset UpdatedUtc,
     EditorAudioSettings? Audio = null,
-    EditorAsrProject? Asr = null);
+    EditorAsrProject? Asr = null,
+    EditorSpeechProject? Speech = null,
+    EditorTtsProject? Tts = null,
+    IReadOnlyDictionary<string, string>? VoiceOverrides = null);
 
 public sealed class EditorProjectStore
 {
-    public const int CurrentSchema = 4;
+    public const int CurrentSchema = 5;
     private const long MaxProjectBytes = 64L * 1024 * 1024;
     private readonly string _directory;
     private readonly SemaphoreSlim _gate = new(1, 1);
@@ -95,7 +123,7 @@ public sealed class EditorProjectStore
                 await using var stream = new FileStream(projectPath, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
                 var loaded = await JsonSerializer.DeserializeAsync<EditorProject>(stream, _json, cancellationToken)
                     ?? throw new InvalidDataException("Project Editor rỗng.");
-                if (loaded.Schema is not (1 or 2 or 3 or CurrentSchema) || !string.Equals(loaded.Id, id, StringComparison.Ordinal))
+                if (loaded.Schema is not (1 or 2 or 3 or 4 or CurrentSchema) || !string.Equals(loaded.Id, id, StringComparison.Ordinal))
                     throw new InvalidDataException("Project Editor không đúng phiên bản hoặc nguồn.");
                 var regions = NormalizeRegions(loaded.Regions);
                 return loaded with
@@ -106,6 +134,9 @@ public sealed class EditorProjectStore
                     Subtitle = NormalizeSubtitle(loaded.Subtitle),
                     Audio = NormalizeAudio(loaded.Audio),
                     Asr = NormalizeAsr(loaded.Asr),
+                    Speech = NormalizeSpeech(loaded.Speech),
+                    Tts = NormalizeTts(loaded.Tts),
+                    VoiceOverrides = NormalizeVoiceOverrides(loaded.VoiceOverrides),
                 };
             }
             catch (OperationCanceledException) { throw; }
@@ -141,6 +172,9 @@ public sealed class EditorProjectStore
             Subtitle = NormalizeSubtitle(project.Subtitle),
             Audio = NormalizeAudio(project.Audio),
             Asr = NormalizeAsr(project.Asr),
+            Speech = NormalizeSpeech(project.Speech),
+            Tts = NormalizeTts(project.Tts),
+            VoiceOverrides = NormalizeVoiceOverrides(project.VoiceOverrides),
             UpdatedUtc = DateTimeOffset.UtcNow,
         };
 
@@ -273,8 +307,7 @@ public sealed class EditorProjectStore
             || asr.CueCount is < 0 or > EditorSubtitleDocument.MaxCues || !double.IsFinite(asr.ProbeRealtimeFactor) || asr.ProbeRealtimeFactor <= 0)
             throw new InvalidDataException("Project Editor chứa trạng thái ASR không hợp lệ.");
         var output = string.IsNullOrWhiteSpace(asr.OutputPath) ? string.Empty : Path.GetFullPath(asr.OutputPath.Trim());
-        if (status == "complete" && (output.Length == 0 || !File.Exists(output)))
-            throw new InvalidDataException("Project Editor báo ASR hoàn tất nhưng thiếu SRT nguồn.");
+        if (status == "complete" && (output.Length == 0 || !File.Exists(output))) return null;
         return asr with
         {
             Status = status,
@@ -284,6 +317,86 @@ public sealed class EditorProjectStore
             ComputeType = compute,
             OutputPath = output,
         };
+    }
+
+    private static EditorSpeechProject? NormalizeSpeech(EditorSpeechProject? speech)
+    {
+        if (speech is null) return null;
+        var status = speech.Status?.Trim().ToLowerInvariant();
+        var device = speech.Device?.Trim().ToLowerInvariant();
+        var compute = speech.ComputeType?.Trim().ToLowerInvariant();
+        if (status is not ("complete" or "partial") || device is not ("cpu" or "cuda") || string.IsNullOrWhiteSpace(compute)
+            || string.IsNullOrWhiteSpace(speech.ModelName) || speech.ModelRevision?.Length != 40 || speech.ModelRevision.Any(x => !Uri.IsHexDigit(x))
+            || speech.AnalysisSha256?.Length != 64 || speech.AnalysisSha256.Any(x => !Uri.IsHexDigit(x))
+            || speech.SegmentCount is < 0 or > EditorSubtitleDocument.MaxCues || speech.WordCount < 0
+            || !double.IsFinite(speech.ProbeRealtimeFactor) || speech.ProbeRealtimeFactor <= 0)
+            throw new InvalidDataException("Project Editor chứa trạng thái Whisper timing không hợp lệ.");
+        var analysisPath = string.IsNullOrWhiteSpace(speech.AnalysisPath) ? string.Empty : Path.GetFullPath(speech.AnalysisPath.Trim());
+        if (status == "complete" && (analysisPath.Length == 0 || !File.Exists(analysisPath) || !FileShaMatches(analysisPath, speech.AnalysisSha256))) return null;
+        return speech with
+        {
+            Status = status,
+            ModelName = speech.ModelName.Trim(),
+            ModelRevision = speech.ModelRevision.ToLowerInvariant(),
+            Device = device,
+            ComputeType = compute,
+            AnalysisPath = analysisPath,
+            AnalysisSha256 = speech.AnalysisSha256.ToLowerInvariant(),
+        };
+    }
+
+    private static EditorTtsProject? NormalizeTts(EditorTtsProject? tts)
+    {
+        if (tts is null) return null;
+        var status = tts.Status?.Trim().ToLowerInvariant();
+        if (status is not ("complete" or "partial") || string.IsNullOrWhiteSpace(tts.Engine) || string.IsNullOrWhiteSpace(tts.EngineVersion)
+            || string.IsNullOrWhiteSpace(tts.MaleVoice) || string.IsNullOrWhiteSpace(tts.FemaleVoice)
+            || tts.ManifestSha256?.Length != 64 || tts.ManifestSha256.Any(x => !Uri.IsHexDigit(x))
+            || tts.CueCount is < 0 or > EditorSubtitleDocument.MaxCues || tts.ReviewCount is < 0 || tts.ReviewCount > tts.CueCount)
+            throw new InvalidDataException("Project Editor chứa trạng thái voice Việt không hợp lệ.");
+        var manifest = string.IsNullOrWhiteSpace(tts.ManifestPath) ? string.Empty : Path.GetFullPath(tts.ManifestPath.Trim());
+        var track = tts.VoiceTrack;
+        if (track is null || string.IsNullOrWhiteSpace(track.Path) || !double.IsFinite(track.Start) || track.Start < 0
+            || !double.IsFinite(track.Duration) || track.Duration <= 0 || !double.IsFinite(track.Gain) || track.Gain is < 0 or > 4)
+            return null;
+        var trackPath = Path.GetFullPath(track.Path.Trim());
+        if (status == "complete" && (manifest.Length == 0 || !File.Exists(manifest) || !FileShaMatches(manifest, tts.ManifestSha256) || !File.Exists(trackPath))) return null;
+        return tts with
+        {
+            Status = status,
+            Engine = tts.Engine.Trim(),
+            EngineVersion = tts.EngineVersion.Trim(),
+            MaleVoice = tts.MaleVoice.Trim(),
+            FemaleVoice = tts.FemaleVoice.Trim(),
+            ManifestPath = manifest,
+            ManifestSha256 = tts.ManifestSha256.ToLowerInvariant(),
+            VoiceTrack = track with { Path = trackPath, Gain = Math.Clamp(track.Gain, 0, 4) },
+        };
+    }
+
+    private static IReadOnlyDictionary<string, string> NormalizeVoiceOverrides(IReadOnlyDictionary<string, string>? source)
+    {
+        if (source is null || source.Count == 0) return new Dictionary<string, string>(StringComparer.Ordinal);
+        if (source.Count > EditorSubtitleDocument.MaxCues) throw new InvalidDataException("Project Editor có quá nhiều override voice.");
+        var result = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var pair in source)
+        {
+            var id = pair.Key?.Trim() ?? string.Empty;
+            var voice = pair.Value?.Trim().ToLowerInvariant() ?? string.Empty;
+            if (id.Length is < 8 or > 64 || voice is not ("male" or "female")) continue;
+            result[id] = voice;
+        }
+        return result;
+    }
+
+    private static bool FileShaMatches(string path, string expected)
+    {
+        try
+        {
+            using var stream = File.OpenRead(path);
+            return string.Equals(Convert.ToHexStringLower(SHA256.HashData(stream)), expected, StringComparison.OrdinalIgnoreCase);
+        }
+        catch { return false; }
     }
 
     private static string ProjectId(string inputPath)

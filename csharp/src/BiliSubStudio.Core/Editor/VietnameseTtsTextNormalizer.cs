@@ -1,73 +1,140 @@
 using System.Globalization;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace BiliSubStudio.Core.Editor;
 
-public static partial class VietnameseTtsTextNormalizer
+/// <summary>
+/// Local Vietnamese text normalization for Piper/NghiTTS. The behavior intentionally follows
+/// the categories handled by nghimestudio/nghitts (numbers, dates, time, percent and decimals)
+/// without embedding its browser UI/runtime.
+/// </summary>
+public static class VietnameseTtsTextNormalizer
 {
-    private static readonly string[] Digits = ["không", "một", "hai", "ba", "bốn", "năm", "sáu", "bảy", "tám", "chín"];
-
-    public static string Normalize(string? value)
+    public static string Normalize(string value)
     {
-        var text = string.Join(' ', (value ?? string.Empty).Replace('\r', ' ').Replace('\n', ' ').Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
-        if (text.Length == 0) return string.Empty;
-        text = PercentRegex().Replace(text, match => NumberToWords(match.Groups[1].Value) + " phần trăm");
-        text = TimeRegex().Replace(text, match => NumberToWords(match.Groups[1].Value) + " giờ " + NumberToWords(match.Groups[2].Value) + " phút");
-        text = NumberRegex().Replace(text, match => NumberToWords(match.Value));
-        return string.Join(' ', text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
-    }
-
-    internal static string NumberToWords(string raw)
-    {
-        if (!long.TryParse(raw.Replace(".", string.Empty, StringComparison.Ordinal), NumberStyles.Integer, CultureInfo.InvariantCulture, out var number))
-            return raw;
-        if (number < 0) return "âm " + NumberToWords((-number).ToString(CultureInfo.InvariantCulture));
-        if (number < 10) return Digits[number];
-        if (number < 20) return number == 10 ? "mười" : "mười " + UnitAfterTens((int)(number % 10));
-        if (number < 100)
+        if (string.IsNullOrWhiteSpace(value)) return string.Empty;
+        var text = value.Normalize(NormalizationForm.FormC).Trim();
+        text = DateRegex().Replace(text, match =>
         {
-            var tens = number / 10;
-            var units = (int)(number % 10);
-            return units == 0 ? Digits[tens] + " mươi" : Digits[tens] + " mươi " + UnitAfterTens(units);
-        }
-        if (number < 1_000)
+            var day = NumberToWords(Parse(match.Groups["d"].Value));
+            var month = NumberToWords(Parse(match.Groups["m"].Value));
+            var year = NumberToWords(Parse(match.Groups["y"].Value));
+            return $"ngày {day} tháng {month} năm {year}";
+        });
+        text = TimeRegex().Replace(text, match =>
         {
-            var hundreds = number / 100;
-            var remainder = number % 100;
-            if (remainder == 0) return Digits[hundreds] + " trăm";
-            if (remainder < 10) return Digits[hundreds] + " trăm lẻ " + Digits[remainder];
-            return Digits[hundreds] + " trăm " + NumberToWords(remainder.ToString(CultureInfo.InvariantCulture));
+            var hour = NumberToWords(Parse(match.Groups["h"].Value));
+            var minute = Parse(match.Groups["m"].Value);
+            return minute == 0 ? $"{hour} giờ" : $"{hour} giờ {NumberToWords(minute)} phút";
+        });
+        text = PercentageRegex().Replace(text, match => NumberExpression(match.Groups["n"].Value) + " phần trăm");
+        text = DecimalRegex().Replace(text, match =>
+        {
+            var left = NumberToWords(Parse(match.Groups["a"].Value));
+            var rightDigits = match.Groups["b"].Value;
+            var right = string.Join(' ', rightDigits.Select(DigitWord));
+            return $"{left} phẩy {right}";
+        });
+        text = IntegerRegex().Replace(text, match => NumberToWords(Parse(match.Value)));
+        text = Regex.Replace(text, @"\s+", " ", RegexOptions.CultureInvariant).Trim();
+        return text;
+    }
+
+    internal static string NumberToWords(long value)
+    {
+        if (value == 0) return "không";
+        if (value < 0) return "âm " + NumberToWords(Math.Abs(value));
+        var groups = new[] { "", "nghìn", "triệu", "tỷ", "nghìn tỷ" };
+        var chunks = new List<int>();
+        var copy = value;
+        while (copy > 0)
+        {
+            chunks.Add((int)(copy % 1000));
+            copy /= 1000;
         }
-        if (number < 1_000_000) return Scale(number, 1_000, "nghìn");
-        if (number < 1_000_000_000) return Scale(number, 1_000_000, "triệu");
-        if (number < 1_000_000_000_000) return Scale(number, 1_000_000_000, "tỷ");
-        return string.Join(' ', raw.Select(character => char.IsDigit(character) ? Digits[character - '0'] : character.ToString()));
+        var parts = new List<string>();
+        for (var index = chunks.Count - 1; index >= 0; index--)
+        {
+            var chunk = chunks[index];
+            if (chunk == 0) continue;
+            var forceHundreds = index < chunks.Count - 1 && chunk < 100;
+            var words = ReadThreeDigits(chunk, forceHundreds);
+            if (groups[index].Length > 0) words += " " + groups[index];
+            parts.Add(words);
+        }
+        return string.Join(' ', parts);
     }
 
-    private static string Scale(long number, long unit, string name)
+    private static string ReadThreeDigits(int value, bool forceHundreds)
     {
-        var high = number / unit;
-        var low = number % unit;
-        if (low == 0) return NumberToWords(high.ToString(CultureInfo.InvariantCulture)) + " " + name;
-        if (low < 10) return NumberToWords(high.ToString(CultureInfo.InvariantCulture)) + " " + name + " không trăm lẻ " + NumberToWords(low.ToString(CultureInfo.InvariantCulture));
-        if (low < 100) return NumberToWords(high.ToString(CultureInfo.InvariantCulture)) + " " + name + " không trăm " + NumberToWords(low.ToString(CultureInfo.InvariantCulture));
-        return NumberToWords(high.ToString(CultureInfo.InvariantCulture)) + " " + name + " " + NumberToWords(low.ToString(CultureInfo.InvariantCulture));
+        var hundreds = value / 100;
+        var remainder = value % 100;
+        var parts = new List<string>();
+        if (hundreds > 0 || forceHundreds)
+        {
+            parts.Add(DigitWord(hundreds));
+            parts.Add("trăm");
+            if (remainder is > 0 and < 10) parts.Add("lẻ");
+        }
+        if (remainder >= 20)
+        {
+            var tens = remainder / 10;
+            var ones = remainder % 10;
+            parts.Add(DigitWord(tens));
+            parts.Add("mươi");
+            if (ones > 0) parts.Add(ones switch
+            {
+                1 => "mốt",
+                4 => "tư",
+                5 => "lăm",
+                _ => DigitWord(ones),
+            });
+        }
+        else if (remainder >= 10)
+        {
+            parts.Add("mười");
+            var ones = remainder % 10;
+            if (ones > 0) parts.Add(ones == 5 ? "lăm" : DigitWord(ones));
+        }
+        else if (remainder > 0)
+        {
+            parts.Add(DigitWord(remainder));
+        }
+        return string.Join(' ', parts);
     }
 
-    private static string UnitAfterTens(int unit) => unit switch
+    private static string NumberExpression(string raw)
     {
-        1 => "mốt",
-        4 => "tư",
-        5 => "lăm",
-        _ => Digits[unit],
+        var decimalMatch = Regex.Match(raw, @"^(?<a>\d+)[,.](?<b>\d+)$", RegexOptions.CultureInvariant);
+        if (!decimalMatch.Success) return NumberToWords(Parse(raw));
+        return NumberToWords(Parse(decimalMatch.Groups["a"].Value)) + " phẩy "
+            + string.Join(' ', decimalMatch.Groups["b"].Value.Select(DigitWord));
+    }
+
+    private static long Parse(string value) => long.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var parsed)
+        ? Math.Clamp(parsed, -999_999_999_999L, 999_999_999_999L)
+        : 0;
+
+    private static string DigitWord(char value) => value is >= '0' and <= '9' ? DigitWord(value - '0') : value.ToString();
+    private static string DigitWord(int value) => value switch
+    {
+        0 => "không",
+        1 => "một",
+        2 => "hai",
+        3 => "ba",
+        4 => "bốn",
+        5 => "năm",
+        6 => "sáu",
+        7 => "bảy",
+        8 => "tám",
+        9 => "chín",
+        _ => value.ToString(CultureInfo.InvariantCulture),
     };
 
-    [GeneratedRegex(@"\b(\d{1,3})\s*%", RegexOptions.CultureInvariant)]
-    private static partial Regex PercentRegex();
-
-    [GeneratedRegex(@"\b(\d{1,2}):(\d{2})\b", RegexOptions.CultureInvariant)]
-    private static partial Regex TimeRegex();
-
-    [GeneratedRegex(@"\b\d{1,12}\b", RegexOptions.CultureInvariant)]
-    private static partial Regex NumberRegex();
+    private static Regex DateRegex() => new(@"\b(?<d>\d{1,2})[/-](?<m>\d{1,2})[/-](?<y>\d{2,4})\b", RegexOptions.CultureInvariant);
+    private static Regex TimeRegex() => new(@"\b(?<h>\d{1,2}):(?<m>\d{2})\b", RegexOptions.CultureInvariant);
+    private static Regex PercentageRegex() => new(@"\b(?<n>\d+(?:[,.]\d+)?)\s*%", RegexOptions.CultureInvariant);
+    private static Regex DecimalRegex() => new(@"\b(?<a>\d+)[,.](?<b>\d+)\b", RegexOptions.CultureInvariant);
+    private static Regex IntegerRegex() => new(@"\b\d{1,12}\b", RegexOptions.CultureInvariant);
 }

@@ -19,9 +19,10 @@ public sealed record VideoEditRequest(
     double Duration,
     IReadOnlyList<EditRegion> Regions,
     EditorSubtitleBurn? Subtitle = null,
-    EditorAudioSettings? Audio = null);
+    EditorAudioSettings? Audio = null,
+    EditorVoiceTrack? VoiceTrack = null);
 
-public sealed record EditorSubtitleBurn(IReadOnlyList<EditorSubtitleCue> Cues, EditorSubtitlePlacement Placement);
+public sealed record EditorSubtitleBurn(IReadOnlyList<EditorSubtitleCue> Cues, EditorSubtitlePlacement Placement, IReadOnlyList<EditorCueSpeechTiming>? SpeechTiming = null, bool Karaoke = true);
 
 public sealed record VideoEditResult(string OutputPath);
 
@@ -63,18 +64,24 @@ public sealed class VideoEditorService
         var graph = BuildFilter(request, subtitleAss);
         var ffmpeg = await _tools.EnsureFfmpegAsync(token);
         var audio = EditorProjectStore.NormalizeAudio(request.Audio);
+        var voice = NormalizeVoiceTrack(request.VoiceTrack, requireFile: true);
         var mp4 = Path.GetExtension(output).Equals(".mp4", StringComparison.OrdinalIgnoreCase);
         var args = new List<string>
         {
             "-y", "-hide_banner", "-loglevel", "error", "-nostdin", "-i", input,
-            "-filter_complex", graph, "-map", "[vout]", "-map_metadata", "0",
-            "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p",
         };
-        args.AddRange(BuildAudioArguments(audio, mp4));
+        if (voice is not null) args.AddRange(["-i", voice.Path]);
+        var combinedGraph = voice is null ? graph : graph + ";" + BuildVoiceAudioFilter(audio, voice, 1, sourceStart: 0);
+        args.AddRange([
+            "-filter_complex", combinedGraph, "-map", "[vout]", "-map_metadata", "0",
+            "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p",
+        ]);
+        if (voice is null) args.AddRange(BuildAudioArguments(audio, mp4));
+        else args.AddRange(["-map", "[aout]", "-c:a", "aac", "-b:a", "192k"]);
         if (mp4) args.AddRange(["-movflags", "+faststart"]);
         args.AddRange(["-progress", "pipe:1", "-nostats", temporary]);
         job.Set("rendering", 1, "Đang chuẩn bị xuất video...");
-        job.Log($"Video Editor: {request.Regions.Count} vùng, audio={audio.SourceMode}/{audio.SourceGain:0.00}, output {output}");
+        job.Log($"Video Editor: {request.Regions.Count} vùng, audio={audio.SourceMode}/{audio.SourceGain:0.00}, voice={(voice is null ? "off" : "local")}, output {output}");
         try
         {
             var result = await _processes.RunAsync(ffmpeg, args, token, standardOutputLine: line =>
@@ -121,8 +128,10 @@ public sealed class VideoEditorService
                 await File.WriteAllTextAsync(subtitleAss, BuildAss(sliced.Subtitle!, previewWidth, previewHeight), new UTF8Encoding(encoderShouldEmitUTF8Identifier: true), cancellationToken);
             var graph = $"[0:v]setpts=PTS-STARTPTS,scale={previewWidth}:{previewHeight}:flags=lanczos,setsar=1[previewbase];" +
                 BuildFilterCore(sliced, subtitleAss, "previewbase", requireEdit: false);
+            var voice = NormalizeVoiceTrack(sliced.VoiceTrack, requireFile: true);
+            if (voice is not null) graph += ";" + BuildVoiceAudioFilter(EditorProjectStore.NormalizeAudio(sliced.Audio), voice, 1, sourceStart);
             var ffmpeg = await _tools.EnsureFfmpegAsync(cancellationToken);
-            var args = BuildPreviewArguments(input, temporary, graph, sliced.Audio, sourceStart, segmentDuration);
+            var args = BuildPreviewArguments(input, temporary, graph, sliced.Audio, sourceStart, segmentDuration, voice);
             var result = await _processes.RunAsync(ffmpeg, args, cancellationToken);
             if (result.ExitCode != 0) throw new InvalidOperationException($"FFmpeg preview Editor: {result.StandardError.Trim()}");
             if (!File.Exists(temporary) || new FileInfo(temporary).Length <= 0) throw new InvalidDataException("Video xem trước đã xử lý bị rỗng.");
@@ -193,7 +202,43 @@ public sealed class VideoEditorService
                     End = Math.Min(segmentDuration, cue.End - sourceStart),
                 })
                 .ToArray();
-            if (cues.Length > 0) subtitle = request.Subtitle with { Cues = cues };
+            if (cues.Length > 0)
+            {
+                IReadOnlyList<EditorCueSpeechTiming>? speechTiming = null;
+                if (request.Subtitle.SpeechTiming is not null)
+                {
+                    var cueIds = cues.Select(x => x.Id).ToHashSet(StringComparer.Ordinal);
+                    speechTiming = request.Subtitle.SpeechTiming
+                        .Where(timing => cueIds.Contains(timing.CueId) && timing.SpeechEnd > sourceStart && timing.SpeechStart < sourceEnd)
+                        .Select(timing => timing with
+                        {
+                            CueStart = Math.Max(0, timing.CueStart - sourceStart),
+                            CueEnd = Math.Min(segmentDuration, timing.CueEnd - sourceStart),
+                            SpeechStart = Math.Max(0, timing.SpeechStart - sourceStart),
+                            SpeechEnd = Math.Min(segmentDuration, timing.SpeechEnd - sourceStart),
+                            Words = timing.Words
+                                .Where(word => word.End > sourceStart && word.Start < sourceEnd)
+                                .Select(word => word with
+                                {
+                                    Start = Math.Max(0, word.Start - sourceStart),
+                                    End = Math.Min(segmentDuration, word.End - sourceStart),
+                                })
+                                .Where(word => word.End > word.Start)
+                                .ToArray(),
+                            Pauses = timing.Pauses
+                                .Where(pause => pause.End > sourceStart && pause.Start < sourceEnd)
+                                .Select(pause => pause with
+                                {
+                                    Start = Math.Max(0, pause.Start - sourceStart),
+                                    End = Math.Min(segmentDuration, pause.End - sourceStart),
+                                })
+                                .Where(pause => pause.End > pause.Start)
+                                .ToArray(),
+                        })
+                        .ToArray();
+                }
+                subtitle = request.Subtitle with { Cues = cues, SpeechTiming = speechTiming };
+            }
         }
         return request with
         {
@@ -211,19 +256,29 @@ public sealed class VideoEditorService
         string graph,
         EditorAudioSettings? audio,
         double sourceStart,
-        double segmentDuration)
+        double segmentDuration,
+        EditorVoiceTrack? voiceTrack = null)
     {
+        var voice = NormalizeVoiceTrack(voiceTrack, requireFile: false);
         var arguments = new List<string>
         {
             "-y", "-hide_banner", "-loglevel", "error", "-nostdin",
             "-ss", sourceStart.ToString("0.000", CultureInfo.InvariantCulture),
             "-i", input,
+        };
+        if (voice is not null)
+        {
+            var voiceSeek = Math.Max(0, sourceStart - voice.Start);
+            arguments.AddRange(["-ss", voiceSeek.ToString("0.000", CultureInfo.InvariantCulture), "-i", voice.Path]);
+        }
+        arguments.AddRange([
             "-t", segmentDuration.ToString("0.000", CultureInfo.InvariantCulture),
             "-filter_complex", graph,
             "-map", "[vout]", "-map_metadata", "-1", "-sn", "-dn",
             "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23", "-tune", "zerolatency", "-pix_fmt", "yuv420p",
-        };
-        arguments.AddRange(BuildAudioArgumentsCore(audio, mp4: true, resetTimestamps: true));
+        ]);
+        if (voice is null) arguments.AddRange(BuildAudioArgumentsCore(audio, mp4: true, resetTimestamps: true));
+        else arguments.AddRange(["-map", "[aout]", "-c:a", "aac", "-b:a", "192k"]);
         arguments.AddRange(["-movflags", "+faststart", "-nostats", output]);
         return arguments;
     }
@@ -372,12 +427,99 @@ public sealed class VideoEditorService
             .AppendLine()
             .AppendLine("[Events]")
             .AppendLine("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text");
+        var timing = subtitle.SpeechTiming?.ToDictionary(x => x.CueId, StringComparer.Ordinal);
         foreach (var cue in subtitle.Cues)
         {
-            builder.Append("Dialogue: 0,").Append(AssTime(cue.Start)).Append(',').Append(AssTime(cue.End))
-                .Append(",Vietsub,,0,0,0,,").AppendLine(EscapeAssText(cue.VietnameseText));
+            if (subtitle.Karaoke && timing is not null && timing.TryGetValue(cue.Id, out var rhythm) && rhythm.SpeechEnd > rhythm.SpeechStart + .04)
+            {
+                builder.Append("Dialogue: 0,").Append(AssTime(rhythm.SpeechStart)).Append(',').Append(AssTime(rhythm.SpeechEnd))
+                    .Append(",Vietsub,,0,0,0,,").AppendLine(BuildKaraokeText(cue.VietnameseText, rhythm));
+            }
+            else
+            {
+                builder.Append("Dialogue: 0,").Append(AssTime(cue.Start)).Append(',').Append(AssTime(cue.End))
+                    .Append(",Vietsub,,0,0,0,,").AppendLine(EscapeAssText(cue.VietnameseText));
+            }
         }
         return builder.ToString();
+    }
+
+    internal static string BuildKaraokeText(string text, EditorCueSpeechTiming timing)
+    {
+        var tokens = text.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (tokens.Length == 0) return string.Empty;
+        var totalCs = Math.Max(tokens.Length, (int)Math.Round(Math.Max(.01, timing.SpeechEnd - timing.SpeechStart) * 100));
+        var sourceUnits = new List<double>();
+        if (timing.Words.Count > 0)
+        {
+            for (var index = 0; index < timing.Words.Count; index++)
+            {
+                var word = timing.Words[index];
+                var next = index + 1 < timing.Words.Count ? timing.Words[index + 1].Start : timing.SpeechEnd;
+                sourceUnits.Add(Math.Max(.02, Math.Min(timing.SpeechEnd, next) - Math.Max(timing.SpeechStart, word.Start)));
+            }
+        }
+        if (sourceUnits.Count == 0) sourceUnits.Add(Math.Max(.01, timing.SpeechEnd - timing.SpeechStart));
+        var durations = ResampleKaraokeDurations(sourceUnits, tokens.Length, totalCs);
+        var output = new StringBuilder(text.Length + tokens.Length * 10);
+        for (var index = 0; index < tokens.Length; index++)
+        {
+            output.Append(@"{\kf").Append(durations[index].ToString(CultureInfo.InvariantCulture)).Append('}')
+                .Append(EscapeAssText(tokens[index]));
+            if (index + 1 < tokens.Length) output.Append(' ');
+        }
+        return output.ToString();
+    }
+
+    private static int[] ResampleKaraokeDurations(IReadOnlyList<double> source, int targetCount, int totalCs)
+    {
+        var result = Enumerable.Repeat(1, targetCount).ToArray();
+        var remaining = Math.Max(targetCount, totalCs) - targetCount;
+        var totalWeight = source.Sum(x => Math.Max(.001, x));
+        for (var index = 0; index < targetCount && remaining > 0; index++)
+        {
+            var position = (index + .5) / targetCount * source.Count - .5;
+            var left = Math.Clamp((int)Math.Floor(position), 0, source.Count - 1);
+            var right = Math.Clamp(left + 1, 0, source.Count - 1);
+            var fraction = Math.Clamp(position - Math.Floor(position), 0, 1);
+            var weight = source[left] * (1 - fraction) + source[right] * fraction;
+            var share = index == targetCount - 1 ? remaining : Math.Clamp((int)Math.Round(remaining * weight / Math.Max(.001, totalWeight)), 0, remaining);
+            result[index] += share;
+            remaining -= share;
+            totalWeight = Math.Max(.001, totalWeight - weight);
+        }
+        if (remaining > 0) result[^1] += remaining;
+        return result;
+    }
+
+    private static EditorVoiceTrack? NormalizeVoiceTrack(EditorVoiceTrack? track, bool requireFile)
+    {
+        if (track is null) return null;
+        if (string.IsNullOrWhiteSpace(track.Path) || !double.IsFinite(track.Start) || track.Start < 0
+            || !double.IsFinite(track.Duration) || track.Duration <= 0 || !double.IsFinite(track.Gain) || track.Gain is < 0 or > 4)
+            throw new InvalidDataException("Track voice Việt không hợp lệ.");
+        var path = Path.GetFullPath(track.Path.Trim());
+        if (requireFile && (!File.Exists(path) || new FileInfo(path).Length <= 64))
+            throw new FileNotFoundException("Thiếu track voice Việt đã tạo.", path);
+        return track with { Path = path, Gain = Math.Clamp(track.Gain, 0, 4) };
+    }
+
+    private static string BuildVoiceAudioFilter(EditorAudioSettings audio, EditorVoiceTrack voice, int voiceInputIndex, double sourceStart)
+    {
+        var relativeDelay = Math.Max(0, voice.Start - sourceStart);
+        var voiceFilters = new List<string> { "asetpts=PTS-STARTPTS" };
+        if (relativeDelay > .0005)
+        {
+            var milliseconds = (int)Math.Round(relativeDelay * 1000);
+            voiceFilters.Add($"adelay={milliseconds}:all=1");
+        }
+        if (Math.Abs(voice.Gain - 1) > .0005)
+            voiceFilters.Add("volume=" + voice.Gain.ToString("0.000", CultureInfo.InvariantCulture));
+        var voiceChain = $"[{voiceInputIndex}:a]{string.Join(',', voiceFilters)}[voicea]";
+        if (audio.SourceMode == "mute") return voiceChain + ";[voicea]anull[aout]";
+        var sourceFilters = new List<string> { "asetpts=PTS-STARTPTS" };
+        if (audio.SourceMode == "duck") sourceFilters.Add("volume=" + audio.SourceGain.ToString("0.000", CultureInfo.InvariantCulture));
+        return $"[0:a]{string.Join(',', sourceFilters)}[sourcea];{voiceChain};[sourcea][voicea]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0[aout]";
     }
 
     public static bool IsActiveAt(EditRegion region, double seconds) =>
@@ -427,7 +569,8 @@ public sealed class VideoEditorService
         .Replace(";", "\\;", StringComparison.Ordinal);
 
     private static bool HasEdit(VideoEditRequest request) =>
-        request.Regions.Count > 0 || request.Subtitle is not null || EditorProjectStore.NormalizeAudio(request.Audio).SourceMode != "keep";
+        request.Regions.Count > 0 || request.Subtitle is not null || request.VoiceTrack is not null
+        || EditorProjectStore.NormalizeAudio(request.Audio).SourceMode != "keep";
 
     private static (double Start, double Duration) PreviewWindow(double sourceDuration, double requestedStart)
     {

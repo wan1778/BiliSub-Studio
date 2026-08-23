@@ -13,6 +13,10 @@ namespace BiliSubStudio.Core.Editor;
 public sealed record EditorAsrRequest(string ProjectId, string SourcePath, double Duration);
 public sealed record EditorAsrResult(
     EditorSubtitleSource Source,
+    string AnalysisPath,
+    string AnalysisSha256,
+    int SegmentCount,
+    int WordCount,
     string Device,
     string ComputeType,
     double ProbeRealtimeFactor,
@@ -22,7 +26,7 @@ public sealed record EditorAsrResult(
 
 internal sealed class LocalAsrService : IDisposable
 {
-    private const int CheckpointSchema = 1;
+    private const int CheckpointSchema = 2;
     private const double ProbeSeconds = 20;
     private readonly AppPaths _paths;
     private readonly LocalAsrInstaller _installer;
@@ -65,10 +69,10 @@ internal sealed class LocalAsrService : IDisposable
             var probeAudio = Path.Combine(operationRoot, "probe.wav");
             var probeDuration = Math.Min(ProbeSeconds, request.Duration);
             var probeStart = Math.Max(0, Math.Min(Math.Max(0, request.Duration - probeDuration), request.Duration * .35));
-            job.Set("asr-probe-audio", 19, "Đang lấy mẫu âm thanh thật để đo ASR trước khi chạy...");
+            job.Set("asr-probe-audio", 19, "Đang lấy mẫu audio thật để benchmark Whisper timing...");
             await ExtractAudioAsync(ffmpeg, source.FullName, probeAudio, probeStart, probeDuration, processes, job.CancellationToken);
             var selection = await SelectRuntimeAsync(runtime, probeAudio, probeDuration, processes, job);
-            job.Log($"ASR benchmark khóa {selection.Device.ToUpperInvariant()}/{selection.ComputeType} · {selection.RealtimeFactor:0.00}× thời gian thực.");
+            job.Log($"Whisper timing benchmark khóa {selection.Device.ToUpperInvariant()}/{selection.ComputeType} · {selection.RealtimeFactor:0.00}× thời gian thực.");
 
             var resumeStart = checkpoint.Cues.Count == 0 ? 0 : Math.Max(0, checkpoint.Cues[^1].End - 1.5);
             var retained = checkpoint.Cues.Where(x => x.End <= resumeStart + .05).ToList();
@@ -83,8 +87,8 @@ internal sealed class LocalAsrService : IDisposable
             var restoredRetained = retained.Count;
             var audio = Path.Combine(operationRoot, "source.wav");
             job.Set("asr-extract", 27, resumeStart > 0
-                ? $"Đang trích âm thanh từ checkpoint {Time(resumeStart)}..."
-                : "Đang trích âm thanh tiếng Trung (mono 16 kHz)...");
+                ? $"Đang trích audio từ checkpoint {Time(resumeStart)} để tiếp tục timing..."
+                : "Đang trích audio mono 16 kHz để lấy word timing, khoảng lặng và chất giọng...");
             await ExtractAudioAsync(ffmpeg, source.FullName, audio, resumeStart, null, processes, job.CancellationToken);
 
             var sync = new SemaphoreSlim(1, 1);
@@ -114,8 +118,9 @@ internal sealed class LocalAsrService : IDisposable
                                 checkpoint = checkpoint with { Frontier = cue.End };
                                 await SaveCheckpointAsync(checkpointPath, checkpoint, CancellationToken.None);
                                 var percent = 34 + Math.Clamp(cue.End / Math.Max(.1, request.Duration), 0, 1) * 62;
+                                var words = checkpoint.Cues.Sum(x => x.Words.Count);
                                 job.Set("asr-transcribe", percent,
-                                    $"Đang nhận giọng Trung · {checkpoint.Cues.Count} câu · {Time(cue.End)}/{Time(request.Duration)} · checkpoint đã lưu.");
+                                    $"Đang phân tích nhịp thoại · {checkpoint.Cues.Count} đoạn / {words} từ · {Time(cue.End)}/{Time(request.Duration)} · checkpoint đã lưu.");
                             }
                             finally { sync.Release(); }
                         }
@@ -123,23 +128,41 @@ internal sealed class LocalAsrService : IDisposable
                 if (result.ExitCode != 0 || !ready || !completed)
                 {
                     var detail = string.IsNullOrWhiteSpace(result.StandardError) ? "worker không trả trạng thái hoàn tất" : LastLine(result.StandardError);
-                    throw new InvalidOperationException("ASR local dừng bất thường: " + detail);
+                    throw new InvalidOperationException("Whisper local dừng bất thường: " + detail);
                 }
             }
             finally { sync.Dispose(); }
 
-            if (checkpoint.Cues.Count == 0) throw new InvalidDataException("Không nhận được câu thoại tiếng Trung nào từ video.");
+            if (checkpoint.Cues.Count == 0) throw new InvalidDataException("Không tìm thấy đoạn thoại tiếng Trung nào để phân tích timing.");
             checkpoint = checkpoint with { Complete = true, Frontier = request.Duration };
             await SaveCheckpointAsync(checkpointPath, checkpoint, job.CancellationToken);
+
+            // Keep an ASR-generated source SRT only as a fallback when the project has no external SRT.
             var outputDirectory = Path.Combine(_paths.Data, "Projects", "ASR");
             Directory.CreateDirectory(outputDirectory);
             var output = Path.Combine(outputDirectory, request.ProjectId + ".zh.srt");
             var cues = checkpoint.Cues.Select((cue, index) => ToSubtitleCue(cue, index + 1)).ToArray();
             await WriteAtomicAsync(output, EditorSubtitleDocument.RenderSource(cues), job.CancellationToken);
             var loaded = await EditorSubtitleDocument.LoadAsync(output, job.CancellationToken);
-            job.Set("asr-final", 99, $"Đã tạo SRT Trung {loaded.Cues.Count} câu; có thể Vietsub bằng skill đã tích hợp.");
-            return new EditorAsrResult(loaded, selection.Device, selection.ComputeType, selection.RealtimeFactor,
-                restoredRetained, LocalAsrInstaller.ModelName, LocalAsrInstaller.ModelRevision);
+
+            var analysisDirectory = Path.Combine(_paths.Data, "Projects", "Speech");
+            Directory.CreateDirectory(analysisDirectory);
+            var analysisPath = Path.Combine(analysisDirectory, request.ProjectId + ".speech.json");
+            var analysis = new EditorSpeechAnalysis(
+                EditorSpeechAnalysisDocument.CurrentSchema,
+                key,
+                LocalAsrInstaller.ModelName,
+                LocalAsrInstaller.ModelRevision,
+                selection.Device,
+                selection.ComputeType,
+                selection.RealtimeFactor,
+                checkpoint.Cues.Select(ToSpeechSegment).ToArray());
+            var analysisSha = await EditorSpeechAnalysisDocument.SaveAsync(analysisPath, analysis, job.CancellationToken);
+            var wordCount = analysis.Segments.Sum(x => x.Words.Count);
+            job.Set("asr-final", 99, $"Whisper timing hoàn tất · {analysis.Segments.Count} đoạn / {wordCount} từ · đã lưu nhịp, khoảng lặng và Nam/Nữ gợi ý.");
+            return new EditorAsrResult(loaded, analysisPath, analysisSha, analysis.Segments.Count, wordCount,
+                selection.Device, selection.ComputeType, selection.RealtimeFactor, restoredRetained,
+                LocalAsrInstaller.ModelName, LocalAsrInstaller.ModelRevision);
         }
         finally
         {
@@ -156,22 +179,22 @@ internal sealed class LocalAsrService : IDisposable
         if (snapshot.NvidiaDetected && (!hardware.VramTelemetryAvailable || hardware.AvailableVramBytes >= 1_500L * 1024 * 1024))
         {
             var compute = hardware.VramTelemetryAvailable && hardware.AvailableVramBytes < 2_500L * 1024 * 1024 ? "int8_float16" : "float16";
-            job.Set("asr-probe-gpu", 21, $"Đang benchmark GPU thật ({compute}) trên mẫu {probeSeconds:0}s...");
+            job.Set("asr-probe-gpu", 21, $"Đang benchmark Whisper GPU thật ({compute}) trên mẫu {probeSeconds:0}s...");
             try
             {
                 var probe = await ProbeAsync(runtime, audio, probeSeconds, new AsrSelection("cuda", compute, threads, 0), processes, job.CancellationToken);
                 if (probe.RealtimeFactor <= 1.5) return probe;
-                job.Warn($"ASR GPU benchmark chậm {probe.RealtimeFactor:0.00}× thời gian thực; đo CPU trước khi khóa cấu hình.");
+                job.Warn($"Whisper GPU benchmark chậm {probe.RealtimeFactor:0.00}× thời gian thực; đo CPU trước khi khóa cấu hình.");
             }
             catch (Exception error) when (error is not OperationCanceledException)
             {
-                job.Warn("ASR GPU không vượt benchmark (VRAM/CUDA/cuDNN): " + error.Message + " · chuyển đo CPU trước khi chạy.");
+                job.Warn("Whisper GPU không vượt benchmark (VRAM/CUDA/cuDNN): " + error.Message + " · chuyển đo CPU.");
             }
         }
 
-        job.Set("asr-probe-cpu", 24, $"Đang benchmark CPU thật với {threads} luồng...");
+        job.Set("asr-probe-cpu", 24, $"Đang benchmark Whisper CPU thật với {threads} luồng...");
         var cpu = await ProbeAsync(runtime, audio, probeSeconds, new AsrSelection("cpu", "int8", threads, 0), processes, job.CancellationToken);
-        if (cpu.RealtimeFactor > 4) job.Warn($"ASR CPU dự kiến chậm ({cpu.RealtimeFactor:0.00}× thời gian thực), nhưng benchmark đã PASS an toàn.");
+        if (cpu.RealtimeFactor > 4) job.Warn($"Whisper CPU dự kiến chậm ({cpu.RealtimeFactor:0.00}× thời gian thực), nhưng benchmark đã PASS an toàn.");
         return cpu;
     }
 
@@ -241,26 +264,34 @@ internal sealed class LocalAsrService : IDisposable
         arguments.AddRange(["-vn", "-sn", "-dn", "-map", "0:a:0", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", "-y", destination]);
         var result = await _processes.RunAsync(ffmpeg, arguments, cancellationToken, owner: processes);
         if (result.ExitCode != 0 || !File.Exists(destination) || new FileInfo(destination).Length <= 44)
-            throw new InvalidOperationException("Không trích được audio để nhận giọng: " + LastLine(result.StandardError));
+            throw new InvalidOperationException("Không trích được audio để phân tích timing: " + LastLine(result.StandardError));
     }
 
     private async Task<AsrCheckpoint> LoadCheckpointAsync(string path, string key, CancellationToken cancellationToken)
     {
         try
         {
-            if (!File.Exists(path) || new FileInfo(path).Length is <= 0 or > 64L * 1024 * 1024) return AsrCheckpoint.New(key);
+            if (!File.Exists(path) || new FileInfo(path).Length is <= 0 or > 128L * 1024 * 1024) return AsrCheckpoint.New(key);
             await using var stream = File.OpenRead(path);
             var loaded = await JsonSerializer.DeserializeAsync<AsrCheckpoint>(stream, _json, cancellationToken);
             if (loaded is null || loaded.Schema != CheckpointSchema || loaded.Key != key || loaded.ModelRevision != LocalAsrInstaller.ModelRevision
                 || loaded.Cues is null || loaded.Cues.Count > EditorSubtitleDocument.MaxCues)
                 return AsrCheckpoint.New(key);
-            var valid = loaded.Cues.Where(x => double.IsFinite(x.Start) && double.IsFinite(x.End) && x.Start >= 0 && x.End > x.Start
-                && !string.IsNullOrWhiteSpace(x.Text) && x.Text.Length <= EditorSubtitleDocument.MaxCueCharacters).OrderBy(x => x.Start).ToList();
+            var valid = loaded.Cues.Where(ValidCue).OrderBy(x => x.Start).ToList();
             return loaded with { Cues = valid };
         }
         catch (OperationCanceledException) { throw; }
         catch { return AsrCheckpoint.New(key); }
     }
+
+    private static bool ValidCue(AsrCue cue) =>
+        double.IsFinite(cue.Start) && double.IsFinite(cue.End) && cue.Start >= 0 && cue.End > cue.Start
+        && !string.IsNullOrWhiteSpace(cue.Text) && cue.Text.Length <= EditorSubtitleDocument.MaxCueCharacters
+        && double.IsFinite(cue.VoiceConfidence) && cue.VoiceConfidence is >= 0 and <= 1
+        && double.IsFinite(cue.MedianPitchHz)
+        && cue.Words is not null && cue.Words.Count <= 1_000
+        && cue.Words.All(x => !string.IsNullOrWhiteSpace(x.Text) && x.Text.Length <= 256 && double.IsFinite(x.Start) && double.IsFinite(x.End)
+            && x.Start >= 0 && x.End > x.Start && double.IsFinite(x.Probability) && x.Probability is >= 0 and <= 1.0001);
 
     private async Task SaveCheckpointAsync(string path, AsrCheckpoint checkpoint, CancellationToken cancellationToken)
     {
@@ -293,15 +324,61 @@ internal sealed class LocalAsrService : IDisposable
             start = Math.Max(start, previous.End);
             if (end <= start + .04) return null;
         }
-        return cue with { Start = start, End = end, Text = text };
+        var words = cue.Words
+            .Where(x => x.End > start && x.Start < end)
+            .Select(x => x with { Start = Math.Max(start, x.Start), End = Math.Min(end, x.End) })
+            .Where(x => x.End > x.Start + .005)
+            .OrderBy(x => x.Start)
+            .ToList();
+        return cue with
+        {
+            Start = start,
+            End = end,
+            Text = text,
+            Words = words,
+            VoiceClass = EditorSpeechAnalysisDocument.NormalizeVoiceClass(cue.VoiceClass),
+            VoiceConfidence = Math.Clamp(double.IsFinite(cue.VoiceConfidence) ? cue.VoiceConfidence : 0, 0, 1),
+            MedianPitchHz = double.IsFinite(cue.MedianPitchHz) && cue.MedianPitchHz >= 0 ? cue.MedianPitchHz : 0,
+        };
     }
 
-    private static AsrCue ParseCue(JsonElement root) => new(
-        GetDouble(root, "start"),
-        GetDouble(root, "end"),
-        GetString(root, "text"),
-        root.TryGetProperty("avg_logprob", out var log) && log.TryGetDouble(out var value) ? value : 0,
-        root.TryGetProperty("no_speech_prob", out var silence) && silence.TryGetDouble(out var probability) ? probability : 0);
+    private static AsrCue ParseCue(JsonElement root)
+    {
+        var words = new List<AsrWord>();
+        if (root.TryGetProperty("words", out var list) && list.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var word in list.EnumerateArray())
+            {
+                var text = GetString(word, "text").Trim();
+                var start = GetDouble(word, "start");
+                var end = GetDouble(word, "end");
+                var probability = GetDouble(word, "probability");
+                if (text.Length == 0 || !double.IsFinite(start) || !double.IsFinite(end) || end <= start) continue;
+                words.Add(new AsrWord(start, end, text, double.IsFinite(probability) ? Math.Clamp(probability, 0, 1) : 0));
+            }
+        }
+        return new AsrCue(
+            GetDouble(root, "start"),
+            GetDouble(root, "end"),
+            GetString(root, "text"),
+            root.TryGetProperty("avg_logprob", out var log) && log.TryGetDouble(out var value) ? value : 0,
+            root.TryGetProperty("no_speech_prob", out var silence) && silence.TryGetDouble(out var probability) ? probability : 0,
+            words,
+            EditorSpeechAnalysisDocument.NormalizeVoiceClass(GetString(root, "voice_class")),
+            Math.Clamp(double.IsFinite(GetDouble(root, "voice_confidence")) ? GetDouble(root, "voice_confidence") : 0, 0, 1),
+            double.IsFinite(GetDouble(root, "median_pitch_hz")) ? Math.Max(0, GetDouble(root, "median_pitch_hz")) : 0);
+    }
+
+    private static EditorSpeechSegment ToSpeechSegment(AsrCue cue) => new(
+        cue.Start,
+        cue.End,
+        cue.Text,
+        cue.AverageLogProbability,
+        cue.NoSpeechProbability,
+        cue.Words.Select(x => new EditorWordTiming(x.Text, x.Start, x.End, x.Probability)).ToArray(),
+        cue.VoiceClass,
+        cue.VoiceConfidence,
+        cue.MedianPitchHz);
 
     private static EditorSubtitleCue ToSubtitleCue(AsrCue cue, int number)
     {
@@ -314,7 +391,7 @@ internal sealed class LocalAsrService : IDisposable
     {
         document = null!;
         line = line.Trim();
-        if (!line.StartsWith('{') || !line.EndsWith('}') || line.Length > 256_000) return false;
+        if (!line.StartsWith('{') || !line.EndsWith('}') || line.Length > 512_000) return false;
         try { document = JsonDocument.Parse(line); return document.RootElement.ValueKind == JsonValueKind.Object; }
         catch (JsonException) { document?.Dispose(); document = null!; return false; }
     }
@@ -325,11 +402,8 @@ internal sealed class LocalAsrService : IDisposable
     private static double GetDouble(JsonElement root, string name) =>
         root.TryGetProperty(name, out var value) && value.TryGetDouble(out var result) ? result : double.NaN;
 
-    private static string CheckpointKey(FileInfo source, double duration)
-    {
-        var identity = $"{source.FullName.ToUpperInvariant()}\n{source.Length}\n{source.LastWriteTimeUtc.Ticks}\n{duration:0.000}\n{LocalAsrInstaller.ModelRevision}";
-        return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(identity)));
-    }
+    private static string CheckpointKey(FileInfo source, double duration) =>
+        EditorSpeechAnalysisDocument.SourceKey(source.FullName, source.Length, source.LastWriteTimeUtc.Ticks, duration, LocalAsrInstaller.ModelRevision);
 
     private static async Task WriteAtomicAsync(string path, string content, CancellationToken cancellationToken)
     {
@@ -346,10 +420,10 @@ internal sealed class LocalAsrService : IDisposable
     {
         ArgumentNullException.ThrowIfNull(request);
         if (request.ProjectId.Length is < 8 or > 64 || request.ProjectId.Any(x => !char.IsAsciiLetterOrDigit(x) && x is not ('-' or '_')))
-            throw new InvalidDataException("Project ID ASR không hợp lệ.");
+            throw new InvalidDataException("Project ID Whisper không hợp lệ.");
         var source = new FileInfo(Path.GetFullPath(request.SourcePath));
-        if (!source.Exists || source.Length <= 0) throw new FileNotFoundException("Video nguồn ASR không tồn tại.", source.FullName);
-        if (!double.IsFinite(request.Duration) || request.Duration <= 0) throw new InvalidDataException("Thời lượng video ASR không hợp lệ.");
+        if (!source.Exists || source.Length <= 0) throw new FileNotFoundException("Video nguồn Whisper không tồn tại.", source.FullName);
+        if (!double.IsFinite(request.Duration) || request.Duration <= 0) throw new InvalidDataException("Thời lượng video không hợp lệ.");
     }
 
     private static string SrtTime(double seconds)
@@ -366,7 +440,17 @@ internal sealed class LocalAsrService : IDisposable
     public void Dispose() => _installer.Dispose();
 
     private sealed record AsrSelection(string Device, string ComputeType, int Threads, double RealtimeFactor);
-    private sealed record AsrCue(double Start, double End, string Text, double AverageLogProbability, double NoSpeechProbability);
+    private sealed record AsrWord(double Start, double End, string Text, double Probability);
+    private sealed record AsrCue(
+        double Start,
+        double End,
+        string Text,
+        double AverageLogProbability,
+        double NoSpeechProbability,
+        List<AsrWord> Words,
+        string VoiceClass,
+        double VoiceConfidence,
+        double MedianPitchHz);
     private sealed record AsrCheckpoint(int Schema, string Key, string ModelRevision, string Device, string ComputeType, double Frontier, bool Complete, List<AsrCue> Cues)
     {
         public static AsrCheckpoint New(string key) => new(CheckpointSchema, key, LocalAsrInstaller.ModelRevision, string.Empty, string.Empty, 0, false, []);
