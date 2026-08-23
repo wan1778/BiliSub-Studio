@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -14,6 +15,9 @@ from pathlib import Path
 
 MALE_PITCH_FACTOR = 0.84
 TARGET_SAMPLE_RATE = 22050
+VOICE_PROFILE_REVISION = "3d796cc2f2c884b3517c527507e084f7bb245aea-profile-v1"
+MALE_PROFILE_NAME = "vais1000-male-profile-v1"
+FEMALE_PROFILE_NAME = "vais1000-female-profile-v1"
 
 
 def emit(payload: dict) -> None:
@@ -96,9 +100,8 @@ def run_ffmpeg_filter(ffmpeg: Path, source: Path, destination: Path, audio_filte
 def apply_voice_profile(ffmpeg: Path, path: Path, voice_name: str) -> None:
     if voice_name != "male":
         return
-    # VAIS-1000 is one licensed female Northern Vietnamese speaker. The male route is
-    # a deterministic synthetic acoustic profile: lower pitch by ~3 semitones while
-    # compensating tempo so the cue duration remains essentially unchanged before fit.
+    # The licensed VAIS-1000 base is one female Northern Vietnamese voice. The male
+    # route is a deterministic synthetic profile, not a real-person identity claim.
     profiled = path.with_name(path.stem + "-male-profile.wav")
     pitched_rate = int(round(TARGET_SAMPLE_RATE * MALE_PITCH_FACTOR))
     tempo_compensation = 1.0 / MALE_PITCH_FACTOR
@@ -163,6 +166,24 @@ def fit_group(voice, voice_name: str, text: str, target: float, cache_path: Path
     return raw, final, desired, status
 
 
+def ensure_profile_cache(output_root: Path) -> None:
+    marker = output_root / "profile-revision.txt"
+    current = marker.read_text(encoding="utf-8").strip() if marker.is_file() else ""
+    if current == VOICE_PROFILE_REVISION:
+        return
+    for name in ("clips", "blocks"):
+        shutil.rmtree(output_root / name, ignore_errors=True)
+    for name in ("voice-master.wav", "voice-master.flac", "result.json"):
+        try:
+            (output_root / name).unlink()
+        except OSError:
+            pass
+    output_root.mkdir(parents=True, exist_ok=True)
+    temporary = marker.with_name(marker.name + ".tmp-" + os.urandom(6).hex())
+    temporary.write_text(VOICE_PROFILE_REVISION + "\n", encoding="utf-8")
+    temporary.replace(marker)
+
+
 def main() -> int:
     parsed = args()
     manifest_path = Path(parsed.manifest).resolve()
@@ -193,11 +214,12 @@ def main() -> int:
         male = PiperVoice.load(str(male_model), config_path=str(male_config))
         voices = {"male": male, "female": base}
     output_root.mkdir(parents=True, exist_ok=True)
+    ensure_profile_cache(output_root)
     clip_root = output_root / "clips"
     block_root = output_root / "blocks"
     clip_root.mkdir(parents=True, exist_ok=True)
     block_root.mkdir(parents=True, exist_ok=True)
-    emit({"event": "ready", "cues": len(cues), "male_pitch_factor": MALE_PITCH_FACTOR})
+    emit({"event": "ready", "cues": len(cues), "male_pitch_factor": MALE_PITCH_FACTOR, "profile_revision": VOICE_PROFILE_REVISION})
 
     clip_entries: list[dict] = []
     cue_results: list[dict] = []
@@ -330,8 +352,8 @@ def main() -> int:
         "schema": 1,
         "engine": "piper-vais1000-profiles",
         "engine_version": manifest.get("engine_version", "unknown"),
-        "male_model": manifest.get("male_model", "vais1000-male-profile-v1"),
-        "female_model": manifest.get("female_model", "vais1000-female-profile-v1"),
+        "male_model": MALE_PROFILE_NAME,
+        "female_model": FEMALE_PROFILE_NAME,
         "cues": cue_results,
         "blocks": blocks,
         "master": {"path": str(master_flac), "start": 0.0, "duration": max_end},
