@@ -9,6 +9,7 @@ on:
       - "csharp/**"
       - "internal/ocr/worker.py"
       - "internal/asr/**"
+      - "internal/tts/**"
       - "internal/translation/**"
       - "docs/migration/**"
       - "docs/engineering/**"
@@ -21,6 +22,7 @@ on:
       - "csharp/**"
       - "internal/ocr/worker.py"
       - "internal/asr/**"
+      - "internal/tts/**"
       - "internal/translation/**"
       - "docs/migration/**"
       - "docs/engineering/**"
@@ -56,6 +58,69 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+
+      - name: Bootstrap exact beta.33 tree
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_BRANCH: editor-all-in-one
+          BASE_SHA: b5c78223c5d5835199bb2ed6be09301fabe379d8
+          PATCH_SHA256: a11bfed8108c4bc9441095ab468dbab0c00a37eda93bccf18f59271bbcad4b0b
+        run: |
+          $ErrorActionPreference = "Stop"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin $env:TARGET_BRANCH --depth=100
+          $current = (git rev-parse "origin/$env:TARGET_BRANCH").Trim()
+          if (-not $current) { throw "Cannot resolve current branch head" }
+
+          $encoded = ""
+          foreach ($index in 0..5) {
+            $name = "part-{0:D2}" -f $index
+            $piece = (git show "$current`:.beta33-bootstrap/$name")
+            if (-not $piece) { throw "Missing bootstrap patch chunk $name" }
+            $encoded += ($piece -join "").Trim()
+          }
+          $b64 = Join-Path $env:RUNNER_TEMP "beta33.patch.xz.b64"
+          $xz = Join-Path $env:RUNNER_TEMP "beta33.patch.xz"
+          $patch = Join-Path $env:RUNNER_TEMP "beta33.patch"
+          [IO.File]::WriteAllText($b64, $encoded, [Text.Encoding]::ASCII)
+          @'
+import base64, hashlib, lzma, os, pathlib
+b64 = pathlib.Path(os.environ["BETA33_B64"])
+xz = pathlib.Path(os.environ["BETA33_XZ"])
+patch = pathlib.Path(os.environ["BETA33_PATCH"])
+raw = base64.b64decode(b64.read_bytes(), validate=True)
+actual = hashlib.sha256(raw).hexdigest()
+expected = os.environ["PATCH_SHA256"].lower()
+if actual != expected:
+    raise SystemExit(f"bootstrap patch SHA mismatch: {actual} != {expected}")
+xz.write_bytes(raw)
+patch.write_bytes(lzma.decompress(raw))
+'@ | Set-Content (Join-Path $env:RUNNER_TEMP "decode_beta33.py") -Encoding utf8
+          $env:BETA33_B64 = $b64
+          $env:BETA33_XZ = $xz
+          $env:BETA33_PATCH = $patch
+          python (Join-Path $env:RUNNER_TEMP "decode_beta33.py")
+
+          git cat-file -e "$env:BASE_SHA`^{commit}"
+          if ($LASTEXITCODE -ne 0) { throw "Baseline commit is unavailable" }
+          git reset --hard $env:BASE_SHA
+          git clean -fdx
+          git apply --whitespace=nowarn $patch
+
+          python -m py_compile internal/asr/worker.py internal/tts/worker.py
+          python csharp/scripts/generate_csharp_code_map.py --check
+          python csharp/scripts/validate_csharp_migration.py
+          if ($LASTEXITCODE -ne 0) { throw "beta.33 static contract failed" }
+
+          git add -A
+          $tree = (git write-tree).Trim()
+          if (-not $tree) { throw "Could not write target tree" }
+          $commit = ("editor: implement Whisper timing and local NghiTTS" | git commit-tree $tree -p $current).Trim()
+          if (-not $commit) { throw "Could not create target commit" }
+          git push origin "$commit`:refs/heads/$env:TARGET_BRANCH"
+          if ($LASTEXITCODE -ne 0) { throw "Could not fast-forward target branch" }
+          Write-Host "BETA33_TARGET_COMMIT=$commit"
 
       - name: Install exact .NET SDK
         uses: actions/setup-dotnet@v4
