@@ -440,7 +440,7 @@ public sealed class LocalSubtitleTranslationService : IDisposable
                 var target = Path.GetFullPath(Path.Combine(temporary, entry.FullName));
                 if (!target.StartsWith(root, StringComparison.OrdinalIgnoreCase) || entry.FullName.Contains(':', StringComparison.Ordinal))
                     throw new InvalidDataException("Runtime AI chứa path không an toàn.");
-                if (entry.FullName.EndsWith('/', StringComparison.Ordinal)) { Directory.CreateDirectory(target); continue; }
+                if (entry.FullName.EndsWith("/", StringComparison.Ordinal)) { Directory.CreateDirectory(target); continue; }
                 Directory.CreateDirectory(Path.GetDirectoryName(target)!);
                 entry.ExtractToFile(target, overwrite: false);
             }

@@ -53,12 +53,12 @@ public sealed partial class TranslationSkillBundle
         foreach (var entry in archive.Entries)
         {
             var normalized = entry.FullName.Replace('\\', '/');
-            if (normalized.StartsWith('/', StringComparison.Ordinal) || normalized.Contains("../", StringComparison.Ordinal) || normalized.Contains(':', StringComparison.Ordinal))
+            if (normalized.StartsWith("/", StringComparison.Ordinal) || normalized.Contains("../", StringComparison.Ordinal) || normalized.Contains(':', StringComparison.Ordinal))
                 throw new InvalidDataException("Skill ZIP chứa path không an toàn.");
             if (entry.Length < 0 || entry.Length > MaxEntryBytes || expanded + entry.Length > MaxExpandedBytes)
                 throw new InvalidDataException("Skill ZIP vượt giới hạn giải nén.");
             expanded += entry.Length;
-            if (!normalized.StartsWith(root, StringComparison.OrdinalIgnoreCase) || normalized.EndsWith('/', StringComparison.Ordinal)) continue;
+            if (!normalized.StartsWith(root, StringComparison.OrdinalIgnoreCase) || normalized.EndsWith("/", StringComparison.Ordinal)) continue;
             var relative = normalized[root.Length..];
             if (!relative.EndsWith(".md", StringComparison.OrdinalIgnoreCase)) continue;
             using var reader = new StreamReader(entry.Open(), new UTF8Encoding(false, true), detectEncodingFromByteOrderMarks: true, leaveOpen: false);
