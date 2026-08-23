@@ -7,7 +7,6 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
-using Microsoft.UI.Xaml.Navigation;
 using Microsoft.UI.Xaml.Shapes;
 using Windows.Foundation;
 using Windows.Graphics.Imaging;
@@ -31,9 +30,7 @@ public sealed partial class EditorPage
     private readonly List<EditorImageOverlayState> _imageOverlays = [];
     private readonly Dictionary<string, BitmapImage> _imageBitmaps = new(StringComparer.OrdinalIgnoreCase);
     private bool _imageFeatureInitialized;
-    private bool _imageModeActive;
     private bool _syncingImageInputs;
-    private bool _fixingImageRenderButton;
     private string? _imageProjectId;
     private int _selectedImageIndex = -1;
     private Point? _imageDragStart;
@@ -55,11 +52,7 @@ public sealed partial class EditorPage
     private NumberBox? _imageHeightBox;
     private Slider? _imageOpacitySlider;
 
-    protected override void OnNavigatedTo(NavigationEventArgs e)
-    {
-        base.OnNavigatedTo(e);
-        EnsureImageFeatureInitialized();
-    }
+
 
     private void EnsureImageFeatureInitialized()
     {
@@ -75,11 +68,12 @@ public sealed partial class EditorPage
             Padding = new Thickness(0),
             HorizontalContentAlignment = HorizontalAlignment.Center,
             VerticalContentAlignment = VerticalAlignment.Center,
+            Tag = "Image",
             Content = new FontIcon { Glyph = "\uEB9F", FontSize = 18 },
         };
         ToolTipService.SetToolTip(_imageModeButton, "Ảnh / logo PNG, JPG, JPEG");
         AutomationProperties.SetName(_imageModeButton, "Chế độ thêm ảnh hoặc logo");
-        _imageModeButton.Click += ImageMode_Click;
+        _imageModeButton.Click += InspectorMode_Click;
         var exportIndex = rail.Children.IndexOf(ExportModeButton);
         rail.Children.Insert(exportIndex < 0 ? rail.Children.Count : exportIndex, _imageModeButton);
 
@@ -104,15 +98,6 @@ public sealed partial class EditorPage
         _imageOverlayCanvas.SizeChanged += ImageOverlay_SizeChanged;
         previewHost.Children.Add(_imageOverlayCanvas);
 
-        SubtitleModeButton.Click += BaseInspectorMode_Click;
-        BlurModeButton.Click += BaseInspectorMode_Click;
-        AudioModeButton.Click += BaseInspectorMode_Click;
-        ExportModeButton.Click += BaseInspectorMode_Click;
-        OpenVideoButton.Click += ImageFeature_OpenVideoClicked;
-        RenderButton.Click -= Render_Click;
-        RenderButton.Click += RenderWithImages_Click;
-        RenderButton.IsEnabledChanged += RenderButton_IsEnabledChanged;
-        Unloaded += ImageFeature_Unloaded;
         RefreshImageControls();
     }
 
@@ -225,51 +210,7 @@ public sealed partial class EditorPage
         return box;
     }
 
-    private async void ImageMode_Click(object sender, RoutedEventArgs e)
-    {
-        if (_imageModeButton is null || _imageInspectorPanel is null || _imageOverlayCanvas is null) return;
-        _imageModeActive = true;
-        SubtitleModeButton.IsChecked = false;
-        BlurModeButton.IsChecked = false;
-        AudioModeButton.IsChecked = false;
-        ExportModeButton.IsChecked = false;
-        _imageModeButton.IsChecked = true;
-        SubtitleInspectorPanel.Visibility = Visibility.Collapsed;
-        BlurInspectorPanel.Visibility = Visibility.Collapsed;
-        AudioInspectorPanel.Visibility = Visibility.Collapsed;
-        ExportInspectorPanel.Visibility = Visibility.Collapsed;
-        _imageInspectorPanel.Visibility = Visibility.Visible;
-        _imageOverlayCanvas.IsHitTestVisible = _media is not null && !EditorBusy && !_playerMode;
-        try { await EnsureImageProjectLoadedAsync(); }
-        catch (Exception error) { if (_imageStatusText is not null) _imageStatusText.Text = error.Message; }
-        RenderImageOverlays();
-        RefreshImageControls();
-    }
 
-    private void BaseInspectorMode_Click(object sender, RoutedEventArgs e)
-    {
-        if (!_imageFeatureInitialized) return;
-        _imageModeActive = false;
-        if (_imageModeButton is not null) _imageModeButton.IsChecked = false;
-        if (_imageInspectorPanel is not null) _imageInspectorPanel.Visibility = Visibility.Collapsed;
-        if (_imageOverlayCanvas is not null) _imageOverlayCanvas.IsHitTestVisible = false;
-        RenderImageOverlays();
-    }
-
-    private async void ImageFeature_OpenVideoClicked(object sender, RoutedEventArgs e)
-    {
-        var previousId = _imageProjectId;
-        for (var attempt = 0; attempt < 80; attempt++)
-        {
-            await Task.Delay(100);
-            if (_project is null || string.Equals(_project.Id, previousId, StringComparison.Ordinal)) continue;
-            try { await EnsureImageProjectLoadedAsync(); }
-            catch (Exception error) { if (_imageStatusText is not null) _imageStatusText.Text = error.Message; }
-            RenderImageOverlays();
-            RefreshImageControls();
-            return;
-        }
-    }
 
     private async Task EnsureImageProjectLoadedAsync()
     {
@@ -306,58 +247,50 @@ public sealed partial class EditorPage
 
     private async void AddImage_Click(object sender, RoutedEventArgs e)
     {
+        try { await AddImageAsync(); }
+        catch (Exception error) { if (_imageStatusText is not null) _imageStatusText.Text = error.Message; }
+    }
+
+    private async Task AddImageAsync()
+    {
         if (_media is null || _project is null || EditorBusy || _playerMode || _imageOverlays.Count >= MaxEditorImages) return;
         var path = await _picker.PickImageAsync();
         if (path is null) return;
-        try
+        var extension = Path.GetExtension(path).ToLowerInvariant();
+        if (extension is not (".png" or ".jpg" or ".jpeg"))
+            throw new InvalidDataException("Chỉ hỗ trợ PNG, JPG hoặc JPEG.");
+        var file = await StorageFile.GetFileFromPathAsync(path);
+        uint pixelWidth;
+        uint pixelHeight;
+        using (var stream = await file.OpenReadAsync())
         {
-            var extension = Path.GetExtension(path).ToLowerInvariant();
-            if (extension is not (".png" or ".jpg" or ".jpeg"))
-                throw new InvalidDataException("Chỉ hỗ trợ PNG, JPG hoặc JPEG.");
-            var file = await StorageFile.GetFileFromPathAsync(path);
-            uint pixelWidth;
-            uint pixelHeight;
-            using (var stream = await file.OpenReadAsync())
-            {
-                var decoder = await BitmapDecoder.CreateAsync(stream);
-                pixelWidth = decoder.PixelWidth;
-                pixelHeight = decoder.PixelHeight;
-            }
-            if (pixelWidth == 0 || pixelHeight == 0) throw new InvalidDataException("Không đọc được kích thước ảnh/logo.");
-
-            var width = .18;
-            var aspect = pixelWidth / (double)pixelHeight;
-            var height = width * _media.Width / (aspect * _media.Height);
-            if (height > .34)
-            {
-                height = .34;
-                width = height * aspect * _media.Height / _media.Width;
-            }
-            width = Math.Clamp(width, .03, .45);
-            height = Math.Clamp(height, .03, .45);
-            var state = new EditorImageOverlayState(
-                Path.GetFullPath(path),
-                Math.Max(0, 1 - width - .025),
-                .025,
-                width,
-                height,
-                1,
-                pixelWidth,
-                pixelHeight);
-            _imageOverlays.Add(state);
-            _selectedImageIndex = _imageOverlays.Count - 1;
-            await EnsureBitmapLoadedAsync(state.Path);
-            await SaveImageSidecarAsync();
-            RenderImageList();
-            LoadSelectedImageIntoInputs();
-            RenderImageOverlays();
-            if (_imageStatusText is not null) _imageStatusText.Text = $"Đã thêm {Path.GetFileName(state.Path)}. Kéo trực tiếp trên preview để đặt logo.";
-            RefreshImageControls();
+            var decoder = await BitmapDecoder.CreateAsync(stream);
+            pixelWidth = decoder.PixelWidth;
+            pixelHeight = decoder.PixelHeight;
         }
-        catch (Exception error)
+        if (pixelWidth == 0 || pixelHeight == 0) throw new InvalidDataException("Không đọc được kích thước ảnh/logo.");
+        var width = .18;
+        var aspect = pixelWidth / (double)pixelHeight;
+        var height = width * _media.Width / (aspect * _media.Height);
+        if (height > .34)
         {
-            if (_imageStatusText is not null) _imageStatusText.Text = error.Message;
+            height = .34;
+            width = height * aspect * _media.Height / _media.Width;
         }
+        width = Math.Clamp(width, .03, .45);
+        height = Math.Clamp(height, .03, .45);
+        var state = new EditorImageOverlayState(
+            Path.GetFullPath(path), Math.Max(0, 1 - width - .025), .025, width, height, 1, pixelWidth, pixelHeight);
+        _imageOverlays.Add(state);
+        _selectedImageIndex = _imageOverlays.Count - 1;
+        await EnsureBitmapLoadedAsync(state.Path);
+        await SaveImageSidecarAsync();
+        RenderImageList();
+        LoadSelectedImageIntoInputs();
+        RenderImageOverlays();
+        NotifyEditorCompositeChanged();
+        if (_imageStatusText is not null) _imageStatusText.Text = $"Đã thêm {Path.GetFileName(state.Path)}. Kéo trực tiếp trên preview để đặt logo.";
+        RefreshEditorActions();
     }
 
     private async void RemoveImage_Click(object sender, RoutedEventArgs e)
@@ -417,6 +350,7 @@ public sealed partial class EditorPage
         _imageOverlays[_selectedImageIndex] = image with { X = x, Y = y, Width = width, Height = height };
         await SaveImageSidecarAsync();
         RenderImageOverlays();
+        NotifyEditorCompositeChanged();
         if (_imageStatusText is not null) _imageStatusText.Text = "Đã cập nhật vị trí/kích thước ảnh/logo.";
     }
 
@@ -426,11 +360,12 @@ public sealed partial class EditorPage
         _imageOverlays[_selectedImageIndex] = image with { Opacity = Math.Clamp(_imageOpacitySlider.Value / 100, .05, 1) };
         await SaveImageSidecarAsync();
         RenderImageOverlays();
+        NotifyEditorCompositeChanged();
     }
 
     private void ImageOverlay_PointerPressed(object sender, PointerRoutedEventArgs e)
     {
-        if (!_imageModeActive || _media is null || EditorBusy || _playerMode || _imageOverlayCanvas is null) return;
+        if (_inspectorMode != InspectorMode.Image || _media is null || EditorBusy || _playerMode || _imageOverlayCanvas is null) return;
         var point = e.GetCurrentPoint(_imageOverlayCanvas).Position;
         var hit = HitTestImage(point);
         if (hit.Index < 0) return;
@@ -556,7 +491,7 @@ public sealed partial class EditorPage
             Canvas.SetTop(image, video.Y + state.Y * video.Height);
             _imageOverlayCanvas.Children.Add(image);
 
-            if (_imageModeActive && index == _selectedImageIndex && !EditorBusy && !_playerMode)
+            if (_inspectorMode == InspectorMode.Image && index == _selectedImageIndex && !EditorBusy && !_playerMode)
                 RenderImageSelection(state, video);
         }
     }
@@ -718,7 +653,7 @@ public sealed partial class EditorPage
 
     private string ImageSidecarPath(string projectId) => Path.Combine(_application.Paths.Data, "Projects", projectId + ".images.json");
 
-    private async void RenderWithImages_Click(object sender, RoutedEventArgs e)
+    private async Task RenderProjectAsync()
     {
         try { await EnsureImageProjectLoadedAsync(); }
         catch (Exception error)
@@ -726,17 +661,21 @@ public sealed partial class EditorPage
             StatusText.Text = error.Message;
             return;
         }
-        if (_imageOverlays.Count == 0)
-        {
-            Render_Click(sender, e);
-            return;
-        }
         if (_path is null || _media is null || _project is null)
         {
-            StatusText.Text = "Chưa chọn video để ghép ảnh/logo.";
+            StatusText.Text = "Chưa chọn video để xuất.";
             return;
         }
         if (EditorBusy) return;
+
+        var subtitle = CompletedSubtitleBurn();
+        var hasBaseEdit = _document.Regions.Count > 0 || subtitle is not null || _audioSettings.SourceMode != "keep" || _voiceTrack is not null;
+        var hasImages = _imageOverlays.Count > 0;
+        if (!hasBaseEdit && !hasImages)
+        {
+            StatusText.Text = "Cần ít nhất một thay đổi trước khi xuất video.";
+            return;
+        }
 
         string? baseOutput = null;
         AppJob? imageJob = null;
@@ -744,8 +683,35 @@ public sealed partial class EditorPage
         {
             await SaveProjectNowAsync();
             await SaveImageSidecarAsync();
-            var subtitle = CompletedSubtitleBurn();
-            var hasBaseEdit = _document.Regions.Count > 0 || subtitle is not null || _audioSettings.SourceMode != "keep" || _voiceTrack is not null;
+
+            if (!hasImages)
+            {
+                _jobId = _application.StartEditor(CurrentEditRequest(subtitle));
+                RefreshEditorActions();
+                while (_jobId is not null)
+                {
+                    var snapshot = _application.Jobs.GetSnapshot(_jobId);
+                    Progress.Value = snapshot.Progress;
+                    StatusText.Text = snapshot.Message;
+                    if (!snapshot.Done)
+                    {
+                        await Task.Delay(350);
+                        continue;
+                    }
+                    _jobId = null;
+                    if (snapshot.Result is VideoEditResult result)
+                    {
+                        Progress.Value = 100;
+                        StatusText.Text = "Đã xuất: " + result.OutputPath;
+                        break;
+                    }
+                    if (snapshot.Message.Contains("hủy", StringComparison.OrdinalIgnoreCase))
+                        throw new OperationCanceledException("Đã hủy xuất video.");
+                    throw new InvalidOperationException(snapshot.Error ?? snapshot.Message);
+                }
+                return;
+            }
+
             var composerInput = _path;
             if (hasBaseEdit)
             {
@@ -755,47 +721,38 @@ public sealed partial class EditorPage
                 var request = CurrentEditRequest(subtitle) with { OutputDirectory = temporaryDirectory, FileName = temporaryName };
                 _jobId = _application.StartEditor(request);
                 RefreshEditorActions();
-                RefreshImageControls();
                 while (_jobId is not null)
                 {
                     var snapshot = _application.Jobs.GetSnapshot(_jobId);
                     Progress.Value = Math.Clamp(snapshot.Progress * .68, 0, 68);
                     StatusText.Text = "Đang dựng bản chỉnh trước khi ghép ảnh/logo · " + snapshot.Message;
-                    if (snapshot.Done)
+                    if (!snapshot.Done)
                     {
-                        var completedId = _jobId;
-                        _jobId = null;
-                        if (snapshot.Result is VideoEditResult result)
-                        {
-                            baseOutput = result.OutputPath;
-                            composerInput = result.OutputPath;
-                            break;
-                        }
-                        if (snapshot.Message.Contains("hủy", StringComparison.OrdinalIgnoreCase))
-                            throw new OperationCanceledException("Đã hủy xuất video.");
-                        throw new InvalidOperationException(snapshot.Error ?? "Không tạo được bản chỉnh trung gian để ghép ảnh/logo.");
+                        await Task.Delay(250);
+                        continue;
                     }
-                    await Task.Delay(250);
+                    _jobId = null;
+                    if (snapshot.Result is VideoEditResult result)
+                    {
+                        baseOutput = result.OutputPath;
+                        composerInput = result.OutputPath;
+                        break;
+                    }
+                    if (snapshot.Message.Contains("hủy", StringComparison.OrdinalIgnoreCase))
+                        throw new OperationCanceledException("Đã hủy xuất video.");
+                    throw new InvalidOperationException(snapshot.Error ?? "Không tạo được bản chỉnh trung gian để ghép ảnh/logo.");
                 }
             }
 
             imageJob = _application.Jobs.Create("editor-image", cleanupAwareCancel: true);
             _jobId = imageJob.Id;
             RefreshEditorActions();
-            RefreshImageControls();
             var composer = new EditorImageOverlayComposer(_application.Tools, _application.Processes);
             var specs = _imageOverlays.Select(image => new EditorImageOverlaySpec(
                 image.Path, image.X, image.Y, image.Width, image.Height, image.Opacity)).ToArray();
             var output = await composer.RenderAsync(
-                imageJob,
-                composerInput,
-                _application.Config.OutputDirectory,
-                FileNameBox.Text,
-                _media.Width,
-                _media.Height,
-                _media.Duration,
-                specs,
-                copyAudio: hasBaseEdit);
+                imageJob, composerInput, _application.Config.OutputDirectory, FileNameBox.Text,
+                _media.Width, _media.Height, _media.Duration, specs, copyAudio: hasBaseEdit);
             imageJob.Finish(null, "Đã xuất: " + output, new VideoEditResult(output));
             Progress.Value = 100;
             StatusText.Text = $"Đã xuất video với {_imageOverlays.Count} ảnh/logo: {output}";
@@ -818,18 +775,8 @@ public sealed partial class EditorPage
             }
             _jobId = null;
             RefreshEditorActions();
-            RefreshImageControls();
             RenderImageOverlays();
         }
-    }
-
-    private void RenderButton_IsEnabledChanged(object sender, DependencyPropertyChangedEventArgs e)
-    {
-        if (_fixingImageRenderButton || _imageOverlays.Count == 0 || _media is null || EditorBusy || _playerMode || string.IsNullOrWhiteSpace(FileNameBox.Text)) return;
-        if (RenderButton.IsEnabled) return;
-        _fixingImageRenderButton = true;
-        try { RenderButton.IsEnabled = true; }
-        finally { _fixingImageRenderButton = false; }
     }
 
     private void RefreshImageControls()
@@ -837,6 +784,7 @@ public sealed partial class EditorPage
         if (!_imageFeatureInitialized) return;
         var editable = _media is not null && !EditorBusy && !_playerMode;
         var selected = _selectedImageIndex >= 0 && _selectedImageIndex < _imageOverlays.Count;
+        if (_imageModeButton is not null) _imageModeButton.IsEnabled = !EditorBusy;
         if (_addImageButton is not null) _addImageButton.IsEnabled = editable && _imageOverlays.Count < MaxEditorImages;
         if (_removeImageButton is not null) _removeImageButton.IsEnabled = editable && selected;
         if (_imageTopLeftButton is not null) _imageTopLeftButton.IsEnabled = editable && selected;
@@ -847,13 +795,6 @@ public sealed partial class EditorPage
         if (_imageWidthBox is not null) _imageWidthBox.IsEnabled = editable && selected;
         if (_imageHeightBox is not null) _imageHeightBox.IsEnabled = editable && selected;
         if (_imageOpacitySlider is not null) _imageOpacitySlider.IsEnabled = editable && selected;
-        if (_imageOverlayCanvas is not null) _imageOverlayCanvas.IsHitTestVisible = editable && _imageModeActive;
-        if (_imageOverlays.Count > 0 && editable && !string.IsNullOrWhiteSpace(FileNameBox.Text))
-            RenderButton.IsEnabled = true;
-    }
-
-    private async void ImageFeature_Unloaded(object sender, RoutedEventArgs e)
-    {
-        try { await SaveImageSidecarAsync(); } catch { }
+        if (_imageOverlayCanvas is not null) _imageOverlayCanvas.IsHitTestVisible = editable && _inspectorMode == InspectorMode.Image;
     }
 }

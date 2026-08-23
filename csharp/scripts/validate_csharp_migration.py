@@ -246,15 +246,29 @@ for marker in ("JobObjectLimitKillOnJobClose", "JobObjectLimitBreakawayOk"):
 
 ocr = read(CSHARP / "src/BiliSubStudio.App/Pages/OcrPage.xaml") + read(CSHARP / "src/BiliSubStudio.App/Pages/OcrPage.xaml.cs")
 editor = read(CSHARP / "src/BiliSubStudio.App/Pages/EditorPage.xaml") + read(CSHARP / "src/BiliSubStudio.App/Pages/EditorPage.xaml.cs")
+editor_partials = "\n".join(read(path) for path in (CSHARP / "src/BiliSubStudio.App/Pages").glob("EditorPage*.cs"))
 for owner, source in (("OCR", ocr), ("Editor", editor)):
-    for marker in ("MediaPlayerElement", 'AreTransportControlsEnabled="True"', "IsFullWindow", "MediaSource.CreateFromStorageFile", "PositionChanged"):
+    for marker in ("MediaPlayerElement", "IsFullWindow", "MediaSource.CreateFromStorageFile", "PositionChanged"):
         require(marker in source, f"{owner} native playback/fullscreen contract missing {marker}")
+require('AreTransportControlsEnabled="True"' in ocr, "OCR native transport contract missing")
+require('AreTransportControlsEnabled="False"' in editor, "Editor must own preview chrome and disable native MediaPlayer transport")
+for forbidden in (
+    "SubtitleModeButton.Click +=", "BlurModeButton.Click +=", "AudioModeButton.Click +=", "ExportModeButton.Click +=",
+    "OpenVideoButton.Click +=", "RenderButton.Click -=", "RenderButton.IsEnabledChanged +=",
+    "OnNavigatedTo(", "OnApplyTemplate(", "Render_Click(sender, e)", "EditorParity_Loaded", "HookEditorLivePreviewEvents",
+):
+    require(forbidden not in editor_partials, f"Editor cleanup regression reintroduced {forbidden}")
+require("EnsureEditorParityInitialized();" in editor_partials and "EnsureImageFeatureInitialized();" in editor_partials,
+        "Editor must initialize parity and image tools from one lifecycle owner")
+require("Loaded += EditorPage_Loaded;" in editor and "private void EditorPage_Loaded" in editor_partials,
+        "Editor must use the actual Loaded event as its single feature initialization lifecycle")
+
 for marker in (
     "SubtitleModeButton", "BlurModeButton", "AudioModeButton", "ExportModeButton",
     "SubtitleInspectorPanel", "BlurInspectorPanel", "AudioInspectorPanel", "ExportInspectorPanel",
     "RunLayoutSmokeAsync", "ImportSrtButton.IsEnabled = idle && !_playerMode;", "PrepareAiButton.IsEnabled = idle && !_playerMode;",
     "_inspectorMode == InspectorMode.Blur", "_inspectorMode == InspectorMode.Subtitle",
-    "Xem bản chỉnh (12 giây)", "CreateEditorPreviewSegmentAsync", "Overlay.Visibility = Visibility.Collapsed",
+    "Xem bản chỉnh", "CreateEditorPreviewSegmentAsync", "PlayerMediaEnded",
 ):
     require(marker in editor, f"Editor icon-mode/action-state contract missing {marker}")
 require("ImportSrtButton.IsEnabled = idle && hasMedia" not in editor,

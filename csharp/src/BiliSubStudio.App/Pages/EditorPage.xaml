@@ -33,7 +33,7 @@
                     <Grid.RowDefinitions><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
                     <Border Background="Black" BorderBrush="{ThemeResource StrongBorderBrush}" BorderThickness="1" CornerRadius="13">
                         <Grid AutomationProperties.Name="Khung xem trước và vùng chỉnh sửa">
-                            <MediaPlayerElement x:Name="PreviewPlayer" AreTransportControlsEnabled="True" AutoPlay="False" Stretch="Uniform" Visibility="Collapsed" AutomationProperties.Name="Trình phát video editor" />
+                            <MediaPlayerElement x:Name="PreviewPlayer" AreTransportControlsEnabled="False" AutoPlay="False" Stretch="Uniform" Visibility="Collapsed" AutomationProperties.Name="Trình phát video editor" />
                             <Image x:Name="PreviewImage" Stretch="Uniform" AutomationProperties.Name="Frame đã áp dụng hiệu ứng" />
                             <Canvas
                                 x:Name="Overlay"
@@ -54,7 +54,7 @@
                         <Grid ColumnSpacing="8">
                             <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
                             <TextBlock x:Name="ClockText" VerticalAlignment="Center" Style="{StaticResource MutedTextStyle}" Text="00:00 / 00:00" />
-                            <Button Grid.Column="1" x:Name="PlaybackButton" AccessKey="P" Click="Playback_Click" Content="Xem bản chỉnh (12 giây)" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />
+                            <Button Grid.Column="1" x:Name="PlaybackButton" AccessKey="P" Click="Playback_Click" Content="Xem bản chỉnh" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />
                             <Button Grid.Column="2" x:Name="FullscreenButton" AccessKey="F" Click="Fullscreen_Click" Content="Toàn màn hình" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />
                             <Button Grid.Column="3" x:Name="RefreshFrameButton" Click="Refresh_Click" Content="Làm mới hiệu ứng" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />
                         </Grid>

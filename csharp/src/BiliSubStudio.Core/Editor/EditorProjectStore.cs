@@ -291,7 +291,7 @@ public sealed class EditorProjectStore
             {
                 Id = identity,
                 Effect = effect,
-                Strength = Math.Clamp(region.Strength, 2, 64),
+                Strength = Math.Clamp(region.Strength, 2, 40),
             });
         }
         return normalized;
