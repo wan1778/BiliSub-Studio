@@ -1,0 +1,549 @@
+name: Editor UI shell builder
+
+on:
+  push:
+    branches:
+      - editor-ui-shell
+
+permissions:
+  contents: write
+
+jobs:
+  build-shell:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: editor-ui-shell
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Apply UI-01 through UI-11 static shell
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+
+          root = Path('.')
+          pages = root / 'csharp/src/BiliSubStudio.App/Pages'
+          xaml_path = pages / 'EditorPage.xaml'
+          editor_path = pages / 'EditorPage.xaml.cs'
+          images_path = pages / 'EditorPage.Images.cs'
+          parity_path = pages / 'EditorPage.ParityFixes.cs'
+          bootstrap_path = pages / 'EditorPage.ParityBootstrap.cs'
+          validator_path = root / 'csharp/scripts/validate_csharp_migration.py'
+
+          xaml = r'''<Page
+              x:Class="BiliSubStudio.App.Pages.EditorPage"
+              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+              Background="{ThemeResource CanvasBrush}"
+              AutomationProperties.Name="Chỉnh video"
+              IsTabStop="True"
+              KeyDown="Page_KeyDown">
+              <Grid x:Name="PageRoot" Padding="12,10,12,12" RowSpacing="10">
+                  <Grid.RowDefinitions>
+                      <RowDefinition Height="Auto" />
+                      <RowDefinition Height="*" />
+                      <RowDefinition Height="Auto" />
+                  </Grid.RowDefinitions>
+
+                  <Grid ColumnSpacing="10">
+                      <Grid.ColumnDefinitions>
+                          <ColumnDefinition Width="*" />
+                          <ColumnDefinition Width="Auto" />
+                      </Grid.ColumnDefinitions>
+                      <StackPanel Spacing="2">
+                          <TextBlock FontSize="10" Foreground="{ThemeResource MutedTextBrush}" Text="BiliSub Studio / Chỉnh video" />
+                          <TextBlock Style="{StaticResource PageTitleStyle}" Text="Chỉnh video" />
+                      </StackPanel>
+                      <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                          <Border Padding="8,3" Background="{ThemeResource AccentSoftBrush}" CornerRadius="9">
+                              <TextBlock FontSize="10" Foreground="{ThemeResource AccentPrimaryBrush}" Text="Project tự lưu" />
+                          </Border>
+                          <Border Padding="8,3" Background="{ThemeResource SuccessSoftBrush}" CornerRadius="9">
+                              <TextBlock FontSize="10" Foreground="{ThemeResource SuccessBrush}" Text="Không ghi đè nguồn" />
+                          </Border>
+                      </StackPanel>
+                  </Grid>
+
+                  <Grid x:Name="WorkspaceGrid" Grid.Row="1" ColumnSpacing="10">
+                      <Grid.ColumnDefinitions>
+                          <ColumnDefinition x:Name="SourceColumn" Width="0.75*" MinWidth="120" MaxWidth="210" />
+                          <ColumnDefinition x:Name="PlayerColumn" Width="2.4*" MinWidth="220" />
+                          <ColumnDefinition x:Name="DetailsColumn" Width="1.15*" MinWidth="190" MaxWidth="330" />
+                      </Grid.ColumnDefinitions>
+
+                      <!-- SOURCE -->
+                      <Border Grid.Column="0" Padding="10" Background="{ThemeResource RaisedSurfaceBrush}" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="1" CornerRadius="11">
+                          <Grid>
+                              <Grid.RowDefinitions>
+                                  <RowDefinition Height="Auto" />
+                                  <RowDefinition Height="*" />
+                              </Grid.RowDefinitions>
+                              <Grid ColumnSpacing="6">
+                                  <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                  <TextBlock FontSize="15" FontWeight="SemiBold" VerticalAlignment="Center" Text="Source" />
+                                  <Button Grid.Column="1" x:Name="OpenVideoButton" AccessKey="O" Click="Pick_Click" Content="Mở video" Padding="9,5" />
+                              </Grid>
+                              <ScrollViewer Grid.Row="1" Margin="0,10,0,0" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+                                  <StackPanel Spacing="12">
+                                      <StackPanel Spacing="4">
+                                          <TextBlock FontWeight="SemiBold" Text="Video" />
+                                          <TextBlock x:Name="PathText" Style="{StaticResource MutedTextStyle}" Text="Chưa chọn video." TextWrapping="Wrap" TextTrimming="CharacterEllipsis" />
+                                          <TextBlock x:Name="MediaText" Style="{StaticResource MutedTextStyle}" TextWrapping="Wrap" />
+                                      </StackPanel>
+                                      <Rectangle Height="1" Fill="{ThemeResource BorderBrush}" />
+                                      <StackPanel Spacing="4">
+                                          <TextBlock FontWeight="SemiBold" Text="SRT" />
+                                          <TextBlock x:Name="SrtPathText" Style="{StaticResource MutedTextStyle}" Text="Chưa chọn SRT." TextWrapping="Wrap" TextTrimming="CharacterEllipsis" />
+                                      </StackPanel>
+                                      <Rectangle Height="1" Fill="{ThemeResource BorderBrush}" />
+                                      <StackPanel Spacing="6">
+                                          <TextBlock FontWeight="SemiBold" Text="Ảnh / logo" />
+                                          <ListView x:Name="ImageSourceList" MinHeight="74" MaxHeight="130" SelectionChanged="ImageList_SelectionChanged" AutomationProperties.Name="Danh sách ảnh và logo nguồn" />
+                                          <TextBlock FontSize="10" Foreground="{ThemeResource SecondaryTextBrush}" Text="Tối đa 8 ảnh. Chỉnh vị trí ở tool Ảnh/Logo." TextWrapping="Wrap" />
+                                      </StackPanel>
+                                      <Rectangle Height="1" Fill="{ThemeResource BorderBrush}" />
+                                      <StackPanel Spacing="6">
+                                          <TextBlock FontWeight="SemiBold" Text="Project" />
+                                          <TextBlock Style="{StaticResource MutedTextStyle}" Text="Tự lưu thay đổi · source media luôn giữ nguyên." TextWrapping="Wrap" />
+                                          <ToggleSwitch x:Name="EditorAutoCompositeToggle" Header="Tự cập nhật preview" IsOn="True" Toggled="EditorAutoComposite_Toggled" />
+                                      </StackPanel>
+                                  </StackPanel>
+                              </ScrollViewer>
+                          </Grid>
+                      </Border>
+
+                      <!-- PLAYER -->
+                      <Grid x:Name="PreviewPane" Grid.Column="1">
+                          <Border x:Name="PreviewSurface" Background="Black" BorderBrush="{ThemeResource StrongBorderBrush}" BorderThickness="1" CornerRadius="12">
+                              <Grid AutomationProperties.Name="Player Editor">
+                                  <MediaPlayerElement x:Name="PreviewPlayer" AreTransportControlsEnabled="False" AutoPlay="False" Stretch="Uniform" Visibility="Collapsed" AutomationProperties.Name="Video preview" />
+                                  <Image x:Name="PreviewImage" Stretch="Uniform" AutomationProperties.Name="Frame preview" />
+                                  <Canvas x:Name="Overlay" Background="Transparent" IsHitTestVisible="False"
+                                          PointerPressed="Overlay_PointerPressed" PointerMoved="Overlay_PointerMoved"
+                                          PointerReleased="Overlay_PointerReleased" PointerCanceled="Overlay_PointerCanceled"
+                                          AutomationProperties.Name="Vùng chỉnh trực tiếp" />
+                                  <Canvas x:Name="ImageOverlayCanvas" Background="Transparent" IsHitTestVisible="False"
+                                          PointerPressed="ImageOverlay_PointerPressed" PointerMoved="ImageOverlay_PointerMoved"
+                                          PointerReleased="ImageOverlay_PointerReleased" PointerCanceled="ImageOverlay_PointerCanceled"
+                                          AutomationProperties.Name="Ảnh và logo trên preview" />
+
+                                  <Border x:Name="PlayerControlBar" Height="48" VerticalAlignment="Bottom" Margin="8" Padding="8,5"
+                                          Background="#D9000000" CornerRadius="9">
+                                      <Grid ColumnSpacing="7">
+                                          <Grid.ColumnDefinitions>
+                                              <ColumnDefinition Width="36" />
+                                              <ColumnDefinition Width="78" />
+                                              <ColumnDefinition Width="*" />
+                                              <ColumnDefinition Width="36" />
+                                              <ColumnDefinition Width="72" />
+                                              <ColumnDefinition Width="36" />
+                                          </Grid.ColumnDefinitions>
+                                          <Button x:Name="PlaybackButton" AccessKey="P" Click="Playback_Click" Content="▶" IsEnabled="False" Padding="0" HorizontalContentAlignment="Center" ToolTipService.ToolTip="Phát / tạm dừng preview" />
+                                          <TextBlock Grid.Column="1" x:Name="ClockText" VerticalAlignment="Center" Foreground="White" FontSize="11" Text="00:00 / 00:00" />
+                                          <Slider Grid.Column="2" x:Name="Timeline" Minimum="0" IsEnabled="False" ValueChanged="Timeline_ValueChanged" VerticalAlignment="Center" AutomationProperties.Name="Vị trí video" />
+                                          <ToggleButton Grid.Column="3" x:Name="PreviewMuteToggle" Toggled="PreviewMute_Toggled" Content="🔊" Padding="0" HorizontalContentAlignment="Center" ToolTipService.ToolTip="Tắt / bật tiếng" />
+                                          <Slider Grid.Column="4" x:Name="PreviewVolumeSlider" Minimum="0" Maximum="100" Value="100" ValueChanged="PreviewVolume_ValueChanged" VerticalAlignment="Center" AutomationProperties.Name="Âm lượng preview" />
+                                          <Button Grid.Column="5" x:Name="FullscreenButton" AccessKey="F" Click="Fullscreen_Click" Content="⛶" IsEnabled="False" Padding="0" HorizontalContentAlignment="Center" ToolTipService.ToolTip="Toàn màn hình" />
+                                      </Grid>
+                                  </Border>
+                              </Grid>
+                          </Border>
+                      </Grid>
+
+                      <!-- DETAILS -->
+                      <Border Grid.Column="2" Padding="9" Background="{ThemeResource RaisedSurfaceBrush}" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="1" CornerRadius="11">
+                          <Grid>
+                              <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                              <StackPanel Spacing="7">
+                                  <TextBlock FontSize="15" FontWeight="SemiBold" Text="Details" />
+                                  <Grid x:Name="ToolSelectorGrid" ColumnSpacing="5" RowSpacing="5">
+                                      <Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
+                                      <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                                      <ToggleButton x:Name="SubtitleModeButton" Grid.Row="0" Grid.Column="0" Height="32" Tag="Subtitle" Click="InspectorMode_Click" Content="Subtitle" IsChecked="True" />
+                                      <ToggleButton x:Name="BlurModeButton" Grid.Row="0" Grid.Column="1" Height="32" Tag="Blur" Click="InspectorMode_Click" Content="Blur" />
+                                      <ToggleButton x:Name="AudioModeButton" Grid.Row="1" Grid.Column="0" Height="32" Tag="Audio" Click="InspectorMode_Click" Content="Audio" />
+                                      <ToggleButton x:Name="VoiceModeButton" Grid.Row="1" Grid.Column="1" Height="32" Tag="Voice" Click="InspectorMode_Click" Content="Voice" />
+                                      <ToggleButton x:Name="ImageModeButton" Grid.Row="2" Grid.Column="0" Height="32" Tag="Image" Click="InspectorMode_Click" Content="Ảnh/Logo" />
+                                      <ToggleButton x:Name="ExportModeButton" Grid.Row="2" Grid.Column="1" Height="32" Tag="Export" Click="InspectorMode_Click" Content="Export" />
+                                  </Grid>
+                              </StackPanel>
+
+                              <ScrollViewer x:Name="InspectorScroll" Grid.Row="1" Margin="0,10,0,0" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+                                  <Grid x:Name="DetailsPanelHost">
+                                      <StackPanel x:Name="SubtitleInspectorPanel" Spacing="10">
+                                          <TextBlock FontSize="14" FontWeight="SemiBold" Text="Subtitle / Vietsub" />
+                                          <TextBlock Style="{StaticResource MutedTextStyle}" Text="SRT Trung → Việt bằng AI local + skill. Timecode và thứ tự block được giữ nguyên." TextWrapping="Wrap" />
+                                          <Button x:Name="ImportSrtButton" Click="ImportSrt_Click" Content="Chọn SRT tiếng Trung" />
+                                          <TextBlock x:Name="AsrStatusText" Style="{StaticResource MutedTextStyle}" Text="Whisper timing chưa chạy." TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
+                                          <TextBlock x:Name="SrtSummaryText" Style="{StaticResource MutedTextStyle}" Text="Skill: Dịch Trung Tu Tiên." TextWrapping="Wrap" />
+                                          <Grid ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
+                                              <Button x:Name="PrepareAiButton" Click="PrepareAi_Click" Content="Chuẩn bị AI" Style="{StaticResource SecondaryButtonStyle}" />
+                                              <Button Grid.Column="1" x:Name="TranslateButton" Click="Translate_Click" Content="Vietsub" IsEnabled="False" />
+                                          </Grid>
+                                          <Grid ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
+                                              <Button x:Name="CancelTranslationButton" Click="CancelTranslation_Click" Content="Hủy AI" IsEnabled="False" Style="{StaticResource DangerButtonStyle}" />
+                                              <Button Grid.Column="1" x:Name="OpenTranslatedSrtButton" Click="OpenTranslatedSrt_Click" Content="Mở SRT Việt" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />
+                                          </Grid>
+                                          <Button x:Name="SaveKaraokeAssButton" Click="SaveKaraokeAss_Click" Content="Lưu Caption ASS" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />
+                                          <ProgressBar x:Name="TranslationProgress" Minimum="0" Maximum="100" />
+                                          <TextBlock x:Name="TranslationStatusText" Style="{StaticResource MutedTextStyle}" Text="Chưa chuẩn bị AI local." TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
+                                      </StackPanel>
+
+                                      <StackPanel x:Name="BlurInspectorPanel" Spacing="10" Visibility="Collapsed">
+                                          <TextBlock FontSize="14" FontWeight="SemiBold" Text="Blur / Mosaic / Cover" />
+                                          <TextBlock Style="{StaticResource MutedTextStyle}" Text="Kéo trực tiếp vùng trên Player; dùng tọa độ khi cần chính xác." TextWrapping="Wrap" />
+                                          <Grid ColumnSpacing="5"><Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
+                                              <NumberBox x:Name="RegionXBox" Header="X (%)" Minimum="0" Maximum="100" ValueChanged="RegionCoordinates_ValueChanged" />
+                                              <NumberBox Grid.Column="1" x:Name="RegionYBox" Header="Y (%)" Minimum="0" Maximum="100" ValueChanged="RegionCoordinates_ValueChanged" />
+                                          </Grid>
+                                          <Grid ColumnSpacing="5"><Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
+                                              <NumberBox x:Name="RegionWidthBox" Header="Rộng (%)" Minimum="0" Maximum="100" ValueChanged="RegionCoordinates_ValueChanged" />
+                                              <NumberBox Grid.Column="1" x:Name="RegionHeightBox" Header="Cao (%)" Minimum="0" Maximum="100" ValueChanged="RegionCoordinates_ValueChanged" />
+                                          </Grid>
+                                          <Grid ColumnSpacing="5"><Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
+                                              <ComboBox x:Name="EffectBox" Header="Hiệu ứng" SelectedIndex="0" SelectionChanged="EffectBox_SelectionChanged">
+                                                  <ComboBoxItem Tag="blur" Content="Làm mờ" /><ComboBoxItem Tag="mosaic" Content="Mosaic" /><ComboBoxItem Tag="cover" Content="Che đen" />
+                                              </ComboBox>
+                                              <NumberBox Grid.Column="1" x:Name="StrengthBox" Header="Cường độ" Minimum="2" Maximum="40" Value="18" ValueChanged="EditInput_ValueChanged" />
+                                          </Grid>
+                                          <ToggleSwitch x:Name="WholeToggle" Header="Áp dụng toàn video" IsOn="True" Toggled="WholeToggle_Toggled" />
+                                          <Grid ColumnSpacing="5"><Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
+                                              <NumberBox x:Name="StartBox" Header="Bắt đầu (s)" IsEnabled="False" ValueChanged="EditInput_ValueChanged" />
+                                              <NumberBox Grid.Column="1" x:Name="EndBox" Header="Kết thúc (s)" IsEnabled="False" ValueChanged="EditInput_ValueChanged" />
+                                          </Grid>
+                                          <Grid ColumnSpacing="5"><Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
+                                              <Button x:Name="EditorUseCurrentStartButton" Click="EditorUseCurrentStart_Click" Content="Lấy thời điểm → đầu" Style="{StaticResource SecondaryButtonStyle}" />
+                                              <Button Grid.Column="1" x:Name="EditorUseCurrentEndButton" Click="EditorUseCurrentEnd_Click" Content="Lấy thời điểm → cuối" Style="{StaticResource SecondaryButtonStyle}" />
+                                          </Grid>
+                                          <TextBlock x:Name="RegionValidationText" Style="{StaticResource MutedTextStyle}" Text="Chọn video rồi kéo để tạo vùng." TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
+                                          <Button x:Name="AddRegionButton" Click="AddRegion_Click" Content="Thêm vùng" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />
+                                          <StackPanel Orientation="Horizontal" Spacing="5">
+                                              <Button x:Name="SubtitlePresetButton" Click="SubtitlePreset_Click" Content="Preset sub" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />
+                                              <Button x:Name="WatermarkPresetButton" Click="WatermarkPreset_Click" Content="Preset logo" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />
+                                          </StackPanel>
+                                          <ListView x:Name="RegionList" MinHeight="82" MaxHeight="130" SelectionChanged="RegionList_SelectionChanged" AutomationProperties.Name="Danh sách vùng hiệu ứng" />
+                                          <Grid ColumnSpacing="5"><Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
+                                              <Button x:Name="UndoButton" Click="Undo_Click" Content="Hoàn tác" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />
+                                              <Button Grid.Column="1" x:Name="RedoButton" Click="Redo_Click" Content="Làm lại" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />
+                                              <Button Grid.Column="2" x:Name="RemoveRegionButton" Click="RemoveRegion_Click" Content="Xóa" IsEnabled="False" Style="{StaticResource DangerButtonStyle}" />
+                                          </Grid>
+                                      </StackPanel>
+
+                                      <StackPanel x:Name="AudioInspectorPanel" Spacing="10" Visibility="Collapsed">
+                                          <TextBlock FontSize="14" FontWeight="SemiBold" Text="Audio" />
+                                          <TextBlock Style="{StaticResource MutedTextStyle}" Text="Điều khiển âm thanh gốc trong preview và bản xuất. File nguồn không bị thay đổi." TextWrapping="Wrap" />
+                                          <ComboBox x:Name="SourceAudioModeBox" Header="Âm thanh gốc" SelectedIndex="0" SelectionChanged="SourceAudioMode_SelectionChanged">
+                                              <ComboBoxItem Tag="keep" Content="Giữ nguyên" /><ComboBoxItem Tag="duck" Content="Giảm âm lượng" /><ComboBoxItem Tag="mute" Content="Tắt tiếng gốc" />
+                                          </ComboBox>
+                                          <Slider x:Name="SourceAudioGainSlider" Header="Mức tiếng gốc khi giảm (%)" Minimum="5" Maximum="95" Value="35" IsEnabled="False" ValueChanged="SourceAudioGain_ValueChanged" />
+                                          <TextBlock x:Name="AudioStatusText" Style="{StaticResource MutedTextStyle}" Text="Preview và video xuất sẽ giữ nguyên âm thanh gốc." TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
+                                      </StackPanel>
+
+                                      <StackPanel x:Name="VoiceInspectorPanel" Spacing="10" Visibility="Collapsed">
+                                          <TextBlock FontSize="14" FontWeight="SemiBold" Text="Voice" />
+                                          <TextBlock Style="{StaticResource MutedTextStyle}" Text="Whisper lấy timing + gợi ý Nam/Nữ; voice Việt chạy local." TextWrapping="Wrap" />
+                                          <Button x:Name="CreateAsrButton" Click="CreateAsr_Click" Content="Phân tích nhịp + Nam/Nữ" IsEnabled="False" />
+                                          <Button x:Name="GenerateTtsButton" Click="GenerateTts_Click" Content="Tạo voice Việt local" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />
+                                          <ToggleSwitch x:Name="KaraokeToggle" Header="Caption theo từng từ" IsOn="True" Toggled="Karaoke_Toggled" />
+                                          <ComboBox x:Name="CurrentCueVoiceBox" Header="Voice câu hiện tại" SelectedIndex="0" SelectionChanged="CurrentCueVoice_SelectionChanged">
+                                              <ComboBoxItem Tag="auto" Content="Tự động Nam/Nữ" /><ComboBoxItem Tag="male" Content="Ép voice Nam" /><ComboBoxItem Tag="female" Content="Ép voice Nữ" />
+                                          </ComboBox>
+                                          <ProgressBar x:Name="VoiceProgress" Minimum="0" Maximum="100" />
+                                          <TextBlock x:Name="VoiceStatusText" Style="{StaticResource MutedTextStyle}" Text="Chưa phân tích nhịp thoại." TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
+                                          <Button x:Name="CancelVoiceButton" Click="CancelVoice_Click" Content="Hủy phân tích / voice" IsEnabled="False" Style="{StaticResource DangerButtonStyle}" />
+                                      </StackPanel>
+
+                                      <StackPanel x:Name="ImageInspectorPanel" Spacing="10" Visibility="Collapsed">
+                                          <TextBlock FontSize="14" FontWeight="SemiBold" Text="Ảnh / Logo" />
+                                          <TextBlock Style="{StaticResource MutedTextStyle}" Text="PNG, JPG, JPEG. Kéo và resize trực tiếp trên Player." TextWrapping="Wrap" />
+                                          <Button x:Name="AddImageButton" Click="AddImage_Click" Content="Thêm ảnh / logo" />
+                                          <TextBlock x:Name="ImageStatusText" Style="{StaticResource MutedTextStyle}" Text="Chưa có ảnh/logo." TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
+                                          <Grid ColumnSpacing="5"><Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
+                                              <Button x:Name="ImageTopLeftButton" Click="ImageTopLeft_Click" Content="Góc trái" Style="{StaticResource SecondaryButtonStyle}" />
+                                              <Button Grid.Column="1" x:Name="ImageTopRightButton" Click="ImageTopRight_Click" Content="Góc phải" Style="{StaticResource SecondaryButtonStyle}" />
+                                          </Grid>
+                                          <Grid ColumnSpacing="5"><Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
+                                              <NumberBox x:Name="ImageXBox" Header="X (%)" Minimum="0" Maximum="100" ValueChanged="ImageGeometry_ValueChanged" />
+                                              <NumberBox Grid.Column="1" x:Name="ImageYBox" Header="Y (%)" Minimum="0" Maximum="100" ValueChanged="ImageGeometry_ValueChanged" />
+                                          </Grid>
+                                          <Grid ColumnSpacing="5"><Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
+                                              <NumberBox x:Name="ImageWidthBox" Header="Rộng (%)" Minimum="0" Maximum="100" ValueChanged="ImageGeometry_ValueChanged" />
+                                              <NumberBox Grid.Column="1" x:Name="ImageHeightBox" Header="Cao (%)" Minimum="0" Maximum="100" ValueChanged="ImageGeometry_ValueChanged" />
+                                          </Grid>
+                                          <Slider x:Name="ImageOpacitySlider" Header="Độ hiện (%)" Minimum="5" Maximum="100" Value="100" ValueChanged="ImageOpacity_ValueChanged" />
+                                          <Button x:Name="RemoveImageButton" Click="RemoveImage_Click" Content="Xóa ảnh/logo đang chọn" IsEnabled="False" Style="{StaticResource DangerButtonStyle}" />
+                                      </StackPanel>
+
+                                      <StackPanel x:Name="ExportInspectorPanel" Spacing="10" Visibility="Collapsed">
+                                          <TextBlock FontSize="14" FontWeight="SemiBold" Text="Export" />
+                                          <TextBlock Style="{StaticResource MutedTextStyle}" Text="Xuất bản chỉnh mới; không ghi đè video nguồn." TextWrapping="Wrap" />
+                                          <TextBlock FontWeight="SemiBold" Text="Nơi lưu" />
+                                          <TextBlock x:Name="EditorOutputPathText" Style="{StaticResource MutedTextStyle}" TextWrapping="Wrap" />
+                                          <Grid ColumnSpacing="5"><Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
+                                              <Button x:Name="EditorChooseOutputButton" Click="EditorChooseOutput_Click" Content="Chọn thư mục" Style="{StaticResource SecondaryButtonStyle}" />
+                                              <Button Grid.Column="1" x:Name="EditorOpenOutputButton" Click="EditorOpenOutput_Click" Content="Mở thư mục" Style="{StaticResource SecondaryButtonStyle}" />
+                                          </Grid>
+                                          <TextBox x:Name="FileNameBox" Header="Tên file đầu ra" PlaceholderText="video_edited.mp4" TextChanged="FileNameBox_TextChanged" />
+                                          <Grid ColumnSpacing="5"><Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
+                                              <Button x:Name="RenderButton" Click="Render_Click" Content="Xuất video" IsEnabled="False" />
+                                              <Button Grid.Column="1" x:Name="CancelButton" Click="Cancel_Click" Content="Hủy" IsEnabled="False" Style="{StaticResource DangerButtonStyle}" />
+                                          </Grid>
+                                          <ProgressBar x:Name="Progress" Minimum="0" Maximum="100" AutomationProperties.Name="Tiến độ xuất video" />
+                                      </StackPanel>
+                                  </Grid>
+                              </ScrollViewer>
+                          </Grid>
+                      </Border>
+                  </Grid>
+
+                  <Border Grid.Row="2" Padding="10,7" Background="{ThemeResource RaisedSurfaceBrush}" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="1" CornerRadius="8">
+                      <TextBlock x:Name="StatusText" Style="{StaticResource MutedTextStyle}" Text="Sẵn sàng." TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
+                  </Border>
+              </Grid>
+          </Page>
+          '''
+          xaml_path.write_text(xaml, encoding='utf-8', newline='\n')
+
+          # UI-02: static parity controls; no parent walking / runtime insertion.
+          parity = r'''using BiliSubStudio.App.Services;
+          using Microsoft.UI.Xaml;
+          using Microsoft.UI.Xaml.Controls;
+          using Windows.Media.Playback;
+
+          namespace BiliSubStudio.App.Pages;
+
+          public sealed partial class EditorPage
+          {
+              private bool _editorParityInitialized;
+              private TextBlock? _editorOutputPathText;
+              private Button? _editorUseCurrentStartButton;
+              private Button? _editorUseCurrentEndButton;
+              private Button? _editorChooseOutputButton;
+              private Button? _editorOpenOutputButton;
+              private ToggleSwitch? _editorAutoCompositeToggle;
+              private CancellationTokenSource? _editorAutoCompositeCancellation;
+              private bool _editorAutoCompositeRebuilding;
+
+              private void EnsureEditorParityInitialized()
+              {
+                  if (_editorParityInitialized) return;
+                  _editorParityInitialized = true;
+                  _editorOutputPathText = EditorOutputPathText;
+                  _editorUseCurrentStartButton = EditorUseCurrentStartButton;
+                  _editorUseCurrentEndButton = EditorUseCurrentEndButton;
+                  _editorChooseOutputButton = EditorChooseOutputButton;
+                  _editorOpenOutputButton = EditorOpenOutputButton;
+                  _editorAutoCompositeToggle = EditorAutoCompositeToggle;
+                  StrengthBox.Maximum = 40;
+                  if (StrengthBox.Value > 40) StrengthBox.Value = 40;
+                  RefreshEditorParityControls();
+              }
+
+              private void EditorUseCurrentStart_Click(object sender, RoutedEventArgs e)
+              {
+                  if (_media is null || WholeToggle.IsOn || EditorBusy) return;
+                  _syncingInputs = true;
+                  try { StartBox.Value = Math.Clamp(Timeline.Value, 0, _media.Duration); }
+                  finally { _syncingInputs = false; }
+                  ApplyInputsToDocument();
+                  NotifyEditorCompositeChanged();
+              }
+
+              private void EditorUseCurrentEnd_Click(object sender, RoutedEventArgs e)
+              {
+                  if (_media is null || WholeToggle.IsOn || EditorBusy) return;
+                  _syncingInputs = true;
+                  try { EndBox.Value = Math.Clamp(Timeline.Value, 0, _media.Duration); }
+                  finally { _syncingInputs = false; }
+                  ApplyInputsToDocument();
+                  NotifyEditorCompositeChanged();
+              }
+
+              private async void EditorChooseOutput_Click(object sender, RoutedEventArgs e)
+              {
+                  try
+                  {
+                      var app = Microsoft.UI.Xaml.Application.Current as BiliSubStudio.App.App
+                          ?? throw new InvalidOperationException("Không lấy được cửa sổ chính.");
+                      var window = app.MainWindow ?? throw new InvalidOperationException("Cửa sổ chính chưa sẵn sàng.");
+                      var picker = new FolderPickerService(() => window);
+                      var path = await picker.PickFolderAsync(_application.Config.OutputDirectory);
+                      if (string.IsNullOrWhiteSpace(path)) return;
+                      await _application.Settings.SetOutputDirectoryAsync(path, CancellationToken.None);
+                      if (_editorOutputPathText is not null) _editorOutputPathText.Text = _application.Config.OutputDirectory;
+                      StatusText.Text = "Đã đổi nơi lưu Editor: " + _application.Config.OutputDirectory;
+                      RefreshEditorActions();
+                  }
+                  catch (Exception error) { StatusText.Text = "Không đổi được nơi lưu: " + error.Message; }
+              }
+
+              private async void EditorOpenOutput_Click(object sender, RoutedEventArgs e)
+              {
+                  try
+                  {
+                      var app = Microsoft.UI.Xaml.Application.Current as BiliSubStudio.App.App
+                          ?? throw new InvalidOperationException("Không lấy được cửa sổ chính.");
+                      var window = app.MainWindow ?? throw new InvalidOperationException("Cửa sổ chính chưa sẵn sàng.");
+                      var picker = new FolderPickerService(() => window);
+                      await picker.OpenFolderAsync(_application.Config.OutputDirectory);
+                  }
+                  catch (Exception error) { StatusText.Text = "Không mở được nơi lưu: " + error.Message; }
+              }
+
+              private void NotifyEditorCompositeChanged()
+              {
+                  RefreshEditorParityControls();
+                  QueueEditorCompositeRefresh();
+              }
+
+              private void EditorAutoComposite_Toggled(object sender, RoutedEventArgs e)
+              {
+                  if (_editorAutoCompositeToggle?.IsOn != true)
+                  {
+                      _editorAutoCompositeCancellation?.Cancel();
+                      _editorAutoCompositeCancellation?.Dispose();
+                      _editorAutoCompositeCancellation = null;
+                  }
+                  RefreshEditorParityControls();
+              }
+
+              private void QueueEditorCompositeRefresh()
+              {
+                  if (_editorAutoCompositeToggle?.IsOn != true || !_playerMode || _previewRendering || _editorAutoCompositeRebuilding) return;
+                  _editorAutoCompositeCancellation?.Cancel();
+                  _editorAutoCompositeCancellation?.Dispose();
+                  var cancellation = new CancellationTokenSource();
+                  _editorAutoCompositeCancellation = cancellation;
+                  _ = RebuildEditorCompositePreviewAsync(cancellation);
+              }
+
+              private async Task RebuildEditorCompositePreviewAsync(CancellationTokenSource cancellation)
+              {
+                  try
+                  {
+                      await Task.Delay(320, cancellation.Token);
+                      if (cancellation.IsCancellationRequested || !_playerMode || _media is null) return;
+                      var resumePlayback = _player?.PlaybackSession.PlaybackState == MediaPlaybackState.Playing;
+                      var sourcePosition = Math.Clamp(Timeline.Value, Timeline.Minimum, Timeline.Maximum);
+                      _editorAutoCompositeRebuilding = true;
+                      StatusText.Text = "Đang cập nhật bản xem trước theo thay đổi mới...";
+                      await SetPlaybackModeAsync(enabled: false, play: false);
+                      cancellation.Token.ThrowIfCancellationRequested();
+                      _syncingTimeline = true;
+                      try { Timeline.Value = sourcePosition; }
+                      finally { _syncingTimeline = false; }
+                      await SetPlaybackModeAsync(enabled: true, play: resumePlayback);
+                      cancellation.Token.ThrowIfCancellationRequested();
+                      StatusText.Text = "Bản xem trước đã cập nhật.";
+                  }
+                  catch (OperationCanceledException) { }
+                  catch (Exception error) { StatusText.Text = "Không tự cập nhật được preview: " + error.Message; }
+                  finally
+                  {
+                      _editorAutoCompositeRebuilding = false;
+                      if (ReferenceEquals(_editorAutoCompositeCancellation, cancellation)) _editorAutoCompositeCancellation = null;
+                      cancellation.Dispose();
+                      RefreshEditorParityControls();
+                  }
+              }
+
+              private void RefreshEditorParityControls()
+              {
+                  if (!_editorParityInitialized) return;
+                  if (_editorOutputPathText is not null) _editorOutputPathText.Text = _application.Config.OutputDirectory;
+                  var timeEnabled = _media is not null && !WholeToggle.IsOn && !EditorBusy && !_playerMode;
+                  if (_editorUseCurrentStartButton is not null) _editorUseCurrentStartButton.IsEnabled = timeEnabled;
+                  if (_editorUseCurrentEndButton is not null) _editorUseCurrentEndButton.IsEnabled = timeEnabled;
+                  if (_editorChooseOutputButton is not null) _editorChooseOutputButton.IsEnabled = !EditorBusy && !_playerMode;
+                  if (_editorOpenOutputButton is not null) _editorOpenOutputButton.IsEnabled = Directory.Exists(_application.Config.OutputDirectory);
+                  if (_editorAutoCompositeToggle is not null) _editorAutoCompositeToggle.IsEnabled = !EditorBusy;
+              }
+
+              private void CleanupEditorParity()
+              {
+                  _editorAutoCompositeCancellation?.Cancel();
+                  _editorAutoCompositeCancellation?.Dispose();
+                  _editorAutoCompositeCancellation = null;
+                  _editorAutoCompositeRebuilding = false;
+              }
+          }
+          '''
+          parity_path.write_text(parity, encoding='utf-8', newline='\n')
+
+          # UI-02/UI-08: Image/Logo is XAML-static; lifecycle only binds backing references.
+          images = images_path.read_text(encoding='utf-8')
+          start = images.index('    private void EnsureImageFeatureInitialized()')
+          end = images.index('    private async Task EnsureImageProjectLoadedAsync()', start)
+          static_image_init = '''    private void EnsureImageFeatureInitialized()\n    {\n        if (_imageFeatureInitialized) return;\n        _imageFeatureInitialized = true;\n        _imageModeButton = ImageModeButton;\n        _imageInspectorPanel = ImageInspectorPanel;\n        _imageOverlayCanvas = ImageOverlayCanvas;\n        _addImageButton = AddImageButton;\n        _removeImageButton = RemoveImageButton;\n        _imageTopRightButton = ImageTopRightButton;\n        _imageTopLeftButton = ImageTopLeftButton;\n        _imageList = ImageSourceList;\n        _imageStatusText = ImageStatusText;\n        _imageXBox = ImageXBox;\n        _imageYBox = ImageYBox;\n        _imageWidthBox = ImageWidthBox;\n        _imageHeightBox = ImageHeightBox;\n        _imageOpacitySlider = ImageOpacitySlider;\n        RefreshImageControls();\n    }\n\n'''
+          images = images[:start] + static_image_init + images[end:]
+          images = images.replace('    private void ImageOverlay_SizeChanged(object sender, SizeChangedEventArgs e) => RenderImageOverlays();\n\n', '')
+          images_path.write_text(images, encoding='utf-8', newline='\n')
+
+          # UI-06: XAML owns transport=false; no runtime patch after load.
+          bootstrap = bootstrap_path.read_text(encoding='utf-8')
+          bootstrap = bootstrap.replace('            PreviewPlayer.AreTransportControlsEnabled = false;\n', '')
+          bootstrap_path.write_text(bootstrap, encoding='utf-8', newline='\n')
+
+          editor = editor_path.read_text(encoding='utf-8')
+          editor = editor.replace('private enum InspectorMode { Subtitle, Blur, Audio, Image, Export }',
+                                  'private enum InspectorMode { Subtitle, Blur, Audio, Voice, Image, Export }')
+          editor = editor.replace('    private double _lastTimelineWidth = -1;\n', '')
+
+          set_start = editor.index('    private void SetInspectorMode(InspectorMode mode)')
+          set_end = editor.index('    internal Task RunLayoutSmokeAsync()', set_start)
+          set_mode = '''    private void SetInspectorMode(InspectorMode mode)\n    {\n        _inspectorMode = mode;\n        SubtitleModeButton.IsChecked = mode == InspectorMode.Subtitle;\n        BlurModeButton.IsChecked = mode == InspectorMode.Blur;\n        AudioModeButton.IsChecked = mode == InspectorMode.Audio;\n        VoiceModeButton.IsChecked = mode == InspectorMode.Voice;\n        ImageModeButton.IsChecked = mode == InspectorMode.Image;\n        ExportModeButton.IsChecked = mode == InspectorMode.Export;\n        SubtitleInspectorPanel.Visibility = mode == InspectorMode.Subtitle ? Visibility.Visible : Visibility.Collapsed;\n        BlurInspectorPanel.Visibility = mode == InspectorMode.Blur ? Visibility.Visible : Visibility.Collapsed;\n        AudioInspectorPanel.Visibility = mode == InspectorMode.Audio ? Visibility.Visible : Visibility.Collapsed;\n        VoiceInspectorPanel.Visibility = mode == InspectorMode.Voice ? Visibility.Visible : Visibility.Collapsed;\n        ImageInspectorPanel.Visibility = mode == InspectorMode.Image ? Visibility.Visible : Visibility.Collapsed;\n        ExportInspectorPanel.Visibility = mode == InspectorMode.Export ? Visibility.Visible : Visibility.Collapsed;\n        RenderOverlays();\n        RenderImageOverlays();\n        RefreshEditorActions();\n    }\n\n'''
+          editor = editor[:set_start] + set_mode + editor[set_end:]
+
+          smoke_start = editor.index('    internal Task RunLayoutSmokeAsync()')
+          smoke_end = editor.index('    private async void EditorPage_Unloaded', smoke_start)
+          smoke = '''    internal Task RunLayoutSmokeAsync()\n    {\n        if (WorkspaceGrid.ColumnDefinitions.Count != 3)\n            throw new InvalidOperationException("Editor shell phải có đúng ba cột Source / Player / Details.");\n        if (SourceColumn.ActualWidth < 95 || PlayerColumn.ActualWidth < 170 || DetailsColumn.ActualWidth < 160)\n            throw new InvalidOperationException($"Editor shell bị bó cột: {SourceColumn.ActualWidth:0}/{PlayerColumn.ActualWidth:0}/{DetailsColumn.ActualWidth:0}.");\n        if (PreviewSurface.ActualWidth <= 0 || PreviewSurface.ActualHeight <= 0)\n            throw new InvalidOperationException("Player Editor không có diện tích hiển thị.");\n        if (PlayerControlBar.ActualHeight < 40 || PlayerControlBar.ActualHeight > 56)\n            throw new InvalidOperationException("Thanh điều khiển Player phải nằm trong khoảng 40–56 px.");\n        if (PreviewPlayer.AreTransportControlsEnabled)\n            throw new InvalidOperationException("Editor không được bật transport WinUI mặc định.");\n        if (!ImportSrtButton.IsEnabled || !PrepareAiButton.IsEnabled)\n            throw new InvalidOperationException("Editor phải cho chọn SRT và chuẩn bị AI trước khi chọn video.");\n        if (CreateAsrButton.IsEnabled)\n            throw new InvalidOperationException("Editor không được cho chạy ASR khi chưa có video nguồn.");\n        foreach (var mode in Enum.GetValues<InspectorMode>())\n        {\n            SetInspectorMode(mode);\n            var visible = new[] { SubtitleInspectorPanel, BlurInspectorPanel, AudioInspectorPanel, VoiceInspectorPanel, ImageInspectorPanel, ExportInspectorPanel }\n                .Count(panel => panel.Visibility == Visibility.Visible);\n            if (visible != 1) throw new InvalidOperationException("Details phải hiển thị đúng một tool panel.");\n        }\n        SetInspectorMode(InspectorMode.Subtitle);\n        return Task.CompletedTask;\n    }\n\n'''
+          editor = editor[:smoke_start] + smoke + editor[smoke_end:]
+
+          # UI-07: remove the old region-timeline presentation and old refresh control ownership.
+          editor = editor.replace('        RenderTimelineRegions();\n', '')
+          editor = editor.replace('        RefreshFrameButton.IsEnabled = editable;\n', '')
+          editor = re.sub(r'\n        if \(Math\.Abs\(RegionTimelineCanvas\.ActualWidth.*?\n        \}\n', '\n', editor, count=1, flags=re.S)
+          editor = re.sub(r'\n    private void RenderTimelineRegions\(\)\n    \{.*?\n    \}\n\n    private \(int Index, DragKind Kind\) HitTestRegion',
+                          '\n    private (int Index, DragKind Kind) HitTestRegion', editor, count=1, flags=re.S)
+          editor = editor.replace('        PlaybackButton.Content = processed ? "Về khung chỉnh" : "Xem bản chỉnh";\n',
+                                  '        PlaybackButton.Content = processed ? "⏸" : "▶";\n')
+          # Resize of either overlay is already covered by the page LayoutUpdated path.
+          editor = editor.replace('            RenderOverlays();\n        }\n', '            RenderOverlays();\n            RenderImageOverlays();\n        }\n', 1)
+          editor_path.write_text(editor, encoding='utf-8', newline='\n')
+
+          # UI-01..11 regression contract: static 3-column shell, no old transport/timeline/runtime insertion.
+          validator = validator_path.read_text(encoding='utf-8')
+          validator = validator.replace(
+              'for marker in (\n    "SubtitleModeButton", "BlurModeButton", "AudioModeButton", "ExportModeButton",\n    "SubtitleInspectorPanel", "BlurInspectorPanel", "AudioInspectorPanel", "ExportInspectorPanel",',
+              'for marker in (\n    "SourceColumn", "PlayerColumn", "DetailsColumn", "PlayerControlBar",\n    "SubtitleModeButton", "BlurModeButton", "AudioModeButton", "VoiceModeButton", "ImageModeButton", "ExportModeButton",\n    "SubtitleInspectorPanel", "BlurInspectorPanel", "AudioInspectorPanel", "VoiceInspectorPanel", "ImageInspectorPanel", "ExportInspectorPanel",')
+          validator = validator.replace('    "_inspectorMode == InspectorMode.Blur", "_inspectorMode == InspectorMode.Subtitle",\n    "Xem bản chỉnh", "CreateEditorPreviewSegmentAsync", "PlayerMediaEnded",',
+                                      '    "_inspectorMode == InspectorMode.Blur", "_inspectorMode == InspectorMode.Subtitle",\n    "CreateEditorPreviewSegmentAsync", "PlayerMediaEnded",')
+          anchor = 'require("Loaded += EditorPage_Loaded;" in editor and "private void EditorPage_Loaded" in editor_partials,\n        "Editor must use the actual Loaded event as its single feature initialization lifecycle")\n'
+          extra = anchor + '''for forbidden in (\n    "RegionTimelineCanvas", "RefreshFrameButton", "BuildEditorTimestampControls", "BuildEditorOutputControls",\n    "BuildEditorLivePreviewControls", "BuildImageInspectorPanel", "rail.Children.Insert",\n    "inspectorHost.Children.Insert", "previewHost.Children.Add(_imageOverlayCanvas)",\n    "PreviewPlayer.AreTransportControlsEnabled = false",\n):\n    require(forbidden not in editor_partials + editor, f"Editor static-shell regression reintroduced {forbidden}")\nrequire(editor.count('<ColumnDefinition x:Name="SourceColumn"') == 1 and editor.count('<ColumnDefinition x:Name="PlayerColumn"') == 1 and editor.count('<ColumnDefinition x:Name="DetailsColumn"') == 1,\n        "Editor must keep one static Source / Player / Details column definition")\nrequire('x:Name="PlayerControlBar" Height="48"' in editor, "Editor Player control bar must remain compact and in XAML")\nrequire('x:Name="ImageOverlayCanvas"' in editor and 'x:Name="ImageModeButton"' in editor and 'x:Name="ImageInspectorPanel"' in editor,\n        "Image/Logo shell must be native XAML, not runtime-inserted")\n'''
+          if anchor not in validator:
+              raise SystemExit('validator lifecycle anchor missing')
+          validator = validator.replace(anchor, extra, 1)
+          validator_path.write_text(validator, encoding='utf-8', newline='\n')
+
+      - name: Refresh generated CSharp code map
+        run: python csharp/scripts/generate_csharp_code_map.py
+      - name: Validate UI shell static contracts
+        run: python csharp/scripts/validate_csharp_migration.py
+      - name: Commit UI shell
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add csharp/src/BiliSubStudio.App/Pages/EditorPage.xaml \
+                  csharp/src/BiliSubStudio.App/Pages/EditorPage.xaml.cs \
+                  csharp/src/BiliSubStudio.App/Pages/EditorPage.Images.cs \
+                  csharp/src/BiliSubStudio.App/Pages/EditorPage.ParityBootstrap.cs \
+                  csharp/src/BiliSubStudio.App/Pages/EditorPage.ParityFixes.cs \
+                  csharp/scripts/validate_csharp_migration.py \
+                  docs/migration/CSHARP_CODE_MAP.generated.md
+          git commit -m "editor: build static three-column UI shell"
+          git push origin HEAD:editor-ui-shell
