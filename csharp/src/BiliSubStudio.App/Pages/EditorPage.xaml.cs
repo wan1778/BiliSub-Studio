@@ -146,24 +146,65 @@ public sealed partial class EditorPage : Page
         await SaveProjectNowAsync();
     }
 
-    private async void Pick_Click(object sender, RoutedEventArgs e)
+    private async void OpenVideo_Click(object sender, RoutedEventArgs e)
     {
         try { await OpenVideoAsync(); }
-        catch (Exception error) { StatusText.Text = "Không mở được video: " + error.Message; }
+        catch (OperationCanceledException) { }
+        catch (Exception error)
+        {
+            StatusText.Text = "Không mở được video: " + error.Message;
+            RefreshEditorActions();
+        }
     }
 
     private async Task OpenVideoAsync()
     {
-        var path = await _picker.PickVideoAsync();
-        if (path is null) return;
-        if (_playerMode) await SetPlaybackModeAsync(enabled: false, play: false);
-        try { await SaveImageSidecarAsync(); } catch { }
+        // SOURCE-02: cancel is a no-op. Do not touch the current source/project before a real path exists.
+        var pickedPath = await _picker.PickVideoAsync();
+        if (string.IsNullOrWhiteSpace(pickedPath)) return;
+
+        var candidatePath = EditorSourceSelection.NormalizeCandidatePath(pickedPath);
+        if (EditorSourceSelection.IsSameSource(_path, candidatePath))
+        {
+            StatusText.Text = "Video này đang được mở; giữ nguyên project và preview hiện tại.";
+            return;
+        }
+
+        // SOURCE-05: probe and load the candidate before mutating any current Editor state.
+        MediaPreviewInfo candidateMedia;
+        try
+        {
+            candidateMedia = await _application.Media.ProbeAsync(candidatePath, CancellationToken.None);
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            throw new InvalidDataException(
+                "File video không hợp lệ, đã hỏng hoặc codec không đọc được. Project hiện tại vẫn được giữ nguyên. " + error.Message,
+                error);
+        }
+
+        EditorProject candidateProject;
+        try
+        {
+            candidateProject = await _application.LoadEditorProjectAsync(candidatePath, candidateMedia, CancellationToken.None);
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            throw new InvalidDataException(
+                "Không mở được project của video đã chọn. Project hiện tại vẫn được giữ nguyên. " + error.Message,
+                error);
+        }
+
         var pendingSubtitle = _project is null ? _subtitleSource : null;
         var pendingPlacement = _subtitlePlacement;
-        await SaveProjectNowAsync();
-        _path = path;
-        _media = await _application.Media.ProbeAsync(path, CancellationToken.None);
-        _project = await _application.LoadEditorProjectAsync(path, _media, CancellationToken.None);
+
+        // SOURCE-04: one explicit old-state save, then one explicit preview disposal.
+        await SaveCurrentSourceStateForSwitchAsync();
+        await DisposePreviewForSourceChangeAsync();
+
+        _path = candidatePath;
+        _media = candidateMedia;
+        _project = candidateProject;
         _document.Reset(_project.Regions);
         _audioSettings = EditorProjectStore.NormalizeAudio(_project.Audio);
         ApplyAudioSettingsToUi();
@@ -183,7 +224,7 @@ public sealed partial class EditorPage : Page
         _draftRegion = null;
         Timeline.Maximum = Math.Max(0.1, _media.Duration);
         Timeline.Value = 0;
-        PathText.Text = path;
+        PathText.Text = candidatePath;
         MediaText.Text = $"{_media.Width}×{_media.Height} · {_media.Duration:0.0}s · {_media.Codec} · preview xử lý dùng cùng pipeline FFmpeg với export";
         _syncingInputs = true;
         try
@@ -206,6 +247,60 @@ public sealed partial class EditorPage : Page
                 : "Chọn SRT tiếng Trung để bắt đầu Vietsub, hoặc kéo frame để tạo vùng hiệu ứng.";
         RefreshEditorActions();
         QueueProjectSave();
+    }
+
+    private async Task SaveCurrentSourceStateForSwitchAsync()
+    {
+        if (_project is null) return;
+        var pendingSave = _saveCancellation;
+        _saveCancellation = null;
+        if (pendingSave is not null)
+        {
+            pendingSave.Cancel();
+            pendingSave.Dispose();
+        }
+        await SaveImageSidecarAsync();
+        await _application.SaveEditorProjectAsync(ProjectSnapshot(), CancellationToken.None);
+    }
+
+    private async Task DisposePreviewForSourceChangeAsync()
+    {
+        var playbackCancellation = _playbackPreviewCancellation;
+        _playbackPreviewCancellation = null;
+        playbackCancellation?.Cancel();
+
+        var frameCancellation = _previewCancellation;
+        _previewCancellation = null;
+        if (frameCancellation is not null)
+        {
+            frameCancellation.Cancel();
+            frameCancellation.Dispose();
+        }
+        ++_previewRevision;
+
+        var player = _player;
+        _player = null;
+        if (player is not null)
+        {
+            player.PlaybackSession.PositionChanged -= PlayerPositionChanged;
+            player.MediaEnded -= PlayerMediaEnded;
+            player.MediaFailed -= PlayerMediaFailed;
+            player.Pause();
+            player.Source = null;
+            player.Dispose();
+        }
+
+        PreviewPlayer.IsFullWindow = false;
+        _playerMode = false;
+        _previewRendering = false;
+        _playerSourceStart = 0;
+        _playerSourceDuration = 0;
+        ApplyPreviewPresentation(false);
+
+        var previewPath = _playerPreviewPath;
+        _playerPreviewPath = null;
+        if (previewPath is not null)
+            await _application.DeleteEditorPreviewSegmentAsync(previewPath);
     }
 
     private async void Refresh_Click(object sender, RoutedEventArgs e)

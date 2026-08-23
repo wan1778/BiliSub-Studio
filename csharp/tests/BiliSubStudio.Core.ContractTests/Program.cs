@@ -51,6 +51,7 @@ internal static class Program
         ("editor project persists, isolates source drift and quarantines corrupt state", EditorProjectContractAsync),
         ("editor SRT keeps exact blocks order and timecodes", EditorSubtitleDocumentContractAsync),
         ("editor manual cue state persists locks and preserves timeline", EditorSubtitleManualContract.RunAsync),
+        ("editor source selection keeps cancel/same-source transitions safe", EditorSourceSelectionContract.RunAsync),
         ("translation skill bundle is pinned and rejects path traversal", TranslationSkillBundleContractAsync),
         ("local translation manifest and resource gate stay pinned", LocalTranslationManifestContractAsync),
         ("local Chinese ASR model manifest and source SRT stay pinned", LocalAsrManifestContractAsync),
