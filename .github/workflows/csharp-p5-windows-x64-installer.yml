@@ -64,7 +64,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TARGET_BRANCH: editor-all-in-one
           BASE_SHA: b5c78223c5d5835199bb2ed6be09301fabe379d8
-          PATCH_SHA256: a11bfed8108c4bc9441095ab468dbab0c00a37eda93bccf18f59271bbcad4b0b
+          PATCH_SHA256: 7f32a352ab01bd6fce32827e30c00ba51d47596dee76ab243bf66d2fdded83d4
         run: |
           $ErrorActionPreference = "Stop"
           git config user.name "github-actions[bot]"
@@ -72,9 +72,12 @@ jobs:
           git fetch origin $env:TARGET_BRANCH --depth=100
           $current = (git rev-parse "origin/$env:TARGET_BRANCH").Trim()
           if (-not $current) { throw "Cannot resolve current branch head" }
+          $workflowTemp = Join-Path $env:RUNNER_TEMP "beta33-bootstrap-workflow.yml"
+          git show --output=$workflowTemp "$current`:.github/workflows/csharp-p5-windows-x64-installer.yml"
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $workflowTemp -PathType Leaf)) { throw "Cannot preserve bootstrap workflow" }
 
           $encoded = ""
-          foreach ($index in 0..5) {
+          foreach ($index in 0..2) {
             $name = "part-{0:D2}" -f $index
             $piece = (git show "$current`:.beta33-bootstrap/$name")
             if (-not $piece) { throw "Missing bootstrap patch chunk $name" }
@@ -94,6 +97,7 @@ jobs:
           git reset --hard $env:BASE_SHA
           git clean -fdx
           git apply --whitespace=nowarn $patch
+          Copy-Item $workflowTemp ".github/workflows/csharp-p5-windows-x64-installer.yml" -Force
 
           python -m py_compile internal/asr/worker.py internal/tts/worker.py
           python csharp/scripts/generate_csharp_code_map.py --check
@@ -184,6 +188,8 @@ jobs:
           $publicVersion = "4.0.$($beta - 14)"
           $tag = "v$publicVersion"
 
+          # The technical build identity stays inside evidence/metadata. GitHub Releases,
+          # filenames and the UI-facing version use short semantic versions only.
           $existingManifest = Get-Content "update/beta.json" -Raw | ConvertFrom-Json
           $publicUrlMarker = "/releases/download/$tag/"
           if ($existingManifest.channel_ready -eq $true -and
@@ -248,6 +254,7 @@ jobs:
 
           $downloadUrl = "https://github.com/$($env:GITHUB_REPOSITORY)/releases/download/$tag/$portableName"
           $manifest = [ordered]@{
+            # Keep the technical build identity here so beta-to-beta ordering remains exact.
             version = $version
             channel_ready = $true
             download_url = $downloadUrl
