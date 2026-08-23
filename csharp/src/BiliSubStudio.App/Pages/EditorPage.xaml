@@ -183,7 +183,7 @@
                                             <TextBlock Style="{StaticResource CardTitleStyle}" Text="Nhịp thoại + Voice Việt" />
                                             <Border HorizontalAlignment="Right" Padding="8,3" Background="{ThemeResource AccentSoftBrush}" CornerRadius="9"><TextBlock FontSize="10" Foreground="{ThemeResource AccentPrimaryBrush}" Text="Local" /></Border>
                                         </Grid>
-                                        <TextBlock Style="{StaticResource MutedTextStyle}" Text="Whisper lấy thời gian từng từ, khoảng lặng và gợi ý chất giọng Nam/Nữ. NghiTTS tạo voice Việt rồi tự fit theo nhịp audio gốc." TextWrapping="Wrap" />
+                                        <TextBlock Style="{StaticResource MutedTextStyle}" Text="Whisper lấy thời gian từng từ, khoảng lặng và gợi ý chất giọng Nam/Nữ. Piper/VAIS local tạo voice Việt rồi tự fit theo nhịp audio gốc." TextWrapping="Wrap" />
                                         <Grid ColumnSpacing="7">
                                             <Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
                                             <Button x:Name="CreateAsrButton" Click="CreateAsr_Click" Content="Phân tích nhịp + Nam/Nữ" IsEnabled="False" />
