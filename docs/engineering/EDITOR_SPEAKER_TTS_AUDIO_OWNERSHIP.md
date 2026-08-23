@@ -1,6 +1,6 @@
 # Editor Whisper timing, voice routing and local TTS ownership
 
-Status: M4 production implementation on `editor-all-in-one`; Windows verification pending for this checkpoint.
+Status: production path implemented on `editor-all-in-one`; consolidated Windows field verification remains.
 Date: 2026-08-23
 
 ## Product decision
@@ -29,96 +29,96 @@ The Editor does not implement:
 
 Source audio remains `keep`, `duck`, or `mute`. `mute` means the complete original mix is muted.
 
-## Whisper timing implementation
+## Whisper timing and acoustic routing
 
-`internal/asr/worker.py` runs the pinned local faster-whisper model with `word_timestamps=True` and VAD. It returns complete word records instead of letting C# discard them.
+`internal/asr/worker.py` runs the pinned local faster-whisper model with `word_timestamps=True` and VAD. It returns complete word records and a lightweight local F0 routing estimate.
 
-`LocalAsrService` persists checkpoint schema 2, then writes an app-owned speech-analysis document under `Data/Projects/Speech`. `EditorSpeechAnalysisDocument` verifies SHA-256 and maps the analysis to whichever SRT is active.
+The advisory F0 policy is intentionally conservative:
 
-Per cue, the mapped result owns:
+- median pitch <= 155 Hz -> `male_like`;
+- median pitch >= 185 Hz -> `female_like`;
+- middle band -> `uncertain`;
+- low-energy/unvoiced/too-short evidence -> `uncertain`;
+- uncertain confidence is kept below the automatic-routing threshold.
 
-- speech start/end inside the cue;
-- leading/trailing silence;
-- word timings;
-- internal pauses >= 180 ms;
-- voice-class suggestion/confidence/pitch.
+`LocalAsrService` persists app-owned speech analysis and `EditorSpeechAnalysisDocument` verifies SHA-256, maps words to active SRT cues, combines overlapping segment evidence and preserves uncertain cases for user review.
 
-Changing the SRT does not invalidate the video-level Whisper analysis; the timing is remapped. Changing the source video/model revision invalidates the analysis.
+Changing the SRT does not invalidate the video-level Whisper analysis; timing is remapped. Changing the source video/model revision invalidates the analysis.
 
 ## Karaoke ASS
 
-`VideoEditorService.BuildAss` is the single ASS owner for both render and user-exported karaoke ASS.
+`VideoEditorService.BuildAss` is the single ASS owner for final render, processed preview and user-exported karaoke ASS.
 
 When word timing exists and Karaoke is enabled:
 
 - dialogue start/end uses the detected speech envelope;
-- Vietnamese display tokens receive ASS `\\kf` durations derived from the original word/pause rhythm;
-- the duration allocator preserves total speech time even when Chinese and Vietnamese token counts differ.
+- Vietnamese display tokens receive ASS `\\kf` durations derived from original word/pause rhythm;
+- the allocator preserves total speech time when Chinese and Vietnamese token counts differ.
 
-This is rhythm alignment, not a false one-to-one semantic claim between Chinese and Vietnamese words.
+This is rhythm alignment, not a false one-to-one semantic mapping.
 
-Preview slicing must shift cue, word and pause timestamps together. Final export and the saved `*.karaoke.ass` use the same builder.
+## Final local Piper/VAIS implementation
 
-## Local NghiTTS/Piper implementation
+NghiTTS was reviewed as an architectural reference, but its previously evaluated generic `sannht/vi_voice` weights are not production assets because the reviewed weight index did not provide a sufficiently clear release license.
 
-Reference repository: `nghimestudio/nghitts`.
+Production pins one official Piper Vietnamese model:
 
-BiliSub Studio does not embed its Vue/Vite application, Web Workers, Cloudflare endpoints, WebView or localhost server. The native app uses reviewed local Piper-compatible ONNX voice assets in an app-managed Python runtime.
+- voice collection: `rhasspy/piper-voices`;
+- model revision: `3d796cc2f2c884b3517c527507e084f7bb245aea`;
+- base voice: `vi_VN-vais1000-medium`;
+- model collection: MIT;
+- source dataset: VAIS-1000, CC BY 4.0;
+- ONNX: 63,201,294 bytes, SHA-256 `ec7c89e2c85f4d1edc24b6120c18aaf1bda614f06b511567eb9c7c0de15e2dab`;
+- config: 4,860 bytes, SHA-256 `fafb9da1354ed4b77c31af228ed41fb41cd825c14cffa105454b25e6ae751ee0`;
+- Piper runtime: `piper-tts 1.4.2` Windows x64 wheel, SHA-256 `9c4a3a11f5889ea9d0df4414dce2bd9bee5ce7d9cf604c8fd5e307441d4c031f`.
 
-Pinned runtime for this checkpoint:
+The base voice is loaded once. Two acoustic routing profiles are exposed:
 
-- Piper: `piper-tts 1.4.2` Windows x64 wheel;
-- wheel SHA-256: `9c4a3a11f5889ea9d0df4414dce2bd9bee5ce7d9cf604c8fd5e307441d4c031f`;
-- Python: app-managed 3.12 bootstrap already owned by BiliSub Studio.
+- `vais1000-female-profile-v1`: original base synthesis;
+- `vais1000-male-profile-v1`: deterministic synthetic lower-pitch profile using pitch factor `0.84` with tempo compensation before timing fit.
 
-Pinned generic voice candidates:
+The male route is a synthetic audio profile, not a real-person identity/likeness claim.
 
-- male: `deepman3909.onnx` — 63,516,050 bytes — SHA-256 `1fb3a404e9927c87367d4175e8cad24ffc6d9959af29888c38682e5ec621056c`;
-- female: `calmwoman3688.onnx` — 63,516,050 bytes — SHA-256 `8db60d8afc50dc0921fd3a1b0b942813f44cc3744dbe2534617f2b8726096e7e`;
-- both configs: 4,855 bytes — SHA-256 `971f57f8d504223fee5b40d664f503cf769baf7db21f7d2ae0554a75d07de2f8`;
-- voice source revision: `sannht/vi_voice@62e57b18157ed213b3863a7a8a35b14d3404554b`.
-
-The mirror's index identifies the voice-weight license as `unknown`. Therefore these weights are allowed only for integration/field verification on this draft branch until redistribution rights are resolved. The public release gate must remain closed. Celebrity-named voice models are not production defaults.
-
-The Piper runtime is GPL-3.0-or-later and is executed as a separate app-managed local process. Third-party notices/license obligations must be completed before public distribution.
+`THIRD_PARTY_NOTICES.md` is packaged with the Windows app and records the VAIS/Piper attribution.
 
 ## Vietnamese text and rhythm fit
 
-`VietnameseTtsTextNormalizer` normalizes common Vietnamese TTS forms locally (numbers, dates, time, decimals, percentages). No online API is required.
+`VietnameseTtsTextNormalizer` normalizes common Vietnamese TTS forms locally. No online API is required.
 
-`LocalTtsService` maps each translated cue to Whisper rhythm groups. The user override wins; otherwise a confident `male_like`/`female_like` suggestion selects the matching generic voice. Uncertain routing is marked for review.
+`LocalTtsService` maps each translated cue to Whisper rhythm groups. Manual override wins. A confident acoustic class selects the matching route; uncertain routing uses a fallback profile but remains review-marked.
 
 For each rhythm group, `internal/tts/worker.py`:
 
-1. synthesizes baseline audio;
-2. measures actual WAV duration;
-3. retries Piper `length_scale` inside 0.86–1.16;
-4. measures again;
-5. applies bounded pitch-preserving FFmpeg `atempo` inside 0.92–1.08 when needed;
-6. measures again;
-7. marks `fit` or `review` instead of forcing extreme speed.
+1. synthesizes baseline Piper audio;
+2. applies the selected acoustic profile;
+3. measures actual WAV duration;
+4. retries Piper `length_scale` inside 0.86–1.16;
+5. measures again;
+6. applies bounded FFmpeg `atempo` inside 0.92–1.08 when needed;
+7. measures again;
+8. marks `fit` or `review` instead of forcing extreme speed.
 
-No SRT timecode/order is silently rewritten.
+No SRT order/timecode is silently rewritten.
 
 ## Cache and long-video behavior
 
-TTS clip keys include timing algorithm version, Piper version, voice revision, cue/group identity, selected voice, group timing and normalized Vietnamese text.
+TTS clip keys include timing algorithm version, Piper version, voice/profile revision, cue/group identity, selected route, group timing and normalized Vietnamese text.
 
-Clips are cached per rhythm group. The worker assembles app-owned 300-second block WAV caches and one seekable `voice-master.flac`. This avoids thousands of FFmpeg input arguments on long films while retaining selective clip/block regeneration.
+The voice revision combines the immutable model revision with `profile-v1`, preventing beta.36 NghiTTS clips from being reused after the VAIS migration. Future profile changes must increment the profile revision.
 
-Changing translation text or a per-cue voice override invalidates the TTS state/track, not the source video, SRT translation, Blur regions, or Whisper analysis. Missing speech/TTS cache files invalidate only the corresponding derived state rather than quarantining the whole Editor project.
+Clips are cached per rhythm group. The worker assembles app-owned 300-second block WAV caches and one seekable `voice-master.flac`. Changing translated text or a per-cue override invalidates TTS state, not valid Blur regions, SRT translation or Whisper analysis. Missing derived caches selectively invalidate their own stage.
 
 ## Preview/render parity
 
 Voice is not a MediaPlayer-volume approximation.
 
-`VideoEditRequest` carries the app-owned `EditorVoiceTrack`. `VideoEditorService` uses one source/TTS audio graph for both final render and `Xem bản chỉnh`:
+`VideoEditRequest` carries the app-owned `EditorVoiceTrack`. `VideoEditorService` uses the same source/TTS audio semantics for processed preview and final render:
 
-- `keep`: source + TTS;
-- `duck`: reduced complete source mix + TTS;
-- `mute`: TTS only.
+- `keep`: complete source mix + Vietnamese TTS;
+- `duck`: reduced complete source mix + Vietnamese TTS;
+- `mute`: Vietnamese TTS only.
 
-The 12-second proxy seeks the same source time in both the video and the seekable voice master. Karaoke cue/word/pause timing is shifted into proxy time by `BuildPreviewSlice`.
+The 12-second proxy seeks the same source time in video and `voice-master.flac`. Karaoke cue/word/pause timing is shifted into proxy time by `BuildPreviewSlice`.
 
 ## User-facing Audio inspector
 
@@ -129,18 +129,19 @@ The compact Audio inspector owns:
 - Karaoke on/off;
 - current-cue automatic/male/female override;
 - progress/cancel/review state;
-- existing source Keep/Duck/Mute controls.
+- source Keep/Duck/Mute controls.
 
 No speaker identity list and no new long navigation tab are introduced.
 
 ## Release gate
 
-This implementation is not field-PASS until all are true:
+The branch is not release-PASS until all are true:
 
-- C# contract tests include word timing, pause mapping, karaoke, voice override persistence, NghiTTS manifest, timing grouping and Keep/Duck/Mute voice graph parity;
+- C# contracts cover word timing, pause mapping, karaoke, voice override persistence, exact VAIS/Piper manifest, timing grouping and Keep/Duck/Mute voice graph parity;
+- static verification rejects the retired `sannht/vi_voice` production path and pins the male profile factor;
 - WinUI/XAML build and startup/layout smoke pass;
 - installer/custom-path/uninstall smoke and candidate packaging pass;
 - processed preview audibly matches final render on Windows;
-- male/female heuristic is measured on representative Mandarin film dialogue and uncertain cases remain reviewable;
-- selected voice-weight redistribution/provenance is resolved;
+- uncertain acoustic cases remain reviewable/overrideable;
+- third-party attribution ships with the Windows runtime;
 - one consolidated Editor real-machine field test passes.
