@@ -5,7 +5,6 @@
     Background="{ThemeResource CanvasBrush}"
     AutomationProperties.Name="Chỉnh video"
     IsTabStop="True"
-    Loaded="EditorParity_Loaded"
     KeyDown="Page_KeyDown">
     <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
         <Grid x:Name="PageRoot" Padding="24,18,24,28" RowSpacing="12">
