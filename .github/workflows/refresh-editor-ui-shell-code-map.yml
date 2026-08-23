@@ -1,4 +1,4 @@
-name: Refresh Editor UI shell code map
+name: Finalize Editor UI shell cleanup
 
 on:
   push:
@@ -24,16 +24,29 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+      - name: Remove retired Image visual-tree builder
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path("csharp/src/BiliSubStudio.App/Pages/EditorPage.Images.cs")
+          text = path.read_text(encoding="utf-8")
+          start = text.find("    private void EnsureImageFeatureInitialized()\n")
+          end = text.find("    private async Task EnsureImageProjectLoadedAsync()\n", start)
+          if start < 0 or end < 0:
+              raise SystemExit("Image builder cleanup markers not found")
+          replacement = '''    // Static UI SHELL declares Image/Logo controls in XAML. Initialization\n    // is state-only and must never insert or reparent visual elements.\n    private void EnsureImageFeatureInitialized()\n    {\n        if (_imageFeatureInitialized) return;\n        _imageFeatureInitialized = true;\n        RefreshImageControls();\n    }\n\n'''
+          path.write_text(text[:start] + replacement + text[end:], encoding="utf-8", newline="\n")
       - name: Regenerate CSharp code map
         run: python csharp/scripts/generate_csharp_code_map.py
-      - name: Commit generated map
+      - name: Commit final shell cleanup
         run: |
-          if git diff --quiet -- docs/migration/CSHARP_CODE_MAP.generated.md; then
-            echo "Code map already current."
+          if git diff --quiet -- csharp/src/BiliSubStudio.App/Pages/EditorPage.Images.cs docs/migration/CSHARP_CODE_MAP.generated.md; then
+            echo "UI shell cleanup already current."
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add docs/migration/CSHARP_CODE_MAP.generated.md
-          git commit -m "docs: refresh code map for static Editor UI shell"
+          git add csharp/src/BiliSubStudio.App/Pages/EditorPage.Images.cs docs/migration/CSHARP_CODE_MAP.generated.md
+          git commit -m "cleanup: remove retired Image UI builder and refresh code map"
           git push origin HEAD:editor-ui-shell
