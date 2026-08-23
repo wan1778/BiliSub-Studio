@@ -11,6 +11,7 @@ public sealed partial class EditorPage
         EnsureImageFeatureInitialized();
         EnsureInteractionRepairInitialized();
         EnsureToolTransitionRepairInitialized();
+        EnsureSubtitleCueEditorInitialized();
         AssertEditorInteractionContract();
     }
 }
