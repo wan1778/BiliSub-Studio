@@ -12,6 +12,7 @@ public sealed partial class EditorPage
         EnsureInteractionRepairInitialized();
         EnsureToolTransitionRepairInitialized();
         EnsureSubtitleCueEditorInitialized();
+        EnsureSubtitleSafetyRepairInitialized();
         AssertEditorInteractionContract();
     }
 }
