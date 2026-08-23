@@ -47,8 +47,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Original patch commit unavailable" }
 
           $workflowTemp = Join-Path $env:RUNNER_TEMP "bootstrap.yml"
-          git show --output=$workflowTemp "$current`:.github/workflows/csharp-p5-windows-x64-installer.yml"
-          if ($LASTEXITCODE -ne 0) { throw "Cannot preserve bootstrap workflow" }
+          git show "$current`:.github/workflows/csharp-p5-windows-x64-installer.yml" | Set-Content $workflowTemp -Encoding utf8
+          if (-not (Test-Path $workflowTemp -PathType Leaf)) { throw "Cannot preserve bootstrap workflow" }
 
           $encoded = ""
           foreach ($index in 0..5) {
@@ -76,13 +76,13 @@ jobs:
           git apply --check --whitespace=nowarn $patch
           if ($LASTEXITCODE -ne 0) { throw "Normalized patch check failed" }
           git apply --whitespace=nowarn $patch
-          Copy-Item $workflowTemp ".github/workflows/csharp-p5-windows-x64-installer.yml" -Force
 
           python -m py_compile internal/asr/worker.py internal/tts/worker.py
           python csharp/scripts/generate_csharp_code_map.py --check
           python csharp/scripts/validate_csharp_migration.py
           if ($LASTEXITCODE -ne 0) { throw "beta.33 static contracts failed" }
 
+          Copy-Item $workflowTemp ".github/workflows/csharp-p5-windows-x64-installer.yml" -Force
           git add -A
           $tree = (git write-tree).Trim()
           $commit = ("editor: implement Whisper timing and local NghiTTS" | git commit-tree $tree -p $current).Trim()
