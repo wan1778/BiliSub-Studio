@@ -44,6 +44,8 @@ public sealed class LocalSubtitleTranslationService : IDisposable
     internal const string ModelUrl = "https://huggingface.co/Qwen/Qwen3-8B-GGUF/resolve/7c41481f57cb95916b40956ab2f0b139b296d974/Qwen3-8B-Q4_K_M.gguf?download=true";
     internal const long ModelBytes = 5_027_783_488;
     internal const string ModelSha256 = "d98cdcbd03e17ce47681435b5150e34c1417f50b5c0019dd560e4882c5745785";
+    internal const string ThinkingTemplateKwargs = "{\"enable_thinking\":false}";
+    internal const string ReasoningMode = "off";
     private const int TranslationBatchSize = 48;
     private const int AnalysisBatchSize = 420;
     private const string TranslationSchema = "{\"type\":\"object\",\"properties\":{\"translations\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"text\":{\"type\":\"string\"}},\"required\":[\"id\",\"text\"],\"additionalProperties\":false}}},\"required\":[\"translations\"],\"additionalProperties\":false}";
@@ -159,10 +161,15 @@ public sealed class LocalSubtitleTranslationService : IDisposable
                 var prompt = BuildBiblePrompt(pageCues, bible, page + 1, analysisPages);
                 string nextBible;
                 try { nextBible = ValidateBible(await RunJsonAsync(prompt, BibleSchema, 2048, layers, job.CancellationToken)); }
+                catch (InvalidDataException first)
+                {
+                    job.Warn($"Lượt đọc SRT {page + 1} trả sai JSON/nội dung; đang thử lại với prompt chặt hơn: {first.Message}");
+                    nextBible = ValidateBible(await RunJsonAsync(prompt + "\nLần trước sai JSON/hồ sơ. Chỉ trả đúng một JSON object theo schema.", BibleSchema, 2048, layers, job.CancellationToken));
+                }
                 catch (Exception first) when (first is not OperationCanceledException)
                 {
-                    job.Warn($"Lượt đọc SRT {page + 1} lỗi; thử lại với mức GPU thấp hơn: {first.Message}");
-                    nextBible = ValidateBible(await RunJsonAsync(prompt + "\nLần trước không trả đúng JSON/hồ sơ. Chỉ trả schema được yêu cầu.", BibleSchema, 2048, LowerGpuLayers(layers), job.CancellationToken));
+                    job.Warn($"Lượt đọc SRT {page + 1} gặp lỗi runtime; thử lại với mức GPU thấp hơn: {first.Message}");
+                    nextBible = ValidateBible(await RunJsonAsync(prompt + "\nLần trước runtime không hoàn tất. Chỉ trả đúng một JSON object theo schema.", BibleSchema, 2048, LowerGpuLayers(layers), job.CancellationToken));
                 }
                 bible = nextBible;
                 checkpoint = checkpoint with { Bible = bible, AnalysisPagesCompleted = page + 1 };
@@ -187,10 +194,17 @@ public sealed class LocalSubtitleTranslationService : IDisposable
                 var root = await RunJsonAsync(prompt, TranslationSchema, 4096, layers, job.CancellationToken);
                 translations = ValidateBatch(root, batch);
             }
+            catch (InvalidDataException first)
+            {
+                job.Warn($"Batch bắt đầu cue {batch[0].Number} sai JSON/ID/nội dung; đang thử lại chặt hơn: {first.Message}");
+                var retry = await RunJsonAsync(prompt + "\nLần trước sai JSON/schema/ID hoặc còn chữ Hán. Dịch lại đúng toàn bộ TARGET và chỉ trả đúng một JSON object.",
+                    TranslationSchema, 4096, layers, job.CancellationToken);
+                translations = ValidateBatch(retry, batch);
+            }
             catch (Exception first) when (first is not OperationCanceledException)
             {
-                job.Warn($"Batch bắt đầu cue {batch[0].Number} lỗi; thử lại độc lập: {first.Message}");
-                var retry = await RunJsonAsync(prompt + "\nLần trước sai schema/ID hoặc còn chữ Hán. Dịch lại đúng toàn bộ TARGET và chỉ trả JSON.",
+                job.Warn($"Batch bắt đầu cue {batch[0].Number} gặp lỗi runtime; thử lại với mức GPU thấp hơn: {first.Message}");
+                var retry = await RunJsonAsync(prompt + "\nLần trước runtime không hoàn tất. Dịch lại đúng toàn bộ TARGET và chỉ trả đúng một JSON object.",
                     TranslationSchema, 4096, LowerGpuLayers(layers), job.CancellationToken);
                 translations = ValidateBatch(retry, batch);
             }
@@ -259,18 +273,27 @@ public sealed class LocalSubtitleTranslationService : IDisposable
     private async Task<JsonElement> RunJsonAsync(string prompt, string schema, int maxTokens, int gpuLayers, CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(_paths.Temp);
-        var promptFile = Path.Combine(_paths.Temp, "translation-prompt-" + Guid.NewGuid().ToString("N") + ".txt");
-        await File.WriteAllTextAsync(promptFile, prompt, new UTF8Encoding(false), cancellationToken);
-        try
+        var token = Guid.NewGuid().ToString("N");
+        var promptFile = Path.Combine(_paths.Temp, "translation-prompt-" + token + ".txt");
+        var responseFile = Path.Combine(_paths.Temp, "translation-response-" + token + ".txt");
+
+        async Task<JsonElement> RunAttemptAsync(string attemptPrompt, bool enforceSchema)
         {
-            var args = new[]
+            await File.WriteAllTextAsync(promptFile, attemptPrompt, new UTF8Encoding(false), cancellationToken);
+            TryDelete(responseFile);
+            var args = new List<string>
             {
                 "-m", ModelPath, "-f", promptFile, "--jinja", "--single-turn", "--no-display-prompt", "--simple-io", "--no-warmup",
                 "--no-context-shift", "-ngl", gpuLayers.ToString(), "-c", "24576", "-n", maxTokens.ToString(),
-                "--reasoning-format", "none", "--reasoning-budget", "0",
-                "--temp", "0.7", "--top-k", "20", "--top-p", "0.8", "--min-p", "0", "--presence-penalty", "1.2",
-                "--json-schema", schema,
+                "--chat-template-kwargs", ThinkingTemplateKwargs, "--reasoning", ReasoningMode, "--reasoning-format", "none",
+                "--temp", "0.4", "--top-k", "20", "--top-p", "0.8", "--min-p", "0", "--presence-penalty", "1.0",
+                "--output", responseFile,
             };
+            if (enforceSchema)
+            {
+                args.Add("--json-schema");
+                args.Add(schema);
+            }
             var result = await _processes.RunAsync(LlamaCli, args, cancellationToken);
             if (result.ExitCode != 0)
             {
@@ -278,9 +301,31 @@ public sealed class LocalSubtitleTranslationService : IDisposable
                 if (reason.Length > 800) reason = reason[^800..];
                 throw new InvalidOperationException("AI local không hoàn tất: " + reason);
             }
-            return ExtractJson(result.StandardOutput);
+            var output = File.Exists(responseFile) ? await File.ReadAllTextAsync(responseFile, cancellationToken) : string.Empty;
+            if (string.IsNullOrWhiteSpace(output)) output = result.StandardOutput;
+            return ExtractJson(output);
         }
-        finally { TryDelete(promptFile); }
+
+        try
+        {
+            try
+            {
+                return await RunAttemptAsync(prompt, enforceSchema: true);
+            }
+            catch (InvalidDataException)
+            {
+                // Qwen3 + llama.cpp can return an empty generation when a JSON grammar is combined with
+                // legacy prompt-token thinking suppression. Thinking is disabled via the chat template above;
+                // this second pass deliberately removes the grammar while downstream validators still
+                // require the exact root shape, cue IDs/count and fully translated Vietnamese text.
+                return await RunAttemptAsync(prompt + "\nCHỈ TRẢ đúng một JSON object hợp lệ, không markdown, không giải thích hay tiền tố/hậu tố.", enforceSchema: false);
+            }
+        }
+        finally
+        {
+            TryDelete(promptFile);
+            TryDelete(responseFile);
+        }
     }
 
     internal static JsonElement ExtractJson(string output)
@@ -304,7 +349,6 @@ public sealed class LocalSubtitleTranslationService : IDisposable
         var skill = Skill.BuildInstructions(cues.Select(x => x.SourceText), 36_000);
         var source = string.Join('\n', cues.Select(x => $"[{x.Id}] {x.SourceText}"));
         return $$"""
-            /no_think
             Bạn đang thực hiện lượt đọc toàn bộ SRT Trung trước khi dịch (phần {{page}}/{{totalPages}}).
             {{skill}}
 
@@ -326,7 +370,6 @@ public sealed class LocalSubtitleTranslationService : IDisposable
         var contextJson = JsonSerializer.Serialize(context.Select(x => new { id = x.Id, text = x.SourceText }));
         var targetJson = JsonSerializer.Serialize(target.Select(x => new { id = x.Id, text = x.SourceText }));
         return $$"""
-            /no_think
             Dịch phụ đề phim Trung Quốc sang tiếng Việt tự nhiên, có cảm xúc, đúng lore tiên hiệp/cổ trang.
             {{skill}}
 
