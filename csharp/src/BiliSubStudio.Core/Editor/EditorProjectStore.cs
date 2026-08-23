@@ -88,6 +88,7 @@ public sealed class EditorProjectStore
 {
     public const int CurrentSchema = 5;
     private const long MaxProjectBytes = 64L * 1024 * 1024;
+    private const string CurrentTtsEngine = "piper-vais1000-profiles";
     private readonly string _directory;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly JsonSerializerOptions _json = new()
@@ -401,6 +402,15 @@ public sealed class EditorProjectStore
             || tts.ManifestSha256?.Length != 64 || tts.ManifestSha256.Any(x => !Uri.IsHexDigit(x))
             || tts.CueCount is < 0 or > EditorSubtitleDocument.MaxCues || tts.ReviewCount is < 0 || tts.ReviewCount > tts.CueCount)
             throw new InvalidDataException("Project Editor chứa trạng thái voice Việt không hợp lệ.");
+        var engine = tts.Engine.Trim();
+        var engineVersion = tts.EngineVersion.Trim();
+        var maleVoice = tts.MaleVoice.Trim();
+        var femaleVoice = tts.FemaleVoice.Trim();
+        if (!string.Equals(engine, CurrentTtsEngine, StringComparison.Ordinal)
+            || !string.Equals(engineVersion, LocalTtsInstaller.PiperVersion, StringComparison.Ordinal)
+            || !string.Equals(maleVoice, LocalTtsInstaller.MaleVoice, StringComparison.Ordinal)
+            || !string.Equals(femaleVoice, LocalTtsInstaller.FemaleVoice, StringComparison.Ordinal))
+            return null;
         var manifest = string.IsNullOrWhiteSpace(tts.ManifestPath) ? string.Empty : Path.GetFullPath(tts.ManifestPath.Trim());
         var track = tts.VoiceTrack;
         if (track is null || string.IsNullOrWhiteSpace(track.Path) || !double.IsFinite(track.Start) || track.Start < 0
@@ -411,10 +421,10 @@ public sealed class EditorProjectStore
         return tts with
         {
             Status = status,
-            Engine = tts.Engine.Trim(),
-            EngineVersion = tts.EngineVersion.Trim(),
-            MaleVoice = tts.MaleVoice.Trim(),
-            FemaleVoice = tts.FemaleVoice.Trim(),
+            Engine = engine,
+            EngineVersion = engineVersion,
+            MaleVoice = maleVoice,
+            FemaleVoice = femaleVoice,
             ManifestPath = manifest,
             ManifestSha256 = tts.ManifestSha256.ToLowerInvariant(),
             VoiceTrack = track with { Path = trackPath, Gain = Math.Clamp(track.Gain, 0, 4) },
