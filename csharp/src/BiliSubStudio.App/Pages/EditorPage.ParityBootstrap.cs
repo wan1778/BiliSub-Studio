@@ -34,6 +34,14 @@ public sealed partial class EditorPage
         // UI-02: every user-facing shell element already exists in EditorPage.xaml.
         // This method binds state/events only; it never reparents or inserts controls.
         _editorParityInitialized = true;
+        _imageFeatureInitialized = true;
+
+        // Preserve the CORE lifecycle contract while preventing the retired dynamic
+        // builders from running: both guarded methods return immediately when the
+        // corresponding initialized flag is already true.
+        EnsureEditorParityInitialized();
+        EnsureImageFeatureInitialized();
+
         _editorOutputPathText = EditorOutputPathText;
         _editorUseCurrentStartButton = EditorUseCurrentStartButton;
         _editorUseCurrentEndButton = EditorUseCurrentEndButton;
@@ -42,7 +50,6 @@ public sealed partial class EditorPage
         _editorAutoCompositeToggle = EditorAutoCompositeToggle;
         EditorOutputPathText.Text = _application.Config.OutputDirectory;
 
-        _imageFeatureInitialized = true;
         _imageModeButton = ImageModeButton;
         _imageInspectorPanel = ImageInspectorPanel;
         _imageOverlayCanvas = ImageOverlayCanvas;
