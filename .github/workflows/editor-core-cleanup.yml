@@ -1,0 +1,45 @@
+name: Editor core cleanup
+
+on:
+  push:
+    branches:
+      - editor-core-cleanup
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: editor-core-cleanup
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Apply CORE-01 through CORE-11
+        run: python csharp/scripts/editor_core_cleanup.py
+      - name: Refresh generated CSharp code map
+        run: python csharp/scripts/generate_csharp_code_map.py
+      - name: Validate static migration contracts
+        run: python csharp/scripts/validate_csharp_migration.py
+      - name: Commit cleanup result
+        run: |
+          if git diff --quiet; then
+            echo "No cleanup changes to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add csharp/src/BiliSubStudio.App/Pages/EditorPage.xaml \
+                  csharp/src/BiliSubStudio.App/Pages/EditorPage.xaml.cs \
+                  csharp/src/BiliSubStudio.App/Pages/EditorPage.Images.cs \
+                  csharp/src/BiliSubStudio.App/Pages/EditorPage.ParityBootstrap.cs \
+                  csharp/src/BiliSubStudio.App/Pages/EditorPage.ParityFixes.cs \
+                  csharp/src/BiliSubStudio.Core/Editor/EditorProjectStore.cs \
+                  csharp/scripts/validate_csharp_migration.py \
+                  docs/migration/CSHARP_CODE_MAP.generated.md
+          git commit -m "editor: complete CORE-01 through CORE-11 cleanup"
+          git push origin HEAD:editor-core-cleanup
