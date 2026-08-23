@@ -12,6 +12,10 @@ import wave
 from pathlib import Path
 
 
+MALE_PITCH_FACTOR = 0.84
+TARGET_SAMPLE_RATE = 22050
+
+
 def emit(payload: dict) -> None:
     sys.stdout.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n")
     sys.stdout.flush()
@@ -70,18 +74,57 @@ def synth_wav(voice, text: str, length_scale: float, path: Path) -> None:
         raise RuntimeError("Piper produced an empty WAV")
 
 
-def run_atempo(ffmpeg: Path, source: Path, destination: Path, ratio: float) -> None:
+def run_ffmpeg_filter(ffmpeg: Path, source: Path, destination: Path, audio_filter: str) -> None:
     command = [
         str(ffmpeg), "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-        "-i", str(source), "-af", f"atempo={ratio:.6f}", "-ac", "1", "-ar", "22050",
+        "-i", str(source), "-af", audio_filter, "-ac", "1", "-ar", str(TARGET_SAMPLE_RATE),
         "-c:a", "pcm_s16le", str(destination),
     ]
-    result = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
+    result = subprocess.run(
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
     if result.returncode != 0 or not destination.is_file() or destination.stat().st_size <= 44:
-        raise RuntimeError("FFmpeg atempo failed: " + (result.stderr.strip().splitlines()[-1] if result.stderr.strip() else "unknown error"))
+        raise RuntimeError("FFmpeg audio filter failed: " + (result.stderr.strip().splitlines()[-1] if result.stderr.strip() else "unknown error"))
 
 
-def fit_group(voice, text: str, target: float, cache_path: Path, ffmpeg: Path, temp_root: Path) -> tuple[float, float, float, str]:
+def apply_voice_profile(ffmpeg: Path, path: Path, voice_name: str) -> None:
+    if voice_name != "male":
+        return
+    # VAIS-1000 is one licensed female Northern Vietnamese speaker. The male route is
+    # a deterministic synthetic acoustic profile: lower pitch by ~3 semitones while
+    # compensating tempo so the cue duration remains essentially unchanged before fit.
+    profiled = path.with_name(path.stem + "-male-profile.wav")
+    pitched_rate = int(round(TARGET_SAMPLE_RATE * MALE_PITCH_FACTOR))
+    tempo_compensation = 1.0 / MALE_PITCH_FACTOR
+    run_ffmpeg_filter(
+        ffmpeg,
+        path,
+        profiled,
+        f"asetrate={pitched_rate},aresample={TARGET_SAMPLE_RATE},atempo={tempo_compensation:.6f}",
+    )
+    try:
+        path.unlink()
+    except OSError:
+        pass
+    profiled.replace(path)
+
+
+def synth_profiled_wav(voice, text: str, length_scale: float, path: Path, ffmpeg: Path, voice_name: str) -> None:
+    synth_wav(voice, text, length_scale, path)
+    apply_voice_profile(ffmpeg, path, voice_name)
+
+
+def run_atempo(ffmpeg: Path, source: Path, destination: Path, ratio: float) -> None:
+    run_ffmpeg_filter(ffmpeg, source, destination, f"atempo={ratio:.6f}")
+
+
+def fit_group(voice, voice_name: str, text: str, target: float, cache_path: Path, ffmpeg: Path, temp_root: Path) -> tuple[float, float, float, str]:
     """Returns raw_duration, final_duration, length_scale, status."""
     if cache_path.is_file() and cache_path.stat().st_size > 44:
         final = wav_duration(cache_path)
@@ -92,7 +135,7 @@ def fit_group(voice, text: str, target: float, cache_path: Path, ffmpeg: Path, t
     baseline = temp_root / f"{identity}-base.wav"
     tuned = temp_root / f"{identity}-tuned.wav"
     stretched = temp_root / f"{identity}-stretch.wav"
-    synth_wav(voice, text, 1.0, baseline)
+    synth_profiled_wav(voice, text, 1.0, baseline, ffmpeg, voice_name)
     raw = wav_duration(baseline)
     if raw <= 0.02 or target <= 0.08:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -102,7 +145,7 @@ def fit_group(voice, text: str, target: float, cache_path: Path, ffmpeg: Path, t
     desired = max(0.86, min(1.16, target / raw))
     candidate = baseline
     if abs(desired - 1.0) >= 0.025:
-        synth_wav(voice, text, desired, tuned)
+        synth_profiled_wav(voice, text, desired, tuned, ffmpeg, voice_name)
         candidate = tuned
     current = wav_duration(candidate)
     ratio = current / target
@@ -125,7 +168,11 @@ def main() -> int:
     manifest_path = Path(parsed.manifest).resolve()
     output_root = Path(parsed.output_root).resolve()
     ffmpeg = Path(parsed.ffmpeg).resolve()
-    for path in (manifest_path, Path(parsed.male_model), Path(parsed.male_config), Path(parsed.female_model), Path(parsed.female_config), ffmpeg):
+    male_model = Path(parsed.male_model).resolve()
+    male_config = Path(parsed.male_config).resolve()
+    female_model = Path(parsed.female_model).resolve()
+    female_config = Path(parsed.female_config).resolve()
+    for path in (manifest_path, male_model, male_config, female_model, female_config, ffmpeg):
         if not path.exists():
             raise FileNotFoundError(path)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -139,15 +186,18 @@ def main() -> int:
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
     from piper import PiperVoice
 
-    male = PiperVoice.load(str(Path(parsed.male_model)), config_path=str(Path(parsed.male_config)))
-    female = PiperVoice.load(str(Path(parsed.female_model)), config_path=str(Path(parsed.female_config)))
-    voices = {"male": male, "female": female}
+    base = PiperVoice.load(str(female_model), config_path=str(female_config))
+    if male_model == female_model and male_config == female_config:
+        voices = {"male": base, "female": base}
+    else:
+        male = PiperVoice.load(str(male_model), config_path=str(male_config))
+        voices = {"male": male, "female": base}
     output_root.mkdir(parents=True, exist_ok=True)
     clip_root = output_root / "clips"
     block_root = output_root / "blocks"
     clip_root.mkdir(parents=True, exist_ok=True)
     block_root.mkdir(parents=True, exist_ok=True)
-    emit({"event": "ready", "cues": len(cues)})
+    emit({"event": "ready", "cues": len(cues), "male_pitch_factor": MALE_PITCH_FACTOR})
 
     clip_entries: list[dict] = []
     cue_results: list[dict] = []
@@ -156,7 +206,7 @@ def main() -> int:
         for cue_index, cue in enumerate(cues):
             cue_id = str(cue["id"])
             voice_name = str(cue.get("voice") or "female")
-            voice = voices.get(voice_name, female)
+            voice = voices.get(voice_name, base)
             groups = cue.get("groups") or []
             cue_review = bool(cue.get("voice_review", False))
             raw_total = 0.0
@@ -171,7 +221,7 @@ def main() -> int:
                     continue
                 cache_key = str(group.get("cache_key") or hashlib.sha256(f"{cue_id}|{group_index}|{voice_name}|{text}|{target:.3f}".encode("utf-8")).hexdigest())
                 cache_path = clip_root / f"{cache_key}.wav"
-                raw, final, length_scale, status = fit_group(voice, text, target, cache_path, ffmpeg, temp_root)
+                raw, final, length_scale, status = fit_group(voice, voice_name, text, target, cache_path, ffmpeg, temp_root)
                 raw_total += raw
                 final_total += final
                 statuses.append(status)
@@ -200,7 +250,7 @@ def main() -> int:
     import numpy as np
 
     block_seconds = max(30.0, min(600.0, float(manifest.get("block_seconds") or 300.0)))
-    sample_rate = 22050
+    sample_rate = TARGET_SAMPLE_RATE
     max_end = max((float(cue.get("cue_end") or 0.0) for cue in cues), default=0.0)
     block_count = max(1, int(math.ceil(max_end / block_seconds)))
     blocks: list[dict] = []
@@ -234,7 +284,6 @@ def main() -> int:
         blocks.append({"path": str(block_path), "start": block_start, "duration": block_end - block_start})
         emit({"event": "block", "index": block_index + 1, "total": block_count, "path": str(block_path)})
 
-    # Build one seekable master track for preview/export while keeping block WAVs as selective caches.
     master_wav = output_root / "voice-master.wav"
     master_flac = output_root / "voice-master.flac"
     block_by_start = {round(float(item["start"]), 6): Path(item["path"]) for item in blocks}
@@ -279,10 +328,10 @@ def main() -> int:
 
     result = {
         "schema": 1,
-        "engine": "piper-nghitts",
+        "engine": "piper-vais1000-profiles",
         "engine_version": manifest.get("engine_version", "unknown"),
-        "male_model": manifest.get("male_model", "deepman3909"),
-        "female_model": manifest.get("female_model", "calmwoman3688"),
+        "male_model": manifest.get("male_model", "vais1000-male-profile-v1"),
+        "female_model": manifest.get("female_model", "vais1000-female-profile-v1"),
         "cues": cue_results,
         "blocks": blocks,
         "master": {"path": str(master_flac), "start": 0.0, "duration": max_end},
