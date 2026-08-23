@@ -10,6 +10,7 @@ public sealed partial class EditorPage
         EditorParity_Loaded(this, new RoutedEventArgs());
         EnsureImageFeatureInitialized();
         EnsureInteractionRepairInitialized();
+        EnsureToolTransitionRepairInitialized();
         AssertEditorInteractionContract();
     }
 }
