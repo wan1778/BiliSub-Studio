@@ -41,7 +41,8 @@ internal sealed class LocalTtsInstaller : IDisposable
     internal const string PiperVersion = "1.4.2";
     internal const string PiperWheel = "https://files.pythonhosted.org/packages/c5/5a/fda959ca07554a8ec3e380b168e79fff16f3020f4956c356a613616c1994/piper_tts-1.4.2-cp39-abi3-win_amd64.whl#sha256=9c4a3a11f5889ea9d0df4414dce2bd9bee5ce7d9cf604c8fd5e307441d4c031f";
     internal const string VoiceRepository = "rhasspy/piper-voices";
-    internal const string VoiceRevision = "3d796cc2f2c884b3517c527507e084f7bb245aea";
+    internal const string ModelRevision = "3d796cc2f2c884b3517c527507e084f7bb245aea";
+    internal const string VoiceRevision = ModelRevision + "-profile-v1";
     internal const string BaseVoice = "vi_VN-vais1000-medium";
     internal const string MaleVoice = "vais1000-male-profile-v1";
     internal const string FemaleVoice = "vais1000-female-profile-v1";
@@ -77,7 +78,7 @@ internal sealed class LocalTtsInstaller : IDisposable
     private string Python => Path.Combine(VenvRoot, "Scripts", "python.exe");
     private string RuntimeManifest => Path.Combine(RuntimeRoot, "install.json");
     private string Worker => Path.Combine(Root, "worker.py");
-    private string ModelRoot => Path.Combine(Root, "Models", "piper-vais1000-" + VoiceRevision[..12]);
+    private string ModelRoot => Path.Combine(Root, "Models", "piper-vais1000-" + ModelRevision[..12]);
     private string VoiceModelPath => Path.Combine(ModelRoot, BaseVoice + ".onnx");
     private string VoiceConfigPath => Path.Combine(ModelRoot, BaseVoice + ".onnx.json");
 
@@ -180,7 +181,7 @@ internal sealed class LocalTtsInstaller : IDisposable
 
     private static IReadOnlyList<TtsModelFile> ModelFiles()
     {
-        static string Url(string name) => $"https://huggingface.co/{VoiceRepository}/resolve/{VoiceRevision}/vi/vi_VN/vais1000/medium/{name}?download=true";
+        static string Url(string name) => $"https://huggingface.co/{VoiceRepository}/resolve/{ModelRevision}/vi/vi_VN/vais1000/medium/{name}?download=true";
         return
         [
             new TtsModelFile(BaseVoice + ".onnx", VoiceModelBytes, VoiceModelSha256, Url(BaseVoice + ".onnx")),
