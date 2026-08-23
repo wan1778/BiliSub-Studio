@@ -20,7 +20,7 @@
                         </Border>
                     </Grid>
                     <Border Padding="12,10" Background="{ThemeResource RaisedSurfaceBrush}" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="1" CornerRadius="9">
-                        <TextBlock x:Name="UpdateText" Style="{StaticResource BodyTextStyle}" Text="Chưa kiểm tra." AutomationProperties.LiveSetting="Polite" />
+                        <TextBlock x:Name="UpdateText" Style="{StaticResource BodyTextStyle}" Text="Chưa kiểm tra." AutomationProperties.LiveSetting="Polite" TextWrapping="Wrap" />
                     </Border>
                     <StackPanel Orientation="Horizontal" Spacing="8">
                         <Button x:Name="CheckButton" AccessKey="U" Click="CheckUpdate_Click" Content="Kiểm tra" Style="{StaticResource SecondaryButtonStyle}" />
@@ -28,7 +28,7 @@
                     </StackPanel>
                     <ProgressBar x:Name="UpdateProgress" AutomationProperties.Name="Tiến độ kiểm tra hoặc chuẩn bị cập nhật" />
                     <Border Padding="11,8" Background="{ThemeResource AccentSoftBrush}" BorderBrush="{ThemeResource AccentPrimaryBrush}" BorderThickness="1" CornerRadius="8">
-                        <TextBlock FontSize="11" Foreground="{ThemeResource AccentPrimaryBrush}" Text="Chỉ nhận payload WinUI 3 từ GitHub Releases của repository và phải khớp size/SHA-256." TextWrapping="Wrap" />
+                        <TextBlock FontSize="11" Foreground="{ThemeResource AccentPrimaryBrush}" Text="Chỉ nhận gói cập nhật chính thức từ GitHub Releases và phải khớp kích thước/SHA-256." TextWrapping="Wrap" />
                     </Border>
                 </StackPanel>
             </Border>
