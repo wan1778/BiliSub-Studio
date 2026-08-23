@@ -71,21 +71,32 @@ public sealed partial class EditorPage
         _subtitleCueSelectedIndex = index;
         try
         {
-            if (_playerMode) await SetPlaybackModeAsync(false, false);
             var cue = _subtitleSource.Cues[index];
-            if (_media is not null)
-            {
-                _syncingTimeline = true;
-                try { Timeline.Value = Math.Clamp(cue.Start, Timeline.Minimum, Timeline.Maximum); }
-                finally { _syncingTimeline = false; }
-                await UpdateFrameAsync();
-            }
+            await SeekEditorToSubtitleCueAsync(cue.Start);
             LoadSelectedSubtitleCue();
             RenderOverlays();
             UpdateCurrentCueVoiceUi();
             RefreshSubtitleCueEditorControls();
+            SubtitleCueEditorStatus.Text = _media is null
+                ? $"Đã chọn câu {cue.Number}; timecode sẽ dùng khi mở video."
+                : $"Đã đưa Player tới câu {cue.Number} tại {cue.Timing}.";
         }
         catch (Exception error) { SubtitleCueEditorStatus.Text = "Không chuyển được tới câu: " + error.Message; }
+    }
+
+    private async Task SeekEditorToSubtitleCueAsync(double sourceTime)
+    {
+        // SUB-06: cue navigation targets the compact Player seek position; no large timeline is required.
+        if (_media is null) return;
+        var target = Math.Clamp(sourceTime, Timeline.Minimum, Timeline.Maximum);
+        _syncingTimeline = true;
+        try { Timeline.Value = target; }
+        finally { _syncingTimeline = false; }
+        UpdateClock();
+        RenderOverlays();
+        UpdateCurrentCueVoiceUi();
+        if (_playerMode) await SeekProcessedPreviewAsync(target);
+        else await UpdateFrameAsync();
     }
 
     private void SubtitleManualText_TextChanged(object sender, TextChangedEventArgs e)

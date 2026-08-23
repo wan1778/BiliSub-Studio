@@ -395,28 +395,55 @@ public sealed partial class EditorPage : Page
         UpdateCurrentCueVoiceUi();
     }
 
-    private async void ImportSrt_Click(object sender, RoutedEventArgs e)
+    private async void ImportSubtitle_Click(object sender, RoutedEventArgs e)
     {
-        try { await ImportSrtAsync(); }
-        catch (Exception error) { TranslationStatusText.Text = "Không chọn được SRT: " + error.Message; }
+        try { await ImportSubtitleAsync(); }
+        catch (OperationCanceledException) { }
+        catch (InvalidDataException error)
+        {
+            TranslationStatusText.Text = "SRT không hợp lệ: " + error.Message;
+            RefreshEditorActions();
+        }
+        catch (Exception error)
+        {
+            TranslationStatusText.Text = "Không nhập được SRT: " + error.Message;
+            RefreshEditorActions();
+        }
     }
 
-    private async Task ImportSrtAsync()
+    private async Task ImportSubtitleAsync()
     {
+        // SUB-02 / SUB-04: picker cancel is a no-op and works before a video exists.
         var path = await _picker.PickSubtitleAsync();
-        if (path is null) return;
-        var source = await _application.LoadEditorSubtitleAsync(path, CancellationToken.None);
-        _subtitleSource = source;
+        if (string.IsNullOrWhiteSpace(path)) return;
+
+        // SUB-05: fully validate the candidate before replacing the current SRT state.
+        EditorSubtitleSource candidate;
+        try
+        {
+            candidate = await _application.LoadEditorSubtitleAsync(path, CancellationToken.None);
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            var detail = error is InvalidDataException or FileNotFoundException
+                ? error.Message
+                : "Không đọc được file SRT. " + error.Message;
+            throw new InvalidDataException(detail, error);
+        }
+
+        _subtitleSource = candidate;
         _subtitlePlacement = EditorSubtitlePlacement.Default;
         if (_project is not null)
         {
+            // SUB-03: attach the validated SRT to the already-open project and invalidate stale voice output.
             _voiceTrack = null;
             _project = _project with { Tts = null };
             AttachSubtitleToProject(string.Empty);
             await RefreshSpeechTimingForSubtitleAsync();
         }
+
         await SyncSubtitleCueEditorAsync();
-        SrtPathText.Text = source.Path;
+        SrtPathText.Text = candidate.Path;
         AsrStatusText.Text = _project?.Speech is { Status: "complete" }
             ? "Đang dùng SRT đã chọn; Whisper timing của video vẫn được giữ và ánh xạ vào SRT này."
             : "Đã dùng SRT đã chọn. Vào Âm thanh để chạy Whisper word timing/nhịp thoại.";
@@ -426,7 +453,7 @@ public sealed partial class EditorPage : Page
             : "Đã khóa timecode và thứ tự. Kéo/resize khung phụ đề trên preview rồi bấm Chuẩn bị AI.";
         UpdateSubtitleSummary();
         RenderOverlays();
-        QueueProjectSave();
+        if (_project is not null) await SaveProjectNowAsync();
         RefreshEditorActions();
     }
 

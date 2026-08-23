@@ -268,6 +268,26 @@ require("ForceFresh = false" in read(CSHARP / "src/BiliSubStudio.Core/Editor/Loc
         "Editor force-fresh cue translation checkpoint reset missing")
 require("LayoutUpdated += Subtitle" not in editor_partials and "SubtitleRetranslateCue_Click(sender" not in editor_partials,
         "Editor cue editor must not sync from LayoutUpdated or call one event handler from another")
+require('Click="ImportSubtitle_Click"' in editor and "private async void ImportSubtitle_Click" in editor_partials
+        and "await ImportSubtitleAsync();" in editor_partials,
+        "SUB-01 requires one Import Subtitle handler calling one ImportSubtitleAsync method")
+require("ImportSrt_Click" not in editor_partials and "ImportSrtAsync" not in editor_partials,
+        "SUB-01 legacy Import SRT handler/method returned")
+require("var path = await _picker.PickSubtitleAsync();" in editor_partials
+        and "if (string.IsNullOrWhiteSpace(path)) return;" in editor_partials,
+        "SUB-02/SUB-04 subtitle picker cancel-safe path missing")
+require("candidate = await _application.LoadEditorSubtitleAsync(path, CancellationToken.None);" in editor_partials
+        and editor_partials.index("candidate = await _application.LoadEditorSubtitleAsync(path, CancellationToken.None);")
+            < editor_partials.index("_subtitleSource = candidate;"),
+        "SUB-05 must validate candidate SRT before replacing current subtitle state")
+require("SRT không hợp lệ:" in editor_partials and "AttachSubtitleToProject(string.Empty);" in editor_partials
+        and "if (_project is not null) await SaveProjectNowAsync();" in editor_partials,
+        "SUB-03/SUB-05 project attach or semantic invalid-SRT error contract missing")
+require("SeekEditorToSubtitleCueAsync" in editor_partials and "await SeekEditorToSubtitleCueAsync(cue.Start);" in editor_partials
+        and "if (_playerMode) await SeekProcessedPreviewAsync(target);" in editor_partials,
+        "SUB-06 cue selection must seek the compact Player to cue start")
+require("if (_playerMode) await SetPlaybackModeAsync(false, false);" not in editor_partials,
+        "SUB-06 cue selection regressed to leaving processed Player mode before seek")
 require("Loaded += EditorPage_Loaded;" in editor and "private void EditorPage_Loaded" in editor_partials,
         "Editor must use the actual Loaded event as its single feature initialization lifecycle")
 
