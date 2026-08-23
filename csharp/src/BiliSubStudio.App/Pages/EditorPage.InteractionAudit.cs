@@ -11,6 +11,9 @@ public sealed partial class EditorPage
             throw new InvalidOperationException("Editor interaction repair chưa được khởi tạo.");
         if (!_imageFeatureInitialized || _imageModeButton is null || _imageInspectorPanel is null || _imageOverlayCanvas is null)
             throw new InvalidOperationException("Editor thiếu công cụ Ảnh/logo trong runtime thực tế.");
+        if (!_subtitleCueEditorInitialized || _subtitleCueList is null || _subtitleSourceEdit is null || _subtitleVietnameseEdit is null ||
+            _subtitleLockToggle is null || _subtitleRetranslateCueButton is null || _subtitleSaveSrtButton is null)
+            throw new InvalidOperationException("Editor thiếu phần sửa/khóa/dịch lại từng câu SRT.");
         if (_compactPreviewChrome is null || _compactPreviewChrome.Height is < 40 or > 50)
             throw new InvalidOperationException("Editor phải có đúng một thanh điều khiển Preview cao 40–50 px.");
         if (PreviewPlayer.AreTransportControlsEnabled)
