@@ -1,0 +1,62 @@
+name: Editor Loaded lifecycle fix
+
+on:
+  push:
+    branches:
+      - editor-core-cleanup
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: editor-core-cleanup
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Use actual Loaded as the single Editor lifecycle
+        shell: python
+        run: |
+          from pathlib import Path
+
+          root = Path('.')
+          pages = root / 'csharp/src/BiliSubStudio.App/Pages'
+          bootstrap = pages / 'EditorPage.ParityBootstrap.cs'
+          editor = pages / 'EditorPage.xaml.cs'
+          validator = root / 'csharp/scripts/validate_csharp_migration.py'
+
+          bootstrap.write_text('''using Microsoft.UI.Xaml;\n\nnamespace BiliSubStudio.App.Pages;\n\npublic sealed partial class EditorPage\n{\n    private bool _editorCoreInitialized;\n\n    private void EditorPage_Loaded(object sender, RoutedEventArgs e)\n    {\n        if (!_editorCoreInitialized)\n        {\n            EnsureEditorParityInitialized();\n            EnsureImageFeatureInitialized();\n            PreviewPlayer.AreTransportControlsEnabled = false;\n            _editorCoreInitialized = true;\n        }\n\n        SetInspectorMode(_inspectorMode);\n        RefreshEditorActions();\n    }\n}\n''', encoding='utf-8', newline='\n')
+
+          text = editor.read_text(encoding='utf-8')
+          old = '''        InitializeComponent();\n        InitializeEditorCore();\n        LayoutUpdated += EditorPage_LayoutUpdated;\n        Unloaded += EditorPage_Unloaded;\n        SetInspectorMode(InspectorMode.Subtitle);\n        RefreshEditorActions();\n'''
+          new = '''        InitializeComponent();\n        Loaded += EditorPage_Loaded;\n        LayoutUpdated += EditorPage_LayoutUpdated;\n        Unloaded += EditorPage_Unloaded;\n'''
+          if old not in text:
+              raise SystemExit('constructor lifecycle block missing')
+          editor.write_text(text.replace(old, new, 1), encoding='utf-8', newline='\n')
+
+          text = validator.read_text(encoding='utf-8')
+          old = '''require("InitializeComponent();\\n        InitializeEditorCore();" in editor,\n        "Editor constructor must own the single initialization lifecycle")\n'''
+          new = '''require("Loaded += EditorPage_Loaded;" in editor and "private void EditorPage_Loaded" in editor_partials,\n        "Editor must use the actual Loaded event as its single feature initialization lifecycle")\n'''
+          if old not in text:
+              raise SystemExit('old constructor lifecycle validator missing')
+          validator.write_text(text.replace(old, new, 1), encoding='utf-8', newline='\n')
+      - name: Refresh generated code map
+        run: python csharp/scripts/generate_csharp_code_map.py
+      - name: Validate cleanup contracts
+        run: python csharp/scripts/validate_csharp_migration.py
+      - name: Commit Loaded lifecycle fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add csharp/src/BiliSubStudio.App/Pages/EditorPage.ParityBootstrap.cs \
+                  csharp/src/BiliSubStudio.App/Pages/EditorPage.xaml.cs \
+                  csharp/scripts/validate_csharp_migration.py \
+                  docs/migration/CSHARP_CODE_MAP.generated.md
+          git commit -m "editor: initialize core from actual Loaded lifecycle"
+          git push origin HEAD:editor-core-cleanup
