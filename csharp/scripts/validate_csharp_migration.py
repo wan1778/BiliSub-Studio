@@ -266,6 +266,9 @@ for marker in ("CreateAsrButton", "CreateAsr_Click", "CreateAsrButton.IsEnabled 
 asr_installer = read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalAsrInstaller.cs")
 asr_service = read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalAsrService.cs")
 asr_worker = read(ROOT / "internal/asr/worker.py")
+attributes = read(ROOT / ".gitattributes")
+for worker_path in ("internal/ocr/worker.py text eol=lf", "internal/asr/worker.py text eol=lf"):
+    require(worker_path in attributes, f"Windows worker byte provenance missing {worker_path}")
 for marker in (
     'FasterWhisperVersion = "1.2.1"', 'CTranslate2Version = "4.8.1"',
     "79a66ad50688c0b794dd501dc340a736992a6342f7f95e5811be60b5224a26a7",

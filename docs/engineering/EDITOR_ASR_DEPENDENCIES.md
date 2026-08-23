@@ -17,5 +17,6 @@ Runtime contract:
 - the private ASR venv reuses only the exact-patch Python bootstrap proven against Windows error 448; it does not use the OCR venv;
 - every model file must match its exact byte length and SHA-256 before a verified stamp is written;
 - the worker sets Hugging Face/Transformers offline mode and loads an absolute local model directory with `local_files_only=True`;
+- `.gitattributes` forces LF for both Python workers, so the packaged worker hash is byte-identical to the reviewed Git blob even on Windows checkout;
 - the app extracts a real bounded audio sample and completes a CUDA or CPU benchmark before starting full transcription;
 - all FFmpeg/Python children are in an owned process group; cancellation waits for cleanup while the atomic cue checkpoint remains resumable.

@@ -1,0 +1,2 @@
+internal/ocr/worker.py text eol=lf
+internal/asr/worker.py text eol=lf
