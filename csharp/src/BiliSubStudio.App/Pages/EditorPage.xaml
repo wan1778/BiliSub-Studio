@@ -96,14 +96,14 @@
                                     <ColumnDefinition Width="36" />
                                     <ColumnDefinition Width="78" />
                                     <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="36" />
+                                    <ColumnDefinition Width="44" />
                                     <ColumnDefinition Width="72" />
                                     <ColumnDefinition Width="36" />
                                 </Grid.ColumnDefinitions>
                                 <Button x:Name="PlayerPlayPauseButton" Content="▶" IsEnabled="False" Padding="0" HorizontalContentAlignment="Center" ToolTipService.ToolTip="Phát / tạm dừng preview" />
                                 <TextBlock Grid.Column="1" x:Name="ClockText" VerticalAlignment="Center" Foreground="White" FontSize="11" Text="00:00 / 00:00" />
                                 <Slider Grid.Column="2" x:Name="Timeline" Minimum="0" IsEnabled="False" ValueChanged="Timeline_ValueChanged" VerticalAlignment="Center" AutomationProperties.Name="Vị trí video" />
-                                <ToggleButton Grid.Column="3" x:Name="PreviewMuteToggle" Toggled="PreviewMute_Toggled" Content="🔊" Padding="0" HorizontalContentAlignment="Center" ToolTipService.ToolTip="Tắt / bật tiếng" />
+                                <ToggleSwitch Grid.Column="3" x:Name="PreviewMuteToggle" Toggled="PreviewMute_Toggled" OffContent="" OnContent="" MinWidth="0" HorizontalAlignment="Center" ToolTipService.ToolTip="Tắt / bật tiếng" />
                                 <Slider Grid.Column="4" x:Name="PreviewVolumeSlider" Minimum="0" Maximum="100" Value="100" ValueChanged="PreviewVolume_ValueChanged" VerticalAlignment="Center" AutomationProperties.Name="Âm lượng preview" />
                                 <Button Grid.Column="5" x:Name="FullscreenButton" AccessKey="F" Click="Fullscreen_Click" Content="⛶" IsEnabled="False" Padding="0" HorizontalContentAlignment="Center" ToolTipService.ToolTip="Toàn màn hình" />
                             </Grid>
