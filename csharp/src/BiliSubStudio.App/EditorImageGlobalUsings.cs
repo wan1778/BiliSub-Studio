@@ -1,3 +1,4 @@
+global using BiliSubStudio.Core.Editor;
 global using BiliSubStudio.Core.Jobs;
 global using Microsoft.UI.Xaml.Automation;
 global using Microsoft.UI.Xaml.Automation.Peers;
