@@ -1,0 +1,44 @@
+name: Editor pre-source completion
+
+on:
+  push:
+    branches:
+      - editor-pre-source-completion
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: editor-pre-source-completion
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Apply clean pre-source completion
+        run: python csharp/scripts/editor_pre_source_completion.py
+      - name: Regenerate CSharp code map
+        run: python csharp/scripts/generate_csharp_code_map.py
+      - name: Run static migration contracts
+        run: python csharp/scripts/validate_csharp_migration.py
+      - name: Remove temporary transformer/workflow and commit product changes
+        run: |
+          git rm csharp/scripts/editor_pre_source_completion.py .github/workflows/editor-pre-source-completion.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add csharp/src/BiliSubStudio.App/Pages/EditorPage.xaml \
+                  csharp/src/BiliSubStudio.App/Pages/EditorPage.xaml.cs \
+                  csharp/src/BiliSubStudio.App/Pages/EditorPage.SubtitleCueEditing.cs \
+                  csharp/src/BiliSubStudio.Core/Editor/EditorSubtitleManualStore.cs \
+                  csharp/src/BiliSubStudio.Core/Editor/LocalSubtitleTranslationService.cs \
+                  csharp/tests/BiliSubStudio.Core.ContractTests/EditorSubtitleManualContract.cs \
+                  csharp/tests/BiliSubStudio.Core.ContractTests/Program.cs \
+                  csharp/scripts/validate_csharp_migration.py \
+                  docs/migration/CSHARP_CODE_MAP.generated.md
+          git commit -m "editor: finish subtitle cue workflow before source tasks"
+          git push origin HEAD:editor-pre-source-completion
