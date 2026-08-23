@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using System.Text.Json;
 using BiliSubStudio.Core.Configuration;
 using BiliSubStudio.Core.IO;
 using BiliSubStudio.Core.Jobs;
@@ -94,11 +95,115 @@ public sealed class VideoEditorService
             });
             if (result.ExitCode != 0) throw new InvalidOperationException($"FFmpeg editor: {result.StandardError.Trim()}");
             if (!File.Exists(temporary) || new FileInfo(temporary).Length <= 0) throw new InvalidDataException("Video đã render rỗng.");
-            job.Set("finalizing", 98, "Đang hoàn tất file...");
+            job.Set("validating", 97, "Đang kiểm tra stream, thời lượng và khả năng giải mã...");
+            await ValidateRenderedOutputAsync(temporary, request.Duration, voice is not null || audio.SourceMode != "mute", token);
+            job.Set("finalizing", 99, "Đã xác minh file; đang hoàn tất...");
             File.Move(temporary, output);
             return new VideoEditResult(output);
         }
         finally { TryDelete(temporary); if (subtitleAss is not null) TryDelete(subtitleAss); }
+    }
+
+    private async Task ValidateRenderedOutputAsync(
+        string path,
+        double expectedDuration,
+        bool expectAudio,
+        CancellationToken cancellationToken)
+    {
+        var ffprobe = await _tools.EnsureFfprobeAsync(cancellationToken);
+        var probe = await _processes.RunAsync(ffprobe,
+        [
+            "-v", "error",
+            "-show_entries", "stream=codec_type,width,height:format=duration,size",
+            "-of", "json", path,
+        ], cancellationToken);
+        if (probe.ExitCode != 0)
+            throw new InvalidDataException("Không đọc được file vừa render: " + probe.StandardError.Trim());
+        ValidateRenderedProbe(probe.StandardOutput, expectedDuration, expectAudio);
+
+        var ffmpeg = await _tools.EnsureFfmpegAsync(cancellationToken);
+        var videoHead = await _processes.RunAsync(ffmpeg,
+        [
+            "-hide_banner", "-loglevel", "error", "-xerror", "-nostdin",
+            "-i", path, "-map", "0:v:0", "-t", "1.000", "-f", "null", "-",
+        ], cancellationToken);
+        if (videoHead.ExitCode != 0)
+            throw new InvalidDataException("Video đầu ra không giải mã được: " + videoHead.StandardError.Trim());
+
+        if (expectAudio)
+        {
+            var audioFrame = await _processes.RunAsync(ffmpeg,
+            [
+                "-hide_banner", "-loglevel", "error", "-xerror", "-nostdin",
+                "-i", path, "-map", "0:a:0", "-frames:a", "1", "-f", "null", "-",
+            ], cancellationToken);
+            if (audioFrame.ExitCode != 0)
+                throw new InvalidDataException("Audio đầu ra không giải mã được: " + audioFrame.StandardError.Trim());
+        }
+
+        if (expectedDuration > 2.5)
+        {
+            var videoTail = await _processes.RunAsync(ffmpeg,
+            [
+                "-hide_banner", "-loglevel", "error", "-xerror", "-nostdin",
+                "-sseof", "-2.000", "-i", path, "-map", "0:v:0", "-frames:v", "1", "-f", "null", "-",
+            ], cancellationToken);
+            if (videoTail.ExitCode != 0)
+                throw new InvalidDataException("Phần cuối video đầu ra không giải mã được: " + videoTail.StandardError.Trim());
+        }
+    }
+
+    private static void ValidateRenderedProbe(string json, double expectedDuration, bool expectAudio)
+    {
+        if (!double.IsFinite(expectedDuration) || expectedDuration <= 0)
+            throw new InvalidDataException("Thời lượng nguồn không hợp lệ để xác minh output.");
+
+        using var document = JsonDocument.Parse(json);
+        var root = document.RootElement;
+        var videoStreams = 0;
+        var audioStreams = 0;
+        var videoWidth = 0;
+        var videoHeight = 0;
+        if (root.TryGetProperty("streams", out var streams) && streams.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var stream in streams.EnumerateArray())
+            {
+                var type = stream.TryGetProperty("codec_type", out var typeNode) ? typeNode.GetString() : null;
+                if (string.Equals(type, "video", StringComparison.Ordinal))
+                {
+                    videoStreams++;
+                    if (stream.TryGetProperty("width", out var widthNode) && widthNode.TryGetInt32(out var width)) videoWidth = Math.Max(videoWidth, width);
+                    if (stream.TryGetProperty("height", out var heightNode) && heightNode.TryGetInt32(out var height)) videoHeight = Math.Max(videoHeight, height);
+                }
+                else if (string.Equals(type, "audio", StringComparison.Ordinal)) audioStreams++;
+            }
+        }
+        if (videoStreams == 0 || videoWidth <= 0 || videoHeight <= 0)
+            throw new InvalidDataException("Output không có video stream hợp lệ.");
+        if (expectAudio && audioStreams == 0)
+            throw new InvalidDataException("Output thiếu audio theo chính sách Keep/Duck/voice Việt.");
+        if (!expectAudio && audioStreams != 0)
+            throw new InvalidDataException("Output vẫn có audio dù chính sách yêu cầu Mute hoàn toàn.");
+
+        if (!root.TryGetProperty("format", out var format) || format.ValueKind != JsonValueKind.Object)
+            throw new InvalidDataException("Output thiếu metadata container.");
+        if (!TryJsonDouble(format, "duration", out var duration) || !double.IsFinite(duration) || duration <= 0)
+            throw new InvalidDataException("Output không có duration hợp lệ.");
+        if (!TryJsonDouble(format, "size", out var size) || !double.IsFinite(size) || size <= 0)
+            throw new InvalidDataException("Output không có kích thước container hợp lệ.");
+
+        var tolerance = Math.Clamp(expectedDuration * .0005, 1.5, 5.0);
+        if (Math.Abs(duration - expectedDuration) > tolerance)
+            throw new InvalidDataException($"Duration output lệch {Math.Abs(duration - expectedDuration):0.000}s, vượt tolerance {tolerance:0.000}s.");
+    }
+
+    private static bool TryJsonDouble(JsonElement parent, string name, out double value)
+    {
+        value = 0;
+        if (!parent.TryGetProperty(name, out var node)) return false;
+        if (node.ValueKind == JsonValueKind.Number) return node.TryGetDouble(out value);
+        return node.ValueKind == JsonValueKind.String
+            && double.TryParse(node.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out value);
     }
 
     public async Task<EditorPreviewSegment> CreatePreviewSegmentAsync(

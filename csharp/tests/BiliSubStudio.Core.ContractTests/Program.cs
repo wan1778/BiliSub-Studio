@@ -45,6 +45,7 @@ internal static class Program
         ("Whisper word timing maps pauses and karaoke ASS", EditorSpeechTimingKaraokeContractAsync),
         ("local NghiTTS manifest and rhythm grouping stay pinned", LocalTtsContractAsync),
         ("voice track mixes identically for keep duck mute", EditorVoiceMixContractAsync),
+        ("editor final render validates streams duration and audio policy", EditorRenderValidationContractAsync),
         ("Vietnamese TTS text normalization stays deterministic", VietnameseTtsNormalizerContractAsync),
         ("editor document preserves identity through undo redo", EditorDocumentContractAsync),
         ("editor project persists and quarantines corrupt state", EditorProjectContractAsync),
@@ -673,6 +674,38 @@ internal static class Program
         var mute = Graph(new EditorAudioSettings("mute", 0));
         True(!mute.Contains("[0:a]", StringComparison.Ordinal), "mute+voice unexpectedly kept source audio");
         True(mute.Contains("[voicea]anull[aout]", StringComparison.Ordinal), "mute+voice did not route TTS to output");
+        return Task.CompletedTask;
+    }
+
+    private static Task EditorRenderValidationContractAsync()
+    {
+        var method = typeof(VideoEditorService).GetMethod("ValidateRenderedProbe", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing Editor final-render validation policy");
+        const string withAudio = """
+            {"streams":[{"codec_type":"video","width":1920,"height":1080},{"codec_type":"audio"}],"format":{"duration":"120.040","size":"1000000"}}
+            """;
+        const string withoutAudio = """
+            {"streams":[{"codec_type":"video","width":1920,"height":1080}],"format":{"duration":"120.010","size":"900000"}}
+            """;
+        method.Invoke(null, [withAudio, 120d, true]);
+        method.Invoke(null, [withoutAudio, 120d, false]);
+
+        void Invalid(string json, double duration, bool expectAudio, string label)
+        {
+            try
+            {
+                method.Invoke(null, [json, duration, expectAudio]);
+                throw new InvalidOperationException(label + " was accepted");
+            }
+            catch (TargetInvocationException error) when (error.InnerException is InvalidDataException)
+            {
+            }
+        }
+
+        Invalid(withoutAudio, 120d, true, "missing required audio");
+        Invalid(withAudio, 120d, false, "unexpected muted audio");
+        Invalid(withAudio, 100d, true, "duration drift");
+        Invalid("""{"streams":[{"codec_type":"audio"}],"format":{"duration":"120","size":"1000"}}""", 120d, true, "missing video");
         return Task.CompletedTask;
     }
 
