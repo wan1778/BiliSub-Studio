@@ -1,9 +1,9 @@
 {
-  "version": "4.0.0-beta.24-csharp-p5",
+  "version": "4.0.0-beta.40-csharp-p5",
   "channel_ready": true,
-  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.10/BiliSubStudio_4.0.10_Windows-x64-portable.zip",
-  "sha256": "c39ac2c08e2d177a21bb370c77faceb9caee1ee1da3c52ab3412917697df0897",
-  "size": 94449168,
+  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.26/BiliSubStudio_4.0.26_Windows-x64-portable.zip",
+  "sha256": "9be23dc99e711b367d38a24bb6f55a52fd015228929b97c15938ad964bfff7dc",
+  "size": 94694429,
   "payload_kind": "winui3-portable-zip",
   "notes": [
     "OCR Auto kiểm tra live RAM/VRAM trước từng bậc 1 → 2 → 4 → 8 → 16.",
