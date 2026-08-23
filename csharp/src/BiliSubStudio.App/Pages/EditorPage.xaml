@@ -148,6 +148,20 @@
                                 <Button x:Name="SaveKaraokeAssButton" Click="SaveKaraokeAss_Click" Content="Lưu Caption ASS" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />
                                 <ProgressBar x:Name="TranslationProgress" Minimum="0" Maximum="100" />
                                 <TextBlock x:Name="TranslationStatusText" Style="{StaticResource MutedTextStyle}" Text="Chưa chuẩn bị AI local." TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
+                                <Rectangle Height="1" Fill="{ThemeResource BorderBrush}" Margin="0,2" />
+                                <TextBlock FontSize="14" FontWeight="SemiBold" Text="Chỉnh từng câu SRT" />
+                                <TextBlock Style="{StaticResource MutedTextStyle}" Text="Chọn câu để đưa Player tới đúng timecode. Có thể sửa lời Trung/Việt, khóa câu hoặc dịch lại riêng câu bằng AI local." TextWrapping="Wrap" />
+                                <ListView x:Name="SubtitleCueList" MinHeight="150" MaxHeight="230" IsEnabled="False" SelectionChanged="SubtitleCueList_SelectionChanged" AutomationProperties.Name="Danh sách câu phụ đề" />
+                                <TextBlock x:Name="SubtitleCueHeader" FontWeight="SemiBold" Text="Chưa chọn câu." TextWrapping="Wrap" />
+                                <TextBox x:Name="SubtitleSourceEdit" Header="Lời Trung / nguồn" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="62" IsEnabled="False" TextChanged="SubtitleManualText_TextChanged" />
+                                <TextBox x:Name="SubtitleVietnameseEdit" Header="Lời Việt" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="62" IsEnabled="False" TextChanged="SubtitleManualText_TextChanged" />
+                                <ToggleSwitch x:Name="SubtitleLockToggle" Header="Khóa câu — Vietsub toàn bộ không ghi đè" IsEnabled="False" Toggled="SubtitleLock_Toggled" />
+                                <Grid ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
+                                    <Button x:Name="SubtitleSaveCueButton" Click="SubtitleSaveCue_Click" Content="Lưu câu" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />
+                                    <Button Grid.Column="1" x:Name="SubtitleRetranslateCueButton" Click="SubtitleRetranslateCue_Click" Content="Dịch lại câu" IsEnabled="False" />
+                                </Grid>
+                                <Button x:Name="SubtitleSaveSrtButton" Click="SubtitleSaveSrt_Click" Content="Lưu SRT Việt" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />
+                                <TextBlock x:Name="SubtitleCueEditorStatus" Style="{StaticResource MutedTextStyle}" Text="Chọn SRT để mở danh sách câu." TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
                             </StackPanel>
 
                             <StackPanel x:Name="BlurInspectorPanel" Spacing="10" Visibility="Collapsed">
