@@ -191,7 +191,8 @@ public sealed partial class EditorPage
     {
         PlayerPlayPauseButton.IsEnabled = PlaybackButton.IsEnabled;
         PlayerPlayPauseButton.Content = _playerMode && _player?.PlaybackSession.PlaybackState == MediaPlaybackState.Playing ? "⏸" : "▶";
-        PreviewMuteToggle.Content = PreviewMuteToggle.IsOn ? "🔇" : "🔊";
+        PreviewMuteToggle.OffContent = "🔊";
+        PreviewMuteToggle.OnContent = "🔇";
     }
 
     void ValidateUiShellLayoutForSmoke()
