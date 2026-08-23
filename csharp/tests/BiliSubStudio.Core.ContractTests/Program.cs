@@ -586,7 +586,7 @@ internal static class Program
         var graph = VideoEditorService.BuildFilter(sliced, "C:\\Temp\\preview.ass");
         True(graph.Contains("enable='between(t,0.000,5.000)'", StringComparison.Ordinal), "preview effect time was not shifted to proxy time");
         var ffmpeg = string.Join(' ', (IReadOnlyList<string>)argumentsMethod.Invoke(null,
-            ["input.mp4", "preview.mp4", graph, sliced.Audio, 100d, 12d])!);
+            ["input.mp4", "preview.mp4", graph, sliced.Audio, 100d, 12d, null])!);
         True(ffmpeg.Contains("-ss 100.000 -i input.mp4 -t 12.000", StringComparison.Ordinal), "preview source window drift");
         True(ffmpeg.Contains("-filter_complex", StringComparison.Ordinal) && ffmpeg.Contains("-map [vout]", StringComparison.Ordinal), "preview bypassed render graph");
         True(ffmpeg.Contains("-preset ultrafast", StringComparison.Ordinal) && ffmpeg.Contains("-pix_fmt yuv420p", StringComparison.Ordinal), "preview proxy is not native-player compatible");
