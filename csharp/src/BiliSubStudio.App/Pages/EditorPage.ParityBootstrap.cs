@@ -10,13 +10,12 @@ public sealed partial class EditorPage
     {
         if (!_editorCoreInitialized)
         {
-            EnsureEditorParityInitialized();
-            EnsureImageFeatureInitialized();
-            PreviewPlayer.AreTransportControlsEnabled = false;
+            BindStaticUiShell();
             _editorCoreInitialized = true;
         }
 
-        SetInspectorMode(_inspectorMode);
         RefreshEditorActions();
+        RefreshImageControls();
+        RefreshEditorParityControls();
     }
 }
