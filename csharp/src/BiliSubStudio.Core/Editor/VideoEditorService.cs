@@ -31,6 +31,9 @@ public sealed record EditorPreviewSegment(string Path, double SourceStart, doubl
 
 public sealed class VideoEditorService
 {
+    internal const long RenderSafetyReserveBytes = 512L * 1024 * 1024;
+    internal const int RenderPreflightSourceMultiplier = 2;
+    internal const int RenderDiskCheckIntervalMilliseconds = 3000;
     private readonly ToolManager _tools;
     private readonly ProcessRunner _processes;
     private readonly string _previewDirectory;
@@ -47,10 +50,40 @@ public sealed class VideoEditorService
     {
         var token = job.CancellationToken;
         var input = Path.GetFullPath(request.InputPath.Trim());
-        if (!File.Exists(input) || new FileInfo(input).Length <= 0) throw new FileNotFoundException("Video nguồn không hợp lệ.", input);
+        var inputInfo = new FileInfo(input);
+        if (!inputInfo.Exists || inputInfo.Length <= 0) throw new FileNotFoundException("Video nguồn không hợp lệ.", input);
         if (!HasEdit(request)) throw new ArgumentException("Hãy tạo vùng hiệu ứng, nạp bản Vietsub hoặc thay đổi âm thanh để xuất video.");
         var outputDirectory = string.IsNullOrWhiteSpace(request.OutputDirectory) ? Path.GetDirectoryName(input)! : Path.GetFullPath(request.OutputDirectory.Trim());
         Directory.CreateDirectory(outputDirectory);
+        DriveInfo? outputDrive = null;
+        long? initialFreeSpace = null;
+        try
+        {
+            var outputRoot = Path.GetPathRoot(outputDirectory);
+            if (!string.IsNullOrWhiteSpace(outputRoot))
+            {
+                var candidate = new DriveInfo(outputRoot);
+                if (candidate.IsReady)
+                {
+                    outputDrive = candidate;
+                    initialFreeSpace = candidate.AvailableFreeSpace;
+                }
+            }
+        }
+        catch (ArgumentException) { outputDrive = null; }
+        catch (IOException) { outputDrive = null; }
+        catch (UnauthorizedAccessException) { outputDrive = null; }
+        if (initialFreeSpace is long freeSpace)
+        {
+            var requiredFreeSpace = inputInfo.Length > (long.MaxValue - RenderSafetyReserveBytes) / RenderPreflightSourceMultiplier
+                ? long.MaxValue
+                : inputInfo.Length * RenderPreflightSourceMultiplier + RenderSafetyReserveBytes;
+            if (freeSpace < requiredFreeSpace)
+            {
+                const double gib = 1024d * 1024 * 1024;
+                throw new IOException($"Không đủ dung lượng để xuất video an toàn. Cần ít nhất {requiredFreeSpace / gib:0.0} GB trống, hiện còn {freeSpace / gib:0.0} GB.");
+            }
+        }
         var defaultExtension = Path.GetExtension(input).ToLowerInvariant() is ".mkv" or ".mp4" ? Path.GetExtension(input).ToLowerInvariant() : ".mp4";
         var fileName = string.IsNullOrWhiteSpace(request.FileName)
             ? Path.GetFileNameWithoutExtension(input) + "_edited" + defaultExtension
@@ -83,6 +116,7 @@ public sealed class VideoEditorService
         args.AddRange(["-progress", "pipe:1", "-nostats", temporary]);
         job.Set("rendering", 1, "Đang chuẩn bị xuất video...");
         job.Log($"Video Editor: {request.Regions.Count} vùng, audio={audio.SourceMode}/{audio.SourceGain:0.00}, voice={(voice is null ? "off" : "local")}, output {output}");
+        var nextDiskCheck = Environment.TickCount64;
         try
         {
             var result = await _processes.RunAsync(ffmpeg, args, token, standardOutputLine: line =>
@@ -90,6 +124,19 @@ public sealed class VideoEditorService
                 var split = line.Split('=', 2);
                 if (split.Length != 2 || split[0] is not ("out_time_us" or "out_time_ms") || request.Duration <= 0) return;
                 if (!double.TryParse(split[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var microseconds)) return;
+                if (outputDrive is not null && Environment.TickCount64 >= nextDiskCheck)
+                {
+                    long liveFreeSpace;
+                    try { liveFreeSpace = outputDrive.AvailableFreeSpace; }
+                    catch (IOException error) { throw new IOException("Không còn truy cập được ổ đĩa đang xuất video.", error); }
+                    catch (UnauthorizedAccessException error) { throw new IOException("Không còn quyền truy cập ổ đĩa đang xuất video.", error); }
+                    if (liveFreeSpace < RenderSafetyReserveBytes)
+                    {
+                        const double mib = 1024d * 1024;
+                        throw new IOException($"Đã dừng xuất để bảo vệ ổ đĩa: dung lượng trống chỉ còn {liveFreeSpace / mib:0} MB.");
+                    }
+                    nextDiskCheck = Environment.TickCount64 + RenderDiskCheckIntervalMilliseconds;
+                }
                 var percent = Math.Clamp(2 + microseconds / 1_000_000d / request.Duration * 94, 2, 96);
                 job.Set("rendering", percent, $"Đang xuất video... {(int)percent}%");
             });
