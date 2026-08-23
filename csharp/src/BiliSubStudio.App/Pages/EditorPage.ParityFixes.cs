@@ -17,102 +17,15 @@ public sealed partial class EditorPage
     private CancellationTokenSource? _editorAutoCompositeCancellation;
     private bool _editorAutoCompositeRebuilding;
 
+    // UI SHELL owns all visible controls in XAML. This method now initializes
+    // behavior only; it never inserts or reparents visual elements.
     private void EnsureEditorParityInitialized()
     {
         if (_editorParityInitialized) return;
         _editorParityInitialized = true;
         StrengthBox.Maximum = 40;
         if (StrengthBox.Value > 40) StrengthBox.Value = 40;
-        BuildEditorTimestampControls();
-        BuildEditorOutputControls();
-        BuildEditorLivePreviewControls();
         RefreshEditorParityControls();
-    }
-
-    private void BuildEditorTimestampControls()
-    {
-        if (StartBox.Parent is not Grid timeGrid || timeGrid.Parent is not StackPanel host) return;
-        var row = new Grid { ColumnSpacing = 7 };
-        row.ColumnDefinitions.Add(new ColumnDefinition());
-        row.ColumnDefinitions.Add(new ColumnDefinition());
-        _editorUseCurrentStartButton = new Button
-        {
-            Content = "Lấy vị trí hiện tại → Bắt đầu",
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-        };
-        _editorUseCurrentStartButton.Click += EditorUseCurrentStart_Click;
-        _editorUseCurrentEndButton = new Button
-        {
-            Content = "Lấy vị trí hiện tại → Kết thúc",
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-        };
-        _editorUseCurrentEndButton.Click += EditorUseCurrentEnd_Click;
-        Grid.SetColumn(_editorUseCurrentEndButton, 1);
-        row.Children.Add(_editorUseCurrentStartButton);
-        row.Children.Add(_editorUseCurrentEndButton);
-        var index = host.Children.IndexOf(timeGrid);
-        host.Children.Insert(index < 0 ? host.Children.Count : index + 1, row);
-    }
-
-    private void BuildEditorOutputControls()
-    {
-        if (FileNameBox.Parent is not StackPanel host) return;
-        var label = new TextBlock
-        {
-            Text = "Nơi lưu",
-            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-        };
-        _editorOutputPathText = new TextBlock
-        {
-            Text = _application.Config.OutputDirectory,
-            TextWrapping = TextWrapping.Wrap,
-            Opacity = .72,
-        };
-        var row = new Grid { ColumnSpacing = 7 };
-        row.ColumnDefinitions.Add(new ColumnDefinition());
-        row.ColumnDefinitions.Add(new ColumnDefinition());
-        _editorChooseOutputButton = new Button
-        {
-            Content = "Chọn thư mục",
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-        };
-        _editorChooseOutputButton.Click += EditorChooseOutput_Click;
-        _editorOpenOutputButton = new Button
-        {
-            Content = "Mở thư mục",
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-        };
-        _editorOpenOutputButton.Click += EditorOpenOutput_Click;
-        Grid.SetColumn(_editorOpenOutputButton, 1);
-        row.Children.Add(_editorChooseOutputButton);
-        row.Children.Add(_editorOpenOutputButton);
-        var index = host.Children.IndexOf(FileNameBox);
-        if (index < 0) index = host.Children.Count;
-        host.Children.Insert(index, label);
-        host.Children.Insert(index + 1, _editorOutputPathText);
-        host.Children.Insert(index + 2, row);
-    }
-
-    private void BuildEditorLivePreviewControls()
-    {
-        if (PlaybackButton.Parent is not Grid playbackGrid || playbackGrid.Parent is not StackPanel host) return;
-        var panel = new StackPanel { Spacing = 3 };
-        _editorAutoCompositeToggle = new ToggleSwitch
-        {
-            Header = "Tự cập nhật bản xem trước khi đang phát",
-            IsOn = true,
-        };
-        _editorAutoCompositeToggle.Toggled += EditorAutoComposite_Toggled;
-        panel.Children.Add(_editorAutoCompositeToggle);
-        panel.Children.Add(new TextBlock
-        {
-            Text = "Thay đổi hiệu ứng, âm thanh hoặc ảnh/logo sẽ dùng cùng pipeline preview; không cần xuất video để kiểm tra.",
-            TextWrapping = TextWrapping.Wrap,
-            Opacity = .72,
-            FontSize = 11,
-        });
-        var index = host.Children.IndexOf(playbackGrid);
-        host.Children.Insert(index < 0 ? host.Children.Count : index + 1, panel);
     }
 
     private void EditorUseCurrentStart_Click(object sender, RoutedEventArgs e)
