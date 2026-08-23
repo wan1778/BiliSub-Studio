@@ -260,8 +260,8 @@ for forbidden in (
     require(forbidden not in editor_partials, f"Editor cleanup regression reintroduced {forbidden}")
 require("EnsureEditorParityInitialized();" in editor_partials and "EnsureImageFeatureInitialized();" in editor_partials,
         "Editor must initialize parity and image tools from one lifecycle owner")
-require("InitializeComponent();\n        InitializeEditorCore();" in editor,
-        "Editor constructor must own the single initialization lifecycle")
+require("Loaded += EditorPage_Loaded;" in editor and "private void EditorPage_Loaded" in editor_partials,
+        "Editor must use the actual Loaded event as its single feature initialization lifecycle")
 
 for marker in (
     "SubtitleModeButton", "BlurModeButton", "AudioModeButton", "ExportModeButton",

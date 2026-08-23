@@ -1,17 +1,21 @@
+using Microsoft.UI.Xaml;
+
 namespace BiliSubStudio.App.Pages;
 
 public sealed partial class EditorPage
 {
     private bool _editorCoreInitialized;
 
-    private void InitializeEditorCore()
+    private void EditorPage_Loaded(object sender, RoutedEventArgs e)
     {
-        if (_editorCoreInitialized) return;
-        _editorCoreInitialized = true;
+        if (!_editorCoreInitialized)
+        {
+            EnsureEditorParityInitialized();
+            EnsureImageFeatureInitialized();
+            PreviewPlayer.AreTransportControlsEnabled = false;
+            _editorCoreInitialized = true;
+        }
 
-        EnsureEditorParityInitialized();
-        EnsureImageFeatureInitialized();
-        PreviewPlayer.AreTransportControlsEnabled = false;
         SetInspectorMode(_inspectorMode);
         RefreshEditorActions();
     }

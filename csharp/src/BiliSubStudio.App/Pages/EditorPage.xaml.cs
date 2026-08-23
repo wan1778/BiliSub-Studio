@@ -71,11 +71,9 @@ public sealed partial class EditorPage : Page
         _application = application;
         _picker = picker;
         InitializeComponent();
-        InitializeEditorCore();
+        Loaded += EditorPage_Loaded;
         LayoutUpdated += EditorPage_LayoutUpdated;
         Unloaded += EditorPage_Unloaded;
-        SetInspectorMode(InspectorMode.Subtitle);
-        RefreshEditorActions();
     }
 
     private void InspectorMode_Click(object sender, RoutedEventArgs e)
