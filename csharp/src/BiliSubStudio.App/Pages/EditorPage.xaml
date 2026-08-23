@@ -100,8 +100,13 @@
                                     <Border HorizontalAlignment="Right" Padding="8,3" Background="{ThemeResource AccentSoftBrush}" CornerRadius="9"><TextBlock FontSize="10" Foreground="{ThemeResource AccentPrimaryBrush}" Text="AI local" /></Border>
                                 </Grid>
                                 <TextBlock Style="{StaticResource MutedTextStyle}" Text="Timecode, thứ tự và số block được khóa. Khung phụ đề trên preview luôn có thể kéo/resize khi không chạy tác vụ." TextWrapping="Wrap" />
-                                <Button x:Name="ImportSrtButton" Click="ImportSrt_Click" Content="Chọn SRT tiếng Trung" />
+                                <Grid ColumnSpacing="7">
+                                    <Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
+                                    <Button x:Name="ImportSrtButton" Click="ImportSrt_Click" Content="Chọn SRT tiếng Trung" />
+                                    <Button Grid.Column="1" x:Name="CreateAsrButton" Click="CreateAsr_Click" Content="Tạo SRT từ giọng Trung" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />
+                                </Grid>
                                 <TextBlock x:Name="SrtPathText" Style="{StaticResource MutedTextStyle}" Text="Chưa chọn SRT." TextTrimming="CharacterEllipsis" />
+                                <TextBlock x:Name="AsrStatusText" Style="{StaticResource MutedTextStyle}" Text="Nếu video chưa có SRT, ASR sẽ benchmark GPU/CPU thật rồi mới nhận giọng." TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
                                 <TextBlock x:Name="SrtSummaryText" Style="{StaticResource MutedTextStyle}" Text="Skill: Dịch Trung Tu Tiên (tích hợp, đã khóa SHA-256)." TextWrapping="Wrap" />
                                 <Grid ColumnSpacing="7">
                                     <Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>

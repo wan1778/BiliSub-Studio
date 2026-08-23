@@ -46,6 +46,7 @@ internal static class Program
         ("editor SRT keeps exact blocks order and timecodes", EditorSubtitleDocumentContractAsync),
         ("translation skill bundle is pinned and rejects path traversal", TranslationSkillBundleContractAsync),
         ("local translation manifest and resource gate stay pinned", LocalTranslationManifestContractAsync),
+        ("local Chinese ASR model manifest and source SRT stay pinned", LocalAsrManifestContractAsync),
         ("Chinese OCR validator rejects foreign scripts", ChineseOcrContractAsync),
         ("Paddle GPU wheel follows numeric CUDA compatibility", OcrGpuWheelContractAsync),
         ("OCR Auto benchmarks 1 2 4 8 16 and restores last PASS", OcrAutoBenchmarkContractAsync),
@@ -586,6 +587,8 @@ internal static class Program
                 Regions = [region],
                 Subtitle = subtitleProject,
                 Audio = new EditorAudioSettings("duck", .35),
+                Asr = new EditorAsrProject("complete", "fixture ASR", "536b0662742c02347bc0e980a01041f333bce120",
+                    "cpu", "int8", srt, 1, .75),
             }, CancellationToken.None);
 
             var reopened = await store.LoadOrCreateAsync(video, 1920, 1080, 120, CancellationToken.None);
@@ -597,6 +600,9 @@ internal static class Program
             Equal(.72, reopened.Subtitle.Placement.Y);
             Equal("duck", reopened.Audio!.SourceMode);
             Equal(.35, reopened.Audio.SourceGain);
+            Equal("complete", reopened.Asr!.Status);
+            Equal("cpu", reopened.Asr.Device);
+            Equal(.75, reopened.Asr.ProbeRealtimeFactor);
 
             var projectPath = store.GetProjectPath(video);
             await File.WriteAllTextAsync(projectPath, "{broken-json");
@@ -620,6 +626,9 @@ internal static class Program
         True(rendered.Contains("10\r\n00:00:01,250 --> 00:00:02,900 position:50%", StringComparison.Ordinal), "editor SRT changed original numbering/timing");
         True(rendered.Contains("20\r\n00:00:03,000 --> 00:00:04,500", StringComparison.Ordinal), "editor SRT changed second timing");
         EditorSubtitleDocument.ValidateUnchangedTimeline(cues, translated);
+        var sourceRendered = EditorSubtitleDocument.RenderSource(cues);
+        True(sourceRendered.Contains("你是谁？", StringComparison.Ordinal), "ASR/source SRT renderer lost Chinese text");
+        Equal(2, EditorSubtitleDocument.Parse(sourceRendered).Count);
         return Task.CompletedTask;
     }
 
@@ -667,6 +676,35 @@ internal static class Program
         Equal(99, (int)recommend.Invoke(null, [safe])!);
         var parsed = (JsonElement)extract.Invoke(null, ["echo prompt {\"id\":\"source\"}\nanswer: {\"bible\":\"Thanh Vân Tông\"}\n[end]"])!;
         Equal("Thanh Vân Tông", parsed.GetProperty("bible").GetString());
+        return Task.CompletedTask;
+    }
+
+    private static Task LocalAsrManifestContractAsync()
+    {
+        var installer = typeof(LocalSubtitleTranslationService).Assembly.GetType("BiliSubStudio.Core.Editor.LocalAsrInstaller")
+            ?? throw new InvalidOperationException("missing LocalAsrInstaller type");
+        static object? Constant(Type type, string name) => type.GetField(name, BindingFlags.Static | BindingFlags.NonPublic)?.GetRawConstantValue();
+        Equal("1.2.1", Constant(installer, "FasterWhisperVersion")?.ToString());
+        Equal("4.8.1", Constant(installer, "CTranslate2Version")?.ToString());
+        True((Constant(installer, "FasterWhisperWheel")?.ToString() ?? string.Empty).EndsWith("#sha256=79a66ad50688c0b794dd501dc340a736992a6342f7f95e5811be60b5224a26a7", StringComparison.Ordinal),
+            "faster-whisper wheel hash drift");
+        True((Constant(installer, "CTranslate2Wheel")?.ToString() ?? string.Empty).EndsWith("#sha256=49f96e861b57301f0b76a082109bde2cac8204a6b4fedc870883008271e82251", StringComparison.Ordinal),
+            "CTranslate2 Windows wheel hash drift");
+        Equal("536b0662742c02347bc0e980a01041f333bce120", Constant(installer, "ModelRevision")?.ToString());
+        var files = (Array?)(installer.GetField("ModelFiles", BindingFlags.Static | BindingFlags.NonPublic)?.GetValue(null))
+            ?? throw new InvalidOperationException("missing ASR model file manifest");
+        Equal(4, files.Length);
+        long total = 0;
+        var hashes = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var file in files)
+        {
+            var type = file!.GetType();
+            total += (long)(type.GetProperty("Size")?.GetValue(file) ?? 0L);
+            hashes.Add(type.GetProperty("Sha256")?.GetValue(file)?.ToString() ?? string.Empty);
+        }
+        Equal(486_212_372L, total);
+        True(hashes.Contains("3e305921506d8872816023e4c273e75d2419fb89b24da97b4fe7bce14170d671"), "ASR model.bin SHA-256 drift");
+        Equal(4, EditorProjectStore.CurrentSchema);
         return Task.CompletedTask;
     }
 

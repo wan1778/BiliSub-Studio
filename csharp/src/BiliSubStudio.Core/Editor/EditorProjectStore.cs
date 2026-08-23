@@ -23,6 +23,16 @@ public sealed record EditorAudioSettings(string SourceMode, double SourceGain)
     public static EditorAudioSettings Default { get; } = new("keep", 1);
 }
 
+public sealed record EditorAsrProject(
+    string Status,
+    string ModelName,
+    string ModelRevision,
+    string Device,
+    string ComputeType,
+    string OutputPath,
+    int CueCount,
+    double ProbeRealtimeFactor);
+
 public sealed record EditorSubtitleProject(
     string SourcePath,
     long SourceSize,
@@ -43,11 +53,12 @@ public sealed record EditorProject(
     IReadOnlyList<EditRegion> Regions,
     EditorSubtitleProject? Subtitle,
     DateTimeOffset UpdatedUtc,
-    EditorAudioSettings? Audio = null);
+    EditorAudioSettings? Audio = null,
+    EditorAsrProject? Asr = null);
 
 public sealed class EditorProjectStore
 {
-    public const int CurrentSchema = 3;
+    public const int CurrentSchema = 4;
     private const long MaxProjectBytes = 64L * 1024 * 1024;
     private readonly string _directory;
     private readonly SemaphoreSlim _gate = new(1, 1);
@@ -84,7 +95,7 @@ public sealed class EditorProjectStore
                 await using var stream = new FileStream(projectPath, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
                 var loaded = await JsonSerializer.DeserializeAsync<EditorProject>(stream, _json, cancellationToken)
                     ?? throw new InvalidDataException("Project Editor rỗng.");
-                if (loaded.Schema is not (1 or 2 or CurrentSchema) || !string.Equals(loaded.Id, id, StringComparison.Ordinal))
+                if (loaded.Schema is not (1 or 2 or 3 or CurrentSchema) || !string.Equals(loaded.Id, id, StringComparison.Ordinal))
                     throw new InvalidDataException("Project Editor không đúng phiên bản hoặc nguồn.");
                 var regions = NormalizeRegions(loaded.Regions);
                 return loaded with
@@ -94,6 +105,7 @@ public sealed class EditorProjectStore
                     Regions = regions,
                     Subtitle = NormalizeSubtitle(loaded.Subtitle),
                     Audio = NormalizeAudio(loaded.Audio),
+                    Asr = NormalizeAsr(loaded.Asr),
                 };
             }
             catch (OperationCanceledException) { throw; }
@@ -128,6 +140,7 @@ public sealed class EditorProjectStore
             Regions = NormalizeRegions(project.Regions),
             Subtitle = NormalizeSubtitle(project.Subtitle),
             Audio = NormalizeAudio(project.Audio),
+            Asr = NormalizeAsr(project.Asr),
             UpdatedUtc = DateTimeOffset.UtcNow,
         };
 
@@ -246,6 +259,30 @@ public sealed class EditorProjectStore
             "keep" => new EditorAudioSettings("keep", 1),
             "mute" => new EditorAudioSettings("mute", 0),
             _ => new EditorAudioSettings("duck", Math.Clamp(audio.SourceGain, .05, .95)),
+        };
+    }
+
+    private static EditorAsrProject? NormalizeAsr(EditorAsrProject? asr)
+    {
+        if (asr is null) return null;
+        var status = asr.Status?.Trim().ToLowerInvariant();
+        var device = asr.Device?.Trim().ToLowerInvariant();
+        var compute = asr.ComputeType?.Trim().ToLowerInvariant();
+        if (status is not ("complete" or "partial") || device is not ("cpu" or "cuda") || string.IsNullOrWhiteSpace(compute)
+            || string.IsNullOrWhiteSpace(asr.ModelName) || asr.ModelRevision?.Length != 40 || asr.ModelRevision.Any(x => !Uri.IsHexDigit(x))
+            || asr.CueCount is < 0 or > EditorSubtitleDocument.MaxCues || !double.IsFinite(asr.ProbeRealtimeFactor) || asr.ProbeRealtimeFactor <= 0)
+            throw new InvalidDataException("Project Editor chứa trạng thái ASR không hợp lệ.");
+        var output = string.IsNullOrWhiteSpace(asr.OutputPath) ? string.Empty : Path.GetFullPath(asr.OutputPath.Trim());
+        if (status == "complete" && (output.Length == 0 || !File.Exists(output)))
+            throw new InvalidDataException("Project Editor báo ASR hoàn tất nhưng thiếu SRT nguồn.");
+        return asr with
+        {
+            Status = status,
+            ModelName = asr.ModelName.Trim(),
+            ModelRevision = asr.ModelRevision.ToLowerInvariant(),
+            Device = device,
+            ComputeType = compute,
+            OutputPath = output,
         };
     }
 

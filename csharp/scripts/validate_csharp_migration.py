@@ -233,7 +233,7 @@ for marker in ("available subtitle > Bilibili AI subtitle", "normal metadata emp
     require(marker in subtitle_fixture, f"subtitle regression fixture missing {marker}")
 
 composition = read(CSHARP / "src/BiliSubStudio.Core/Application/BiliSubApplication.cs")
-for marker in ("PrepareShutdownAsync", "PauseJobAsync", "WindowsProcessContainment", "StartOcrScan", "StartEditor", "StartSubtitle", "StartVideo"):
+for marker in ("PrepareShutdownAsync", "PauseJobAsync", "WindowsProcessContainment", "StartOcrScan", "StartEditor", "StartEditorAsr", "StartSubtitle", "StartVideo"):
     require(marker in composition, f"application composition root missing {marker}")
 
 worker_client = read(CSHARP / "src/BiliSubStudio.Core/Ocr/OcrWorkerClient.cs")
@@ -260,6 +260,27 @@ require("ImportSrtButton.IsEnabled = idle && hasMedia" not in editor,
         "Editor SRT picker regressed to requiring a selected video")
 require("PrepareAiButton.IsEnabled = idle && hasMedia" not in editor,
         "Editor AI preparation regressed to requiring a selected video")
+for marker in ("CreateAsrButton", "CreateAsr_Click", "CreateAsrButton.IsEnabled = idle && hasMedia;", "PollAsrJobAsync", "EditorAsrProject"):
+    require(marker in editor, f"Editor video-only ASR UI/state contract missing {marker}")
+
+asr_installer = read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalAsrInstaller.cs")
+asr_service = read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalAsrService.cs")
+asr_worker = read(ROOT / "internal/asr/worker.py")
+for marker in (
+    'FasterWhisperVersion = "1.2.1"', 'CTranslate2Version = "4.8.1"',
+    "79a66ad50688c0b794dd501dc340a736992a6342f7f95e5811be60b5224a26a7",
+    "49f96e861b57301f0b76a082109bde2cac8204a6b4fedc870883008271e82251",
+    'ModelRevision = "536b0662742c02347bc0e980a01041f333bce120"',
+    "3e305921506d8872816023e4c273e75d2419fb89b24da97b4fe7bce14170d671",
+    "EnsurePrivatePythonAsync", "SHA-256 model ASR", "HF_HUB_OFFLINE",
+):
+    require(marker in asr_installer, f"ASR pinned installer contract missing {marker}")
+for marker in ("SelectRuntimeAsync", "ProbeRealtimeFactor", "asr-probe-gpu", "asr-probe-cpu", "SaveCheckpointAsync", "RunStreamingAsync", "OwnedProcessGroup"):
+    require(marker in asr_service, f"ASR benchmark/checkpoint/process contract missing {marker}")
+for marker in ('local_files_only=True', 'language="zh"', "word_timestamps=True", "vad_filter=True", '"event": "segment"'):
+    require(marker in asr_worker, f"ASR worker offline/Chinese/timestamp contract missing {marker}")
+require("WhisperModel(" in asr_worker and "str(model_dir)" in asr_worker,
+        "ASR worker must load only the verified local model directory")
 
 main_xaml = read(CSHARP / "src/BiliSubStudio.App/MainWindow.xaml")
 main_code = read(CSHARP / "src/BiliSubStudio.App/MainWindow.xaml.cs")

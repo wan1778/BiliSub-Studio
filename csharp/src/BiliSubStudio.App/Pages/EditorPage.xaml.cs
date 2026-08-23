@@ -35,6 +35,7 @@ public sealed partial class EditorPage : Page
     private EditRegion? _draftRegion;
     private string? _jobId;
     private string? _translationJobId;
+    private string? _asrJobId;
     private MediaPlayer? _player;
     private bool _playerMode;
     private bool _syncingTimeline;
@@ -54,6 +55,7 @@ public sealed partial class EditorPage : Page
     private double _lastOverlayWidth = -1;
     private double _lastOverlayHeight = -1;
     private double _lastTimelineWidth = -1;
+    private bool EditorBusy => _jobId is not null || _translationJobId is not null || _asrJobId is not null;
 
     public EditorPage(BiliSubApplication application, IFilePickerService picker)
     {
@@ -91,6 +93,8 @@ public sealed partial class EditorPage : Page
     {
         if (!ImportSrtButton.IsEnabled || !PrepareAiButton.IsEnabled)
             throw new InvalidOperationException("Editor phải cho phép chọn SRT và chuẩn bị AI trước khi chọn video.");
+        if (CreateAsrButton.IsEnabled)
+            throw new InvalidOperationException("Editor không được cho chạy ASR khi chưa có video nguồn.");
         foreach (var mode in Enum.GetValues<InspectorMode>())
         {
             SetInspectorMode(mode);
@@ -134,6 +138,9 @@ public sealed partial class EditorPage : Page
                 TranslationStatusText.Text = "Đã gắn SRT đã chọn vào video; có thể đặt khung và Vietsub.";
             }
             else await RestoreSubtitleAsync(_project.Subtitle);
+            AsrStatusText.Text = _project.Asr is { Status: "complete" } asr
+                ? $"SRT được tạo bằng {asr.ModelName} · {asr.Device.ToUpperInvariant()}/{asr.ComputeType} · benchmark {asr.ProbeRealtimeFactor:0.00}× thời gian thực."
+                : "Nếu video chưa có SRT, ASR sẽ benchmark GPU/CPU thật rồi mới nhận giọng.";
             _draftRegion = null;
             Timeline.Maximum = Math.Max(0.1, _media.Duration);
             Timeline.Value = 0;
@@ -217,8 +224,13 @@ public sealed partial class EditorPage : Page
             var source = await _application.LoadEditorSubtitleAsync(path, CancellationToken.None);
             _subtitleSource = source;
             _subtitlePlacement = EditorSubtitlePlacement.Default;
-            if (_project is not null) AttachSubtitleToProject(string.Empty);
+            if (_project is not null)
+            {
+                _project = _project with { Asr = null };
+                AttachSubtitleToProject(string.Empty);
+            }
             SrtPathText.Text = source.Path;
+            AsrStatusText.Text = "Đang dùng SRT đã chọn; ASR giọng nói được bỏ qua.";
             TranslationProgress.Value = 0;
             TranslationStatusText.Text = _media is null
                 ? "Đã khóa timecode và thứ tự. Có thể chuẩn bị AI ngay; hãy chọn video để đặt khung và Vietsub."
@@ -267,6 +279,66 @@ public sealed partial class EditorPage : Page
         }
     }
 
+    private async void CreateAsr_Click(object sender, RoutedEventArgs e)
+    {
+        if (_asrJobId is not null || _project is null || _media is null || string.IsNullOrWhiteSpace(_path)) return;
+        try
+        {
+            _asrJobId = _application.StartEditorAsr(new EditorAsrRequest(_project.Id, _path, _media.Duration));
+            TranslationProgress.Value = 0;
+            AsrStatusText.Text = "Đang chuẩn bị và benchmark ASR local; chỉ bắt đầu quét sau khi khóa cấu hình PASS.";
+            RefreshEditorActions();
+            await PollAsrJobAsync();
+        }
+        catch (Exception error)
+        {
+            _asrJobId = null;
+            AsrStatusText.Text = error.Message;
+            RefreshEditorActions();
+        }
+    }
+
+    private async Task PollAsrJobAsync()
+    {
+        while (_asrJobId is not null)
+        {
+            var snapshot = _application.Jobs.GetSnapshot(_asrJobId);
+            TranslationProgress.Value = snapshot.Progress;
+            AsrStatusText.Text = snapshot.Message;
+            if (snapshot.Done)
+            {
+                if (snapshot.Result is EditorAsrResult result && _project is not null)
+                {
+                    _subtitleSource = result.Source;
+                    _subtitlePlacement = EditorSubtitlePlacement.Default;
+                    AttachSubtitleToProject(string.Empty);
+                    _project = _project with
+                    {
+                        Asr = new EditorAsrProject(
+                            "complete",
+                            result.ModelName,
+                            result.ModelRevision,
+                            result.Device,
+                            result.ComputeType,
+                            result.Source.Path,
+                            result.Source.Cues.Count,
+                            result.ProbeRealtimeFactor),
+                    };
+                    SrtPathText.Text = result.Source.Path;
+                    UpdateSubtitleSummary();
+                    TranslationStatusText.Text = "Đã tạo SRT Trung từ giọng nói; bây giờ có thể chuẩn bị AI và Vietsub.";
+                    AsrStatusText.Text = $"ASR hoàn tất · {result.Device.ToUpperInvariant()}/{result.ComputeType} · benchmark {result.ProbeRealtimeFactor:0.00}× · khôi phục {result.RestoredCueCount} câu checkpoint.";
+                    RenderOverlays();
+                    await SaveProjectNowAsync();
+                }
+                _asrJobId = null;
+                RefreshEditorActions();
+                break;
+            }
+            await Task.Delay(350);
+        }
+    }
+
     private async void Translate_Click(object sender, RoutedEventArgs e)
     {
         if (_translationJobId is not null || _project is null || _subtitleSource is null) return;
@@ -291,9 +363,13 @@ public sealed partial class EditorPage : Page
 
     private void CancelTranslation_Click(object sender, RoutedEventArgs e)
     {
-        if (_translationJobId is null) return;
-        _application.CancelJob(_translationJobId);
-        TranslationStatusText.Text = "Đang dừng AI an toàn; các batch đã xong vẫn nằm trong checkpoint...";
+        var job = _translationJobId ?? _asrJobId;
+        if (job is null) return;
+        _application.CancelJob(job);
+        if (_asrJobId is not null)
+            AsrStatusText.Text = "Đang dừng ASR, thu hồi Python/FFmpeg; các câu đã xong vẫn nằm trong checkpoint...";
+        else
+            TranslationStatusText.Text = "Đang dừng AI an toàn; các batch đã xong vẫn nằm trong checkpoint...";
     }
 
     private async Task PollTranslationJobAsync(bool preparing)
@@ -436,7 +512,7 @@ public sealed partial class EditorPage : Page
     private void WholeToggle_Toggled(object sender, RoutedEventArgs e)
     {
         if (!IsLoaded || _syncingInputs) return;
-        StartBox.IsEnabled = EndBox.IsEnabled = !WholeToggle.IsOn && _jobId is null;
+        StartBox.IsEnabled = EndBox.IsEnabled = !WholeToggle.IsOn && !EditorBusy;
         if (!WholeToggle.IsOn && _media is not null && _document.Selected is null)
         {
             _syncingInputs = true;
@@ -700,7 +776,7 @@ public sealed partial class EditorPage : Page
 
     private void Overlay_PointerPressed(object sender, PointerRoutedEventArgs e)
     {
-        if (_media is null || _jobId is not null || _translationJobId is not null || _playerMode) return;
+        if (_media is null || EditorBusy || _playerMode) return;
         var point = e.GetCurrentPoint(Overlay).Position;
         if (!TryNormalize(point, out var normalized)) return;
         if (_inspectorMode == InspectorMode.Subtitle)
@@ -841,7 +917,7 @@ public sealed partial class EditorPage : Page
 
     private void Page_KeyDown(object sender, KeyRoutedEventArgs e)
     {
-        if (_inspectorMode != InspectorMode.Blur || e.Key is not (VirtualKey.Delete or VirtualKey.Back) || _jobId is not null || _document.Selected is null) return;
+        if (_inspectorMode != InspectorMode.Blur || e.Key is not (VirtualKey.Delete or VirtualKey.Back) || EditorBusy || _document.Selected is null) return;
         if (FocusManager.GetFocusedElement(XamlRoot) is TextBox) return;
         if (_document.RemoveSelected())
         {
@@ -917,7 +993,7 @@ public sealed partial class EditorPage : Page
         var top = video.Y + placement.Y * video.Height;
         var width = Math.Max(1, placement.Width * video.Width);
         var height = Math.Max(1, placement.Height * video.Height);
-        var active = _inspectorMode == InspectorMode.Subtitle && _translationJobId is null && _jobId is null && !_playerMode;
+        var active = _inspectorMode == InspectorMode.Subtitle && !EditorBusy && !_playerMode;
         var stroke = active ? ColorHelper.FromArgb(255, 255, 194, 72) : ColorHelper.FromArgb(210, 170, 170, 170);
         var rectangle = new Rectangle
         {
@@ -1234,7 +1310,7 @@ public sealed partial class EditorPage : Page
             WholeToggle.IsOn = region.WholeVideo;
             StartBox.Value = region.Start;
             EndBox.Value = region.End;
-            StartBox.IsEnabled = EndBox.IsEnabled = !region.WholeVideo && _jobId is null;
+            StartBox.IsEnabled = EndBox.IsEnabled = !region.WholeVideo && !EditorBusy;
             RegionValidationText.Text = "Vùng đang chọn có thể kéo, resize hoặc sửa bằng các ô số.";
         }
         finally { _syncingInputs = false; }
@@ -1416,7 +1492,7 @@ public sealed partial class EditorPage : Page
 
     private void RefreshEditorActions()
     {
-        var idle = _jobId is null && _translationJobId is null;
+        var idle = !EditorBusy;
         var hasMedia = _media is not null;
         OpenVideoButton.IsEnabled = idle;
         Overlay.IsHitTestVisible = idle && hasMedia && !_playerMode &&
@@ -1439,15 +1515,16 @@ public sealed partial class EditorPage : Page
         StartBox.IsEnabled = EndBox.IsEnabled = idle && hasMedia && !WholeToggle.IsOn;
         FileNameBox.IsEnabled = idle;
         ImportSrtButton.IsEnabled = idle;
+        CreateAsrButton.IsEnabled = idle && hasMedia;
         PrepareAiButton.IsEnabled = idle;
         var aiReady = false;
         try { aiReady = _application.LocalTranslationStatus.RuntimeReady && _application.LocalTranslationStatus.ModelReady; }
         catch { }
         TranslateButton.IsEnabled = idle && _project is not null && hasMedia && _subtitleSource is not null && aiReady;
-        CancelTranslationButton.IsEnabled = _translationJobId is not null;
+        CancelTranslationButton.IsEnabled = _translationJobId is not null || _asrJobId is not null;
         OpenTranslatedSrtButton.IsEnabled = idle && File.Exists(_project?.Subtitle?.OutputPath);
-        PreviewMuteToggle.IsEnabled = _player is not null && _jobId is null;
-        PreviewVolumeSlider.IsEnabled = _player is not null && _jobId is null;
+        PreviewMuteToggle.IsEnabled = _player is not null && idle;
+        PreviewVolumeSlider.IsEnabled = _player is not null && idle;
         SourceAudioModeBox.IsEnabled = idle && hasMedia;
         SourceAudioGainSlider.IsEnabled = idle && hasMedia && _audioSettings.SourceMode == "duck";
     }

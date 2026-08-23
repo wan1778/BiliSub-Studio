@@ -94,6 +94,23 @@ public static partial class EditorSubtitleDocument
         return output.ToString().Replace("\r\n", "\n", StringComparison.Ordinal).Replace("\n", "\r\n", StringComparison.Ordinal);
     }
 
+    public static string RenderSource(IReadOnlyList<EditorSubtitleCue> cues)
+    {
+        ArgumentNullException.ThrowIfNull(cues);
+        if (cues.Count == 0) throw new InvalidDataException("Chưa có cue nguồn để xuất SRT.");
+        var output = new StringBuilder(cues.Count * 96);
+        foreach (var cue in cues)
+        {
+            var source = cue.SourceText.Trim();
+            if (source.Length == 0) throw new InvalidDataException($"Cue {cue.Number} không có lời thoại nguồn.");
+            output.AppendLine(cue.Number);
+            output.AppendLine(cue.Timing);
+            output.AppendLine(source);
+            output.AppendLine();
+        }
+        return output.ToString().Replace("\r\n", "\n", StringComparison.Ordinal).Replace("\n", "\r\n", StringComparison.Ordinal);
+    }
+
     public static void ValidateUnchangedTimeline(IReadOnlyList<EditorSubtitleCue> source, IReadOnlyList<EditorSubtitleCue> translated)
     {
         if (source.Count != translated.Count) throw new InvalidDataException("Model làm thay đổi số block SRT.");

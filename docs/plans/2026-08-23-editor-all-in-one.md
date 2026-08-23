@@ -343,15 +343,19 @@ Before atomic promotion, Core verifies through ffprobe and bounded decode checks
 - Whole-source terminology/character analysis, overlapping cue batches, strict JSON validation and atomic checkpoint/resume.
 - Separate Vietnamese SRT output plus real ASS/FFmpeg hardsub using the selected placement.
 
-The fixed preview now uses a compact Subtitle/Blur/Audio/Export icon rail. SRT selection and AI preparation no longer depend on choosing a video first; a preselected validated SRT is attached when the video project opens. Subtitle and Blur modes own separate pointer interaction so their rectangles cannot steal each other's gestures. Schema-3 projects persist source-audio keep/duck/mute and render maps it to an exact FFmpeg policy.
+The fixed preview now uses a compact Subtitle/Blur/Audio/Export icon rail. SRT selection and AI preparation no longer depend on choosing a video first; a preselected validated SRT is attached when the video project opens. Subtitle and Blur modes own separate pointer interaction so their rectangles cannot steal each other's gestures. Schema-4 projects persist ASR provenance plus source-audio keep/duck/mute and render maps the audio state to an exact FFmpeg policy.
 
 The previous incremental M2 field-test proposal is retained as an automated/regression acceptance target, but the owner requested one consolidated field test after the full Editor branch instead of testing each intermediate candidate.
 
 ### M3 - Video-only Chinese ASR
 
-- app-managed faster-whisper runtime/model manager.
-- audio extraction, word timestamps, VAD, cue segmentation, checkpoint/resume.
-- CPU/GPU preflight and long-video reconciliation.
+- Implemented app-managed faster-whisper 1.2.1/CTranslate2 4.8.1 in a separate private venv that reuses the Windows error-448-safe exact-patch Python bootstrap.
+- Implemented immutable multilingual small-model revision with exact per-file size/SHA-256, resumable download and offline-only loading.
+- Implemented real-video 16 kHz audio extraction, Chinese transcription, word timestamps, VAD, strict source-SRT output and automatic handoff to the existing Vietsub path.
+- Implemented pre-run full GPU benchmark with live VRAM gate and measured CPU/int8 fallback; device/compute/threads are locked before the real scan.
+- Implemented atomic per-segment checkpoint/resume with overlap-tail reconciliation and owned Python/FFmpeg cleanup on cancel.
+
+M3 remains build-verified rather than field-PASS until the owner performs the single consolidated Editor test after later milestones.
 
 ### M4 - Speaker analysis and TTS
 

@@ -7,6 +7,44 @@ public sealed record ProcessResult(int ExitCode, string StandardOutput, string S
 
 public sealed class ProcessRunner
 {
+    public async Task<ProcessResult> RunStreamingAsync(
+        string executable,
+        IEnumerable<string> arguments,
+        CancellationToken cancellationToken,
+        Func<string, CancellationToken, ValueTask> standardOutputLine,
+        IReadOnlyDictionary<string, string?>? environment = null,
+        OwnedProcessGroup? owner = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(executable);
+        ArgumentNullException.ThrowIfNull(standardOutputLine);
+        var start = BuildStartInfo(executable, arguments, environment);
+        using var process = new Process { StartInfo = start };
+        if (!process.Start())
+        {
+            throw new InvalidOperationException($"Không khởi động được {Path.GetFileName(executable)}.");
+        }
+        using var ownership = owner?.Track(process);
+        using var registration = cancellationToken.Register(() => Kill(process));
+        var stderrTask = process.StandardError.ReadToEndAsync(CancellationToken.None);
+        try
+        {
+            var stdout = new StringBuilder();
+            while (await process.StandardOutput.ReadLineAsync(cancellationToken) is { } line)
+            {
+                stdout.AppendLine(line);
+                await standardOutputLine(line, cancellationToken);
+            }
+            await process.WaitForExitAsync(cancellationToken);
+            var stderr = await stderrTask;
+            return new ProcessResult(process.ExitCode, stdout.ToString(), stderr);
+        }
+        finally
+        {
+            Kill(process);
+            await ReapAsync(process, stderrTask);
+        }
+    }
+
     public async Task<ProcessResult> RunAsync(
         string executable,
         IEnumerable<string> arguments,
@@ -16,27 +54,7 @@ public sealed class ProcessRunner
         OwnedProcessGroup? owner = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(executable);
-        var start = new ProcessStartInfo(executable)
-        {
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            WindowStyle = ProcessWindowStyle.Hidden,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            StandardOutputEncoding = Encoding.UTF8,
-            StandardErrorEncoding = Encoding.UTF8,
-        };
-        foreach (var argument in arguments)
-        {
-            start.ArgumentList.Add(argument);
-        }
-        if (environment is not null)
-        {
-            foreach (var pair in environment)
-            {
-                start.Environment[pair.Key] = pair.Value;
-            }
-        }
+        var start = BuildStartInfo(executable, arguments, environment);
 
         using var process = new Process { StartInfo = start };
         if (!process.Start())
@@ -68,6 +86,29 @@ public sealed class ProcessRunner
             Kill(process);
             await ReapAsync(process, stderrTask);
         }
+    }
+
+    private static ProcessStartInfo BuildStartInfo(
+        string executable,
+        IEnumerable<string> arguments,
+        IReadOnlyDictionary<string, string?>? environment)
+    {
+        var start = new ProcessStartInfo(executable)
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            WindowStyle = ProcessWindowStyle.Hidden,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8,
+        };
+        foreach (var argument in arguments) start.ArgumentList.Add(argument);
+        if (environment is not null)
+        {
+            foreach (var pair in environment) start.Environment[pair.Key] = pair.Value;
+        }
+        return start;
     }
 
     public async Task<byte[]> CaptureBytesAsync(

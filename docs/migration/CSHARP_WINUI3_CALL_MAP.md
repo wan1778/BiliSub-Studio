@@ -290,7 +290,7 @@ EditorPage.Pick_Click
   -> MediaPreviewService.ProbeAsync
   -> EditorProjectStore.LoadOrCreateAsync
        -> Data/Projects/<source-path-sha256-prefix>.json
-       -> schema-3/source validation; schema 1/2 migrate with default audio policy
+       -> schema-4/source validation; schema 1/2/3 migrate with default ASR/audio state
        -> corrupt project quarantine
   -> attach an SRT selected before the video, without discarding its validated cue document
   -> restore source-audio mode/gain
@@ -336,6 +336,33 @@ EditorPage.PrepareAi_Click
        -> resume pinned Qwen3-8B Q4_K_M GGUF download (~5.03 GB)
        -> exact size + SHA-256 -> verified model stamp
 
+EditorPage.CreateAsr_Click
+  -> requires a video-backed Editor project; imported SRT path remains independent
+  -> BiliSubApplication.StartEditorAsr
+  -> JobManager.Create(kind=editor-asr, cleanupAwareCancel=true)
+  -> LocalAsrInstaller.PrepareAsync
+       -> reuse exact-patch Python 3.12 under the Windows error-448-safe LocalAppData bootstrap
+       -> separate Tools/ASR private venv
+       -> pin faster-whisper 1.2.1 + CTranslate2 4.8.1
+       -> immutable Systran/faster-whisper-small revision
+       -> exact size/SHA-256 for config/model/tokenizer/vocabulary; offline-only worker load
+  -> LocalAsrService.SelectRuntimeAsync
+       -> extract a bounded real 16 kHz mono sample with app-owned FFmpeg
+       -> live RAM/VRAM gate -> complete CUDA probe
+       -> CUDA/VRAM/cuDNN failure or poor throughput -> complete CPU/int8 probe
+       -> lock measured device/compute/threads before full transcription
+  -> full audio extraction from the safe checkpoint frontier
+  -> internal/asr/worker.py -> Chinese + VAD + word timestamps -> framed JSON segment events
+  -> atomic cue checkpoint under Data/Projects/ASR after every accepted segment
+  -> strict source SRT render/load -> attach to EditorSubtitleProject
+  -> schema-4 EditorAsrProject records model revision, device, compute and measured realtime factor
+
+EditorPage.CancelTranslation_Click while ASR owns the subtitle job
+  -> AppJob.Cancel remains `cancelling`
+  -> ProcessRunner/OwnedProcessGroup kill and reap ASR Python + FFmpeg trees
+  -> temporary WAV tree removed; completed cue checkpoint preserved
+  -> rerun overlaps/reconciles the tail and resumes, never silently starts over
+
 EditorPage.Translate_Click
   -> BiliSubApplication.StartEditorTranslation
   -> JobManager.Create(kind=translation, cleanupAwareCancel=true)
@@ -365,7 +392,7 @@ EditorPage processed preview
 EditorPage.Audio inspector
   -> PreviewMute/PreviewVolume -> native MediaPlayer only
   -> source output mode keep / duck / mute
-  -> EditorAudioSettings normalized and autosaved in schema-3 project
+  -> EditorAudioSettings normalized and autosaved in schema-4 project (schema-3 migration retained)
   -> VideoEditorService.BuildAudioArguments
        keep -> optional source-audio map; MKV may stream-copy
        duck -> exact volume filter + AAC encode

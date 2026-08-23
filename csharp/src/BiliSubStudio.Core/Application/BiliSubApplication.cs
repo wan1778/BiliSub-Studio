@@ -26,6 +26,7 @@ public sealed class BiliSubApplication : IAsyncDisposable
     private readonly VideoEditorService _editor;
     private readonly EditorProjectStore _editorProjects;
     private readonly LocalSubtitleTranslationService _translation;
+    private readonly LocalAsrService _asr;
     private readonly WindowsProcessContainment _containment;
 
     public BiliSubApplication(AppPaths paths)
@@ -60,8 +61,10 @@ public sealed class BiliSubApplication : IAsyncDisposable
             Processes,
             Hardware,
             Path.Combine(AppContext.BaseDirectory, "Assets", "Translation", "dich-trung-tu-tien.zip"));
-        _ocr = new OcrManager(paths, Hardware, new OcrInstaller(paths, _http, Processes));
+        var pythonBootstrap = new OcrInstaller(paths, _http, Processes);
+        _ocr = new OcrManager(paths, Hardware, pythonBootstrap);
         _ocrScanner = new OcrScanner(Tools, Processes, _ocr, Hardware, new OcrCheckpointStore(paths));
+        _asr = new LocalAsrService(paths, new LocalAsrInstaller(paths, pythonBootstrap, Processes), Tools, Processes, Hardware);
     }
 
     public AppPaths Paths { get; }
@@ -79,6 +82,7 @@ public sealed class BiliSubApplication : IAsyncDisposable
     public AppConfig Config => _configStore.Snapshot;
     public OcrStatus OcrStatus => _ocr.Status;
     public LocalTranslationStatus LocalTranslationStatus => _translation.Status;
+    public LocalAsrStatus LocalAsrStatus => _asr.Status;
     public PreparedUpdate? PendingUpdate { get; private set; }
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
@@ -479,6 +483,18 @@ public sealed class BiliSubApplication : IAsyncDisposable
         return job.Id;
     }
 
+    public string StartEditorAsr(EditorAsrRequest request)
+    {
+        if (Jobs.HasActiveJobs) throw new InvalidOperationException("Hãy hoàn tất hoặc hủy tác vụ Media/OCR/Editor đang chạy trước khi tạo SRT bằng ASR.");
+        var job = Jobs.Create("editor-asr", cleanupAwareCancel: true);
+        _ = RunJobAsync(job, async () =>
+        {
+            var result = await _asr.TranscribeAsync(job, request);
+            job.Finish(null, "Đã tạo SRT tiếng Trung từ giọng nói: " + result.Source.Path, result);
+        });
+        return job.Id;
+    }
+
     public Task<byte[]> GetEditorPreviewFrameJpegAsync(
         string path,
         double seconds,
@@ -646,6 +662,7 @@ public sealed class BiliSubApplication : IAsyncDisposable
         await _ocr.DisposeAsync();
         await Sessions.DeleteTemporaryAsync();
         Jobs.Dispose();
+        _asr.Dispose();
         _translation.Dispose();
         _configStore.Dispose();
         _http.Dispose();
