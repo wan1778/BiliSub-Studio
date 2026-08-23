@@ -1,10 +1,19 @@
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Controls;
+using Windows.Media.Playback;
 
 namespace BiliSubStudio.App.Pages;
 
 public sealed partial class EditorPage
 {
     private bool _editorCoreInitialized;
+
+    // These are compatibility objects only. They are not attached to the visual tree.
+    // Existing core logic can continue to own preview/cache state while the new Player
+    // exposes only its compact in-preview controls.
+    private readonly Button PlaybackButton = new() { Content = "Xem bản chỉnh" };
+    private readonly Button RefreshFrameButton = new();
+    private readonly Canvas RegionTimelineCanvas = new();
 
     private void EditorPage_Loaded(object sender, RoutedEventArgs e)
     {
@@ -17,5 +26,162 @@ public sealed partial class EditorPage
         RefreshEditorActions();
         RefreshImageControls();
         RefreshEditorParityControls();
+        SyncShellPlayerControls();
+    }
+
+    void BindStaticUiShell()
+    {
+        // UI-02: all user-facing controls already exist in EditorPage.xaml.
+        // No parent walking and no runtime insertion into Source/Player/Details.
+        _editorParityInitialized = true;
+        _editorOutputPathText = EditorOutputPathText;
+        _editorUseCurrentStartButton = EditorUseCurrentStartButton;
+        _editorUseCurrentEndButton = EditorUseCurrentEndButton;
+        _editorChooseOutputButton = EditorChooseOutputButton;
+        _editorOpenOutputButton = EditorOpenOutputButton;
+        _editorAutoCompositeToggle = EditorAutoCompositeToggle;
+        EditorOutputPathText.Text = _application.Config.OutputDirectory;
+
+        _imageFeatureInitialized = true;
+        _imageModeButton = ImageModeButton;
+        _imageInspectorPanel = ImageInspectorPanel;
+        _imageOverlayCanvas = ImageOverlayCanvas;
+        _addImageButton = AddImageButton;
+        _removeImageButton = RemoveImageButton;
+        _imageTopRightButton = ImageTopRightButton;
+        _imageTopLeftButton = ImageTopLeftButton;
+        _imageList = ImageSourceList;
+        _imageStatusText = ImageStatusText;
+        _imageXBox = ImageXBox;
+        _imageYBox = ImageYBox;
+        _imageWidthBox = ImageWidthBox;
+        _imageHeightBox = ImageHeightBox;
+        _imageOpacitySlider = ImageOpacitySlider;
+
+        PlaybackButton.IsEnabledChanged += (_, _) => SyncShellPlayerControls();
+        LayoutUpdated += (_, _) =>
+        {
+            SyncShellPlayerControls();
+            RenderImageOverlays();
+        };
+
+        // UI-11: MainWindow startup smoke resizes to 800x600, 1000x700 and 1500x900.
+        // Validate the actual shell at those runtime layouts, but never throw during normal use.
+        var layoutSmoke = Environment.GetCommandLineArgs()
+            .Any(arg => arg.StartsWith("--startup-smoke-test=", StringComparison.OrdinalIgnoreCase));
+        if (layoutSmoke)
+        {
+            WorkspaceGrid.SizeChanged += (_, _) => ValidateUiShellLayoutForSmoke();
+        }
+
+        SelectShellTool("Subtitle");
+        RefreshImageControls();
+        RefreshEditorParityControls();
+    }
+
+    void ShellTool_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { Tag: string tag }) SelectShellTool(tag);
+    }
+
+    void SelectShellTool(string tag)
+    {
+        var subtitle = string.Equals(tag, "Subtitle", StringComparison.OrdinalIgnoreCase);
+        var blur = string.Equals(tag, "Blur", StringComparison.OrdinalIgnoreCase);
+        var audio = string.Equals(tag, "Audio", StringComparison.OrdinalIgnoreCase);
+        var voice = string.Equals(tag, "Voice", StringComparison.OrdinalIgnoreCase);
+        var image = string.Equals(tag, "Image", StringComparison.OrdinalIgnoreCase);
+        var export = string.Equals(tag, "Export", StringComparison.OrdinalIgnoreCase);
+        if (!subtitle && !blur && !audio && !voice && !image && !export) return;
+
+        // The core ROI state remains authoritative. Audio and Voice are separate
+        // Details tools but both are non-ROI core modes.
+        _inspectorMode = subtitle ? InspectorMode.Subtitle
+            : blur ? InspectorMode.Blur
+            : image ? InspectorMode.Image
+            : export ? InspectorMode.Export
+            : InspectorMode.Audio;
+
+        SubtitleModeButton.IsChecked = subtitle;
+        BlurModeButton.IsChecked = blur;
+        AudioModeButton.IsChecked = audio;
+        VoiceModeButton.IsChecked = voice;
+        ImageModeButton.IsChecked = image;
+        ExportModeButton.IsChecked = export;
+
+        SubtitleInspectorPanel.Visibility = subtitle ? Visibility.Visible : Visibility.Collapsed;
+        BlurInspectorPanel.Visibility = blur ? Visibility.Visible : Visibility.Collapsed;
+        AudioInspectorPanel.Visibility = audio ? Visibility.Visible : Visibility.Collapsed;
+        VoiceInspectorPanel.Visibility = voice ? Visibility.Visible : Visibility.Collapsed;
+        ImageInspectorPanel.Visibility = image ? Visibility.Visible : Visibility.Collapsed;
+        ExportInspectorPanel.Visibility = export ? Visibility.Visible : Visibility.Collapsed;
+
+        RenderOverlays();
+        RenderImageOverlays();
+        RefreshEditorActions();
+        SyncShellPlayerControls();
+    }
+
+    async void PlayerPlayPause_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (_playerMode && _player is not null)
+            {
+                if (_player.PlaybackSession.PlaybackState == MediaPlaybackState.Playing) _player.Pause();
+                else _player.Play();
+            }
+            else
+            {
+                await SetPlaybackModeAsync(enabled: true, play: true);
+            }
+            SyncShellPlayerControls();
+        }
+        catch (OperationCanceledException)
+        {
+            StatusText.Text = "Đã dừng tạo bản xem trước.";
+        }
+        catch (Exception error)
+        {
+            StatusText.Text = "Preview bản chỉnh: " + error.Message;
+        }
+    }
+
+    void SyncShellPlayerControls()
+    {
+        PlayerPlayPauseButton.IsEnabled = PlaybackButton.IsEnabled;
+        PlayerPlayPauseButton.Content = _playerMode && _player?.PlaybackSession.PlaybackState == MediaPlaybackState.Playing ? "⏸" : "▶";
+        PreviewMuteToggle.Content = PreviewMuteToggle.IsOn ? "🔇" : "🔊";
+    }
+
+    void ValidateUiShellLayoutForSmoke()
+    {
+        if (WorkspaceGrid.ActualWidth < 500 || WorkspaceGrid.ActualHeight < 250) return;
+        if (WorkspaceGrid.ColumnDefinitions.Count != 3)
+            throw new InvalidOperationException("Editor shell phải có đúng ba cột Source / Player / Details.");
+        if (SourceColumn.ActualWidth < 110)
+            throw new InvalidOperationException($"Source quá hẹp: {SourceColumn.ActualWidth:0}px.");
+        if (PlayerColumn.ActualWidth < 210)
+            throw new InvalidOperationException($"Player quá hẹp: {PlayerColumn.ActualWidth:0}px.");
+        if (DetailsColumn.ActualWidth < 180)
+            throw new InvalidOperationException($"Details quá hẹp: {DetailsColumn.ActualWidth:0}px.");
+        if (PreviewSurface.ActualWidth <= 0 || PreviewSurface.ActualHeight <= 0)
+            throw new InvalidOperationException("Player không có diện tích preview.");
+        if (PlayerControlBar.ActualHeight > 0 && (PlayerControlBar.ActualHeight < 40 || PlayerControlBar.ActualHeight > 56))
+            throw new InvalidOperationException($"Thanh Player sai chiều cao: {PlayerControlBar.ActualHeight:0}px.");
+        if (PreviewPlayer.AreTransportControlsEnabled)
+            throw new InvalidOperationException("Transport WinUI mặc định đã xuất hiện lại trong Editor.");
+
+        var visiblePanels = new[]
+        {
+            SubtitleInspectorPanel,
+            BlurInspectorPanel,
+            AudioInspectorPanel,
+            VoiceInspectorPanel,
+            ImageInspectorPanel,
+            ExportInspectorPanel,
+        }.Count(panel => panel.Visibility == Visibility.Visible);
+        if (visiblePanels != 1)
+            throw new InvalidOperationException($"Details đang hiện {visiblePanels} tool panel thay vì đúng một panel.");
     }
 }
