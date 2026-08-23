@@ -628,14 +628,14 @@ public sealed partial class EditorPage : Page
         var burn = CompletedSubtitleBurn();
         if (burn is null || !KaraokeToggle.IsOn || _cueSpeechTiming.Count == 0)
         {
-            TranslationStatusText.Text = "Cần Vietsub đầy đủ và Whisper word timing trước khi lưu ASS karaoke.";
+            TranslationStatusText.Text = "Cần Vietsub đầy đủ và Whisper word timing trước khi lưu Caption ASS.";
             return;
         }
         try
         {
             var output = await _application.SaveEditorKaraokeAssAsync(
                 burn, _media.Width, _media.Height, _subtitleSource.Path, CancellationToken.None);
-            TranslationStatusText.Text = "Đã lưu ASS karaoke: " + output;
+            TranslationStatusText.Text = "Đã lưu Caption ASS: " + output;
         }
         catch (Exception error)
         {

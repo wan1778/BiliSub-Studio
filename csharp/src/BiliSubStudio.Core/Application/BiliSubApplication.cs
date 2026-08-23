@@ -548,12 +548,12 @@ public sealed class BiliSubApplication : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(subtitle);
         if (!subtitle.Karaoke || subtitle.SpeechTiming is null || subtitle.SpeechTiming.Count == 0)
-            throw new InvalidOperationException("Chưa có Whisper word timing để tạo ASS karaoke.");
+            throw new InvalidOperationException("Chưa có Whisper word timing để tạo Caption ASS.");
         var outputDirectory = string.IsNullOrWhiteSpace(Config.OutputDirectory) ? Paths.DefaultDownloads : Path.GetFullPath(Config.OutputDirectory);
         Directory.CreateDirectory(outputDirectory);
         var sourceName = Path.GetFileNameWithoutExtension(sourceSubtitlePath);
         if (string.IsNullOrWhiteSpace(sourceName)) sourceName = "BiliSub";
-        var output = Path.Combine(outputDirectory, FileNamePolicy.Sanitize(sourceName + ".karaoke.ass", "BiliSub.karaoke.ass"));
+        var output = Path.Combine(outputDirectory, FileNamePolicy.Sanitize(sourceName + ".caption.ass", "BiliSub.caption.ass"));
         var temporary = output + ".tmp-" + Guid.NewGuid().ToString("N");
         try
         {

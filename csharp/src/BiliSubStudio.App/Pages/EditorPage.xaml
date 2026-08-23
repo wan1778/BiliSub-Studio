@@ -114,7 +114,7 @@
                                     <Button x:Name="CancelTranslationButton" Click="CancelTranslation_Click" Content="Hủy tác vụ AI" IsEnabled="False" Style="{StaticResource DangerButtonStyle}" />
                                     <Button Grid.Column="1" x:Name="OpenTranslatedSrtButton" Click="OpenTranslatedSrt_Click" Content="Mở thư mục SRT Việt" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />
                                 </Grid>
-                                <Button x:Name="SaveKaraokeAssButton" Click="SaveKaraokeAss_Click" Content="Lưu ASS karaoke" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />
+                                <Button x:Name="SaveKaraokeAssButton" Click="SaveKaraokeAss_Click" Content="Lưu Caption ASS" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />
                                 <ProgressBar x:Name="TranslationProgress" Minimum="0" Maximum="100" />
                                 <TextBlock x:Name="TranslationStatusText" Style="{StaticResource MutedTextStyle}" Text="Chưa chuẩn bị AI local." TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
                             </StackPanel>
@@ -189,7 +189,7 @@
                                             <Button x:Name="CreateAsrButton" Click="CreateAsr_Click" Content="Phân tích nhịp + Nam/Nữ" IsEnabled="False" />
                                             <Button Grid.Column="1" x:Name="GenerateTtsButton" Click="GenerateTts_Click" Content="Tạo voice Việt local" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />
                                         </Grid>
-                                        <ToggleSwitch x:Name="KaraokeToggle" Header="Karaoke theo word timing" IsOn="True" Toggled="Karaoke_Toggled" />
+                                        <ToggleSwitch x:Name="KaraokeToggle" Header="Caption theo từng từ (Whisper)" IsOn="True" Toggled="Karaoke_Toggled" />
                                         <ComboBox x:Name="CurrentCueVoiceBox" Header="Voice câu tại vị trí hiện tại" SelectedIndex="0" SelectionChanged="CurrentCueVoice_SelectionChanged">
                                             <ComboBoxItem Tag="auto" Content="Tự động Nam/Nữ" />
                                             <ComboBoxItem Tag="male" Content="Ép voice Nam" />
