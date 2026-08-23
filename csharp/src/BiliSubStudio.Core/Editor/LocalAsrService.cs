@@ -352,9 +352,9 @@ internal sealed class LocalAsrService : IDisposable
                 var text = GetString(word, "text").Trim();
                 var start = GetDouble(word, "start");
                 var end = GetDouble(word, "end");
-                var probability = GetDouble(word, "probability");
+                var wordProbability = GetDouble(word, "probability");
                 if (text.Length == 0 || !double.IsFinite(start) || !double.IsFinite(end) || end <= start) continue;
-                words.Add(new AsrWord(start, end, text, double.IsFinite(probability) ? Math.Clamp(probability, 0, 1) : 0));
+                words.Add(new AsrWord(start, end, text, double.IsFinite(wordProbability) ? Math.Clamp(wordProbability, 0, 1) : 0));
             }
         }
         return new AsrCue(
