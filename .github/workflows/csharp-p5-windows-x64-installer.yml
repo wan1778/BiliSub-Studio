@@ -1,4 +1,4 @@
-name: Bootstrap beta.33 exact tree
+name: Normalize Caption wording
 
 on:
   pull_request:
@@ -8,85 +8,43 @@ on:
 permissions:
   contents: write
 
-concurrency:
-  group: beta33-bootstrap-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  bootstrap:
+  normalize-caption:
     runs-on: windows-2025
-    timeout-minutes: 15
+    timeout-minutes: 10
     defaults:
       run:
         shell: pwsh
     steps:
-      - name: Check out PR merge
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 1
-
-      - name: Install Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-
-      - name: Build and push exact beta.33 tree
+      - name: Replace user-facing Karaoke wording with Caption
         env:
           TARGET_BRANCH: editor-all-in-one
-          BASE_SHA: b5c78223c5d5835199bb2ed6be09301fabe379d8
-          PARTS_COMMIT: bba2d8e0b8dcef5b71dd86d828811fdf1696e3c5
-          PATCH_SHA256: a11bfed8108c4bc9441095ab468dbab0c00a37eda93bccf18f59271bbcad4b0b
         run: |
           $ErrorActionPreference = "Stop"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git fetch origin $env:TARGET_BRANCH --depth=100
-          $current = (git rev-parse "origin/$env:TARGET_BRANCH").Trim()
-          if (-not $current) { throw "Cannot resolve branch head" }
-          git cat-file -e "$env:PARTS_COMMIT`^{commit}"
-          if ($LASTEXITCODE -ne 0) { throw "Original patch commit unavailable" }
+          git checkout -B caption-normalize "origin/$env:TARGET_BRANCH"
 
-          $workflowTemp = Join-Path $env:RUNNER_TEMP "bootstrap.yml"
-          git show "$current`:.github/workflows/csharp-p5-windows-x64-installer.yml" | Set-Content $workflowTemp -Encoding utf8
-          if (-not (Test-Path $workflowTemp -PathType Leaf)) { throw "Cannot preserve bootstrap workflow" }
-
-          $encoded = ""
-          foreach ($index in 0..5) {
-            $name = "part-{0:D2}" -f $index
-            $piece = git show "$env:PARTS_COMMIT`:.beta33-bootstrap/$name"
-            if ($LASTEXITCODE -ne 0 -or -not $piece) { throw "Missing original $name" }
-            $encoded += ($piece -join "").Trim()
+          function Replace-Exact([string]$Path, [string]$Old, [string]$New) {
+            $text = [IO.File]::ReadAllText($Path)
+            if (-not $text.Contains($Old, [StringComparison]::Ordinal)) { throw "Missing expected text in $Path`: $Old" }
+            $text = $text.Replace($Old, $New, [StringComparison]::Ordinal)
+            [IO.File]::WriteAllText($Path, $text, [Text.UTF8Encoding]::new($false))
           }
 
-          $b64 = Join-Path $env:RUNNER_TEMP "beta33.xz.b64"
-          $rawPatch = Join-Path $env:RUNNER_TEMP "beta33.raw.patch"
-          $patch = Join-Path $env:RUNNER_TEMP "beta33.repo.patch"
-          [IO.File]::WriteAllText($b64, $encoded, [Text.Encoding]::ASCII)
-          $env:BETA33_B64 = $b64
-          $env:BETA33_RAW_PATCH = $rawPatch
-          $env:BETA33_PATCH = $patch
+          Replace-Exact "csharp/src/BiliSubStudio.App/Pages/EditorPage.xaml" 'Content="Lưu ASS karaoke"' 'Content="Lưu Caption ASS"'
+          Replace-Exact "csharp/src/BiliSubStudio.App/Pages/EditorPage.xaml" 'Header="Karaoke theo word timing"' 'Header="Caption theo từng từ (Whisper)"'
+          Replace-Exact "csharp/src/BiliSubStudio.App/Pages/EditorPage.xaml.cs" 'Cần Vietsub đầy đủ và Whisper word timing trước khi lưu ASS karaoke.' 'Cần Vietsub đầy đủ và Whisper word timing trước khi lưu Caption ASS.'
+          Replace-Exact "csharp/src/BiliSubStudio.App/Pages/EditorPage.xaml.cs" 'Đã lưu ASS karaoke: ' 'Đã lưu Caption ASS: '
+          Replace-Exact "csharp/src/BiliSubStudio.Core/Application/BiliSubApplication.cs" 'Chưa có Whisper word timing để tạo ASS karaoke.' 'Chưa có Whisper word timing để tạo Caption ASS.'
+          Replace-Exact "csharp/src/BiliSubStudio.Core/Application/BiliSubApplication.cs" 'sourceName + ".karaoke.ass"' 'sourceName + ".caption.ass"'
+          Replace-Exact "csharp/src/BiliSubStudio.Core/Application/BiliSubApplication.cs" '"BiliSub.karaoke.ass"' '"BiliSub.caption.ass"'
 
-          python -c "import base64,hashlib,lzma,os,pathlib; raw=base64.b64decode(pathlib.Path(os.environ['BETA33_B64']).read_bytes(),validate=True); actual=hashlib.sha256(raw).hexdigest(); expected=os.environ['PATCH_SHA256'].lower(); assert actual==expected, f'patch SHA mismatch: {actual} != {expected}'; pathlib.Path(os.environ['BETA33_RAW_PATCH']).write_bytes(lzma.decompress(raw))"
-          python -c 'import os,pathlib; src=pathlib.Path(os.environ["BETA33_RAW_PATCH"]); dst=pathlib.Path(os.environ["BETA33_PATCH"]); tops=["/.gitattributes","/.github/","/csharp/","/docs/","/internal/","/update/","/design-system/","/AGENTS.md","/ARCHITECTURE.md","/BUILD.md","/README.md"]; out=[]; lines=src.read_text(encoding="utf-8").splitlines(True); exec("for line in lines:\n if line.startswith(\"diff -ruN \"): continue\n if line.startswith((\"--- \",\"+++ \")):\n  head=line[:4]; body=line[4:]; path,sep,tail=body.partition(\"\\t\"); norm=path.replace(\"\\\\\",\"/\"); hits=[norm.find(t) for t in tops if norm.find(t)>=0]; assert hits, f\"cannot map: {path}\"; rel=norm[min(hits)+1:]; line=head+(\"a/\" if head==\"--- \" else \"b/\")+rel+(sep+tail if sep else \"\")\n out.append(line)"); dst.write_text("".join(out),encoding="utf-8",newline="")'
-
-          git cat-file -e "$env:BASE_SHA`^{commit}"
-          if ($LASTEXITCODE -ne 0) { throw "Baseline unavailable" }
-          git reset --hard $env:BASE_SHA
-          git clean -fdx
-          git apply --check --whitespace=nowarn $patch
-          if ($LASTEXITCODE -ne 0) { throw "Normalized patch check failed" }
-          git apply --whitespace=nowarn $patch
-
-          python -m py_compile internal/asr/worker.py internal/tts/worker.py
-          python csharp/scripts/generate_csharp_code_map.py --check
-          python csharp/scripts/validate_csharp_migration.py
-          if ($LASTEXITCODE -ne 0) { throw "beta.33 static contracts failed" }
-
-          Copy-Item $workflowTemp ".github/workflows/csharp-p5-windows-x64-installer.yml" -Force
-          git add -A
-          $tree = (git write-tree).Trim()
-          $commit = ("editor: implement Whisper timing and local NghiTTS" | git commit-tree $tree -p $current).Trim()
-          if (-not $commit) { throw "Could not create target commit" }
-          git push origin "$commit`:refs/heads/$env:TARGET_BRANCH"
-          if ($LASTEXITCODE -ne 0) { throw "Could not fast-forward target branch" }
-          Write-Host "BETA33_TARGET_COMMIT=$commit"
+          git diff --check
+          git add csharp/src/BiliSubStudio.App/Pages/EditorPage.xaml csharp/src/BiliSubStudio.App/Pages/EditorPage.xaml.cs csharp/src/BiliSubStudio.Core/Application/BiliSubApplication.cs
+          git commit -m "ui: call word-timed subtitles Caption"
+          git push origin HEAD:$env:TARGET_BRANCH
