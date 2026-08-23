@@ -84,23 +84,10 @@ jobs:
           $xz = Join-Path $env:RUNNER_TEMP "beta33.patch.xz"
           $patch = Join-Path $env:RUNNER_TEMP "beta33.patch"
           [IO.File]::WriteAllText($b64, $encoded, [Text.Encoding]::ASCII)
-          @'
-import base64, hashlib, lzma, os, pathlib
-b64 = pathlib.Path(os.environ["BETA33_B64"])
-xz = pathlib.Path(os.environ["BETA33_XZ"])
-patch = pathlib.Path(os.environ["BETA33_PATCH"])
-raw = base64.b64decode(b64.read_bytes(), validate=True)
-actual = hashlib.sha256(raw).hexdigest()
-expected = os.environ["PATCH_SHA256"].lower()
-if actual != expected:
-    raise SystemExit(f"bootstrap patch SHA mismatch: {actual} != {expected}")
-xz.write_bytes(raw)
-patch.write_bytes(lzma.decompress(raw))
-'@ | Set-Content (Join-Path $env:RUNNER_TEMP "decode_beta33.py") -Encoding utf8
           $env:BETA33_B64 = $b64
           $env:BETA33_XZ = $xz
           $env:BETA33_PATCH = $patch
-          python (Join-Path $env:RUNNER_TEMP "decode_beta33.py")
+          python -c "import base64,hashlib,lzma,os,pathlib; b64=pathlib.Path(os.environ['BETA33_B64']); raw=base64.b64decode(b64.read_bytes(),validate=True); actual=hashlib.sha256(raw).hexdigest(); expected=os.environ['PATCH_SHA256'].lower(); assert actual==expected, f'bootstrap patch SHA mismatch: {actual} != {expected}'; pathlib.Path(os.environ['BETA33_XZ']).write_bytes(raw); pathlib.Path(os.environ['BETA33_PATCH']).write_bytes(lzma.decompress(raw))"
 
           git cat-file -e "$env:BASE_SHA`^{commit}"
           if ($LASTEXITCODE -ne 0) { throw "Baseline commit is unavailable" }
@@ -197,8 +184,6 @@ patch.write_bytes(lzma.decompress(raw))
           $publicVersion = "4.0.$($beta - 14)"
           $tag = "v$publicVersion"
 
-          # The technical build identity stays inside evidence/metadata. GitHub Releases,
-          # filenames and the UI-facing version use short semantic versions only.
           $existingManifest = Get-Content "update/beta.json" -Raw | ConvertFrom-Json
           $publicUrlMarker = "/releases/download/$tag/"
           if ($existingManifest.channel_ready -eq $true -and
@@ -263,7 +248,6 @@ patch.write_bytes(lzma.decompress(raw))
 
           $downloadUrl = "https://github.com/$($env:GITHUB_REPOSITORY)/releases/download/$tag/$portableName"
           $manifest = [ordered]@{
-            # Keep the technical build identity here so beta-to-beta ordering remains exact.
             version = $version
             channel_ready = $true
             download_url = $downloadUrl
