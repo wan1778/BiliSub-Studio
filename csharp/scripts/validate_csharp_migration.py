@@ -151,7 +151,7 @@ require('BiliSubStudio_v$version-source-$sourceTag.zip' in package_script,
 for marker in (
     "$version = ([string]$identity.informational_version).Trim()", "Assert-Pe32PlusX64",
     "BiliSubStudio_Setup_v${version}_${sourceTag}_x64", "INSTALLER_GATE_STATUS.json",
-    'requires_admin = $false', "root_launcher_smoke = $rootLauncherSmoke",
+    'requires_admin = $false', "root_launcher_smoke = $rootLauncherSmoke,
     "installer_install_smoke = $installerInstallSmoke", "BiliSub Studio Custom Location\\BiliSub Studio",
 ):
     require(marker in installer_script, f"one-file installer gate missing {marker}")
@@ -307,7 +307,7 @@ for marker in (
     "9c4a3a11f5889ea9d0df4414dce2bd9bee5ce7d9cf604c8fd5e307441d4c031f",
     'VoiceRepository = "rhasspy/piper-voices"',
     'ModelRevision = "3d796cc2f2c884b3517c527507e084f7bb245aea"',
-    'VoiceRevision = "3d796cc2f2c884b3517c527507e084f7bb245aea-profile-v1"',
+    'VoiceRevision = ModelRevision + "-profile-v1"',
     'BaseVoice = "vi_VN-vais1000-medium"',
     'MaleVoice = "vais1000-male-profile-v1"', 'FemaleVoice = "vais1000-female-profile-v1"',
     "ec7c89e2c85f4d1edc24b6120c18aaf1bda614f06b511567eb9c7c0de15e2dab",
