@@ -1,9 +1,9 @@
 {
-  "version": "4.0.0-beta.42-csharp-p5",
+  "version": "4.0.0-beta.43-csharp-p5",
   "notes": [
-    "Khung Cập nhật chỉ hiển thị phiên bản public ngắn gọn 4.0.x, không còn chuỗi beta/build SHA nội bộ.",
-    "Thanh trạng thái dưới cùng hiển thị phiên bản hiện tại thay cho C# / .NET / WinUI.",
-    "Ghi chú phát hành được khóa theo đúng build; CI từ chối publish nếu release notes không khớp phiên bản để không lặp thông báo cũ.",
-    "Cập nhật vẫn chỉ nhận gói chính thức từ GitHub Releases và xác minh kích thước/SHA-256 trước khi áp dụng."
+    "Tab Chỉnh video dùng một thanh điều khiển gọn nằm ngay trong Preview; tắt transport mặc định của WinUI và ẩn bộ timeline/control trùng lặp bên ngoài.",
+    "Preview không còn dừng sau 12 giây: BiliSub tự nối các đoạn cache xử lý theo vị trí phát để người dùng xem xuyên suốt toàn bộ thời lượng video.",
+    "Mở video, Chọn SRT và Thêm ảnh/logo được bọc lỗi đầy đủ; FileOpenPicker có hộp chọn file Win32 dự phòng để tránh tình trạng bấm mà không chọn được file.",
+    "Công cụ Ảnh/logo được khởi tạo đúng khi mở tab Chỉnh video, giữ PNG/JPG/JPEG, kéo/resize trực tiếp trên Preview và xuất không ghi đè nguồn."
   ]
 }
