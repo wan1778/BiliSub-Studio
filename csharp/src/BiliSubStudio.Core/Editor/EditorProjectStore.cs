@@ -120,11 +120,19 @@ public sealed class EditorProjectStore
                 var info = new FileInfo(projectPath);
                 if (info.Length <= 0 || info.Length > MaxProjectBytes)
                     throw new InvalidDataException("Project Editor có kích thước không hợp lệ.");
-                await using var stream = new FileStream(projectPath, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
-                var loaded = await JsonSerializer.DeserializeAsync<EditorProject>(stream, _json, cancellationToken)
-                    ?? throw new InvalidDataException("Project Editor rỗng.");
+                EditorProject loaded;
+                await using (var stream = new FileStream(projectPath, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
+                {
+                    loaded = await JsonSerializer.DeserializeAsync<EditorProject>(stream, _json, cancellationToken)
+                        ?? throw new InvalidDataException("Project Editor rỗng.");
+                }
                 if (loaded.Schema is not (1 or 2 or 3 or 4 or CurrentSchema) || !string.Equals(loaded.Id, id, StringComparison.Ordinal))
                     throw new InvalidDataException("Project Editor không đúng phiên bản hoặc nguồn.");
+                if (SourceFingerprintChanged(loaded.Source, source))
+                {
+                    ArchiveSourceChanged(projectPath);
+                    return CreateFreshProject(source, id, loaded.Name, loaded.FileName);
+                }
                 var regions = NormalizeRegions(loaded.Regions);
                 return loaded with
                 {
@@ -146,16 +154,55 @@ public sealed class EditorProjectStore
             }
         }
 
+        return CreateFreshProject(source, id);
+    }
+
+    private static EditorProject CreateFreshProject(
+        EditorSourceFingerprint source,
+        string id,
+        string? name = null,
+        string? fileName = null)
+    {
+        var defaultName = Path.GetFileNameWithoutExtension(source.Path);
         return new EditorProject(
             CurrentSchema,
             id,
-            Path.GetFileNameWithoutExtension(source.Path),
+            string.IsNullOrWhiteSpace(name) ? defaultName : name.Trim(),
             source,
-            Path.GetFileNameWithoutExtension(source.Path) + "_edited.mp4",
+            string.IsNullOrWhiteSpace(fileName) ? defaultName + "_edited.mp4" : fileName.Trim(),
             [],
             null,
             DateTimeOffset.UtcNow,
             EditorAudioSettings.Default);
+    }
+
+    private static bool SourceFingerprintChanged(EditorSourceFingerprint? previous, EditorSourceFingerprint current)
+    {
+        if (previous is null || previous.Size <= 0 || previous.LastWriteUtcTicks <= 0
+            || previous.Width <= 0 || previous.Height <= 0 || !double.IsFinite(previous.Duration) || previous.Duration < 0)
+            return true;
+        string previousPath;
+        try { previousPath = Path.GetFullPath(previous.Path.Trim()); }
+        catch { return true; }
+        return !string.Equals(previousPath, current.Path, StringComparison.OrdinalIgnoreCase)
+            || previous.Size != current.Size
+            || previous.LastWriteUtcTicks != current.LastWriteUtcTicks
+            || previous.Width != current.Width
+            || previous.Height != current.Height
+            || Math.Abs(previous.Duration - current.Duration) > .05;
+    }
+
+    private static void ArchiveSourceChanged(string path)
+    {
+        var archive = path + ".source-changed-" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        try
+        {
+            File.Move(path, archive, overwrite: false);
+            return;
+        }
+        catch { }
+        try { File.Copy(path, archive, overwrite: false); }
+        catch { }
     }
 
     public async Task SaveAsync(EditorProject project, CancellationToken cancellationToken)

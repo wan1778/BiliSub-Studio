@@ -48,7 +48,7 @@ internal static class Program
         ("editor final render validates streams duration and audio policy", EditorRenderValidationContractAsync),
         ("Vietnamese TTS text normalization stays deterministic", VietnameseTtsNormalizerContractAsync),
         ("editor document preserves identity through undo redo", EditorDocumentContractAsync),
-        ("editor project persists and quarantines corrupt state", EditorProjectContractAsync),
+        ("editor project persists, isolates source drift and quarantines corrupt state", EditorProjectContractAsync),
         ("editor SRT keeps exact blocks order and timecodes", EditorSubtitleDocumentContractAsync),
         ("translation skill bundle is pinned and rejects path traversal", TranslationSkillBundleContractAsync),
         ("local translation manifest and resource gate stay pinned", LocalTranslationManifestContractAsync),
@@ -813,7 +813,22 @@ internal static class Program
             Equal("complete", selectivelyRecovered.Speech!.Status);
             Equal("episode-edited.mp4", selectivelyRecovered.FileName);
 
+            await File.WriteAllBytesAsync(voicePath, Enumerable.Repeat((byte)1, 128).ToArray());
+            await store.SaveAsync(reopened, CancellationToken.None);
             var projectPath = store.GetProjectPath(video);
+            await File.AppendAllTextAsync(video, "changed-source");
+            var sourceChanged = await store.LoadOrCreateAsync(video, 1920, 1080, 120, CancellationToken.None);
+            Equal("episode-edited.mp4", sourceChanged.FileName);
+            Equal(0, sourceChanged.Regions.Count);
+            True(sourceChanged.Subtitle is null, "changed source reused old subtitle state");
+            True(sourceChanged.Asr is null, "changed source reused old ASR state");
+            True(sourceChanged.Speech is null, "changed source reused old Whisper timing");
+            True(sourceChanged.Tts is null, "changed source reused old TTS state");
+            Equal(0, sourceChanged.VoiceOverrides?.Count ?? 0);
+            Equal("keep", sourceChanged.Audio!.SourceMode);
+            True(Directory.GetFiles(Path.GetDirectoryName(projectPath)!, Path.GetFileName(projectPath) + ".source-changed-*").Length == 1,
+                "source-changed Editor project was not archived");
+
             await File.WriteAllTextAsync(projectPath, "{broken-json");
             var recovered = await store.LoadOrCreateAsync(video, 1920, 1080, 120, CancellationToken.None);
             Equal(0, recovered.Regions.Count);
