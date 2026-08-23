@@ -58,15 +58,19 @@ public sealed partial class EditorPage
         _imageHeightBox = ImageHeightBox;
         _imageOpacitySlider = ImageOpacitySlider;
 
-        // Handlers implemented in partial files are attached here so the static XAML
-        // remains independent from the old verifier assumption that every handler
-        // must live in EditorPage.xaml.cs.
-        SubtitleModeButton.Click += ShellTool_Click;
-        BlurModeButton.Click += ShellTool_Click;
-        AudioModeButton.Click += ShellTool_Click;
-        VoiceModeButton.Click += ShellTool_Click;
-        ImageModeButton.Click += ShellTool_Click;
-        ExportModeButton.Click += ShellTool_Click;
+        // One navigation owner for all six tools; no per-tool ownership is reintroduced.
+        foreach (var toolButton in new[]
+        {
+            SubtitleModeButton,
+            BlurModeButton,
+            AudioModeButton,
+            VoiceModeButton,
+            ImageModeButton,
+            ExportModeButton,
+        })
+        {
+            toolButton.Click += ShellTool_Click;
+        }
         PlayerPlayPauseButton.Click += PlayerPlayPause_Click;
 
         ImageSourceList.SelectionChanged += ImageList_SelectionChanged;
