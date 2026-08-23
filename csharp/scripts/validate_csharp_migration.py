@@ -151,7 +151,7 @@ require('BiliSubStudio_v$version-source-$sourceTag.zip' in package_script,
 for marker in (
     "$version = ([string]$identity.informational_version).Trim()", "Assert-Pe32PlusX64",
     "BiliSubStudio_Setup_v${version}_${sourceTag}_x64", "INSTALLER_GATE_STATUS.json",
-    'requires_admin = $false', "root_launcher_smoke = $rootLauncherSmoke,
+    'requires_admin = $false', "root_launcher_smoke = $rootLauncherSmoke",
     "installer_install_smoke = $installerInstallSmoke", "BiliSub Studio Custom Location\\BiliSub Studio",
 ):
     require(marker in installer_script, f"one-file installer gate missing {marker}")
