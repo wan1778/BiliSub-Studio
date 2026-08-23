@@ -9,12 +9,21 @@ namespace BiliSubStudio.App.Pages;
 
 public sealed partial class SupportPage : Page
 {
-    private static readonly Func<string, string> DisplayVersion = version =>
+    internal static readonly Func<string, string> DisplayVersion = version =>
     {
-        var match = Regex.Match(version, @"^4\.0\.0-beta\.(\d+)-csharp-p5$");
-        if (match.Success && int.TryParse(match.Groups[1].Value, out var beta) && beta >= 14)
+        var value = version.Trim();
+        var betaMatch = Regex.Match(
+            value,
+            @"^4\.0\.0-beta[.-](\d+)-csharp-p5(?:\+.*)?$",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        if (betaMatch.Success && int.TryParse(betaMatch.Groups[1].Value, out var beta) && beta >= 14)
             return $"4.0.{beta - 14}";
-        return version;
+
+        var stableMatch = Regex.Match(
+            value,
+            @"^(\d+\.\d+\.\d+)(?:\+.*)?$",
+            RegexOptions.CultureInvariant);
+        return stableMatch.Success ? stableMatch.Groups[1].Value : value;
     };
 
     private readonly BiliSubApplication _application;
@@ -28,6 +37,7 @@ public sealed partial class SupportPage : Page
         _application = application;
         _log = log;
         InitializeComponent();
+        UpdateText.Text = $"Phiên bản hiện tại {DisplayVersion(_application.Updates.CurrentVersion)}. Nhấn Kiểm tra để tìm bản mới.";
     }
 
     public void ApplyUpdateInfo(UpdateInfo info)
@@ -35,14 +45,20 @@ public sealed partial class SupportPage : Page
         _updateAvailable = info.Available && info.ChannelReady;
         var current = DisplayVersion(info.Current);
         var latest = DisplayVersion(info.Latest);
-        UpdateText.Text = $"Hiện tại {current} · bản mới {latest} · {info.Message}\n{string.Join("\n", info.Notes)}";
+        var notes = info.Notes.Count > 0 ? "\n" + string.Join("\n", info.Notes) : string.Empty;
+
+        UpdateText.Text = !info.ChannelReady
+            ? $"Phiên bản hiện tại {current} · {info.Message}{notes}"
+            : _updateAvailable
+                ? $"Hiện tại {current} · bản mới {latest}.{notes}"
+                : $"Phiên bản hiện tại {current} · Bạn đang dùng bản mới nhất.{notes}";
         SyncControls();
     }
 
     public void ApplyUpdateError(string message)
     {
         _updateAvailable = false;
-        UpdateText.Text = message;
+        UpdateText.Text = $"Phiên bản hiện tại {DisplayVersion(_application.Updates.CurrentVersion)} · {message}";
         SyncControls();
     }
 
@@ -87,7 +103,7 @@ public sealed partial class SupportPage : Page
         }
         catch (Exception error)
         {
-            UpdateText.Text = error.Message;
+            UpdateText.Text = $"Phiên bản hiện tại {DisplayVersion(_application.Updates.CurrentVersion)} · {error.Message}";
             _log.Error("Cập nhật", "Chuẩn bị cập nhật lỗi: " + error.Message);
         }
         finally

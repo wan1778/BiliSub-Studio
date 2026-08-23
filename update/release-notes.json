@@ -1,0 +1,9 @@
+{
+  "version": "4.0.0-beta.42-csharp-p5",
+  "notes": [
+    "Khung Cập nhật chỉ hiển thị phiên bản public ngắn gọn 4.0.x, không còn chuỗi beta/build SHA nội bộ.",
+    "Thanh trạng thái dưới cùng hiển thị phiên bản hiện tại thay cho C# / .NET / WinUI.",
+    "Ghi chú phát hành được khóa theo đúng build; CI từ chối publish nếu release notes không khớp phiên bản để không lặp thông báo cũ.",
+    "Cập nhật vẫn chỉ nhận gói chính thức từ GitHub Releases và xác minh kích thước/SHA-256 trước khi áp dụng."
+  ]
+}
