@@ -11,6 +11,7 @@ on:
       - "internal/asr/**"
       - "internal/tts/**"
       - "internal/translation/**"
+      - "update/release-notes.json"
       - "docs/migration/**"
       - "docs/engineering/**"
   push:
@@ -24,6 +25,7 @@ on:
       - "internal/asr/**"
       - "internal/tts/**"
       - "internal/translation/**"
+      - "update/release-notes.json"
       - "docs/migration/**"
       - "docs/engineering/**"
 
@@ -100,6 +102,18 @@ jobs:
       - name: Verify local translation model and skill contracts
         run: python csharp/scripts/verify_translation_skill_contract.py
 
+      - name: Verify release notes match build
+        run: |
+          [xml]$props = Get-Content "csharp/Directory.Build.props" -Raw
+          $version = ([string]$props.Project.PropertyGroup.InformationalVersion).Trim()
+          $releaseNotes = Get-Content "update/release-notes.json" -Raw | ConvertFrom-Json
+          $releaseNotesVersion = ([string]$releaseNotes.version).Trim()
+          if ($releaseNotesVersion -ne $version) {
+            throw "release notes version $releaseNotesVersion does not match build $version"
+          }
+          $noteLines = @($releaseNotes.notes | ForEach-Object { ([string]$_).Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+          if ($noteLines.Count -eq 0) { throw "release notes must contain at least one non-empty note" }
+
       - name: Verify raw Bilibili CDN endpoint discovery
         run: dotnet run --project csharp/tests/BiliSubStudio.CdnRegression/BiliSubStudio.CdnRegression.csproj -c Release -p:NuGetAudit=false
 
@@ -167,6 +181,14 @@ jobs:
           $publicVersion = "4.0.$($beta - 14)"
           $tag = "v$publicVersion"
 
+          $releaseNotes = Get-Content "update/release-notes.json" -Raw | ConvertFrom-Json
+          $releaseNotesVersion = ([string]$releaseNotes.version).Trim()
+          if ($releaseNotesVersion -ne $version) {
+            throw "release notes version $releaseNotesVersion does not match build $version"
+          }
+          $releaseNoteLines = @($releaseNotes.notes | ForEach-Object { ([string]$_).Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+          if ($releaseNoteLines.Count -eq 0) { throw "release notes must contain at least one non-empty note" }
+
           $existingManifest = Get-Content "update/beta.json" -Raw | ConvertFrom-Json
           $publicUrlMarker = "/releases/download/$tag/"
           if ($existingManifest.channel_ready -eq $true -and
@@ -212,14 +234,8 @@ jobs:
           ) | Set-Content $releaseSums -Encoding UTF8
 
           $notes = Join-Path $env:RUNNER_TEMP "bilisub-beta-release-notes.md"
-          @(
-            "# BiliSub Studio $publicVersion",
-            "",
-            '- OCR Auto dùng Predict → Probe → Commit: kiểm tra live RAM/VRAM trước từng bậc 1 → 2 → 4 → 8 → 16.',
-            '- Mức N chỉ PASS khi đủ đúng N Python + N FFmpeg/OCR pipeline và throughput tăng ít nhất 10%.',
-            '- Mức thiếu tài nguyên/không tăng tốc/lỗi/OOM/timeout tự quay về mức PASS gần nhất rồi mới quét.',
-            '- Hủy OCR thu hồi toàn bộ Python và cây FFmpeg do lần quét sở hữu trước khi xóa checkpoint và trở về Quét từ đầu.'
-          ) | Set-Content $notes -Encoding UTF8
+          $releaseBody = @("# BiliSub Studio $publicVersion", "") + @($releaseNoteLines | ForEach-Object { "- $_" })
+          $releaseBody | Set-Content $notes -Encoding UTF8
 
           gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
           if ($LASTEXITCODE -eq 0) {
@@ -237,12 +253,7 @@ jobs:
             sha256 = $portableHash
             size = $portableSize
             payload_kind = "winui3-portable-zip"
-            notes = @(
-              "OCR Auto kiểm tra live RAM/VRAM trước từng bậc 1 → 2 → 4 → 8 → 16.",
-              "Mức N yêu cầu đủ N Python + N FFmpeg/OCR pipeline và gain throughput tối thiểu 10%.",
-              "Mức không an toàn hoặc không còn tăng tốc tự quay về PASS gần nhất.",
-              "Hủy OCR thu hồi sạch Python/FFmpeg rồi xóa checkpoint và trở về Quét từ đầu."
-            )
+            notes = $releaseNoteLines
           }
           $manifest | ConvertTo-Json -Depth 4 | Set-Content "update/beta.json" -Encoding UTF8
           git config user.name "github-actions[bot]"
