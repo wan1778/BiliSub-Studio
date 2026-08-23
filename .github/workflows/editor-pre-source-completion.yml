@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - editor-pre-source-completion
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
