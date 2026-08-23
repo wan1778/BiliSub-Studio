@@ -295,7 +295,7 @@ EditorPage.Pick_Click
   -> attach an SRT selected before the video, without discarding its validated cue document
   -> restore source-audio mode/gain
   -> EditorRegionDocument.Reset
-  -> native player for raw playback when directly compatible
+  -> native MediaPlayer reserved for app-owned processed-preview MP4 proxies
   -> VideoEditorService.GetPreviewFrameJpegAsync for processed frame
 
 EditorPage direct overlay
@@ -383,20 +383,35 @@ EditorPage.CancelTranslation_Click
   -> AppJob.CancelComplete only after cleanup
 
 EditorPage processed preview
-  -> current timeline position + active saved/draft regions
-  -> BiliSubApplication.GetEditorPreviewFrameJpegAsync
-  -> VideoEditorService.GetPreviewFrameJpegAsync
-  -> exact VideoEditorService.BuildFilter Blur/Mosaic/Cover graph
-  -> app-owned FFmpeg MJPEG pipe
+  -> editable mode: current timeline position + active saved/draft regions
+       -> BiliSubApplication.GetEditorPreviewFrameJpegAsync
+       -> VideoEditorService.GetPreviewFrameJpegAsync
+       -> exact VideoEditorService.BuildFilter Blur/Mosaic/Cover graph
+       -> app-owned FFmpeg MJPEG pipe
+  -> Xem bản chỉnh: CurrentEditRequest is shared with Render_Click
+       -> translated cue when available; Chinese source text is the explicit pre-translation fallback
+       -> BiliSubApplication.CreateEditorPreviewSegmentAsync
+       -> VideoEditorService.CreatePreviewSegmentAsync
+            -> bounded 12-second source window from current playhead
+            -> BuildPreviewSlice shifts/clips timed regions and subtitle cues into proxy time
+            -> app-owned Temp/Editor/Preview only
+            -> exact BuildFilterCore + BuildAss + BuildAudioArguments used by final render
+            -> H.264/AAC yuv420p MP4 proxy for deterministic WinUI playback
+       -> MediaPlayer position + source-window offset -> main source timeline
+       -> playback hides handles/locks all edit inputs
+       -> MediaEnded or Về khung chỉnh -> release source, delete proxy, refresh processed frame, unlock ROI
+       -> page unload cancels proxy FFmpeg and removes the current proxy
 
 EditorPage.Audio inspector
-  -> PreviewMute/PreviewVolume -> native MediaPlayer only
+  -> PreviewMute/PreviewVolume -> local monitor gain/mute only
   -> source output mode keep / duck / mute
   -> EditorAudioSettings normalized and autosaved in schema-4 project (schema-3 migration retained)
   -> VideoEditorService.BuildAudioArguments
        keep -> optional source-audio map; MKV may stream-copy
        duck -> exact volume filter + AAC encode
        mute -> no output audio stream
+  -> same source policy is audible in Xem bản chỉnh before final export
+  -> later TTS/stem inputs must extend the same preview/render audio graph
 
 EditorPage.Render_Click
   -> BiliSubApplication.StartEditor

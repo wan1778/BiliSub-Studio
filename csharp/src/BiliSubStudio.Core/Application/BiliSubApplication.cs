@@ -54,7 +54,7 @@ public sealed class BiliSubApplication : IAsyncDisposable
         Resolver = new YtDlpResolver(Tools, Processes);
         _video = new VideoDownloadService(paths, Resolver, new RangeDownloader(_http), Tools, Processes);
         _subtitle = new SubtitleService(Resolver, _http);
-        _editor = new VideoEditorService(Tools, Processes);
+        _editor = new VideoEditorService(paths, Tools, Processes);
         _editorProjects = new EditorProjectStore(paths);
         _translation = new LocalSubtitleTranslationService(
             paths,
@@ -502,6 +502,15 @@ public sealed class BiliSubApplication : IAsyncDisposable
         IReadOnlyList<EditRegion> regions,
         CancellationToken cancellationToken) =>
         _editor.GetPreviewFrameJpegAsync(path, seconds, media.Width, media.Height, media.Duration, regions, cancellationToken);
+
+    public Task<EditorPreviewSegment> CreateEditorPreviewSegmentAsync(
+        VideoEditRequest request,
+        double requestedStart,
+        CancellationToken cancellationToken) =>
+        _editor.CreatePreviewSegmentAsync(request, requestedStart, cancellationToken);
+
+    public Task DeleteEditorPreviewSegmentAsync(string? path, CancellationToken cancellationToken = default) =>
+        _editor.DeletePreviewSegmentAsync(path, cancellationToken);
 
     public async Task<OcrResult> RecognizeFrameAsync(string path, double at, OcrRegion region, string device, CancellationToken cancellationToken) =>
         await _ocrScanner.RecognizeFrameAsync(path, at, region, device, cancellationToken);

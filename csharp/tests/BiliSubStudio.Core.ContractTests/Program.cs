@@ -41,6 +41,7 @@ internal static class Program
         ("subtitle VTT and SRT normalize before export", SubtitleTimedTextContractAsync),
         ("editor filter graph preserves normalized regions", EditorFilterContractAsync),
         ("editor audio modes map to exact FFmpeg policy", EditorAudioContractAsync),
+        ("editor processed preview slices the exact render graph and audio policy", EditorProcessedPreviewContractAsync),
         ("editor document preserves identity through undo redo", EditorDocumentContractAsync),
         ("editor project persists and quarantines corrupt state", EditorProjectContractAsync),
         ("editor SRT keeps exact blocks order and timecodes", EditorSubtitleDocumentContractAsync),
@@ -531,6 +532,50 @@ internal static class Program
         var graph = VideoEditorService.BuildFilter(new VideoEditRequest(
             "in.mp4", ".", "out.mp4", 1920, 1080, 10, [], null, new EditorAudioSettings("mute", 0)));
         Equal("[0:v]null[vout]", graph);
+        return Task.CompletedTask;
+    }
+
+    private static Task EditorProcessedPreviewContractAsync()
+    {
+        var sliceMethod = typeof(VideoEditorService).GetMethod("BuildPreviewSlice", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing editor processed-preview slice policy");
+        var argumentsMethod = typeof(VideoEditorService).GetMethod("BuildPreviewArguments", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing editor processed-preview FFmpeg policy");
+        var subtitle = new EditorSubtitleBurn(
+        [
+            new EditorSubtitleCue("cue-a", "1", "00:01:39,000 --> 00:01:42,000", 99, 102, "你好", "Xin chào"),
+            new EditorSubtitleCue("cue-b", "2", "00:01:45,000 --> 00:01:48,000", 105, 108, "再见", "Tạm biệt"),
+            new EditorSubtitleCue("cue-c", "3", "00:01:52,000 --> 00:01:55,000", 112, 115, "以后", "Sau này"),
+        ], new EditorSubtitlePlacement(.1, .7, .8, .2));
+        var request = new VideoEditRequest(
+            "input.mp4", ".", "out.mp4", 3840, 2160, 300,
+            [
+                new EditRegion(.1, .2, .3, .25, "blur", 18, false, 98, 105, "crossing"),
+                new EditRegion(.6, .1, .2, .1, "cover", 8, false, 130, 140, "outside"),
+            ],
+            subtitle,
+            new EditorAudioSettings("duck", .35));
+        var sliced = (VideoEditRequest)sliceMethod.Invoke(null, [request, 100d, 12d, 1280, 720])!;
+        Equal(1280, sliced.SourceWidth);
+        Equal(720, sliced.SourceHeight);
+        Equal(12d, sliced.Duration);
+        Equal(1, sliced.Regions.Count);
+        Equal(0d, sliced.Regions[0].Start);
+        Equal(5d, sliced.Regions[0].End);
+        Equal(2, sliced.Subtitle?.Cues.Count ?? 0);
+        Equal(0d, sliced.Subtitle!.Cues[0].Start);
+        Equal(2d, sliced.Subtitle.Cues[0].End);
+        Equal(5d, sliced.Subtitle.Cues[1].Start);
+        Equal(8d, sliced.Subtitle.Cues[1].End);
+        var graph = VideoEditorService.BuildFilter(sliced, "C:\\Temp\\preview.ass");
+        True(graph.Contains("enable='between(t,0.000,5.000)'", StringComparison.Ordinal), "preview effect time was not shifted to proxy time");
+        var ffmpeg = string.Join(' ', (IReadOnlyList<string>)argumentsMethod.Invoke(null,
+            ["input.mp4", "preview.mp4", graph, sliced.Audio, 100d, 12d])!);
+        True(ffmpeg.Contains("-ss 100.000 -i input.mp4 -t 12.000", StringComparison.Ordinal), "preview source window drift");
+        True(ffmpeg.Contains("-filter_complex", StringComparison.Ordinal) && ffmpeg.Contains("-map [vout]", StringComparison.Ordinal), "preview bypassed render graph");
+        True(ffmpeg.Contains("-preset ultrafast", StringComparison.Ordinal) && ffmpeg.Contains("-pix_fmt yuv420p", StringComparison.Ordinal), "preview proxy is not native-player compatible");
+        True(ffmpeg.Contains("-af asetpts=PTS-STARTPTS,volume=0.350", StringComparison.Ordinal), "preview bypassed timestamp reset/source-audio duck policy");
+        True(ffmpeg.Contains("-movflags +faststart", StringComparison.Ordinal), "preview MP4 faststart contract missing");
         return Task.CompletedTask;
     }
 

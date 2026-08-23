@@ -252,16 +252,25 @@ for owner, source in (("OCR", ocr), ("Editor", editor)):
 for marker in (
     "SubtitleModeButton", "BlurModeButton", "AudioModeButton", "ExportModeButton",
     "SubtitleInspectorPanel", "BlurInspectorPanel", "AudioInspectorPanel", "ExportInspectorPanel",
-    "RunLayoutSmokeAsync", "ImportSrtButton.IsEnabled = idle;", "PrepareAiButton.IsEnabled = idle;",
+    "RunLayoutSmokeAsync", "ImportSrtButton.IsEnabled = idle && !_playerMode;", "PrepareAiButton.IsEnabled = idle && !_playerMode;",
     "_inspectorMode == InspectorMode.Blur", "_inspectorMode == InspectorMode.Subtitle",
+    "Xem bản chỉnh (12 giây)", "CreateEditorPreviewSegmentAsync", "Overlay.Visibility = Visibility.Collapsed",
 ):
     require(marker in editor, f"Editor icon-mode/action-state contract missing {marker}")
 require("ImportSrtButton.IsEnabled = idle && hasMedia" not in editor,
         "Editor SRT picker regressed to requiring a selected video")
 require("PrepareAiButton.IsEnabled = idle && hasMedia" not in editor,
         "Editor AI preparation regressed to requiring a selected video")
-for marker in ("CreateAsrButton", "CreateAsr_Click", "CreateAsrButton.IsEnabled = idle && hasMedia;", "PollAsrJobAsync", "EditorAsrProject"):
+for marker in ("CreateAsrButton", "CreateAsr_Click", "CreateAsrButton.IsEnabled = editable;", "PollAsrJobAsync", "EditorAsrProject"):
     require(marker in editor, f"Editor video-only ASR UI/state contract missing {marker}")
+
+editor_service = read(CSHARP / "src/BiliSubStudio.Core/Editor/VideoEditorService.cs")
+for marker in (
+    "CreatePreviewSegmentAsync", "BuildPreviewSlice", "BuildPreviewArguments", "BuildFilterCore",
+    'Path.Combine(paths.Temp, "Editor", "Preview")', '"-preset", "ultrafast"',
+    "BuildAudioArgumentsCore(audio, mp4: true, resetTimestamps: true)", "DeletePreviewSegmentAsync",
+):
+    require(marker in editor_service, f"Editor processed-preview/render parity contract missing {marker}")
 
 asr_installer = read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalAsrInstaller.cs")
 asr_service = read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalAsrService.cs")

@@ -54,7 +54,7 @@
                         <Grid ColumnSpacing="8">
                             <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
                             <TextBlock x:Name="ClockText" VerticalAlignment="Center" Style="{StaticResource MutedTextStyle}" Text="00:00 / 00:00" />
-                            <Button Grid.Column="1" x:Name="PlaybackButton" AccessKey="P" Click="Playback_Click" Content="Phát video" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />
+                            <Button Grid.Column="1" x:Name="PlaybackButton" AccessKey="P" Click="Playback_Click" Content="Xem bản chỉnh (12 giây)" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />
                             <Button Grid.Column="2" x:Name="FullscreenButton" AccessKey="F" Click="Fullscreen_Click" Content="Toàn màn hình" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />
                             <Button Grid.Column="3" x:Name="RefreshFrameButton" Click="Refresh_Click" Content="Làm mới hiệu ứng" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />
                         </Grid>
@@ -186,16 +186,16 @@
                                             <TextBlock Style="{StaticResource CardTitleStyle}" Text="Âm thanh" />
                                             <Border HorizontalAlignment="Right" Padding="8,3" Background="{ThemeResource AccentSoftBrush}" CornerRadius="9"><TextBlock FontSize="10" Foreground="{ThemeResource AccentPrimaryBrush}" Text="Nguồn gốc" /></Border>
                                         </Grid>
-                                        <TextBlock Style="{StaticResource MutedTextStyle}" Text="Nghe thử và chọn mức âm thanh gốc được giữ lại khi xuất. Thiết lập này không thay đổi file nguồn." TextWrapping="Wrap" />
+                                        <TextBlock Style="{StaticResource MutedTextStyle}" Text="Nút Xem bản chỉnh áp dụng đúng mức âm thanh gốc sẽ dùng khi xuất. Thiết lập này không thay đổi file nguồn." TextWrapping="Wrap" />
                                         <ToggleSwitch x:Name="PreviewMuteToggle" Header="Tắt tiếng khi xem trước" Toggled="PreviewMute_Toggled" />
                                         <Slider x:Name="PreviewVolumeSlider" Header="Âm lượng nghe thử (%)" Minimum="0" Maximum="100" Value="100" ValueChanged="PreviewVolume_ValueChanged" />
-                                        <ComboBox x:Name="SourceAudioModeBox" Header="Âm thanh gốc khi xuất" SelectedIndex="0" SelectionChanged="SourceAudioMode_SelectionChanged">
+                                        <ComboBox x:Name="SourceAudioModeBox" Header="Âm thanh gốc trong bản chỉnh" SelectedIndex="0" SelectionChanged="SourceAudioMode_SelectionChanged">
                                             <ComboBoxItem Tag="keep" Content="Giữ nguyên" />
                                             <ComboBoxItem Tag="duck" Content="Giảm âm lượng" />
                                             <ComboBoxItem Tag="mute" Content="Tắt tiếng gốc" />
                                         </ComboBox>
                                         <Slider x:Name="SourceAudioGainSlider" Header="Mức tiếng gốc khi giảm (%)" Minimum="5" Maximum="95" Value="35" IsEnabled="False" ValueChanged="SourceAudioGain_ValueChanged" />
-                                        <TextBlock x:Name="AudioStatusText" Style="{StaticResource MutedTextStyle}" Text="Video xuất sẽ giữ nguyên âm thanh gốc." TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
+                                        <TextBlock x:Name="AudioStatusText" Style="{StaticResource MutedTextStyle}" Text="Preview và video xuất sẽ giữ nguyên âm thanh gốc." TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
                                     </StackPanel>
                                 </Border>
                             </StackPanel>
@@ -226,7 +226,7 @@
                 </ScrollViewer>
             </Grid>
             <Border Grid.Row="2" Padding="12,8" Background="{ThemeResource RaisedSurfaceBrush}" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="1" CornerRadius="9">
-                <TextBlock Style="{StaticResource MutedTextStyle}" Text="Project, vị trí phụ đề và checkpoint dịch được tự lưu. Hủy AI giữ các câu đã hoàn tất để lần sau tiếp tục; SRT gốc không bị sửa." />
+                <TextBlock Style="{StaticResource MutedTextStyle}" Text="Khung chỉnh phản hồi ngay; Xem bản chỉnh phát đoạn đã ghép hiệu ứng, phụ đề và âm thanh bằng cùng graph với lúc xuất. Project/checkpoint tự lưu; SRT gốc không bị sửa." />
             </Border>
         </Grid>
     </ScrollViewer>

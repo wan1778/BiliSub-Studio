@@ -1,6 +1,6 @@
 # Editor All-in-One for Chinese film localization
 
-Status: M1 foundation, the requested M2 common path, the icon-mode workspace and the first persisted source-audio policy are implemented on the draft Editor branch. The owner explicitly deferred incremental field testing until the requested Editor branch is complete. Windows candidate gates remain mandatory for every checkpoint; this does not authorize a merge or public release.
+Status: M1 foundation, the requested M2 common path, the icon-mode workspace, the first persisted source-audio policy, video-only Chinese ASR and processed A/V preview are implemented on the draft Editor branch. The owner explicitly deferred incremental field testing until the requested Editor branch is complete. Windows candidate gates remain mandatory for every checkpoint; this does not authorize a merge or public release.
 
 Date: 2026-08-23
 
@@ -344,6 +344,8 @@ Before atomic promotion, Core verifies through ffprobe and bounded decode checks
 - Separate Vietnamese SRT output plus real ASS/FFmpeg hardsub using the selected placement.
 
 The fixed preview now uses a compact Subtitle/Blur/Audio/Export icon rail. SRT selection and AI preparation no longer depend on choosing a video first; a preselected validated SRT is attached when the video project opens. Subtitle and Blur modes own separate pointer interaction so their rectangles cannot steal each other's gestures. Schema-4 projects persist ASR provenance plus source-audio keep/duck/mute and render maps the audio state to an exact FFmpeg policy.
+
+Preview is no longer allowed to switch to an unprocessed source playback path. The editable still frame remains the low-latency direct-manipulation surface; `Xem bản chỉnh` renders a bounded 12-second proxy from the playhead through the same effect/ASS/audio builders as final output. Its proxy clock is remapped to source time, all edit controls lock while playing, and returning/ending releases and deletes the app-owned temporary MP4 before the editable frame is refreshed. M4/M5 voice and stem work must plug into this same preview/render audio graph so users can hear the real mix before export.
 
 The previous incremental M2 field-test proposal is retained as an automated/regression acceptance target, but the owner requested one consolidated field test after the full Editor branch instead of testing each intermediate candidate.
 

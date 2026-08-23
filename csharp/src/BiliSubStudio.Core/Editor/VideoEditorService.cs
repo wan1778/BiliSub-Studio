@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using BiliSubStudio.Core.Configuration;
 using BiliSubStudio.Core.IO;
 using BiliSubStudio.Core.Jobs;
 using BiliSubStudio.Core.Processes;
@@ -24,15 +25,20 @@ public sealed record EditorSubtitleBurn(IReadOnlyList<EditorSubtitleCue> Cues, E
 
 public sealed record VideoEditResult(string OutputPath);
 
+public sealed record EditorPreviewSegment(string Path, double SourceStart, double Duration);
+
 public sealed class VideoEditorService
 {
     private readonly ToolManager _tools;
     private readonly ProcessRunner _processes;
+    private readonly string _previewDirectory;
 
-    public VideoEditorService(ToolManager tools, ProcessRunner processes)
+    public VideoEditorService(AppPaths paths, ToolManager tools, ProcessRunner processes)
     {
+        ArgumentNullException.ThrowIfNull(paths);
         _tools = tools;
         _processes = processes;
+        _previewDirectory = Path.Combine(paths.Temp, "Editor", "Preview");
     }
 
     public async Task<VideoEditResult> RunAsync(AppJob job, VideoEditRequest request)
@@ -40,6 +46,7 @@ public sealed class VideoEditorService
         var token = job.CancellationToken;
         var input = Path.GetFullPath(request.InputPath.Trim());
         if (!File.Exists(input) || new FileInfo(input).Length <= 0) throw new FileNotFoundException("Video nguồn không hợp lệ.", input);
+        if (!HasEdit(request)) throw new ArgumentException("Hãy tạo vùng hiệu ứng, nạp bản Vietsub hoặc thay đổi âm thanh để xuất video.");
         var outputDirectory = string.IsNullOrWhiteSpace(request.OutputDirectory) ? Path.GetDirectoryName(input)! : Path.GetFullPath(request.OutputDirectory.Trim());
         Directory.CreateDirectory(outputDirectory);
         var defaultExtension = Path.GetExtension(input).ToLowerInvariant() is ".mkv" or ".mp4" ? Path.GetExtension(input).ToLowerInvariant() : ".mp4";
@@ -87,13 +94,152 @@ public sealed class VideoEditorService
         finally { TryDelete(temporary); if (subtitleAss is not null) TryDelete(subtitleAss); }
     }
 
+    public async Task<EditorPreviewSegment> CreatePreviewSegmentAsync(
+        VideoEditRequest request,
+        double requestedStart,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var input = Path.GetFullPath(request.InputPath.Trim());
+        if (!File.Exists(input) || new FileInfo(input).Length <= 0) throw new FileNotFoundException("Video nguồn không hợp lệ.", input);
+        if (!double.IsFinite(request.Duration) || request.Duration <= 0) throw new InvalidDataException("Thời lượng video không hợp lệ.");
+
+        var (sourceStart, segmentDuration) = PreviewWindow(request.Duration, requestedStart);
+        var (previewWidth, previewHeight) = PreviewDimensions(request.SourceWidth, request.SourceHeight);
+        var sliced = BuildPreviewSlice(request, sourceStart, segmentDuration, previewWidth, previewHeight);
+        Directory.CreateDirectory(_previewDirectory);
+        CleanupStalePreviewFiles();
+        var identity = Guid.NewGuid().ToString("N");
+        var output = Path.Combine(_previewDirectory, identity + ".mp4");
+        var temporary = Path.Combine(_previewDirectory, identity + ".rendering.mp4");
+        var subtitleAss = sliced.Subtitle is null ? null : Path.Combine(_previewDirectory, identity + ".ass");
+        TryDelete(output);
+        TryDelete(temporary);
+        try
+        {
+            if (subtitleAss is not null)
+                await File.WriteAllTextAsync(subtitleAss, BuildAss(sliced.Subtitle!, previewWidth, previewHeight), new UTF8Encoding(encoderShouldEmitUTF8Identifier: true), cancellationToken);
+            var graph = $"[0:v]setpts=PTS-STARTPTS,scale={previewWidth}:{previewHeight}:flags=lanczos,setsar=1[previewbase];" +
+                BuildFilterCore(sliced, subtitleAss, "previewbase", requireEdit: false);
+            var ffmpeg = await _tools.EnsureFfmpegAsync(cancellationToken);
+            var args = BuildPreviewArguments(input, temporary, graph, sliced.Audio, sourceStart, segmentDuration);
+            var result = await _processes.RunAsync(ffmpeg, args, cancellationToken);
+            if (result.ExitCode != 0) throw new InvalidOperationException($"FFmpeg preview Editor: {result.StandardError.Trim()}");
+            if (!File.Exists(temporary) || new FileInfo(temporary).Length <= 0) throw new InvalidDataException("Video xem trước đã xử lý bị rỗng.");
+            File.Move(temporary, output);
+            return new EditorPreviewSegment(output, sourceStart, segmentDuration);
+        }
+        finally
+        {
+            TryDelete(temporary);
+            if (subtitleAss is not null) TryDelete(subtitleAss);
+        }
+    }
+
+    public async Task DeletePreviewSegmentAsync(string? path, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return;
+        var candidate = Path.GetFullPath(path.Trim());
+        var root = Path.GetFullPath(_previewDirectory).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        if (!candidate.StartsWith(root, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(Path.GetExtension(candidate), ".mp4", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Không được xóa file ngoài vùng preview Editor do ứng dụng quản lý.");
+        for (var attempt = 0; attempt < 6; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                File.Delete(candidate);
+                return;
+            }
+            catch (FileNotFoundException) { return; }
+            catch (DirectoryNotFoundException) { return; }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+            if (attempt < 5) await Task.Delay(TimeSpan.FromMilliseconds(80 * (attempt + 1)), cancellationToken);
+        }
+    }
+
+    internal static VideoEditRequest BuildPreviewSlice(
+        VideoEditRequest request,
+        double sourceStart,
+        double segmentDuration,
+        int previewWidth,
+        int previewHeight)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (!double.IsFinite(sourceStart) || sourceStart < 0 || !double.IsFinite(segmentDuration) || segmentDuration <= 0)
+            throw new ArgumentException("Khoảng thời gian preview không hợp lệ.");
+        if (previewWidth <= 0 || previewHeight <= 0) throw new ArgumentException("Kích thước preview không hợp lệ.");
+        var sourceEnd = sourceStart + segmentDuration;
+        var regions = request.Regions
+            .Where(region => region.WholeVideo || region.End > sourceStart && region.Start < sourceEnd)
+            .Select(region => region.WholeVideo
+                ? region with { Start = 0, End = segmentDuration }
+                : region with
+                {
+                    Start = Math.Max(0, region.Start - sourceStart),
+                    End = Math.Min(segmentDuration, region.End - sourceStart),
+                })
+            .ToArray();
+        EditorSubtitleBurn? subtitle = null;
+        if (request.Subtitle is not null)
+        {
+            var cues = request.Subtitle.Cues
+                .Where(cue => cue.End > sourceStart && cue.Start < sourceEnd)
+                .Select(cue => cue with
+                {
+                    Start = Math.Max(0, cue.Start - sourceStart),
+                    End = Math.Min(segmentDuration, cue.End - sourceStart),
+                })
+                .ToArray();
+            if (cues.Length > 0) subtitle = request.Subtitle with { Cues = cues };
+        }
+        return request with
+        {
+            SourceWidth = previewWidth,
+            SourceHeight = previewHeight,
+            Duration = segmentDuration,
+            Regions = regions,
+            Subtitle = subtitle,
+        };
+    }
+
+    internal static IReadOnlyList<string> BuildPreviewArguments(
+        string input,
+        string output,
+        string graph,
+        EditorAudioSettings? audio,
+        double sourceStart,
+        double segmentDuration)
+    {
+        var arguments = new List<string>
+        {
+            "-y", "-hide_banner", "-loglevel", "error", "-nostdin",
+            "-ss", sourceStart.ToString("0.000", CultureInfo.InvariantCulture),
+            "-i", input,
+            "-t", segmentDuration.ToString("0.000", CultureInfo.InvariantCulture),
+            "-filter_complex", graph,
+            "-map", "[vout]", "-map_metadata", "-1", "-sn", "-dn",
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23", "-tune", "zerolatency", "-pix_fmt", "yuv420p",
+        };
+        arguments.AddRange(BuildAudioArgumentsCore(audio, mp4: true, resetTimestamps: true));
+        arguments.AddRange(["-movflags", "+faststart", "-nostats", output]);
+        return arguments;
+    }
+
     internal static IReadOnlyList<string> BuildAudioArguments(EditorAudioSettings? settings, bool mp4)
+        => BuildAudioArgumentsCore(settings, mp4, resetTimestamps: false);
+
+    private static IReadOnlyList<string> BuildAudioArgumentsCore(EditorAudioSettings? settings, bool mp4, bool resetTimestamps)
     {
         var audio = EditorProjectStore.NormalizeAudio(settings);
         if (audio.SourceMode == "mute") return ["-an"];
         var arguments = new List<string> { "-map", "0:a?" };
-        if (audio.SourceMode == "duck")
-            arguments.AddRange(["-af", "volume=" + audio.SourceGain.ToString("0.000", CultureInfo.InvariantCulture)]);
+        var filters = new List<string>();
+        if (resetTimestamps) filters.Add("asetpts=PTS-STARTPTS");
+        if (audio.SourceMode == "duck") filters.Add("volume=" + audio.SourceGain.ToString("0.000", CultureInfo.InvariantCulture));
+        if (filters.Count > 0) arguments.AddRange(["-af", string.Join(',', filters)]);
         if (mp4 || audio.SourceMode == "duck") arguments.AddRange(["-c:a", "aac", "-b:a", "192k"]);
         else arguments.AddRange(["-c:a", "copy"]);
         return arguments;
@@ -139,14 +285,17 @@ public sealed class VideoEditorService
     }
 
     public static string BuildFilter(VideoEditRequest request, string? subtitleAssPath = null)
+        => BuildFilterCore(request, subtitleAssPath, "0:v", requireEdit: true);
+
+    private static string BuildFilterCore(VideoEditRequest request, string? subtitleAssPath, string inputLabel, bool requireEdit)
     {
         if (request.SourceWidth <= 0 || request.SourceHeight <= 0) throw new ArgumentException("Không đọc được kích thước video.");
-        var audio = EditorProjectStore.NormalizeAudio(request.Audio);
-        if (request.Regions.Count == 0 && request.Subtitle is null && audio.SourceMode == "keep")
+        if (string.IsNullOrWhiteSpace(inputLabel)) throw new ArgumentException("Nhãn video đầu vào không hợp lệ.");
+        if (requireEdit && !HasEdit(request))
             throw new ArgumentException("Hãy tạo vùng hiệu ứng, nạp bản Vietsub hoặc thay đổi âm thanh để xuất video.");
         if (request.Regions.Count > 32) throw new ArgumentException("Tối đa 32 vùng chỉnh video.");
         var parts = new List<string>();
-        var current = "0:v";
+        var current = inputLabel;
         for (var index = 0; index < request.Regions.Count; index++)
         {
             var region = request.Regions[index];
@@ -276,6 +425,42 @@ public sealed class VideoEditorService
         .Replace("]", "\\]", StringComparison.Ordinal)
         .Replace(",", "\\,", StringComparison.Ordinal)
         .Replace(";", "\\;", StringComparison.Ordinal);
+
+    private static bool HasEdit(VideoEditRequest request) =>
+        request.Regions.Count > 0 || request.Subtitle is not null || EditorProjectStore.NormalizeAudio(request.Audio).SourceMode != "keep";
+
+    private static (double Start, double Duration) PreviewWindow(double sourceDuration, double requestedStart)
+    {
+        const double targetDuration = 12;
+        var start = Math.Clamp(double.IsFinite(requestedStart) ? requestedStart : 0, 0, sourceDuration);
+        if (sourceDuration - start < Math.Min(2, sourceDuration)) start = Math.Max(0, sourceDuration - targetDuration);
+        var duration = Math.Min(targetDuration, sourceDuration - start);
+        if (duration <= 0) throw new InvalidDataException("Không còn đoạn video để tạo preview.");
+        return (start, duration);
+    }
+
+    private static (int Width, int Height) PreviewDimensions(int sourceWidth, int sourceHeight)
+    {
+        if (sourceWidth <= 0 || sourceHeight <= 0) throw new ArgumentException("Không đọc được kích thước video.");
+        const double maxLongSide = 1280;
+        var scale = Math.Min(1, maxLongSide / Math.Max(sourceWidth, sourceHeight));
+        static int Even(double value) => Math.Max(2, (int)Math.Round(value / 2, MidpointRounding.AwayFromZero) * 2);
+        return (Even(sourceWidth * scale), Even(sourceHeight * scale));
+    }
+
+    private void CleanupStalePreviewFiles()
+    {
+        try
+        {
+            var cutoff = DateTime.UtcNow - TimeSpan.FromDays(1);
+            foreach (var path in Directory.EnumerateFiles(_previewDirectory))
+            {
+                try { if (File.GetLastWriteTimeUtc(path) < cutoff) File.Delete(path); }
+                catch { }
+            }
+        }
+        catch { }
+    }
 
     private static void TryDelete(string path) { try { File.Delete(path); } catch { } }
 }
