@@ -39,7 +39,6 @@
                 <ColumnDefinition x:Name="DetailsColumn" Width="1.15*" MinWidth="190" MaxWidth="330" />
             </Grid.ColumnDefinitions>
 
-            <!-- SOURCE -->
             <Border Grid.Column="0" Padding="10" Background="{ThemeResource RaisedSurfaceBrush}" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="1" CornerRadius="11">
                 <Grid>
                     <Grid.RowDefinitions>
@@ -66,21 +65,20 @@
                             <Rectangle Height="1" Fill="{ThemeResource BorderBrush}" />
                             <StackPanel Spacing="6">
                                 <TextBlock FontWeight="SemiBold" Text="Ảnh / logo" />
-                                <ListView x:Name="ImageSourceList" MinHeight="74" MaxHeight="130" SelectionChanged="ImageList_SelectionChanged" AutomationProperties.Name="Danh sách ảnh và logo nguồn" />
+                                <ListView x:Name="ImageSourceList" MinHeight="74" MaxHeight="130" AutomationProperties.Name="Danh sách ảnh và logo nguồn" />
                                 <TextBlock FontSize="10" Foreground="{ThemeResource SecondaryTextBrush}" Text="Tối đa 8 ảnh. Chỉnh vị trí ở tool Ảnh/Logo." TextWrapping="Wrap" />
                             </StackPanel>
                             <Rectangle Height="1" Fill="{ThemeResource BorderBrush}" />
                             <StackPanel Spacing="6">
                                 <TextBlock FontWeight="SemiBold" Text="Project" />
                                 <TextBlock Style="{StaticResource MutedTextStyle}" Text="Tự lưu thay đổi · source media luôn giữ nguyên." TextWrapping="Wrap" />
-                                <ToggleSwitch x:Name="EditorAutoCompositeToggle" Header="Tự cập nhật preview" IsOn="True" Toggled="EditorAutoComposite_Toggled" />
+                                <ToggleSwitch x:Name="EditorAutoCompositeToggle" Header="Tự cập nhật preview" IsOn="True" />
                             </StackPanel>
                         </StackPanel>
                     </ScrollViewer>
                 </Grid>
             </Border>
 
-            <!-- PLAYER -->
             <Grid x:Name="PreviewPane" Grid.Column="1">
                 <Border x:Name="PreviewSurface" Background="Black" BorderBrush="{ThemeResource StrongBorderBrush}" BorderThickness="1" CornerRadius="12">
                     <Grid AutomationProperties.Name="Player Editor">
@@ -90,10 +88,7 @@
                                 PointerPressed="Overlay_PointerPressed" PointerMoved="Overlay_PointerMoved"
                                 PointerReleased="Overlay_PointerReleased" PointerCanceled="Overlay_PointerCanceled"
                                 AutomationProperties.Name="Vùng chỉnh trực tiếp" />
-                        <Canvas x:Name="ImageOverlayCanvas" Background="Transparent" IsHitTestVisible="False"
-                                PointerPressed="ImageOverlay_PointerPressed" PointerMoved="ImageOverlay_PointerMoved"
-                                PointerReleased="ImageOverlay_PointerReleased" PointerCanceled="ImageOverlay_PointerCanceled"
-                                AutomationProperties.Name="Ảnh và logo trên preview" />
+                        <Canvas x:Name="ImageOverlayCanvas" Background="Transparent" IsHitTestVisible="False" AutomationProperties.Name="Ảnh và logo trên preview" />
 
                         <Border x:Name="PlayerControlBar" Height="48" VerticalAlignment="Bottom" Margin="8" Padding="8,5" Background="#D9000000" CornerRadius="9">
                             <Grid ColumnSpacing="7">
@@ -105,7 +100,7 @@
                                     <ColumnDefinition Width="72" />
                                     <ColumnDefinition Width="36" />
                                 </Grid.ColumnDefinitions>
-                                <Button x:Name="PlayerPlayPauseButton" Click="PlayerPlayPause_Click" Content="▶" IsEnabled="False" Padding="0" HorizontalContentAlignment="Center" ToolTipService.ToolTip="Phát / tạm dừng preview" />
+                                <Button x:Name="PlayerPlayPauseButton" Content="▶" IsEnabled="False" Padding="0" HorizontalContentAlignment="Center" ToolTipService.ToolTip="Phát / tạm dừng preview" />
                                 <TextBlock Grid.Column="1" x:Name="ClockText" VerticalAlignment="Center" Foreground="White" FontSize="11" Text="00:00 / 00:00" />
                                 <Slider Grid.Column="2" x:Name="Timeline" Minimum="0" IsEnabled="False" ValueChanged="Timeline_ValueChanged" VerticalAlignment="Center" AutomationProperties.Name="Vị trí video" />
                                 <ToggleButton Grid.Column="3" x:Name="PreviewMuteToggle" Toggled="PreviewMute_Toggled" Content="🔊" Padding="0" HorizontalContentAlignment="Center" ToolTipService.ToolTip="Tắt / bật tiếng" />
@@ -117,7 +112,6 @@
                 </Border>
             </Grid>
 
-            <!-- DETAILS -->
             <Border Grid.Column="2" Padding="9" Background="{ThemeResource RaisedSurfaceBrush}" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="1" CornerRadius="11">
                 <Grid>
                     <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
@@ -126,12 +120,12 @@
                         <Grid x:Name="ToolSelectorGrid" ColumnSpacing="5" RowSpacing="5">
                             <Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
                             <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
-                            <ToggleButton x:Name="SubtitleModeButton" Grid.Row="0" Grid.Column="0" Height="32" Tag="Subtitle" Click="ShellTool_Click" Content="Subtitle" IsChecked="True" />
-                            <ToggleButton x:Name="BlurModeButton" Grid.Row="0" Grid.Column="1" Height="32" Tag="Blur" Click="ShellTool_Click" Content="Blur" />
-                            <ToggleButton x:Name="AudioModeButton" Grid.Row="1" Grid.Column="0" Height="32" Tag="Audio" Click="ShellTool_Click" Content="Audio" />
-                            <ToggleButton x:Name="VoiceModeButton" Grid.Row="1" Grid.Column="1" Height="32" Tag="Voice" Click="ShellTool_Click" Content="Voice" />
-                            <ToggleButton x:Name="ImageModeButton" Grid.Row="2" Grid.Column="0" Height="32" Tag="Image" Click="ShellTool_Click" Content="Ảnh/Logo" />
-                            <ToggleButton x:Name="ExportModeButton" Grid.Row="2" Grid.Column="1" Height="32" Tag="Export" Click="ShellTool_Click" Content="Export" />
+                            <ToggleButton x:Name="SubtitleModeButton" Grid.Row="0" Grid.Column="0" Height="32" Tag="Subtitle" Content="Subtitle" IsChecked="True" />
+                            <ToggleButton x:Name="BlurModeButton" Grid.Row="0" Grid.Column="1" Height="32" Tag="Blur" Content="Blur" />
+                            <ToggleButton x:Name="AudioModeButton" Grid.Row="1" Grid.Column="0" Height="32" Tag="Audio" Content="Audio" />
+                            <ToggleButton x:Name="VoiceModeButton" Grid.Row="1" Grid.Column="1" Height="32" Tag="Voice" Content="Voice" />
+                            <ToggleButton x:Name="ImageModeButton" Grid.Row="2" Grid.Column="0" Height="32" Tag="Image" Content="Ảnh/Logo" />
+                            <ToggleButton x:Name="ExportModeButton" Grid.Row="2" Grid.Column="1" Height="32" Tag="Export" Content="Export" />
                         </Grid>
                     </StackPanel>
 
@@ -179,8 +173,8 @@
                                     <NumberBox Grid.Column="1" x:Name="EndBox" Header="Kết thúc (s)" IsEnabled="False" ValueChanged="EditInput_ValueChanged" />
                                 </Grid>
                                 <Grid ColumnSpacing="5"><Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
-                                    <Button x:Name="EditorUseCurrentStartButton" Click="EditorUseCurrentStart_Click" Content="Lấy thời điểm → đầu" Style="{StaticResource SecondaryButtonStyle}" />
-                                    <Button Grid.Column="1" x:Name="EditorUseCurrentEndButton" Click="EditorUseCurrentEnd_Click" Content="Lấy thời điểm → cuối" Style="{StaticResource SecondaryButtonStyle}" />
+                                    <Button x:Name="EditorUseCurrentStartButton" Content="Lấy thời điểm → đầu" Style="{StaticResource SecondaryButtonStyle}" />
+                                    <Button Grid.Column="1" x:Name="EditorUseCurrentEndButton" Content="Lấy thời điểm → cuối" Style="{StaticResource SecondaryButtonStyle}" />
                                 </Grid>
                                 <TextBlock x:Name="RegionValidationText" Style="{StaticResource MutedTextStyle}" Text="Chọn video rồi kéo để tạo vùng." TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
                                 <Button x:Name="AddRegionButton" Click="AddRegion_Click" Content="Thêm vùng" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />
@@ -223,22 +217,22 @@
                             <StackPanel x:Name="ImageInspectorPanel" Spacing="10" Visibility="Collapsed">
                                 <TextBlock FontSize="14" FontWeight="SemiBold" Text="Ảnh / Logo" />
                                 <TextBlock Style="{StaticResource MutedTextStyle}" Text="PNG, JPG, JPEG. Kéo và resize trực tiếp trên Player." TextWrapping="Wrap" />
-                                <Button x:Name="AddImageButton" Click="AddImage_Click" Content="Thêm ảnh / logo" />
+                                <Button x:Name="AddImageButton" Content="Thêm ảnh / logo" />
                                 <TextBlock x:Name="ImageStatusText" Style="{StaticResource MutedTextStyle}" Text="Chưa có ảnh/logo." TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
                                 <Grid ColumnSpacing="5"><Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
-                                    <Button x:Name="ImageTopLeftButton" Click="ImageTopLeft_Click" Content="Góc trái" Style="{StaticResource SecondaryButtonStyle}" />
-                                    <Button Grid.Column="1" x:Name="ImageTopRightButton" Click="ImageTopRight_Click" Content="Góc phải" Style="{StaticResource SecondaryButtonStyle}" />
+                                    <Button x:Name="ImageTopLeftButton" Content="Góc trái" Style="{StaticResource SecondaryButtonStyle}" />
+                                    <Button Grid.Column="1" x:Name="ImageTopRightButton" Content="Góc phải" Style="{StaticResource SecondaryButtonStyle}" />
                                 </Grid>
                                 <Grid ColumnSpacing="5"><Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
-                                    <NumberBox x:Name="ImageXBox" Header="X (%)" Minimum="0" Maximum="100" ValueChanged="ImageGeometry_ValueChanged" />
-                                    <NumberBox Grid.Column="1" x:Name="ImageYBox" Header="Y (%)" Minimum="0" Maximum="100" ValueChanged="ImageGeometry_ValueChanged" />
+                                    <NumberBox x:Name="ImageXBox" Header="X (%)" Minimum="0" Maximum="100" />
+                                    <NumberBox Grid.Column="1" x:Name="ImageYBox" Header="Y (%)" Minimum="0" Maximum="100" />
                                 </Grid>
                                 <Grid ColumnSpacing="5"><Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
-                                    <NumberBox x:Name="ImageWidthBox" Header="Rộng (%)" Minimum="0" Maximum="100" ValueChanged="ImageGeometry_ValueChanged" />
-                                    <NumberBox Grid.Column="1" x:Name="ImageHeightBox" Header="Cao (%)" Minimum="0" Maximum="100" ValueChanged="ImageGeometry_ValueChanged" />
+                                    <NumberBox x:Name="ImageWidthBox" Header="Rộng (%)" Minimum="0" Maximum="100" />
+                                    <NumberBox Grid.Column="1" x:Name="ImageHeightBox" Header="Cao (%)" Minimum="0" Maximum="100" />
                                 </Grid>
-                                <Slider x:Name="ImageOpacitySlider" Header="Độ hiện (%)" Minimum="5" Maximum="100" Value="100" ValueChanged="ImageOpacity_ValueChanged" />
-                                <Button x:Name="RemoveImageButton" Click="RemoveImage_Click" Content="Xóa ảnh/logo đang chọn" IsEnabled="False" Style="{StaticResource DangerButtonStyle}" />
+                                <Slider x:Name="ImageOpacitySlider" Header="Độ hiện (%)" Minimum="5" Maximum="100" Value="100" />
+                                <Button x:Name="RemoveImageButton" Content="Xóa ảnh/logo đang chọn" IsEnabled="False" Style="{StaticResource DangerButtonStyle}" />
                             </StackPanel>
 
                             <StackPanel x:Name="ExportInspectorPanel" Spacing="10" Visibility="Collapsed">
@@ -247,8 +241,8 @@
                                 <TextBlock FontWeight="SemiBold" Text="Nơi lưu" />
                                 <TextBlock x:Name="EditorOutputPathText" Style="{StaticResource MutedTextStyle}" TextWrapping="Wrap" />
                                 <Grid ColumnSpacing="5"><Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
-                                    <Button x:Name="EditorChooseOutputButton" Click="EditorChooseOutput_Click" Content="Chọn thư mục" Style="{StaticResource SecondaryButtonStyle}" />
-                                    <Button Grid.Column="1" x:Name="EditorOpenOutputButton" Click="EditorOpenOutput_Click" Content="Mở thư mục" Style="{StaticResource SecondaryButtonStyle}" />
+                                    <Button x:Name="EditorChooseOutputButton" Content="Chọn thư mục" Style="{StaticResource SecondaryButtonStyle}" />
+                                    <Button Grid.Column="1" x:Name="EditorOpenOutputButton" Content="Mở thư mục" Style="{StaticResource SecondaryButtonStyle}" />
                                 </Grid>
                                 <TextBox x:Name="FileNameBox" Header="Tên file đầu ra" PlaceholderText="video_edited.mp4" TextChanged="FileNameBox_TextChanged" />
                                 <Grid ColumnSpacing="5"><Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
