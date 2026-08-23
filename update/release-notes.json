@@ -4,7 +4,8 @@
     "Tab Chỉnh video dùng một thanh điều khiển gọn nằm ngay trong Preview; tắt transport mặc định của WinUI và ẩn bộ timeline/control trùng lặp bên ngoài.",
     "Preview không còn dừng sau 12 giây: BiliSub tự nối các đoạn cache xử lý theo vị trí phát để người dùng xem xuyên suốt toàn bộ thời lượng video.",
     "Mở video, Chọn SRT và Thêm ảnh/logo được bọc lỗi đầy đủ; FileOpenPicker có hộp chọn file Win32 dự phòng để tránh tình trạng bấm mà không chọn được file.",
+    "Phụ đề có danh sách câu ngay trong inspector: chọn câu đưa Preview tới đúng timecode, sửa lời Trung/Việt, khóa câu, dịch lại riêng câu và lưu SRT Việt mà không đổi số thứ tự/timecode.",
     "Công cụ Ảnh/logo được khởi tạo đúng khi mở tab Chỉnh video, giữ PNG/JPG/JPEG, kéo/resize trực tiếp trên Preview và xuất không ghi đè nguồn.",
-    "Startup/layout gate kiểm tra trực tiếp runtime Editor: SRT phải clickable, Image/Logo phải tồn tại, native transport phải tắt và seek phải nằm trong thanh Preview duy nhất."
+    "Startup/layout gate kiểm tra trực tiếp runtime Editor: SRT phải clickable, editor từng câu và Image/Logo phải tồn tại, native transport phải tắt và seek phải nằm trong thanh Preview duy nhất."
   ]
 }
