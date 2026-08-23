@@ -40,15 +40,15 @@ internal sealed class LocalTtsInstaller : IDisposable
 {
     internal const string PiperVersion = "1.4.2";
     internal const string PiperWheel = "https://files.pythonhosted.org/packages/c5/5a/fda959ca07554a8ec3e380b168e79fff16f3020f4956c356a613616c1994/piper_tts-1.4.2-cp39-abi3-win_amd64.whl#sha256=9c4a3a11f5889ea9d0df4414dce2bd9bee5ce7d9cf604c8fd5e307441d4c031f";
-    internal const string VoiceRepository = "sannht/vi_voice";
-    internal const string VoiceRevision = "62e57b18157ed213b3863a7a8a35b14d3404554b";
-    internal const string MaleVoice = "deepman3909";
-    internal const string FemaleVoice = "calmwoman3688";
-    internal const long VoiceModelBytes = 63_516_050;
-    internal const long VoiceConfigBytes = 4_855;
-    internal const string MaleModelSha256 = "1fb3a404e9927c87367d4175e8cad24ffc6d9959af29888c38682e5ec621056c";
-    internal const string FemaleModelSha256 = "8db60d8afc50dc0921fd3a1b0b942813f44cc3744dbe2534617f2b8726096e7e";
-    internal const string VoiceConfigSha256 = "971f57f8d504223fee5b40d664f503cf769baf7db21f7d2ae0554a75d07de2f8";
+    internal const string VoiceRepository = "rhasspy/piper-voices";
+    internal const string VoiceRevision = "3d796cc2f2c884b3517c527507e084f7bb245aea";
+    internal const string BaseVoice = "vi_VN-vais1000-medium";
+    internal const string MaleVoice = "vais1000-male-profile-v1";
+    internal const string FemaleVoice = "vais1000-female-profile-v1";
+    internal const long VoiceModelBytes = 63_201_294;
+    internal const long VoiceConfigBytes = 4_860;
+    internal const string VoiceModelSha256 = "ec7c89e2c85f4d1edc24b6120c18aaf1bda614f06b511567eb9c7c0de15e2dab";
+    internal const string VoiceConfigSha256 = "fafb9da1354ed4b77c31af228ed41fb41cd825c14cffa105454b25e6ae751ee0";
 
     private readonly AppPaths _paths;
     private readonly OcrInstaller _pythonBootstrap;
@@ -77,11 +77,9 @@ internal sealed class LocalTtsInstaller : IDisposable
     private string Python => Path.Combine(VenvRoot, "Scripts", "python.exe");
     private string RuntimeManifest => Path.Combine(RuntimeRoot, "install.json");
     private string Worker => Path.Combine(Root, "worker.py");
-    private string ModelRoot => Path.Combine(Root, "Models", "nghitts-" + VoiceRevision[..12]);
-    private string MaleModelPath => Path.Combine(ModelRoot, MaleVoice + ".onnx");
-    private string MaleConfigPath => Path.Combine(ModelRoot, MaleVoice + ".onnx.json");
-    private string FemaleModelPath => Path.Combine(ModelRoot, FemaleVoice + ".onnx");
-    private string FemaleConfigPath => Path.Combine(ModelRoot, FemaleVoice + ".onnx.json");
+    private string ModelRoot => Path.Combine(Root, "Models", "piper-vais1000-" + VoiceRevision[..12]);
+    private string VoiceModelPath => Path.Combine(ModelRoot, BaseVoice + ".onnx");
+    private string VoiceConfigPath => Path.Combine(ModelRoot, BaseVoice + ".onnx.json");
 
     public LocalTtsStatus Status
     {
@@ -90,21 +88,23 @@ internal sealed class LocalTtsInstaller : IDisposable
             try
             {
                 var runtime = _runtimeReady ??= RuntimeMatches();
+                var voiceReady = FileMatches(VoiceModelPath, VoiceModelBytes, VoiceModelSha256)
+                    && FileMatches(VoiceConfigPath, VoiceConfigBytes, VoiceConfigSha256);
                 return new LocalTtsStatus(
                     runtime,
-                    FileMatches(MaleModelPath, VoiceModelBytes, MaleModelSha256) && FileMatches(MaleConfigPath, VoiceConfigBytes, VoiceConfigSha256),
-                    FileMatches(FemaleModelPath, VoiceModelBytes, FemaleModelSha256) && FileMatches(FemaleConfigPath, VoiceConfigBytes, VoiceConfigSha256),
-                    "Piper local + NghiTTS ONNX",
+                    voiceReady,
+                    voiceReady,
+                    "Piper local + VAIS-1000 acoustic profiles",
                     PiperVersion,
                     MaleVoice,
                     FemaleVoice,
-                    VoiceModelBytes * 2 + VoiceConfigBytes * 2,
+                    VoiceModelBytes + VoiceConfigBytes,
                     _lastError);
             }
             catch (Exception error)
             {
-                return new LocalTtsStatus(false, false, false, "Piper local + NghiTTS ONNX", PiperVersion, MaleVoice, FemaleVoice,
-                    VoiceModelBytes * 2 + VoiceConfigBytes * 2, error.Message);
+                return new LocalTtsStatus(false, false, false, "Piper local + VAIS-1000 acoustic profiles", PiperVersion, MaleVoice, FemaleVoice,
+                    VoiceModelBytes + VoiceConfigBytes, error.Message);
             }
         }
     }
@@ -153,15 +153,15 @@ internal sealed class LocalTtsInstaller : IDisposable
                 if (FileMatches(destination, file.Size, file.Sha256)) continue;
                 var start = Progress(25 + completed / (double)total * 72);
                 var end = Progress(25 + (completed + file.Size) / (double)total * 72);
-                job.Set("tts-model", start, $"Đang tải voice NghiTTS local · {completed / 1024d / 1024:0}/{total / 1024d / 1024:0} MB...");
+                job.Set("tts-model", start, $"Đang tải voice Piper VAIS-1000 đã xác minh · {completed / 1024d / 1024:0}/{total / 1024d / 1024:0} MB...");
                 await DownloadVerifiedAsync(file.Url, destination, file.Size, file.Sha256, start, end, total, completed, job);
                 WriteStamp(destination, file.Size, file.Sha256);
                 completed += file.Size;
             }
 
             if (!Status.Ready) throw new InvalidOperationException(Status.Error ?? "Voice local chưa hoàn chỉnh sau khi cài.");
-            job.Set("tts-ready", Progress(99), $"Voice Việt local sẵn sàng · {MaleVoice} (nam) + {FemaleVoice} (nữ).");
-            return new LocalTtsRuntime(Python, worker, MaleModelPath, MaleConfigPath, FemaleModelPath, FemaleConfigPath,
+            job.Set("tts-ready", Progress(99), "Voice Việt local sẵn sàng · profile Nam tổng hợp + Nữ gốc từ VAIS-1000.");
+            return new LocalTtsRuntime(Python, worker, VoiceModelPath, VoiceConfigPath, VoiceModelPath, VoiceConfigPath,
                 new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
                 {
                     ["PYTHONUTF8"] = "1",
@@ -180,13 +180,11 @@ internal sealed class LocalTtsInstaller : IDisposable
 
     private static IReadOnlyList<TtsModelFile> ModelFiles()
     {
-        static string Url(string name) => $"https://huggingface.co/{VoiceRepository}/resolve/{VoiceRevision}/tts-model/{name}?download=true";
+        static string Url(string name) => $"https://huggingface.co/{VoiceRepository}/resolve/{VoiceRevision}/vi/vi_VN/vais1000/medium/{name}?download=true";
         return
         [
-            new TtsModelFile(MaleVoice + ".onnx", VoiceModelBytes, MaleModelSha256, Url(MaleVoice + ".onnx")),
-            new TtsModelFile(MaleVoice + ".onnx.json", VoiceConfigBytes, VoiceConfigSha256, Url(MaleVoice + ".onnx.json")),
-            new TtsModelFile(FemaleVoice + ".onnx", VoiceModelBytes, FemaleModelSha256, Url(FemaleVoice + ".onnx")),
-            new TtsModelFile(FemaleVoice + ".onnx.json", VoiceConfigBytes, VoiceConfigSha256, Url(FemaleVoice + ".onnx.json")),
+            new TtsModelFile(BaseVoice + ".onnx", VoiceModelBytes, VoiceModelSha256, Url(BaseVoice + ".onnx")),
+            new TtsModelFile(BaseVoice + ".onnx.json", VoiceConfigBytes, VoiceConfigSha256, Url(BaseVoice + ".onnx.json")),
         ];
     }
 
@@ -303,7 +301,7 @@ internal sealed class LocalTtsInstaller : IDisposable
         if (!string.Equals(actual, expectedSha, StringComparison.Ordinal))
         {
             TryDelete(partial);
-            throw new InvalidDataException("SHA-256 voice NghiTTS không khớp; đã xóa file không tin cậy.");
+            throw new InvalidDataException("SHA-256 voice Piper VAIS-1000 không khớp; đã xóa file không tin cậy.");
         }
         File.Move(partial, destination, overwrite: true);
     }
