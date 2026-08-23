@@ -1,0 +1,67 @@
+name: Editor core lifecycle fix
+
+on:
+  push:
+    branches:
+      - editor-core-cleanup
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: editor-core-cleanup
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Make constructor the only Editor initialization lifecycle
+        shell: python
+        run: |
+          from pathlib import Path
+
+          root = Path('.')
+          pages = root / 'csharp/src/BiliSubStudio.App/Pages'
+          bootstrap = pages / 'EditorPage.ParityBootstrap.cs'
+          editor = pages / 'EditorPage.xaml.cs'
+          validator = root / 'csharp/scripts/validate_csharp_migration.py'
+
+          bootstrap.write_text('''namespace BiliSubStudio.App.Pages;\n\npublic sealed partial class EditorPage\n{\n    private bool _editorCoreInitialized;\n\n    private void InitializeEditorCore()\n    {\n        if (_editorCoreInitialized) return;\n        _editorCoreInitialized = true;\n\n        EnsureEditorParityInitialized();\n        EnsureImageFeatureInitialized();\n        PreviewPlayer.AreTransportControlsEnabled = false;\n        SetInspectorMode(_inspectorMode);\n        RefreshEditorActions();\n    }\n}\n''', encoding='utf-8', newline='\n')
+
+          text = editor.read_text(encoding='utf-8')
+          old = '''        InitializeComponent();\n        PreviewPlayer.AreTransportControlsEnabled = false;\n        LayoutUpdated += EditorPage_LayoutUpdated;\n'''
+          new = '''        InitializeComponent();\n        InitializeEditorCore();\n        LayoutUpdated += EditorPage_LayoutUpdated;\n'''
+          if old not in text:
+              raise SystemExit('constructor lifecycle marker missing')
+          editor.write_text(text.replace(old, new, 1), encoding='utf-8', newline='\n')
+
+          text = validator.read_text(encoding='utf-8')
+          old = '''    "OnNavigatedTo(", "Render_Click(sender, e)", "EditorParity_Loaded", "HookEditorLivePreviewEvents",\n'''
+          new = '''    "OnNavigatedTo(", "OnApplyTemplate(", "Render_Click(sender, e)", "EditorParity_Loaded", "HookEditorLivePreviewEvents",\n'''
+          if old not in text:
+              raise SystemExit('validator forbidden lifecycle marker missing')
+          text = text.replace(old, new, 1)
+          anchor = '''require("EnsureEditorParityInitialized();" in editor_partials and "EnsureImageFeatureInitialized();" in editor_partials,\n        "Editor must initialize parity and image tools from one lifecycle owner")\n'''
+          addition = anchor + '''require("InitializeComponent();\\n        InitializeEditorCore();" in editor,\n        "Editor constructor must own the single initialization lifecycle")\n'''
+          if anchor not in text:
+              raise SystemExit('validator lifecycle owner marker missing')
+          validator.write_text(text.replace(anchor, addition, 1), encoding='utf-8', newline='\n')
+      - name: Refresh generated code map
+        run: python csharp/scripts/generate_csharp_code_map.py
+      - name: Validate cleanup contracts
+        run: python csharp/scripts/validate_csharp_migration.py
+      - name: Commit lifecycle fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add csharp/src/BiliSubStudio.App/Pages/EditorPage.ParityBootstrap.cs \
+                  csharp/src/BiliSubStudio.App/Pages/EditorPage.xaml.cs \
+                  csharp/scripts/validate_csharp_migration.py \
+                  docs/migration/CSHARP_CODE_MAP.generated.md
+          git commit -m "editor: make constructor the single core lifecycle"
+          git push origin HEAD:editor-core-cleanup
