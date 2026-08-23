@@ -1,6 +1,6 @@
 # C# Editor M4 implemented call map
 
-Status: production path implemented on `editor-all-in-one`; Windows CI/field verification gates remain.
+Status: production path implemented on `editor-all-in-one`; consolidated Windows field verification remains.
 
 ```text
 Video + original audio
@@ -15,7 +15,7 @@ Video + original audio
             faster_whisper(... local_files_only=True)
             word_timestamps=True
             VAD
-            per-segment F0 feature routing
+            conservative F0 acoustic routing
             -> words[] + male_like/female_like/uncertain + confidence
        -> resumable checkpoint schema 2
        -> EditorSpeechAnalysisDocument.SaveAsync
@@ -30,7 +30,7 @@ External/generated Chinese SRT
        derive speech envelope
        derive leading/trailing silence
        derive internal pauses
-       derive advisory voice routing per cue
+       combine advisory acoustic routing per cue
 
 Chinese SRT
   -> LocalSubtitleTranslationService
@@ -45,23 +45,27 @@ EditorPage.GenerateTts_Click
        -> VietnameseTtsTextNormalizer
        -> voice routing
             manual cue override wins
-            male_like confidence >= threshold -> deepman3909
-            female_like confidence >= threshold -> calmwoman3688
+            male_like confidence >= threshold -> male acoustic profile
+            female_like confidence >= threshold -> female/base profile
             uncertain -> closest fallback + review flag
        -> BuildRhythmGroups from Whisper pauses
        -> LocalTtsInstaller
-            app-managed Python 3.12
+            app-managed Python
             pinned piper-tts 1.4.2 Windows wheel + SHA-256
-            pinned NghiTTS-compatible ONNX/config files + SHA-256
+            one pinned official Piper VAIS-1000 ONNX/config pair
+            rhasspy/piper-voices@3d796cc2f2c884b3517c527507e084f7bb245aea
+            exact size + SHA-256 verification
        -> internal/tts/worker.py
-            synth baseline
-            measure duration
+            load VAIS model once
+            female route -> base synthesis
+            male route -> synthetic pitch factor 0.84 + tempo compensation
+            measure actual profiled WAV duration
             bounded Piper length_scale
             measure
             bounded FFmpeg atempo
             measure
             fit/review
-            clip cache
+            selective clip cache
             300-second block cache
             seekable voice-master.flac
        -> EditorTtsProject + EditorVoiceTrack
@@ -102,8 +106,11 @@ Final export
   -> same CurrentEditRequest
   -> BiliSubApplication.StartEditor
   -> VideoEditorService.RunAsync
+       preflight output-drive free space
        same BuildAss
        same BuildVoiceAudioFilter
+       runtime low-disk guard
+       output decode/duration/audio validation
        H.264 + AAC final output
 ```
 
@@ -119,7 +126,7 @@ EditorProject
 
   Tts: EditorTtsProject
     engine/version
-    male/female voice ids
+    male/female profile ids
     result manifest + SHA-256
     EditorVoiceTrack
     cue/review counts
@@ -133,6 +140,22 @@ EditorProject
 
 Missing speech/TTS cache files selectively invalidate those derived fields. A missing derived cache must not quarantine an otherwise valid Editor project.
 
+## Exact final voice pin
+
+```text
+Piper runtime: 1.4.2
+Voice repository: rhasspy/piper-voices
+Model revision: 3d796cc2f2c884b3517c527507e084f7bb245aea
+Base voice: vi_VN-vais1000-medium
+Model: 63,201,294 bytes / ec7c89e2c85f4d1edc24b6120c18aaf1bda614f06b511567eb9c7c0de15e2dab
+Config: 4,860 bytes / fafb9da1354ed4b77c31af228ed41fb41cd825c14cffa105454b25e6ae751ee0
+Female route: vais1000-female-profile-v1
+Male route: vais1000-male-profile-v1 / pitch factor 0.84
+Cache voice revision: <model revision>-profile-v1
+```
+
+VAIS-1000 attribution is shipped in `THIRD_PARTY_NOTICES.md`.
+
 ## Explicitly absent paths
 
 ```text
@@ -142,12 +165,7 @@ NO Hugging Face gated diarization token
 NO Demucs/stem separation
 NO paid TTS API
 NO localhost/WebView NghiTTS app
+NO sannht/vi_voice production weights
+NO deepman3909/calmwoman3688 production download
 NO MediaPlayer-only fake voice preview
 ```
-
-## Third-party gate
-
-- Piper runtime: GPL-3.0-or-later, separate local process.
-- NghiTTS reference source: Apache-2.0.
-- selected `sannht/vi_voice` weight index currently says `license: unknown` for the pinned generic weights.
-- therefore public release stays blocked until voice-weight redistribution/provenance is resolved.
