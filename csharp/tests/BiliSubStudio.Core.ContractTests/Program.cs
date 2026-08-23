@@ -40,6 +40,7 @@ internal static class Program
         ("subtitle JSON exports deterministic SRT", SubtitleContractAsync),
         ("subtitle VTT and SRT normalize before export", SubtitleTimedTextContractAsync),
         ("editor filter graph preserves normalized regions", EditorFilterContractAsync),
+        ("editor audio modes map to exact FFmpeg policy", EditorAudioContractAsync),
         ("editor document preserves identity through undo redo", EditorDocumentContractAsync),
         ("editor project persists and quarantines corrupt state", EditorProjectContractAsync),
         ("editor SRT keeps exact blocks order and timecodes", EditorSubtitleDocumentContractAsync),
@@ -508,6 +509,30 @@ internal static class Program
         return Task.CompletedTask;
     }
 
+    private static Task EditorAudioContractAsync()
+    {
+        var method = typeof(VideoEditorService).GetMethod("BuildAudioArguments", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing editor audio argument policy");
+        static string Arguments(MethodInfo method, EditorAudioSettings settings, bool mp4) =>
+            string.Join(' ', (IReadOnlyList<string>)method.Invoke(null, [settings, mp4])!);
+
+        var keep = Arguments(method, new EditorAudioSettings("keep", .2), mp4: false);
+        True(keep.Contains("-map 0:a?", StringComparison.Ordinal), "keep mode lost optional source audio map");
+        True(keep.Contains("-c:a copy", StringComparison.Ordinal), "MKV keep mode must copy source audio");
+        True(!keep.Contains("-af", StringComparison.Ordinal), "keep mode unexpectedly filters audio");
+
+        var duck = Arguments(method, new EditorAudioSettings("duck", .35), mp4: true);
+        True(duck.Contains("-af volume=0.350", StringComparison.Ordinal), "duck mode gain drift");
+        True(duck.Contains("-c:a aac -b:a 192k", StringComparison.Ordinal), "duck mode must encode filtered audio");
+
+        var mute = Arguments(method, new EditorAudioSettings("mute", 1), mp4: true);
+        Equal("-an", mute);
+        var graph = VideoEditorService.BuildFilter(new VideoEditRequest(
+            "in.mp4", ".", "out.mp4", 1920, 1080, 10, [], null, new EditorAudioSettings("mute", 0)));
+        Equal("[0:v]null[vout]", graph);
+        return Task.CompletedTask;
+    }
+
     private static Task EditorDocumentContractAsync()
     {
         var document = new EditorRegionDocument();
@@ -555,7 +580,13 @@ internal static class Program
                 "Dịch Trung Tu Tiên",
                 TranslationSkillBundle.BuiltInSha256,
                 Path.Combine(root, "source.vi.srt"));
-            await store.SaveAsync(created with { FileName = "episode-edited.mp4", Regions = [region], Subtitle = subtitleProject }, CancellationToken.None);
+            await store.SaveAsync(created with
+            {
+                FileName = "episode-edited.mp4",
+                Regions = [region],
+                Subtitle = subtitleProject,
+                Audio = new EditorAudioSettings("duck", .35),
+            }, CancellationToken.None);
 
             var reopened = await store.LoadOrCreateAsync(video, 1920, 1080, 120, CancellationToken.None);
             Equal("episode-edited.mp4", reopened.FileName);
@@ -564,6 +595,8 @@ internal static class Program
             Equal(.1, reopened.Regions[0].X);
             Equal("Xin chào", reopened.Subtitle!.Cues[0].VietnameseText);
             Equal(.72, reopened.Subtitle.Placement.Y);
+            Equal("duck", reopened.Audio!.SourceMode);
+            Equal(.35, reopened.Audio.SourceGain);
 
             var projectPath = store.GetProjectPath(video);
             await File.WriteAllTextAsync(projectPath, "{broken-json");

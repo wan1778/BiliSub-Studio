@@ -18,6 +18,11 @@ public sealed record EditorSubtitlePlacement(double X, double Y, double Width, d
     public static EditorSubtitlePlacement Default { get; } = new(.08, .70, .84, .22);
 }
 
+public sealed record EditorAudioSettings(string SourceMode, double SourceGain)
+{
+    public static EditorAudioSettings Default { get; } = new("keep", 1);
+}
+
 public sealed record EditorSubtitleProject(
     string SourcePath,
     long SourceSize,
@@ -37,11 +42,12 @@ public sealed record EditorProject(
     string FileName,
     IReadOnlyList<EditRegion> Regions,
     EditorSubtitleProject? Subtitle,
-    DateTimeOffset UpdatedUtc);
+    DateTimeOffset UpdatedUtc,
+    EditorAudioSettings? Audio = null);
 
 public sealed class EditorProjectStore
 {
-    public const int CurrentSchema = 2;
+    public const int CurrentSchema = 3;
     private const long MaxProjectBytes = 64L * 1024 * 1024;
     private readonly string _directory;
     private readonly SemaphoreSlim _gate = new(1, 1);
@@ -78,10 +84,17 @@ public sealed class EditorProjectStore
                 await using var stream = new FileStream(projectPath, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
                 var loaded = await JsonSerializer.DeserializeAsync<EditorProject>(stream, _json, cancellationToken)
                     ?? throw new InvalidDataException("Project Editor rỗng.");
-                if (loaded.Schema is not (1 or CurrentSchema) || !string.Equals(loaded.Id, id, StringComparison.Ordinal))
+                if (loaded.Schema is not (1 or 2 or CurrentSchema) || !string.Equals(loaded.Id, id, StringComparison.Ordinal))
                     throw new InvalidDataException("Project Editor không đúng phiên bản hoặc nguồn.");
                 var regions = NormalizeRegions(loaded.Regions);
-                return loaded with { Schema = CurrentSchema, Source = source, Regions = regions, Subtitle = NormalizeSubtitle(loaded.Subtitle) };
+                return loaded with
+                {
+                    Schema = CurrentSchema,
+                    Source = source,
+                    Regions = regions,
+                    Subtitle = NormalizeSubtitle(loaded.Subtitle),
+                    Audio = NormalizeAudio(loaded.Audio),
+                };
             }
             catch (OperationCanceledException) { throw; }
             catch
@@ -98,7 +111,8 @@ public sealed class EditorProjectStore
             Path.GetFileNameWithoutExtension(source.Path) + "_edited.mp4",
             [],
             null,
-            DateTimeOffset.UtcNow);
+            DateTimeOffset.UtcNow,
+            EditorAudioSettings.Default);
     }
 
     public async Task SaveAsync(EditorProject project, CancellationToken cancellationToken)
@@ -113,6 +127,7 @@ public sealed class EditorProjectStore
             FileName = string.IsNullOrWhiteSpace(project.FileName) ? project.Name + "_edited.mp4" : project.FileName.Trim(),
             Regions = NormalizeRegions(project.Regions),
             Subtitle = NormalizeSubtitle(project.Subtitle),
+            Audio = NormalizeAudio(project.Audio),
             UpdatedUtc = DateTimeOffset.UtcNow,
         };
 
@@ -215,6 +230,22 @@ public sealed class EditorProjectStore
             SkillName = subtitle.SkillName?.Trim() ?? string.Empty,
             SkillSha256 = subtitle.SkillSha256?.Trim().ToLowerInvariant() ?? string.Empty,
             OutputPath = subtitle.OutputPath?.Trim() ?? string.Empty,
+        };
+    }
+
+    public static EditorAudioSettings NormalizeAudio(EditorAudioSettings? audio)
+    {
+        if (audio is null) return EditorAudioSettings.Default;
+        var mode = audio.SourceMode?.Trim().ToLowerInvariant();
+        if (mode is not ("keep" or "duck" or "mute"))
+            throw new InvalidDataException("Project Editor chứa chế độ âm thanh không hợp lệ.");
+        if (!double.IsFinite(audio.SourceGain))
+            throw new InvalidDataException("Project Editor chứa mức âm thanh không hợp lệ.");
+        return mode switch
+        {
+            "keep" => new EditorAudioSettings("keep", 1),
+            "mute" => new EditorAudioSettings("mute", 0),
+            _ => new EditorAudioSettings("duck", Math.Clamp(audio.SourceGain, .05, .95)),
         };
     }
 

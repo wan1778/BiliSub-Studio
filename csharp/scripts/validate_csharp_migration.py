@@ -249,6 +249,17 @@ editor = read(CSHARP / "src/BiliSubStudio.App/Pages/EditorPage.xaml") + read(CSH
 for owner, source in (("OCR", ocr), ("Editor", editor)):
     for marker in ("MediaPlayerElement", 'AreTransportControlsEnabled="True"', "IsFullWindow", "MediaSource.CreateFromStorageFile", "PositionChanged"):
         require(marker in source, f"{owner} native playback/fullscreen contract missing {marker}")
+for marker in (
+    "SubtitleModeButton", "BlurModeButton", "AudioModeButton", "ExportModeButton",
+    "SubtitleInspectorPanel", "BlurInspectorPanel", "AudioInspectorPanel", "ExportInspectorPanel",
+    "RunLayoutSmokeAsync", "ImportSrtButton.IsEnabled = idle;", "PrepareAiButton.IsEnabled = idle;",
+    "_inspectorMode == InspectorMode.Blur", "_inspectorMode == InspectorMode.Subtitle",
+):
+    require(marker in editor, f"Editor icon-mode/action-state contract missing {marker}")
+require("ImportSrtButton.IsEnabled = idle && hasMedia" not in editor,
+        "Editor SRT picker regressed to requiring a selected video")
+require("PrepareAiButton.IsEnabled = idle && hasMedia" not in editor,
+        "Editor AI preparation regressed to requiring a selected video")
 
 main_xaml = read(CSHARP / "src/BiliSubStudio.App/MainWindow.xaml")
 main_code = read(CSHARP / "src/BiliSubStudio.App/MainWindow.xaml.cs")
@@ -258,6 +269,8 @@ for marker in ('IsPaneToggleButtonVisible="True"', 'PaneDisplayMode="Left"', 'Op
     require(marker in main_xaml, f"stable navigation contract missing {marker}")
 for marker in ("RunLayoutSmokeAsync", "layout-smoke-page", "new SizeInt32(800, 600)", "new SizeInt32(1_500, 900)"):
     require(marker in main_code, f"multi-viewport layout smoke contract missing {marker}")
+require("await editorPage.RunLayoutSmokeAsync()" in main_code,
+        "multi-viewport layout smoke no longer exercises Editor icon rail/action state")
 
 app_xaml = read(CSHARP / "src/BiliSubStudio.App/App.xaml")
 require("ResourceDictionary.ThemeDictionaries" in app_xaml and 'x:Key="Light"' in app_xaml and "XamlControlsResources" in app_xaml,

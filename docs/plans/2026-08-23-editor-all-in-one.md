@@ -1,6 +1,6 @@
 # Editor All-in-One for Chinese film localization
 
-Status: M1 foundation and the requested M2 common path are implemented on the draft Editor branch; Windows candidate and real-machine field gates are still required. This does not authorize a public release.
+Status: M1 foundation, the requested M2 common path, the icon-mode workspace and the first persisted source-audio policy are implemented on the draft Editor branch. The owner explicitly deferred incremental field testing until the requested Editor branch is complete. Windows candidate gates remain mandatory for every checkpoint; this does not authorize a merge or public release.
 
 Date: 2026-08-23
 
@@ -343,7 +343,9 @@ Before atomic promotion, Core verifies through ffprobe and bounded decode checks
 - Whole-source terminology/character analysis, overlapping cue batches, strict JSON validation and atomic checkpoint/resume.
 - Separate Vietnamese SRT output plus real ASS/FFmpeg hardsub using the selected placement.
 
-This is the first useful vertical slice and should be field-tested before adding speech synthesis.
+The fixed preview now uses a compact Subtitle/Blur/Audio/Export icon rail. SRT selection and AI preparation no longer depend on choosing a video first; a preselected validated SRT is attached when the video project opens. Subtitle and Blur modes own separate pointer interaction so their rectangles cannot steal each other's gestures. Schema-3 projects persist source-audio keep/duck/mute and render maps it to an exact FFmpeg policy.
+
+The previous incremental M2 field-test proposal is retained as an automated/regression acceptance target, but the owner requested one consolidated field test after the full Editor branch instead of testing each intermediate candidate.
 
 ### M3 - Video-only Chinese ASR
 
@@ -390,7 +392,7 @@ This is the first useful vertical slice and should be field-tested before adding
 
 ## 15. Field-test sequence
 
-Field testing is milestone-specific and short. The user is not asked to test unfinished downstream stages.
+Automated gates remain milestone-specific. Real-machine field testing is consolidated after the requested Editor branch is complete; the user is not asked to test intermediate downstream stages.
 
 M1:
 

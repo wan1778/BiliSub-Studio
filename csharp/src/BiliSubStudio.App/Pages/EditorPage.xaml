@@ -62,7 +62,26 @@
                 </Grid>
 
                 <ScrollViewer x:Name="InspectorScroll" Grid.Column="1" HorizontalScrollBarVisibility="Disabled">
-                    <StackPanel Spacing="12">
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="50" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                        <Border Padding="4,6" Background="{ThemeResource RaisedSurfaceBrush}" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="1" CornerRadius="11">
+                            <StackPanel HorizontalAlignment="Center" Spacing="8">
+                                <ToggleButton x:Name="SubtitleModeButton" Width="40" Height="40" Padding="0" IsChecked="True" Tag="Subtitle" Click="InspectorMode_Click" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" ToolTipService.ToolTip="Phụ đề và Vietsub" AutomationProperties.Name="Chế độ phụ đề và Vietsub">
+                                    <SymbolIcon Symbol="Font" />
+                                </ToggleButton>
+                                <ToggleButton x:Name="BlurModeButton" Width="40" Height="40" Padding="0" Tag="Blur" Click="InspectorMode_Click" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" ToolTipService.ToolTip="Blur, Mosaic và che vùng" AutomationProperties.Name="Chế độ Blur, Mosaic và che vùng">
+                                    <SymbolIcon Symbol="Filter" />
+                                </ToggleButton>
+                                <ToggleButton x:Name="AudioModeButton" Width="40" Height="40" Padding="0" Tag="Audio" Click="InspectorMode_Click" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" ToolTipService.ToolTip="Âm thanh" AutomationProperties.Name="Chế độ âm thanh">
+                                    <SymbolIcon Symbol="Audio" />
+                                </ToggleButton>
+                                <ToggleButton x:Name="ExportModeButton" Width="40" Height="40" Padding="0" Tag="Export" Click="InspectorMode_Click" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" ToolTipService.ToolTip="Xuất video" AutomationProperties.Name="Chế độ xuất video">
+                                    <SymbolIcon Symbol="Save" />
+                                </ToggleButton>
+                            </StackPanel>
+                        </Border>
+                        <StackPanel Grid.Column="1" Spacing="12">
+                            <StackPanel x:Name="SubtitleInspectorPanel" Spacing="12">
                         <Border Style="{StaticResource CardBorderStyle}">
                             <StackPanel Spacing="7">
                                 <Grid>
@@ -81,12 +100,12 @@
                                     <Border HorizontalAlignment="Right" Padding="8,3" Background="{ThemeResource AccentSoftBrush}" CornerRadius="9"><TextBlock FontSize="10" Foreground="{ThemeResource AccentPrimaryBrush}" Text="AI local" /></Border>
                                 </Grid>
                                 <TextBlock Style="{StaticResource MutedTextStyle}" Text="Timecode, thứ tự và số block được khóa. Khung phụ đề trên preview luôn có thể kéo/resize khi không chạy tác vụ." TextWrapping="Wrap" />
-                                <Button x:Name="ImportSrtButton" Click="ImportSrt_Click" Content="Chọn SRT tiếng Trung" IsEnabled="False" />
+                                <Button x:Name="ImportSrtButton" Click="ImportSrt_Click" Content="Chọn SRT tiếng Trung" />
                                 <TextBlock x:Name="SrtPathText" Style="{StaticResource MutedTextStyle}" Text="Chưa chọn SRT." TextTrimming="CharacterEllipsis" />
                                 <TextBlock x:Name="SrtSummaryText" Style="{StaticResource MutedTextStyle}" Text="Skill: Dịch Trung Tu Tiên (tích hợp, đã khóa SHA-256)." TextWrapping="Wrap" />
                                 <Grid ColumnSpacing="7">
                                     <Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
-                                    <Button x:Name="PrepareAiButton" Click="PrepareAi_Click" Content="Chuẩn bị AI (~5 GB)" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />
+                                    <Button x:Name="PrepareAiButton" Click="PrepareAi_Click" Content="Chuẩn bị AI (~5 GB)" Style="{StaticResource SecondaryButtonStyle}" />
                                     <Button Grid.Column="1" x:Name="TranslateButton" Click="Translate_Click" Content="Vietsub SRT" IsEnabled="False" />
                                 </Grid>
                                 <Grid ColumnSpacing="7">
@@ -98,6 +117,9 @@
                                 <TextBlock x:Name="TranslationStatusText" Style="{StaticResource MutedTextStyle}" Text="Chưa chuẩn bị AI local." TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
                             </StackPanel>
                         </Border>
+                            </StackPanel>
+
+                            <StackPanel x:Name="BlurInspectorPanel" Spacing="12" Visibility="Collapsed">
 
                         <Border Style="{StaticResource CardBorderStyle}">
                             <StackPanel Spacing="9">
@@ -150,6 +172,30 @@
                                 <Button x:Name="RemoveRegionButton" Click="RemoveRegion_Click" Content="Xóa vùng chọn" IsEnabled="False" Style="{StaticResource DangerButtonStyle}" />
                             </StackPanel>
                         </Border>
+                            </StackPanel>
+
+                            <StackPanel x:Name="AudioInspectorPanel" Spacing="12" Visibility="Collapsed">
+                                <Border Style="{StaticResource CardBorderStyle}">
+                                    <StackPanel Spacing="9">
+                                        <Grid>
+                                            <TextBlock Style="{StaticResource CardTitleStyle}" Text="Âm thanh" />
+                                            <Border HorizontalAlignment="Right" Padding="8,3" Background="{ThemeResource AccentSoftBrush}" CornerRadius="9"><TextBlock FontSize="10" Foreground="{ThemeResource AccentPrimaryBrush}" Text="Nguồn gốc" /></Border>
+                                        </Grid>
+                                        <TextBlock Style="{StaticResource MutedTextStyle}" Text="Nghe thử và chọn mức âm thanh gốc được giữ lại khi xuất. Thiết lập này không thay đổi file nguồn." TextWrapping="Wrap" />
+                                        <ToggleSwitch x:Name="PreviewMuteToggle" Header="Tắt tiếng khi xem trước" Toggled="PreviewMute_Toggled" />
+                                        <Slider x:Name="PreviewVolumeSlider" Header="Âm lượng nghe thử (%)" Minimum="0" Maximum="100" Value="100" ValueChanged="PreviewVolume_ValueChanged" />
+                                        <ComboBox x:Name="SourceAudioModeBox" Header="Âm thanh gốc khi xuất" SelectedIndex="0" SelectionChanged="SourceAudioMode_SelectionChanged">
+                                            <ComboBoxItem Tag="keep" Content="Giữ nguyên" />
+                                            <ComboBoxItem Tag="duck" Content="Giảm âm lượng" />
+                                            <ComboBoxItem Tag="mute" Content="Tắt tiếng gốc" />
+                                        </ComboBox>
+                                        <Slider x:Name="SourceAudioGainSlider" Header="Mức tiếng gốc khi giảm (%)" Minimum="5" Maximum="95" Value="35" IsEnabled="False" ValueChanged="SourceAudioGain_ValueChanged" />
+                                        <TextBlock x:Name="AudioStatusText" Style="{StaticResource MutedTextStyle}" Text="Video xuất sẽ giữ nguyên âm thanh gốc." TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+
+                            <StackPanel x:Name="ExportInspectorPanel" Spacing="12" Visibility="Collapsed">
 
                         <Border Style="{StaticResource CardBorderStyle}">
                             <StackPanel Spacing="8">
@@ -169,7 +215,9 @@
                                 </Border>
                             </StackPanel>
                         </Border>
-                    </StackPanel>
+                            </StackPanel>
+                        </StackPanel>
+                    </Grid>
                 </ScrollViewer>
             </Grid>
             <Border Grid.Row="2" Padding="12,8" Background="{ThemeResource RaisedSurfaceBrush}" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="1" CornerRadius="9">

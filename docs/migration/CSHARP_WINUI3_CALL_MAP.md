@@ -277,12 +277,23 @@ OCRPage.Restart
 ## Video editor
 
 ```text
+EditorPage icon rail
+  -> Subtitle / Blur / Audio / Export buttons keep the native preview fixed
+  -> SetInspectorMode exposes exactly one right-side inspector
+  -> Windows layout smoke cycles every mode and requires SRT picker + AI preparation enabled before video selection
+  -> mode is interaction ownership, not cosmetic state
+       Subtitle -> only subtitle placement accepts pointer edits
+       Blur -> only Blur/Mosaic/Cover regions accept pointer edits
+       Audio/Export -> preview overlay is read-only
+
 EditorPage.Pick_Click
   -> MediaPreviewService.ProbeAsync
   -> EditorProjectStore.LoadOrCreateAsync
        -> Data/Projects/<source-path-sha256-prefix>.json
-       -> schema/source validation
+       -> schema-3/source validation; schema 1/2 migrate with default audio policy
        -> corrupt project quarantine
+  -> attach an SRT selected before the video, without discarding its validated cue document
+  -> restore source-audio mode/gain
   -> EditorRegionDocument.Reset
   -> native player for raw playback when directly compatible
   -> VideoEditorService.GetPreviewFrameJpegAsync for processed frame
@@ -302,10 +313,11 @@ EditorPage direct overlay
 
 EditorPage.ImportSrt_Click
   -> native FileOpenPicker (.srt)
+  -> remains available before a video/project is selected
   -> EditorSubtitleDocument.LoadAsync
        -> UTF-8/GBK decode with 32 MiB bound
        -> strict stable cue IDs; preserve block number/order/timing line
-  -> EditorProjectStore.SaveAsync
+  -> pending in-memory SRT until a video is selected, then EditorProjectStore.SaveAsync
        -> source SRT fingerprint + cues + normalized subtitle placement
 
 EditorPage subtitle placement overlay
@@ -350,12 +362,22 @@ EditorPage processed preview
   -> exact VideoEditorService.BuildFilter Blur/Mosaic/Cover graph
   -> app-owned FFmpeg MJPEG pipe
 
+EditorPage.Audio inspector
+  -> PreviewMute/PreviewVolume -> native MediaPlayer only
+  -> source output mode keep / duck / mute
+  -> EditorAudioSettings normalized and autosaved in schema-3 project
+  -> VideoEditorService.BuildAudioArguments
+       keep -> optional source-audio map; MKV may stream-copy
+       duck -> exact volume filter + AAC encode
+       mute -> no output audio stream
+
 EditorPage.Render_Click
   -> BiliSubApplication.StartEditor
   -> JobManager.Create(kind=editor, cleanupAwareCancel=true)
   -> VideoEditorService.RunAsync
   -> completed Vietsub cues + placement -> temporary ASS with exact cue timing
   -> same FFmpeg Blur/Mosaic/Cover graph and time guards + ASS hardsub
+  -> exact persisted keep/duck/mute source-audio policy
   -> temporary `.rendering` output
   -> non-empty verification -> final output
 

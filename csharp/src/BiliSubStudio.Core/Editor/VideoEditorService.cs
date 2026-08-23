@@ -17,7 +17,8 @@ public sealed record VideoEditRequest(
     int SourceHeight,
     double Duration,
     IReadOnlyList<EditRegion> Regions,
-    EditorSubtitleBurn? Subtitle = null);
+    EditorSubtitleBurn? Subtitle = null,
+    EditorAudioSettings? Audio = null);
 
 public sealed record EditorSubtitleBurn(IReadOnlyList<EditorSubtitleCue> Cues, EditorSubtitlePlacement Placement);
 
@@ -54,18 +55,19 @@ public sealed class VideoEditorService
             await File.WriteAllTextAsync(subtitleAss, BuildAss(request.Subtitle!, request.SourceWidth, request.SourceHeight), new UTF8Encoding(encoderShouldEmitUTF8Identifier: true), token);
         var graph = BuildFilter(request, subtitleAss);
         var ffmpeg = await _tools.EnsureFfmpegAsync(token);
+        var audio = EditorProjectStore.NormalizeAudio(request.Audio);
+        var mp4 = Path.GetExtension(output).Equals(".mp4", StringComparison.OrdinalIgnoreCase);
         var args = new List<string>
         {
             "-y", "-hide_banner", "-loglevel", "error", "-nostdin", "-i", input,
-            "-filter_complex", graph, "-map", "[vout]", "-map", "0:a?", "-map_metadata", "0",
+            "-filter_complex", graph, "-map", "[vout]", "-map_metadata", "0",
             "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p",
         };
-        if (Path.GetExtension(output).Equals(".mp4", StringComparison.OrdinalIgnoreCase))
-            args.AddRange(["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"]);
-        else args.AddRange(["-c:a", "copy"]);
+        args.AddRange(BuildAudioArguments(audio, mp4));
+        if (mp4) args.AddRange(["-movflags", "+faststart"]);
         args.AddRange(["-progress", "pipe:1", "-nostats", temporary]);
         job.Set("rendering", 1, "Đang chuẩn bị xuất video...");
-        job.Log($"Video Editor: {request.Regions.Count} vùng, output {output}");
+        job.Log($"Video Editor: {request.Regions.Count} vùng, audio={audio.SourceMode}/{audio.SourceGain:0.00}, output {output}");
         try
         {
             var result = await _processes.RunAsync(ffmpeg, args, token, standardOutputLine: line =>
@@ -83,6 +85,18 @@ public sealed class VideoEditorService
             return new VideoEditResult(output);
         }
         finally { TryDelete(temporary); if (subtitleAss is not null) TryDelete(subtitleAss); }
+    }
+
+    internal static IReadOnlyList<string> BuildAudioArguments(EditorAudioSettings? settings, bool mp4)
+    {
+        var audio = EditorProjectStore.NormalizeAudio(settings);
+        if (audio.SourceMode == "mute") return ["-an"];
+        var arguments = new List<string> { "-map", "0:a?" };
+        if (audio.SourceMode == "duck")
+            arguments.AddRange(["-af", "volume=" + audio.SourceGain.ToString("0.000", CultureInfo.InvariantCulture)]);
+        if (mp4 || audio.SourceMode == "duck") arguments.AddRange(["-c:a", "aac", "-b:a", "192k"]);
+        else arguments.AddRange(["-c:a", "copy"]);
+        return arguments;
     }
 
     public async Task<byte[]> GetPreviewFrameJpegAsync(
@@ -127,7 +141,9 @@ public sealed class VideoEditorService
     public static string BuildFilter(VideoEditRequest request, string? subtitleAssPath = null)
     {
         if (request.SourceWidth <= 0 || request.SourceHeight <= 0) throw new ArgumentException("Không đọc được kích thước video.");
-        if (request.Regions.Count == 0 && request.Subtitle is null) throw new ArgumentException("Hãy tạo vùng hiệu ứng hoặc nạp bản Vietsub để xuất video.");
+        var audio = EditorProjectStore.NormalizeAudio(request.Audio);
+        if (request.Regions.Count == 0 && request.Subtitle is null && audio.SourceMode == "keep")
+            throw new ArgumentException("Hãy tạo vùng hiệu ứng, nạp bản Vietsub hoặc thay đổi âm thanh để xuất video.");
         if (request.Regions.Count > 32) throw new ArgumentException("Tối đa 32 vùng chỉnh video.");
         var parts = new List<string>();
         var current = "0:v";

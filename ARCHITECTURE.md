@@ -83,6 +83,8 @@ WinUI pages own direct region interaction: create, select, move and resize over 
 
 `EditorProjectStore` persists one schema-versioned project per normalized source path under `Data/Projects`. Writes are serialized, write-through and replace the project file only after serialization completes. Invalid or corrupt project files are quarantined instead of partially loading into the UI. Resizing the preview/window only recalculates screen geometry; normalized source coordinates remain unchanged.
 
+The Editor keeps one fixed native preview and a compact right-side icon rail. Subtitle, Blur, Audio and Export each own exactly one inspector; switching mode cannot make the other ROI type consume the same pointer gesture. SRT selection and local-model preparation are intentionally available before video selection. A validated SRT selected first remains pending and is attached atomically when the video-backed project opens. Windows layout smoke cycles all four inspectors and rejects a build if those two initial actions regress to disabled.
+
 Core media services own ffprobe, exact processed-frame extraction and FFmpeg render orchestration. Preview and export use the same `VideoEditorService.BuildFilter` effect graph and time guards. Final outputs are non-destructive and never share downloader concurrency/CDN/resume ownership. Editor export jobs use cleanup-aware cancellation: Cancel is not terminal until the FFmpeg process tree has exited and the partial `.rendering` artifact has been removed.
 
 The common subtitle path is native Editor state, not the downloader's normalizing subtitle path. `EditorSubtitleDocument` strictly preserves every imported SRT block number, order and timing line. `TranslationSkillBundle` loads the exact bundled `Dịch Trung Tu Tiên` ZIP only after SHA-256, entry-count, expanded-size, required-file and path-traversal checks; core rules are always present and reference sections are retrieved by the current Chinese source terms.
@@ -90,6 +92,8 @@ The common subtitle path is native Editor state, not the downloader's normalizin
 `LocalSubtitleTranslationService` owns a pinned, app-managed Qwen3-8B Q4_K_M GGUF and pinned llama.cpp Vulkan/CPU runtime under `Tools/Translation`. Both downloads are exact-size/SHA-256 verified; the model URL is commit-pinned and partial downloads are resumable. Inference is an owned `llama-cli` child over files/stdout with strict cue-ID JSON, never Ollama, localhost or a second BiliSub backend. A whole-SRT terminology/character bible is accumulated before bounded translation batches. Completed batches are atomically checkpointed under `Data/Projects/Translation`; cancellation reaps the process but preserves completed cues.
 
 Subtitle placement is a distinct normalized video-space rectangle rendered over the native preview. Resizing the preview only recomputes its display geometry. Vietnamese SRT export preserves the source timecode/order; Editor render converts the completed cues and placement into a temporary ASS file and applies it in the same FFmpeg graph for real hardsub output.
+
+Schema-3 Editor projects also persist an explicit source-audio policy: keep, duck with a normalized gain, or mute. Preview mute/volume is native-player state only. Render maps the persisted policy to an exact FFmpeg audio argument set; filtered audio is encoded, unchanged MKV audio may be stream-copied, and mute emits no audio stream. This is the stable audio boundary that later TTS/stem stages extend rather than bypass.
 
 ## Jobs, shutdown and logs
 
