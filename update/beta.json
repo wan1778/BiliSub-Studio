@@ -1,14 +1,14 @@
 {
-  "version": "4.0.0-beta.41-csharp-p5",
+  "version": "4.0.0-beta.42-csharp-p5",
   "channel_ready": true,
-  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.27/BiliSubStudio_4.0.27_Windows-x64-portable.zip",
-  "sha256": "3524d251df244ca5b713ceb76167f30438944a603df778aaacc7b640f66038f9",
-  "size": 94698827,
+  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.28/BiliSubStudio_4.0.28_Windows-x64-portable.zip",
+  "sha256": "8df8b6e2ac3f136773dbe6250b747609b4618fd1cf6799ce959fd736214103aa",
+  "size": 94699699,
   "payload_kind": "winui3-portable-zip",
   "notes": [
-    "OCR Auto kiểm tra live RAM/VRAM trước từng bậc 1 → 2 → 4 → 8 → 16.",
-    "Mức N yêu cầu đủ N Python + N FFmpeg/OCR pipeline và gain throughput tối thiểu 10%.",
-    "Mức không an toàn hoặc không còn tăng tốc tự quay về PASS gần nhất.",
-    "Hủy OCR thu hồi sạch Python/FFmpeg rồi xóa checkpoint và trở về Quét từ đầu."
+    "Khung Cập nhật chỉ hiển thị phiên bản public ngắn gọn 4.0.x, không còn chuỗi beta/build SHA nội bộ.",
+    "Thanh trạng thái dưới cùng hiển thị phiên bản hiện tại thay cho C# / .NET / WinUI.",
+    "Ghi chú phát hành được khóa theo đúng build; CI từ chối publish nếu release notes không khớp phiên bản để không lặp thông báo cũ.",
+    "Cập nhật vẫn chỉ nhận gói chính thức từ GitHub Releases và xác minh kích thước/SHA-256 trước khi áp dụng."
   ]
 }
