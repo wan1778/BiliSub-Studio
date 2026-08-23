@@ -25,7 +25,8 @@ public sealed record EditorTranslationRequest(
     string ProjectId,
     EditorSubtitleSource Source,
     string OutputDirectory,
-    string OutputFileName);
+    string OutputFileName,
+    bool ForceFresh = false);
 
 public sealed record EditorTranslationResult(
     IReadOnlyList<EditorSubtitleCue> Cues,
@@ -136,6 +137,7 @@ public sealed class LocalSubtitleTranslationService : IDisposable
         var source = request.Source.Cues;
         if (source.Count == 0) throw new InvalidDataException("SRT nguồn không có cue.");
         var checkpointPath = Path.Combine(CheckpointDirectory, request.ProjectId + ".json");
+        if (request.ForceFresh) TryDelete(checkpointPath);
         var checkpoint = await LoadCheckpointAsync(checkpointPath, request.Source.Sha256, job.CancellationToken);
         var layers = RecommendedGpuLayers(_hardware.ResourceSnapshot());
         var analysisBatches = CreateBatches(source, AnalysisBatchSize, 45_000);

@@ -111,7 +111,8 @@ event_attributes = {
 for xaml_file in CSHARP.rglob("*.xaml"):
     root = ET.parse(xaml_file).getroot()
     code_file = Path(str(xaml_file) + ".cs")
-    code = read(code_file) if code_file.is_file() else ""
+    partials = sorted(xaml_file.parent.glob(xaml_file.stem + "*.cs"))
+    code = "\n".join(read(path) for path in partials) if partials else (read(code_file) if code_file.is_file() else "")
     for element in root.iter():
         for attribute, handler in element.attrib.items():
             event_name = attribute.rsplit("}", 1)[-1]
@@ -260,6 +261,13 @@ for forbidden in (
     require(forbidden not in editor_partials, f"Editor cleanup regression reintroduced {forbidden}")
 require("EnsureEditorParityInitialized();" in editor_partials and "EnsureImageFeatureInitialized();" in editor_partials,
         "Editor must initialize parity and image tools from one lifecycle owner")
+require("SubtitleCueList" in editor and "SubtitleRetranslateCueButton" in editor and "SubtitleSaveSrtButton" in editor,
+        "Editor static subtitle cue editor controls missing")
+require("ForceFresh = false" in read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalSubtitleTranslationService.cs")
+        and "if (request.ForceFresh) TryDelete(checkpointPath);" in read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalSubtitleTranslationService.cs"),
+        "Editor force-fresh cue translation checkpoint reset missing")
+require("LayoutUpdated += Subtitle" not in editor_partials and "SubtitleRetranslateCue_Click(sender" not in editor_partials,
+        "Editor cue editor must not sync from LayoutUpdated or call one event handler from another")
 require("Loaded += EditorPage_Loaded;" in editor and "private void EditorPage_Loaded" in editor_partials,
         "Editor must use the actual Loaded event as its single feature initialization lifecycle")
 

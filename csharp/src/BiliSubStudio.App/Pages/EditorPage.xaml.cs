@@ -177,6 +177,7 @@ public sealed partial class EditorPage : Page
             TranslationStatusText.Text = "Đã gắn SRT đã chọn vào video; có thể đặt khung và Vietsub.";
         }
         else await RestoreSubtitleAsync(_project.Subtitle);
+        await SyncSubtitleCueEditorAsync();
         await RestoreSpeechAndVoiceAsync();
         await EnsureImageProjectLoadedAsync();
         _draftRegion = null;
@@ -319,6 +320,7 @@ public sealed partial class EditorPage : Page
             AttachSubtitleToProject(string.Empty);
             await RefreshSpeechTimingForSubtitleAsync();
         }
+        await SyncSubtitleCueEditorAsync();
         SrtPathText.Text = source.Path;
         AsrStatusText.Text = _project?.Speech is { Status: "complete" }
             ? "Đang dùng SRT đã chọn; Whisper timing của video vẫn được giữ và ánh xạ vào SRT này."
@@ -408,6 +410,7 @@ public sealed partial class EditorPage : Page
                         AttachSubtitleToProject(string.Empty);
                         SrtPathText.Text = result.Source.Path;
                         TranslationStatusText.Text = "Video chưa có SRT nên đã giữ thêm SRT Trung do Whisper tạo; mục chính vẫn là word timing/nhịp thoại.";
+                        await SyncSubtitleCueEditorAsync();
                     }
                     _voiceTrack = null;
                     _project = _project with
@@ -580,23 +583,13 @@ public sealed partial class EditorPage : Page
 
     private async void Translate_Click(object sender, RoutedEventArgs e)
     {
-        if (_translationJobId is not null || _project is null || _subtitleSource is null) return;
-        try
-        {
-            var outputName = System.IO.Path.GetFileNameWithoutExtension(_subtitleSource.Path) + ".vi.srt";
-            _translationJobId = _application.StartEditorTranslation(new EditorTranslationRequest(
-                _project.Id,
-                _subtitleSource,
-                _application.Config.OutputDirectory,
-                outputName));
-            RefreshEditorActions();
-            await PollTranslationJobAsync(preparing: false);
-        }
+        try { await TranslateAllWithManualStateAsync(); }
         catch (Exception error)
         {
             _translationJobId = null;
             TranslationStatusText.Text = error.Message;
             RefreshEditorActions();
+            RefreshSubtitleCueEditorControls();
         }
     }
 
@@ -1898,7 +1891,7 @@ public sealed partial class EditorPage : Page
         var subtitleReady = _subtitleSource is not null && _subtitleSource.Cues.All(x => !string.IsNullOrWhiteSpace(x.VietnameseText));
         var audioChanged = _audioSettings.SourceMode != "keep";
         var hasImages = _imageFeatureInitialized && _imageOverlays.Count > 0;
-        RenderButton.IsEnabled = editable && _path is not null
+        RenderButton.IsEnabled = editable && !_subtitleManualDirty && _path is not null
             && (_document.Regions.Count > 0 || subtitleReady || audioChanged || _voiceTrack is not null || hasImages)
             && !string.IsNullOrWhiteSpace(FileNameBox.Text);
         CancelButton.IsEnabled = _jobId is not null;
@@ -1918,17 +1911,18 @@ public sealed partial class EditorPage : Page
         catch { }
         TranslateButton.IsEnabled = editable && _project is not null && _subtitleSource is not null && aiReady;
         CancelTranslationButton.IsEnabled = _translationJobId is not null;
-        OpenTranslatedSrtButton.IsEnabled = idle && !_playerMode && File.Exists(_project?.Subtitle?.OutputPath);
-        SaveKaraokeAssButton.IsEnabled = editable && subtitleReady && KaraokeToggle.IsOn && _cueSpeechTiming.Count > 0;
+        OpenTranslatedSrtButton.IsEnabled = idle && !_playerMode && !_subtitleManualDirty && File.Exists(_project?.Subtitle?.OutputPath);
+        SaveKaraokeAssButton.IsEnabled = editable && !_subtitleManualDirty && subtitleReady && KaraokeToggle.IsOn && _cueSpeechTiming.Count > 0;
         PreviewMuteToggle.IsEnabled = PreviewVolumeSlider.IsEnabled = idle && hasMedia;
         SourceAudioModeBox.IsEnabled = editable;
         SourceAudioGainSlider.IsEnabled = editable && _audioSettings.SourceMode == "duck";
-        GenerateTtsButton.IsEnabled = editable && subtitleReady && _project?.Speech is { Status: "complete" };
+        GenerateTtsButton.IsEnabled = editable && !_subtitleManualDirty && subtitleReady && _project?.Speech is { Status: "complete" };
         CancelVoiceButton.IsEnabled = _asrJobId is not null || _ttsJobId is not null;
         CurrentCueVoiceBox.IsEnabled = editable && _subtitleSource is not null && _project?.Speech is { Status: "complete" };
         KaraokeToggle.IsEnabled = idle && !_playerMode && _subtitleSource is not null;
         RefreshImageControls();
         RefreshEditorParityControls();
+        RefreshSubtitleCueEditorControls();
     }
 
     private static string FormatClock(double seconds)
