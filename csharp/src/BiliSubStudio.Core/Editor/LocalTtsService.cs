@@ -199,8 +199,8 @@ internal sealed class LocalTtsService : IDisposable
         var tokens = normalizedText.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         if (tokens.Length == 0) return [];
         var speechStart = Math.Clamp(timing.SpeechStart, cue.Start, cue.End);
-        var speechEnd = Math.Clamp(timing.SpeechEnd, speechStart + .08, cue.End);
-        if (speechEnd <= speechStart) { speechStart = cue.Start; speechEnd = cue.End; }
+        var speechEnd = Math.Clamp(timing.SpeechEnd, speechStart, cue.End);
+        if (speechEnd <= speechStart + .01) { speechStart = cue.Start; speechEnd = cue.End; }
         var intervals = new List<(double Start, double End)>();
         var cursor = speechStart;
         foreach (var pause in timing.Pauses.OrderBy(x => x.Start))
