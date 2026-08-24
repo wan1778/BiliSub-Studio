@@ -193,8 +193,8 @@
                                 <TextBlock x:Name="RegionValidationText" Style="{StaticResource MutedTextStyle}" Text="Chọn video rồi kéo để tạo vùng." TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
                                 <Button x:Name="AddRegionButton" Click="AddRegion_Click" Content="Thêm vùng" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />
                                 <StackPanel Orientation="Horizontal" Spacing="5">
-                                    <Button x:Name="SubtitlePresetButton" Click="SubtitlePreset_Click" Content="Preset sub" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />
-                                    <Button x:Name="WatermarkPresetButton" Click="WatermarkPreset_Click" Content="Preset logo" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />
+                                    <Button x:Name="SubtitlePresetButton" Click="SubtitlePreset_Click" Content="Mờ sub dưới" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" AutomationProperties.Name="Thêm vùng làm mờ phụ đề phía dưới" />
+                                    <Button x:Name="WatermarkPresetButton" Click="WatermarkPreset_Click" Content="Mosaic logo" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" AutomationProperties.Name="Thêm vùng Mosaic che logo góc phải" />
                                 </StackPanel>
                                 <ListView x:Name="RegionList" MinHeight="82" MaxHeight="130" SelectionChanged="RegionList_SelectionChanged" AutomationProperties.Name="Danh sách vùng hiệu ứng" />
                                 <Grid ColumnSpacing="5"><Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>

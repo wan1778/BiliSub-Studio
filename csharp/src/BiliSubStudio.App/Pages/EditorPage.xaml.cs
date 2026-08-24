@@ -1070,18 +1070,32 @@ public sealed partial class EditorPage : Page
 
     private void SubtitlePreset_Click(object sender, RoutedEventArgs e)
     {
-        if (_media is null) return;
-        _document.Add(new EditRegion(.08, .72, .84, .18, "blur", 18, true, 0, _media.Duration));
-        LoadSelectedIntoInputs();
-        DocumentChanged("Đã thêm preset vùng phụ đề dưới.");
+        TryAddRegionPreset(EditorRegionPresetKind.SubtitleBottom);
     }
 
     private void WatermarkPreset_Click(object sender, RoutedEventArgs e)
     {
-        if (_media is null) return;
-        _document.Add(new EditRegion(.78, .04, .18, .10, "mosaic", 12, true, 0, _media.Duration));
+        TryAddRegionPreset(EditorRegionPresetKind.WatermarkTopRight);
+    }
+
+    private bool TryAddRegionPreset(EditorRegionPresetKind preset)
+    {
+        if (_media is null || EditorBusy || _playback.IsPreviewMode || _dragStartNormalized is not null) return false;
+        var region = EditorRegionGeometry.CreatePreset(preset, _media.Width, _media.Height, _media.Duration);
+        if (region is null)
+        {
+            StatusText.Text = "Preset không phù hợp với kích thước video nguồn.";
+            return false;
+        }
+
+        _document.Add(region);
+        _draftRegion = null;
         LoadSelectedIntoInputs();
-        DocumentChanged("Đã thêm preset watermark góc phải.");
+        var status = preset == EditorRegionPresetKind.SubtitleBottom
+            ? "Đã thêm vùng làm mờ phụ đề phía dưới."
+            : "Đã thêm vùng Mosaic che logo góc phải.";
+        DocumentChanged(status);
+        return true;
     }
 
     private void FileNameBox_TextChanged(object sender, TextChangedEventArgs e)

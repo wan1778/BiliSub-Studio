@@ -12,8 +12,35 @@ public enum EditorRegionResizeHandle
     SouthWest,
 }
 
+public enum EditorRegionPresetKind
+{
+    SubtitleBottom,
+    WatermarkTopRight,
+}
+
 public static class EditorRegionGeometry
 {
+    public static EditRegion? CreatePreset(
+        EditorRegionPresetKind preset,
+        int sourceWidth,
+        int sourceHeight,
+        double duration)
+    {
+        if (sourceWidth <= 0 || sourceHeight <= 0 || !double.IsFinite(duration) || duration < 0)
+            return null;
+
+        EditRegion? region = preset switch
+        {
+            EditorRegionPresetKind.SubtitleBottom =>
+                new(.08, .72, .84, .18, "blur", EditorBlurStrength.Default, true, 0, 0),
+            EditorRegionPresetKind.WatermarkTopRight =>
+                new(.78, .04, .18, .10, "mosaic", EditorMosaicStrength.Default, true, 0, 0),
+            _ => null,
+        };
+        if (region is null || !IsPixelValid(region, sourceWidth, sourceHeight)) return null;
+        return EditorRegionTimeScope.NormalizeWholeVideo(region, duration);
+    }
+
     public static EditRegion? FromPercentInputs(
         EditRegion settings,
         double xPercent,

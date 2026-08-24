@@ -56,6 +56,7 @@ internal static class Program
         ("editor Undo restores ordered region selection and bounded history", EditorUndoContractAsync),
         ("editor Redo restores ordered region selection and invalidates divergent history", EditorRedoContractAsync),
         ("editor Delete preserves neighboring selection and exact undo redo history", EditorDeleteContractAsync),
+        ("editor region presets stay pixel valid and add exact whole-video effects", EditorRegionPresetContractAsync),
         ("editor mouse drag creates only pixel-valid regions in either direction", EditorMouseRegionGeometryContractAsync),
         ("editor region selection picks the topmost hit and synchronizes document state", EditorRegionSelectionContractAsync),
         ("editor region move clamps bounds and cancellation leaves no history", EditorRegionMoveContractAsync),
@@ -1033,6 +1034,56 @@ internal static class Program
         Equal(0, document.SelectedIndex);
         True(document.Redo(), "empty-state Delete could not be redone");
         True(document.Selected is null && document.Regions.Count == 0, "Redo did not restore the exact empty Delete state");
+        return Task.CompletedTask;
+    }
+
+    private static Task EditorRegionPresetContractAsync()
+    {
+        const double duration = 123.45;
+        var subtitle = EditorRegionGeometry.CreatePreset(
+            EditorRegionPresetKind.SubtitleBottom, 1920, 1080, duration)
+            ?? throw new InvalidOperationException("bottom-subtitle preset was rejected");
+        Equal(.08, subtitle.X);
+        Equal(.72, subtitle.Y);
+        Equal(.84, subtitle.Width);
+        Equal(.18, subtitle.Height);
+        Equal("blur", subtitle.Effect);
+        Equal(EditorBlurStrength.Default, subtitle.Strength);
+        True(subtitle.WholeVideo && subtitle.Start == 0 && subtitle.End == duration,
+            "bottom-subtitle preset did not own the exact whole-video range");
+
+        var watermark = EditorRegionGeometry.CreatePreset(
+            EditorRegionPresetKind.WatermarkTopRight, 1920, 1080, duration)
+            ?? throw new InvalidOperationException("top-right watermark preset was rejected");
+        Equal(.78, watermark.X);
+        Equal(.04, watermark.Y);
+        Equal(.18, watermark.Width);
+        Equal(.10, watermark.Height);
+        Equal("mosaic", watermark.Effect);
+        Equal(EditorMosaicStrength.Default, watermark.Strength);
+        True(watermark.WholeVideo && watermark.Start == 0 && watermark.End == duration,
+            "top-right watermark preset did not own the exact whole-video range");
+
+        _ = VideoEditorService.BuildFilter(
+            new VideoEditRequest("input.mp4", ".", "output.mp4", 1920, 1080, duration, [subtitle, watermark]));
+        True(EditorRegionGeometry.CreatePreset(EditorRegionPresetKind.SubtitleBottom, 1, 1, duration) is null,
+            "source-pixel-invalid preset was accepted");
+        True(EditorRegionGeometry.CreatePreset(EditorRegionPresetKind.WatermarkTopRight, 1920, 1080, double.NaN) is null,
+            "non-finite preset duration was accepted");
+        True(EditorRegionGeometry.CreatePreset((EditorRegionPresetKind)999, 1920, 1080, duration) is null,
+            "unknown region preset was accepted");
+
+        var document = new EditorRegionDocument();
+        document.Reset([]);
+        document.Add(subtitle);
+        var subtitleId = document.Selected?.Id ?? throw new InvalidOperationException("subtitle preset received no identity");
+        document.Add(watermark);
+        var watermarkId = document.Selected?.Id ?? throw new InvalidOperationException("watermark preset received no identity");
+        True(subtitleId != watermarkId, "preset additions shared one region identity");
+        True(document.Undo(), "watermark preset addition could not be undone");
+        Equal(subtitleId, document.Selected?.Id);
+        True(document.Redo(), "watermark preset addition could not be redone");
+        Equal(watermarkId, document.Selected?.Id);
         return Task.CompletedTask;
     }
 

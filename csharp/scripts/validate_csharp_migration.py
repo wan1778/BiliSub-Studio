@@ -617,6 +617,36 @@ require('x:Name="RemoveRegionButton"' in editor_xaml
         and "VirtualKey.Back" in undo_key_source
         and "editor Delete preserves neighboring selection and exact undo redo history" in contract_tests_source,
         "BLUR-14 Delete must have one guarded owner that clears stale inputs and preserves exact selection history persistence and Preview state")
+subtitle_preset_source = editor_main.split("private void SubtitlePreset_Click(", 1)[1].split("private void WatermarkPreset_Click(", 1)[0]
+watermark_preset_source = editor_main.split("private void WatermarkPreset_Click(", 1)[1].split("private bool TryAddRegionPreset(", 1)[0] if "private bool TryAddRegionPreset(" in editor_main else ""
+preset_owner_source = editor_main.split("private bool TryAddRegionPreset(", 1)[1].split("private void FileNameBox_TextChanged(", 1)[0] if "private bool TryAddRegionPreset(" in editor_main else ""
+require('x:Name="SubtitlePresetButton"' in editor_xaml
+        and 'Click="SubtitlePreset_Click"' in editor_xaml
+        and 'Content="Mờ sub dưới"' in editor_xaml
+        and 'x:Name="WatermarkPresetButton"' in editor_xaml
+        and 'Click="WatermarkPreset_Click"' in editor_xaml
+        and 'Content="Mosaic logo"' in editor_xaml
+        and "SubtitlePresetButton.Click +=" not in editor_partials
+        and "WatermarkPresetButton.Click +=" not in editor_partials
+        and editor_partials.count("private void SubtitlePreset_Click(") == 1
+        and editor_partials.count("private void WatermarkPreset_Click(") == 1
+        and "TryAddRegionPreset(EditorRegionPresetKind.SubtitleBottom);" in subtitle_preset_source
+        and "_document.Add(" not in subtitle_preset_source
+        and "TryAddRegionPreset(EditorRegionPresetKind.WatermarkTopRight);" in watermark_preset_source
+        and "_document.Add(" not in watermark_preset_source
+        and "if (_media is null || EditorBusy || _playback.IsPreviewMode || _dragStartNormalized is not null) return false;" in preset_owner_source
+        and "EditorRegionGeometry.CreatePreset(" in preset_owner_source
+        and "_document.Add(region);" in preset_owner_source
+        and "_draftRegion = null;" in preset_owner_source
+        and "LoadSelectedIntoInputs();" in preset_owner_source
+        and "DocumentChanged(status);" in preset_owner_source
+        and "SubtitlePresetButton.IsEnabled = WatermarkPresetButton.IsEnabled = editable;" in editor_main
+        and "public enum EditorRegionPresetKind" in region_geometry_source
+        and "public static EditRegion? CreatePreset(" in region_geometry_source
+        and "EditorBlurStrength.Default" in region_geometry_source
+        and "EditorMosaicStrength.Default" in region_geometry_source
+        and "editor region presets stay pixel valid and add exact whole-video effects" in contract_tests_source,
+        "BLUR-15 retained presets must have clear labels one guarded owner and tested source-pixel-valid whole-video policy")
 require("SubtitleCueList" in editor and "SubtitleRetranslateCueButton" in editor and "SubtitleSaveSrtButton" in editor,
         "Editor static subtitle cue editor controls missing")
 require("ForceFresh = false" in read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalSubtitleTranslationService.cs")

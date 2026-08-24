@@ -2,13 +2,13 @@
 
 - Base/current upstream main: `origin/main@8eb2a8a2600b37d29bfd0deaae9eeb94b3cda635`
 - Current local branch: `main`
-- Local base before this task: `f3dc6db2f2d8ec34c0d3a74f26d1fb5daf1e9868`
+- Local base before this task: `9f2de0056c3f77c1f007ca5226edda3205dfd80d`
 - Pull request: none; local Preview/Blur task commits are not pushed or merged
 - Last completed before Blur phase: `PREVIEW-15 — Cleanup preview cache`
-- Task completed in this handoff: `BLUR-14 — Delete`
+- Task completed in this handoff: `BLUR-15 — Preset nếu còn giữ`
 - Task result: `PASS`
 - Task currently running: none
-- Exact next task after this task passes: `BLUR-15 — Preset nếu còn giữ`
+- Exact next task after this task passes: `BLUR-16 — Reopen project giữ region`
 
 ## Recent task commits
 
@@ -25,10 +25,13 @@
 - `BLUR-11`: `8cff071ee44f9f7f8a90196577486505a33b3470` — strict numeric/current-position timed ranges with direct XAML event ownership.
 - `BLUR-12`: `9fb53063526a5b542356b38135c4b3a28f197c64` — guarded Undo button/Ctrl+Z owner with exact input restoration and bounded history.
 - `BLUR-13`: `f3dc6db2f2d8ec34c0d3a74f26d1fb5daf1e9868` — guarded Redo button/Ctrl+Y/Shift+Ctrl+Z owner with exact history restoration.
-- `BLUR-14`: the commit containing this handoff; resolve its exact SHA with `git rev-parse HEAD` after checkout. The exact SHA is also reported in the task completion message because a commit cannot contain its own cryptographic ID.
+- `BLUR-14`: `9f2de0056c3f77c1f007ca5226edda3205dfd80d` — one guarded Delete owner with exact neighboring selection/history/input restoration.
+- `BLUR-15`: the commit containing this handoff; resolve its exact SHA with `git rev-parse HEAD` after checkout. The exact SHA is also reported in the task completion message because a commit cannot contain its own cryptographic ID.
 
-## Files changed by BLUR-14
+## Files changed by BLUR-15
 
+- `csharp/src/BiliSubStudio.Core/Editor/EditorRegionGeometry.cs`
+- `csharp/src/BiliSubStudio.App/Pages/EditorPage.xaml`
 - `csharp/src/BiliSubStudio.App/Pages/EditorPage.xaml.cs`
 - `csharp/tests/BiliSubStudio.Core.ContractTests/Program.cs`
 - `csharp/scripts/validate_csharp_migration.py`
@@ -37,37 +40,37 @@
 
 ## Root cause
 
-Delete had two action owners: `RemoveRegion_Click` and `Page_KeyDown` each called `_document.RemoveSelected()` and performed different follow-up work. The keyboard path did not clear coordinate inputs when deleting the last region, while neither path shared explicit active-drag/processed-Preview guards or draft cleanup. Existing coverage only deleted one region inside the broad document test; it did not prove neighboring selection after deleting middle/last regions, exact Undo/Redo restoration, empty-state selection or divergent-branch invalidation.
+The current release acceptance explicitly requires Editor multi-region presets, so removing them would regress the required product scope. The two retained handlers nevertheless embedded untested geometry/effect/strength/time literals directly in WinUI, bypassed source-pixel validation and lacked the active-drag guard used by other region actions. The labels `Preset sub` and especially `Preset logo` were ambiguous because the latter creates a Mosaic region to hide a logo rather than adding an Image/Logo overlay.
 
 ## Implementation
 
-- Added one independent `TryDeleteSelectedRegion()` owner used by `RemoveRegionButton.Click` and page Delete/Backspace; no event handler calls another handler.
-- Delete is rejected while Editor is busy, processed Preview is active, a pointer drag transaction is open or no region is selected.
-- Successful Delete clears draft state, selects the correct neighboring region and loads its inputs, or clears coordinates when the document becomes empty.
-- Delete then routes through existing `DocumentChanged` exactly once to refresh list/overlay/timeline/actions, autosave and static/processed Preview.
-- Added a BLUR-14 Core contract covering empty Delete, middle/last/only-region selection policy, exact Undo/Redo restoration and divergent-branch invalidation.
-- Added static direct-XAML/action-owner/guard/keyboard/save/Preview-route coverage and regenerated the C# code map. Core `RemoveSelected` production logic did not need modification.
+- Retained both domain-specific presets to satisfy release acceptance: bottom-subtitle Blur and top-right-logo Mosaic.
+- Added `EditorRegionPresetKind` and `EditorRegionGeometry.CreatePreset` as the tested Core policy owner for normalized geometry, effect, default strength, whole-video time scope and two-source-pixel validity.
+- Both direct-XAML handlers now call one independent `TryAddRegionPreset` owner; it rejects missing/invalid media, busy, processed Preview and active drag states, then adds exactly one history entry, clears draft state, loads inputs and calls `DocumentChanged` once.
+- Renamed the visible buttons to `Mờ sub dưới` and `Mosaic logo`, with explicit accessibility names, so the Mosaic action is not confused with adding an Image/Logo overlay.
+- Added a BLUR-15 Core contract covering exact geometry/effect/default strength/time, invalid source/duration/kind rejection, filter acceptance, unique document identity and Undo/Redo.
+- Added static label/direct-XAML/action-owner/guard/save/Preview-route coverage and regenerated the C# code map.
 
 ## Tests and results
 
-- Fail-first `python csharp/scripts/validate_csharp_migration.py` — expected FAIL before implementation: `BLUR-14 Delete must have one guarded owner that clears stale inputs and preserves exact selection history persistence and Preview state`.
+- Fail-first `python csharp/scripts/validate_csharp_migration.py` — expected FAIL before implementation: `BLUR-15 retained presets must have clear labels one guarded owner and tested source-pixel-valid whole-video policy`.
 - `python csharp/scripts/validate_csharp_migration.py` — PASS (`4.0.0-beta.42-csharp-p5`).
 - `python csharp/scripts/generate_csharp_code_map.py --check` — PASS.
-- Core contract runner with exact SDK `10.0.400` — PASS, 68/68.
-- Targeted Windows x64 Release solution build with cached restore — PASS, 0 warnings and 0 errors; this compiled the unified WinUI button/keyboard Delete path.
+- Core contract runner with exact SDK `10.0.400` — PASS, 69/69.
+- Targeted Windows x64 Release solution build with cached restore — PASS, 0 warnings and 0 errors; this compiled the WinUI preset owner, labels and Core preset policy.
 - Git diff whitespace check — PASS.
-- Full clean-checkout `csharp/scripts/verify.ps1` on the commit containing this handoff — PASS: Windows compile, 68/68 Core contracts, global-log/shell and OCR contracts, range/short-read regression, self-contained WinUI x64 publish, real startup smoke, worker identity, PE32+ x64 and checksum readback.
-- No FFmpeg probe was needed because BLUR-14 changes history/UI orchestration, not the filter graph.
+- Full clean-checkout `csharp/scripts/verify.ps1` on the commit containing this handoff — PASS: Windows compile, 69/69 Core contracts, global-log/shell and OCR contracts, range/short-read regression, self-contained WinUI x64 publish, real startup smoke, worker identity, PE32+ x64 and checksum readback.
+- No standalone FFmpeg probe was needed because the BLUR-15 Core contract passes both preset regions through the production filter builder without changing the filter graph implementation.
 - No CI workflow was dispatched; no installer/package/release was built or published.
 
 ## Verification level
 
-- Delete Core contract PASS: neighboring selection after middle/last Delete, exact empty selection, identity-preserving Undo/Redo and divergent branch invalidation.
-- Static UI ownership PASS: one XAML Remove Click; button and Delete/Backspace call one independent guarded owner; no handler-to-handler call.
-- Persistence/Preview route PASS by source contract: successful Delete calls the existing `DocumentChanged` owner, which renders, queues project save and queues Preview refresh once.
+- Preset Core contract PASS: exact normalized geometry, expected Blur/Mosaic defaults, canonical whole-video range, pixel validity, filter acceptance, unique identity and Undo/Redo.
+- Static UI ownership PASS: two distinct direct-XAML Click handlers call one independent guarded preset action owner; no runtime attachment or handler-to-handler call.
+- Persistence/Preview route PASS by source contract: successful preset Add calls the existing `DocumentChanged` owner, which renders, queues project save and queues Preview refresh once.
 - Compile PASS: Windows x64 Release solution build, 0 warnings/errors.
 - Functional WinUI startup/layout on the commit containing this handoff: PASS via clean-checkout real startup smoke.
-- Real interactive Delete button/Delete/Backspace after selecting middle/last/only regions on a physical Windows desktop: not run; still required before release.
+- Real interactive preset clicks, label fit at 800×600 and visual placement on varied aspect ratios on a physical Windows desktop: not run; still required before release.
 
 ## Constraints to preserve
 
@@ -76,10 +79,11 @@ Delete had two action owners: `RemoveRegion_Click` and `Page_KeyDown` each calle
 - Translation, ASR and TTS remain local; Chinese → Vietnamese uses the project translation skill.
 - Keep the three-column Editor and contextual tool scope; do not turn it into a full NLE or add a large multi-track timeline.
 - Keep one event/owner, one button/handler, no handler-calls-handler and the single `EditorPlaybackController` playback owner.
-- `TryUndoDocument`, `TryRedoDocument` and `TryDeleteSelectedRegion` remain the only UI history action owners; do not duplicate save/Preview synchronization or call event handlers from keyboard code.
+- `TryUndoDocument`, `TryRedoDocument`, `TryDeleteSelectedRegion` and `TryAddRegionPreset` remain the only UI history action owners for their operations; do not duplicate save/Preview synchronization or call event handlers from other handlers.
+- `EditorRegionGeometry.CreatePreset` owns retained preset geometry/effect/default strength/time/pixel validity; do not reintroduce preset literals in WinUI.
 - `EditorRegionDocument` owns bounded snapshots, no-op suppression and divergent-branch invalidation.
 - `EditorRegionTimeScope` continues to own whole/timed invariants; current-position buttons retain direct XAML ownership.
 - Do not add Repair/Fix/Parity layers when the real owner can be corrected; remove dead/superseded logic.
-- One small task and targeted regression at a time; do not start BLUR-15 until BLUR-14 has final clean verification and its own commit.
+- One small task and targeted regression at a time; do not start BLUR-16 until BLUR-15 has final clean verification and its own commit.
 - Do not reopen already-passed Subtitle work without a demonstrated regression.
 - No version bump, release, push, PR merge or merge without explicit authorization and passing gates.
