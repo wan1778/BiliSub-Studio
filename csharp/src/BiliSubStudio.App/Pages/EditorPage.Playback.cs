@@ -69,17 +69,7 @@ public sealed partial class EditorPage
             if (stalePreview is not null)
                 await _page._application.DeleteEditorPreviewSegmentAsync(stalePreview);
 
-            var player = new MediaPlayer
-            {
-                AutoPlay = false,
-                IsMuted = _page.PreviewMuteToggle.IsOn,
-                Volume = Math.Clamp(_page.PreviewVolumeSlider.Value / 100, 0, 1),
-            };
-            player.PlaybackSession.PositionChanged += PlayerPositionChanged;
-            player.MediaEnded += PlayerMediaEnded;
-            player.MediaFailed += PlayerMediaFailed;
-            _player = player;
-            _page.PreviewPlayer.SetMediaPlayer(player);
+            CreatePlayer();
         }
 
         internal async Task ToggleAsync()
@@ -379,6 +369,21 @@ public sealed partial class EditorPage
             _player = null;
         }
 
+        private void CreatePlayer()
+        {
+            var player = new MediaPlayer
+            {
+                AutoPlay = false,
+                IsMuted = _page.PreviewMuteToggle.IsOn,
+                Volume = Math.Clamp(_page.PreviewVolumeSlider.Value / 100, 0, 1),
+            };
+            player.PlaybackSession.PositionChanged += PlayerPositionChanged;
+            player.MediaEnded += PlayerMediaEnded;
+            player.MediaFailed += PlayerMediaFailed;
+            _player = player;
+            _page.PreviewPlayer.SetMediaPlayer(player);
+        }
+
         private void PlayerPositionChanged(MediaPlaybackSession sender, object args)
         {
             if (!IsPreviewMode) return;
@@ -432,12 +437,42 @@ public sealed partial class EditorPage
 
         private void PlayerMediaFailed(MediaPlayer sender, MediaPlayerFailedEventArgs args)
         {
-            _page.DispatcherQueue.TryEnqueue(async () =>
+            var errorMessage = args.ErrorMessage;
+            _page.DispatcherQueue.TryEnqueue(() => _ = RecoverFromPlayerFailureAsync(sender, errorMessage));
+        }
+
+        private async Task RecoverFromPlayerFailureAsync(MediaPlayer failedPlayer, string errorMessage)
+        {
+            if (!ReferenceEquals(failedPlayer, _player)) return;
+            try
             {
-                try { await SetModeAsync(enabled: false, play: false); }
-                catch { }
-                _page.StatusText.Text = "Player preview lỗi: " + args.ErrorMessage;
-            });
+                Exception? cleanupFailure = null;
+                try { await ResetAsync(); }
+                catch (Exception error) { cleanupFailure = error; }
+
+                if (_player is not null && !ReferenceEquals(failedPlayer, _player)) return;
+                if (ReferenceEquals(failedPlayer, _player))
+                {
+                    ClearFullscreenTracking(unregisterCallback: true);
+                    DisposePlayer();
+                    IsPreviewMode = false;
+                    HasEnded = false;
+                    ApplyPresentation(processed: false);
+                }
+                if (_player is null) CreatePlayer();
+                _page.StatusText.Text = cleanupFailure is null
+                    ? "Player preview lỗi: " + errorMessage + " Đã khôi phục player; bấm Play để thử lại."
+                    : "Player preview lỗi: " + errorMessage + " Đã thay player; một phần cleanup báo lỗi: " + cleanupFailure.Message;
+            }
+            catch (Exception error)
+            {
+                _page.StatusText.Text = "Không khôi phục được player preview: " + error.Message;
+            }
+            finally
+            {
+                _page.RefreshEditorActions();
+                _page.SyncShellPlayerControls();
+            }
         }
     }
 }

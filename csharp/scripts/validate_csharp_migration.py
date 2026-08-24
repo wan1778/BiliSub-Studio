@@ -355,6 +355,16 @@ require("await _playback.ToggleFullscreenAsync();" in playback_source
         and "if (snapshot.Playing) ResumeFromCurrentFrame();" in fullscreen_roundtrip
         and "else PauseAtCurrentFrame();" in fullscreen_roundtrip,
         "PREVIEW-12 fullscreen roundtrip must restore presentation, position and play/pause intent")
+player_failure_recovery = playback_source.split("private void PlayerMediaFailed(", 1)[1]
+require("var errorMessage = args.ErrorMessage;" in player_failure_recovery
+        and "TryEnqueue(() => _ = RecoverFromPlayerFailureAsync(sender, errorMessage));" in player_failure_recovery
+        and "private async Task RecoverFromPlayerFailureAsync(MediaPlayer failedPlayer, string errorMessage)" in player_failure_recovery
+        and "if (!ReferenceEquals(failedPlayer, _player)) return;" in player_failure_recovery
+        and "await ResetAsync();" in player_failure_recovery
+        and "CreatePlayer();" in player_failure_recovery
+        and "_page.RefreshEditorActions();" in player_failure_recovery
+        and "TryEnqueue(async" not in player_failure_recovery,
+        "PREVIEW-13 MediaFailed must replace the failed player, ignore stale callbacks and unlock Editor actions")
 require("SubtitleCueList" in editor and "SubtitleRetranslateCueButton" in editor and "SubtitleSaveSrtButton" in editor,
         "Editor static subtitle cue editor controls missing")
 require("ForceFresh = false" in read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalSubtitleTranslationService.cs")
