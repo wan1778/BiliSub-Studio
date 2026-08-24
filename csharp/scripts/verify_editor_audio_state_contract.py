@@ -253,4 +253,53 @@ require('audio.SourceMode != "mute"' in video_editor,
 require("_monitorAudio" not in video_editor,
         "AUDIO-04 render/export owner must remain independent from Player monitor mute/volume")
 
-print("PASS: AUDIO-01 single monitor owner + AUDIO-02 Preview volume + AUDIO-03 Preview mute + AUDIO-04 Keep original audio contract")
+# AUDIO-05 — Duck original audio. Duck is the persisted render policy that attenuates
+# the complete source mix to the selected 5..95% gain in both processed Preview and
+# final Export. It must stay independent from Player monitor mute/volume.
+source_audio_gain = named_xaml_control("SourceAudioGainSlider")
+require(source_audio_gain.get("Minimum") == "5"
+        and source_audio_gain.get("Maximum") == "95"
+        and source_audio_gain.get("Value") == "35",
+        "AUDIO-05 Duck gain must expose the reviewed 5..95% range with 35% default")
+require(source_audio_gain.get("ValueChanged") == "SourceAudioGain_ValueChanged",
+        "AUDIO-05 Duck gain must keep exactly one reviewed ValueChanged handler")
+require(editor_main.count("private void SourceAudioGain_ValueChanged(") == 1,
+        "AUDIO-05 Duck gain handler must have exactly one implementation")
+
+require('"duck" => SourceAudioGainSlider.Value / 100,' in audio_update,
+        "AUDIO-05 Duck UI percent must map directly to 0..1 source gain")
+require('"duck" => $"Preview và video xuất sẽ giữ {_audioSettings.SourceGain:P0} mức âm thanh gốc.",' in audio_update,
+        "AUDIO-05 Duck status must report the persisted Preview/Export source gain")
+require("QueueProjectSave();" in audio_update and "NotifyEditorCompositeChanged();" in audio_update,
+        "AUDIO-05 Duck changes must persist and refresh processed Preview")
+for forbidden in ("_playback.SetMuted(", "_playback.SetVolume(", "_monitorAudio"):
+    require(forbidden not in audio_update,
+            f"AUDIO-05 Duck render policy must not mutate Player monitor state; found {forbidden}")
+
+apply_audio = editor_main.split("private void ApplyAudioSettingsToUi()", 1)[1].split(
+    "private async void Translate_Click", 1)[0]
+require('if (_audioSettings.SourceMode == "duck") SourceAudioGainSlider.Value = _audioSettings.SourceGain * 100;' in apply_audio,
+        "AUDIO-05 reopening a Duck project must restore its exact gain into the UI")
+require('SourceAudioGainSlider.IsEnabled = editable && _audioSettings.SourceMode == "duck";' in editor_main,
+        "AUDIO-05 Duck must be the only source mode that enables the gain slider")
+
+require('_ => new EditorAudioSettings("duck", Math.Clamp(audio.SourceGain, .05, .95)),' in normalize_audio,
+        "AUDIO-05 persisted Duck gain must clamp to the reviewed 5..95% domain")
+require("Audio = _audioSettings," in project_snapshot and "_audioSettings," in current_request,
+        "AUDIO-05 Duck must persist into the project and flow into Preview/Export requests")
+
+require('if (audio.SourceMode == "duck") filters.Add("volume=" + audio.SourceGain.ToString("0.000", CultureInfo.InvariantCulture));' in audio_arguments,
+        "AUDIO-05 no-voice Preview/Export must attenuate source audio with the selected Duck gain")
+require('if (mp4 || audio.SourceMode == "duck") arguments.AddRange(["-c:a", "aac", "-b:a", "192k"]);' in audio_arguments,
+        "AUDIO-05 filtered Duck audio must be encoded after the volume filter")
+require("BuildAudioArgumentsCore(audio, mp4: true, resetTimestamps: true)" in preview_arguments,
+        "AUDIO-05 processed Preview must use the same Duck audio-policy core as Export")
+
+require('if (audio.SourceMode == "duck") sourceFilters.Add("volume=" + audio.SourceGain.ToString("0.000", CultureInfo.InvariantCulture));' in voice_audio,
+        "AUDIO-05 Duck+Voice must attenuate source audio before mixing Voice")
+require("[sourcea][voicea]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0[aout]" in voice_audio,
+        "AUDIO-05 Duck+Voice must preserve the selected source gain through the final mix")
+require('audio.SourceMode != "mute"' in video_editor,
+        "AUDIO-05 final render validation must require an audio stream for Duck")
+
+print("PASS: AUDIO-01 single monitor owner + AUDIO-02 Preview volume + AUDIO-03 Preview mute + AUDIO-04 Keep original audio + AUDIO-05 Duck original audio contract")
