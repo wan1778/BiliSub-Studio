@@ -394,6 +394,8 @@ public sealed class VideoEditorService
                             CueEnd = Math.Min(segmentDuration, timing.CueEnd - sourceStart),
                             SpeechStart = Math.Max(0, timing.SpeechStart - sourceStart),
                             SpeechEnd = Math.Min(segmentDuration, timing.SpeechEnd - sourceStart),
+                            LeadingSilence = Math.Max(0, Math.Max(0, timing.SpeechStart - sourceStart) - Math.Max(0, timing.CueStart - sourceStart)),
+                            TrailingSilence = Math.Max(0, Math.Min(segmentDuration, timing.CueEnd - sourceStart) - Math.Min(segmentDuration, timing.SpeechEnd - sourceStart)),
                             Words = timing.Words
                                 .Where(word => word.End > sourceStart && word.Start < sourceEnd)
                                 .Select(word => word with

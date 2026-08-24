@@ -110,8 +110,8 @@ public static class EditorSpeechAnalysisDocument
                 .ThenBy(word => word.End)
                 .ToArray();
             var speechStart = words.Length > 0 ? Math.Clamp(words[0].Start, cue.Start, cue.End) : cue.Start;
-            var speechEnd = words.Length > 0 ? Math.Clamp(words[^1].End, speechStart + .01, cue.End) : cue.End;
-            if (speechEnd <= speechStart) { speechStart = cue.Start; speechEnd = cue.End; }
+            var speechEnd = words.Length > 0 ? Math.Clamp(words[^1].End, speechStart, cue.End) : cue.End;
+            if (speechEnd <= speechStart + .01) { speechStart = cue.Start; speechEnd = cue.End; }
             var pauses = new List<EditorPauseTiming>();
             for (var index = 1; index < words.Length; index++)
             {
