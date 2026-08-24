@@ -274,6 +274,8 @@ public sealed partial class MainWindow : Window
         try
         {
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(95));
+            if (_pages["editor"] is EditorPage editorPage)
+                await editorPage.FlushForAppCloseAsync(timeout.Token);
             await _application.PrepareShutdownAsync(timeout.Token);
             _application.LaunchPendingUpdate();
             _safeToClose = true;
