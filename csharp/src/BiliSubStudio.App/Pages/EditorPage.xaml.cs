@@ -1048,11 +1048,18 @@ public sealed partial class EditorPage : Page
 
     private void Redo_Click(object sender, RoutedEventArgs e)
     {
-        if (_document.Redo())
-        {
-            if (_document.Selected is not null) LoadSelectedIntoInputs();
-            DocumentChanged("Đã làm lại.");
-        }
+        TryRedoDocument();
+    }
+
+    private bool TryRedoDocument()
+    {
+        if (EditorBusy || _playback.IsPreviewMode || _dragStartNormalized is not null) return false;
+        if (!_document.Redo()) return false;
+        _draftRegion = null;
+        if (_document.Selected is not null) LoadSelectedIntoInputs();
+        else SetCoordinateBoxes(0, 0, 0, 0);
+        DocumentChanged("Đã làm lại.");
+        return true;
     }
 
     private void SubtitlePreset_Click(object sender, RoutedEventArgs e)
@@ -1363,6 +1370,13 @@ public sealed partial class EditorPage : Page
         if (e.Key == VirtualKey.Z && controlDown && !shiftDown)
         {
             if (TryUndoDocument()) e.Handled = true;
+            return;
+        }
+        var redoShortcut = controlDown &&
+            (e.Key == VirtualKey.Y && !shiftDown || e.Key == VirtualKey.Z && shiftDown);
+        if (redoShortcut)
+        {
+            if (TryRedoDocument()) e.Handled = true;
             return;
         }
         if (e.Key is not (VirtualKey.Delete or VirtualKey.Back) || _document.Selected is null) return;

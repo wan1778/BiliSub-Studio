@@ -54,6 +54,7 @@ internal static class Program
         ("Vietnamese TTS text normalization stays deterministic", VietnameseTtsNormalizerContractAsync),
         ("editor document preserves identity through undo redo", EditorDocumentContractAsync),
         ("editor Undo restores ordered region selection and bounded history", EditorUndoContractAsync),
+        ("editor Redo restores ordered region selection and invalidates divergent history", EditorRedoContractAsync),
         ("editor mouse drag creates only pixel-valid regions in either direction", EditorMouseRegionGeometryContractAsync),
         ("editor region selection picks the topmost hit and synchronizes document state", EditorRegionSelectionContractAsync),
         ("editor region move clamps bounds and cancellation leaves no history", EditorRegionMoveContractAsync),
@@ -935,6 +936,52 @@ internal static class Program
         Equal(50, undoCount);
         Equal(5, document.Selected?.Strength);
         Equal("bounded", document.Selected?.Id);
+        return Task.CompletedTask;
+    }
+
+    private static Task EditorRedoContractAsync()
+    {
+        var document = new EditorRegionDocument();
+        document.Reset([]);
+        True(!document.Redo(), "empty document unexpectedly exposed Redo");
+
+        var first = new EditRegion(.1, .2, .3, .25, "blur", 18, true, 0, 10, "first-redo");
+        var second = new EditRegion(.5, .1, .2, .2, "mosaic", 12, false, 2, 8, "second-redo");
+        var editedSecond = second with { X = .55, Strength = 20 };
+        document.Add(first);
+        document.Add(second);
+        True(document.ReplaceSelected(editedSecond), "Redo fixture edit was rejected");
+
+        True(document.Undo() && document.Undo() && document.Undo(), "Redo fixture could not rewind to empty state");
+        Equal(0, document.Regions.Count);
+        Equal(-1, document.SelectedIndex);
+        True(document.CanRedo, "rewound document did not expose Redo");
+
+        True(document.Redo(), "first region add could not be redone");
+        Equal(first, document.Selected);
+        Equal(0, document.SelectedIndex);
+        True(document.Redo(), "second region add could not be redone");
+        Equal(2, document.Regions.Count);
+        Equal(second, document.Selected);
+        Equal(1, document.SelectedIndex);
+        True(document.Redo(), "latest region edit could not be redone");
+        Equal(editedSecond, document.Selected);
+        Equal("second-redo", document.Selected?.Id);
+        True(!document.CanRedo, "completed Redo sequence left stale history");
+
+        True(document.Undo(), "Redo no-op fixture could not be rewound");
+        True(!document.ReplaceSelected(document.Selected!), "no-op replacement unexpectedly changed the document");
+        True(document.CanRedo, "no-op replacement cleared valid Redo history");
+        True(document.Redo(), "Redo failed after a no-op replacement");
+        Equal(editedSecond, document.Selected);
+
+        True(document.Undo(), "divergent Redo fixture could not be rewound");
+        True(document.ReplaceSelected(document.Selected! with { Strength = 30 }), "divergent Redo edit was rejected");
+        True(!document.CanRedo && !document.Redo(), "divergent edit did not invalidate stale Redo history");
+        Equal(30, document.Selected?.Strength);
+
+        document.Reset([first]);
+        True(!document.CanUndo && !document.CanRedo, "document reset retained Undo or Redo history");
         return Task.CompletedTask;
     }
 

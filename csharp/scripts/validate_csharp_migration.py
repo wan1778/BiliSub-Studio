@@ -578,6 +578,25 @@ require('x:Name="UndoButton"' in editor_xaml
         and "if (replacement == _regions[SelectedIndex]) return false;" in region_document_source
         and "editor Undo restores ordered region selection and bounded history" in contract_tests_source,
         "BLUR-12 Undo must have one guarded owner that restores exact document selection inputs persistence and Preview state")
+redo_click_source = editor_main.split("private void Redo_Click(", 1)[1].split("private bool TryRedoDocument()", 1)[0] if "private bool TryRedoDocument()" in editor_main else ""
+redo_owner_source = editor_main.split("private bool TryRedoDocument()", 1)[1].split("private void SubtitlePreset_Click(", 1)[0] if "private bool TryRedoDocument()" in editor_main else ""
+require('x:Name="RedoButton"' in editor_xaml
+        and 'Click="Redo_Click"' in editor_xaml
+        and "RedoButton.Click +=" not in editor_partials
+        and editor_partials.count("private void Redo_Click(") == 1
+        and "TryRedoDocument();" in redo_click_source
+        and "_document.Redo()" not in redo_click_source
+        and "if (EditorBusy || _playback.IsPreviewMode || _dragStartNormalized is not null) return false;" in redo_owner_source
+        and "_document.Redo()" in redo_owner_source
+        and "_draftRegion = null;" in redo_owner_source
+        and "else SetCoordinateBoxes(0, 0, 0, 0);" in redo_owner_source
+        and 'DocumentChanged("Đã làm lại.");' in redo_owner_source
+        and "TryRedoDocument()" in undo_key_source
+        and "Redo_Click(" not in undo_key_source
+        and "e.Key == VirtualKey.Y" in undo_key_source
+        and "e.Key == VirtualKey.Z" in undo_key_source
+        and "editor Redo restores ordered region selection and invalidates divergent history" in contract_tests_source,
+        "BLUR-13 Redo must have one guarded owner that restores exact document selection inputs persistence and Preview state")
 require("SubtitleCueList" in editor and "SubtitleRetranslateCueButton" in editor and "SubtitleSaveSrtButton" in editor,
         "Editor static subtitle cue editor controls missing")
 require("ForceFresh = false" in read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalSubtitleTranslationService.cs")
