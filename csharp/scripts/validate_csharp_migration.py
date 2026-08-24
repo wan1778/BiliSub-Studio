@@ -388,6 +388,32 @@ require("public async Task CleanupPreviewCacheAsync(" in video_editor_source
         and "editor preview cache removes normal and crash leftovers" in contract_tests_source
         and playback_source.count("await CancelPreviewWorkAsync();") == 3,
         "PREVIEW-15 preview cache must clean owned active/prefetched files and purge crash leftovers at startup")
+blur_input_bindings = {
+    "RegionXBox": ("ValueChanged", "RegionCoordinates_ValueChanged"),
+    "RegionYBox": ("ValueChanged", "RegionCoordinates_ValueChanged"),
+    "RegionWidthBox": ("ValueChanged", "RegionCoordinates_ValueChanged"),
+    "RegionHeightBox": ("ValueChanged", "RegionCoordinates_ValueChanged"),
+    "EffectBox": ("SelectionChanged", "EffectBox_SelectionChanged"),
+    "StrengthBox": ("ValueChanged", "EditInput_ValueChanged"),
+    "WholeToggle": ("Toggled", "WholeToggle_Toggled"),
+    "StartBox": ("ValueChanged", "EditInput_ValueChanged"),
+    "EndBox": ("ValueChanged", "EditInput_ValueChanged"),
+}
+editor_tree = ET.parse(CSHARP / "src/BiliSubStudio.App/Pages/EditorPage.xaml").getroot()
+blur_controls = {}
+for element in editor_tree.iter():
+    attributes = {name.rsplit("}", 1)[-1]: value for name, value in element.attrib.items()}
+    if attributes.get("Name") in blur_input_bindings:
+        blur_controls[attributes["Name"]] = attributes
+require(set(blur_controls) == set(blur_input_bindings), "BLUR-01 blur input control map is incomplete")
+for control, (event_name, handler) in blur_input_bindings.items():
+    require(blur_controls[control].get(event_name) == handler,
+            f"BLUR-01 {control}.{event_name} must have exactly the reviewed XAML handler {handler}")
+    require(not re.search(rf"\b{re.escape(control)}\s*\.\s*{re.escape(event_name)}\s*[+-]=", editor_partials),
+            f"BLUR-01 {control}.{event_name} must not add or replace a runtime handler")
+for handler in {binding[1] for binding in blur_input_bindings.values()}:
+    require(len(re.findall(rf"\b{re.escape(handler)}\s*\(", editor_partials)) == 1,
+            f"BLUR-01 handler {handler} must have exactly one implementation and no handler-to-handler call")
 require("SubtitleCueList" in editor and "SubtitleRetranslateCueButton" in editor and "SubtitleSaveSrtButton" in editor,
         "Editor static subtitle cue editor controls missing")
 require("ForceFresh = false" in read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalSubtitleTranslationService.cs")
