@@ -267,7 +267,6 @@ public sealed class VideoEditorService
         var (previewWidth, previewHeight) = PreviewDimensions(request.SourceWidth, request.SourceHeight);
         var sliced = BuildPreviewSlice(request, sourceStart, segmentDuration, previewWidth, previewHeight);
         Directory.CreateDirectory(_previewDirectory);
-        CleanupStalePreviewFiles();
         var identity = Guid.NewGuid().ToString("N");
         var output = Path.Combine(_previewDirectory, identity + ".mp4");
         var temporary = Path.Combine(_previewDirectory, identity + ".rendering.mp4");
@@ -305,6 +304,29 @@ public sealed class VideoEditorService
         if (!candidate.StartsWith(root, StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(Path.GetExtension(candidate), ".mp4", StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Không được xóa file ngoài vùng preview Editor do ứng dụng quản lý.");
+        await DeletePreviewArtifactAsync(candidate, cancellationToken);
+    }
+
+    public async Task CleanupPreviewCacheAsync(CancellationToken cancellationToken = default)
+    {
+        if (!Directory.Exists(_previewDirectory)) return;
+        foreach (var path in Directory.EnumerateFiles(_previewDirectory, "*", SearchOption.TopDirectoryOnly))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!IsManagedPreviewArtifact(path)) continue;
+            await DeletePreviewArtifactAsync(path, cancellationToken);
+        }
+    }
+
+    private static bool IsManagedPreviewArtifact(string path)
+    {
+        var extension = Path.GetExtension(path);
+        return string.Equals(extension, ".mp4", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(extension, ".ass", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static async Task DeletePreviewArtifactAsync(string candidate, CancellationToken cancellationToken)
+    {
         for (var attempt = 0; attempt < 6; attempt++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -753,20 +775,6 @@ public sealed class VideoEditorService
         var scale = Math.Min(1, maxLongSide / Math.Max(sourceWidth, sourceHeight));
         static int Even(double value) => Math.Max(2, (int)Math.Round(value / 2, MidpointRounding.AwayFromZero) * 2);
         return (Even(sourceWidth * scale), Even(sourceHeight * scale));
-    }
-
-    private void CleanupStalePreviewFiles()
-    {
-        try
-        {
-            var cutoff = DateTime.UtcNow - TimeSpan.FromDays(1);
-            foreach (var path in Directory.EnumerateFiles(_previewDirectory))
-            {
-                try { if (File.GetLastWriteTimeUtc(path) < cutoff) File.Delete(path); }
-                catch { }
-            }
-        }
-        catch { }
     }
 
     private static void TryDelete(string path) { try { File.Delete(path); } catch { } }

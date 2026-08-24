@@ -90,6 +90,7 @@ public sealed class BiliSubApplication : IAsyncDisposable
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
+        await _editor.CleanupPreviewCacheAsync(cancellationToken);
         await Settings.InitializeAsync(cancellationToken);
         await Sessions.LoadAsync(cancellationToken);
         await _ocr.ConfigureDeviceAsync(Config.OcrDevice, cancellationToken);
@@ -725,6 +726,8 @@ public sealed class BiliSubApplication : IAsyncDisposable
     {
         Jobs.CancelAll();
         await _ocr.DisposeAsync();
+        try { await _editor.CleanupPreviewCacheAsync(); }
+        catch { }
         await Sessions.DeleteTemporaryAsync();
         Jobs.Dispose();
         _asr.Dispose();

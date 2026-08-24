@@ -12,6 +12,7 @@ using BiliSubStudio.Core.Maintenance;
 using BiliSubStudio.Core.Ocr;
 using BiliSubStudio.Core.Processes;
 using BiliSubStudio.Core.Subtitle;
+using BiliSubStudio.Core.Tools;
 using BiliSubStudio.Core.Video;
 using System.Net;
 using System.Net.Http.Headers;
@@ -45,6 +46,7 @@ internal static class Program
         ("editor processed preview accepts arbitrary internal windows and preserves render graph and audio policy", EditorProcessedPreviewContractAsync),
         ("editor processed preview advances every segment to the full source end", EditorFullVideoPlaybackContractAsync),
         ("editor rapid preview requests serialize cleanup and run only the latest request", EditorRapidPreviewRequestContractAsync),
+        ("editor preview cache removes normal and crash leftovers", EditorPreviewCacheCleanupContractAsync),
         ("Whisper word timing maps pauses and karaoke ASS", EditorSpeechTimingKaraokeContractAsync),
         ("local NghiTTS manifest and rhythm grouping stay pinned", LocalTtsContractAsync),
         ("voice track mixes identically for keep duck mute", EditorVoiceMixContractAsync),
@@ -720,6 +722,30 @@ internal static class Program
         True(!coordinator.IsActive, "Cancel left an active preview request/CTS owner");
         await ThrowsAsync<OperationCanceledException>(() => cancellable);
     }
+
+    private static Task EditorPreviewCacheCleanupContractAsync() => WithTemporaryRootAsync(async root =>
+    {
+        var paths = AppPaths.FromRoot(root);
+        paths.EnsureBootstrapDirectories();
+        var previewDirectory = Path.Combine(paths.Temp, "Editor", "Preview");
+        Directory.CreateDirectory(previewDirectory);
+        var owned = new[]
+        {
+            Path.Combine(previewDirectory, "active.mp4"),
+            Path.Combine(previewDirectory, "crashed.rendering.mp4"),
+            Path.Combine(previewDirectory, "crashed.ass"),
+        };
+        foreach (var path in owned) await File.WriteAllTextAsync(path, "owned preview artifact");
+        var unrelated = Path.Combine(previewDirectory, "keep.txt");
+        await File.WriteAllTextAsync(unrelated, "not a managed preview artifact");
+
+        using var http = new HttpClient();
+        var service = new VideoEditorService(paths, new ToolManager(paths, http), new ProcessRunner());
+        await service.CleanupPreviewCacheAsync();
+
+        True(owned.All(path => !File.Exists(path)), "preview cache cleanup left an owned active/crash artifact");
+        True(File.Exists(unrelated), "preview cache cleanup removed an unrelated file type");
+    });
 
     private static async Task EditorSpeechTimingKaraokeContractAsync()
     {

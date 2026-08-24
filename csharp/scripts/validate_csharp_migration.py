@@ -379,6 +379,15 @@ require("private bool _foregroundRendering;" in playback_source
         and "if (announcePlayback)" in playback_source
         and "announcePlayback: false, foreground: false" in playback_source,
         "PREVIEW-14 internal segment rendering must prefetch without locking controls or exposing boundary status")
+video_editor_source = read(CSHARP / "src/BiliSubStudio.Core/Editor/VideoEditorService.cs")
+application_source = read(CSHARP / "src/BiliSubStudio.Core/Application/BiliSubApplication.cs")
+require("public async Task CleanupPreviewCacheAsync(" in video_editor_source
+        and "IsManagedPreviewArtifact(" in video_editor_source
+        and "await _editor.CleanupPreviewCacheAsync(cancellationToken);" in application_source
+        and application_source.count("_editor.CleanupPreviewCacheAsync") == 2
+        and "editor preview cache removes normal and crash leftovers" in contract_tests_source
+        and playback_source.count("await CancelPreviewWorkAsync();") == 3,
+        "PREVIEW-15 preview cache must clean owned active/prefetched files and purge crash leftovers at startup")
 require("SubtitleCueList" in editor and "SubtitleRetranslateCueButton" in editor and "SubtitleSaveSrtButton" in editor,
         "Editor static subtitle cue editor controls missing")
 require("ForceFresh = false" in read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalSubtitleTranslationService.cs")
