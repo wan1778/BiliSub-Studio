@@ -82,7 +82,7 @@ public sealed partial class EditorPage
             if (IsPreviewMode && _player is not null)
             {
                 if (IsPlaying) PauseAtCurrentFrame();
-                else _player.Play();
+                else ResumeFromCurrentFrame();
             }
             else
             {
@@ -92,6 +92,8 @@ public sealed partial class EditorPage
         }
 
         private void PauseAtCurrentFrame() => _player?.Pause();
+
+        private void ResumeFromCurrentFrame() => _player?.Play();
 
         private Task PlayFromStartAsync() => LoadSegmentAsync(0, play: true);
 
@@ -117,7 +119,7 @@ public sealed partial class EditorPage
             {
                 if (IsPreviewMode)
                 {
-                    if (play) _player?.Play();
+                    if (play) ResumeFromCurrentFrame();
                     return;
                 }
                 await LoadSegmentAsync(_page.Timeline.Value, play);

@@ -295,6 +295,10 @@ require("if (IsPlaying) PauseAtCurrentFrame();" in toggle_playback
         and "SetModeAsync(enabled: false" not in toggle_playback
         and "ApplyPresentation(processed: false)" not in toggle_playback,
         "PREVIEW-05 Pause must hold the current MediaPlayer frame without leaving processed preview")
+require("else ResumeFromCurrentFrame();" in toggle_playback
+        and "private void ResumeFromCurrentFrame() => _player?.Play();" in playback_source
+        and playback_source.count("ResumeFromCurrentFrame();") == 2,
+        "PREVIEW-06 Resume must reuse the paused MediaPlayer source/position without rendering a segment")
 require("SubtitleCueList" in editor and "SubtitleRetranslateCueButton" in editor and "SubtitleSaveSrtButton" in editor,
         "Editor static subtitle cue editor controls missing")
 require("ForceFresh = false" in read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalSubtitleTranslationService.cs")
