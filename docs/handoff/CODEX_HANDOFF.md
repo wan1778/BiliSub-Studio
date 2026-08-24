@@ -4,9 +4,9 @@
 - Current branch: `editor-preview-blur-01-17`
 - Remote branch: `origin/editor-preview-blur-01-17`
 - PR: none; do not create, merge, release or bump version without explicit authorization
-- Last completed task: `VOICE-11 — Thay subtitle phải invalidate voice cũ khi cần` (`500e39792c471e74ab5d2a7b3474b718d76e3575`)
-- Task completed: `VOICE-12 — Preview track Việt`
-- Exact next task after this one: `VOICE-13 — Mix voice + original audio`
+- Last completed task: `VOICE-12 — Preview track Việt` (`af30b463d80388ce6e060cd9c0029bc223a05c5c`)
+- Task currently running: `VOICE-13 — Mix voice + original audio`
+- Exact next task after this one: `VOICE-14 — Preview = Export`
 
 ## VOICE-12 scope and ownership
 
@@ -39,6 +39,27 @@ validated Vietnamese master into processed Preview and its MediaPlayer activatio
   matches the already-landed VOICE-11 LocalTtsService method list.
 - No production Editor, Subtitle, TTS, audio graph or media-source behavior was changed.
 
+## VOICE-13 scope and changes
+
+The production graph already has the correct owner and is unchanged:
+
+```text
+EditorAudioSettings + EditorVoiceTrack
+  -> BuildVoiceAudioFilter
+  -> Keep: source + voice
+  -> Duck: attenuated source + voice
+  -> Mute: voice only
+  -> [aout] -> Preview/Export
+```
+
+Root cause for VOICE-13 was the absence of a task-specific contract covering all
+three source-audio policies, voice timing/gain, and the requirement that Player
+monitor mute/volume never enter the render graph. Added only that regression gate.
+
+- Added `csharp/scripts/verify_editor_voice_mix_contract.py`.
+- Added the VOICE-13 contract to `csharp/scripts/verify.ps1`.
+- No production audio or voice behavior was changed.
+
 ## Verification status
 
 Targeted checks:
@@ -46,11 +67,12 @@ Targeted checks:
 - `python -m py_compile csharp/scripts/verify_editor_voice_preview_contract.py`: PASS
 - `python csharp/scripts/validate_csharp_migration.py`: PASS
 - `python csharp/scripts/verify_editor_voice_preview_contract.py`: PASS
+- `python csharp/scripts/verify_editor_voice_mix_contract.py`: PASS
 - `python csharp/scripts/verify_editor_audio_preview_export_contract.py`: PASS
 - `python csharp/scripts/verify_editor_voice_subtitle_invalidation_contract.py`: PASS
 - .NET 10.0.400 Core contract tests: `71/71` PASS
 - `python csharp/scripts/generate_csharp_code_map.py --check`: PASS after regeneration
-- Windows x64 `csharp/scripts/verify.ps1`: PASS
+- Windows x64 `csharp/scripts/verify.ps1`: pending for VOICE-13 on a committed clean checkout
   - SDK `10.0.400`
   - Release x64 WinUI build: 0 warnings, 0 errors
   - Core contracts: `71/71` PASS
@@ -61,7 +83,7 @@ Targeted checks:
   - published `BiliSubStudio.exe` SHA-256: `dce1aac6713e959546319612ac4b9beb7bc71795af4546eab445dd8c7980aabd`
   - source tree SHA-256: `73dbccb1c275482dcdb8d00fd5e140d032ae25a51b99d82c24587547a609ac4b`
 
-Task commits pushed to GitHub:
+Previous task commits pushed to GitHub:
 
 - `31c5627726cb1cafafa1d08288b693422d3274c4` — VOICE-12 Preview contract + handoff/code map
 - `ae0069570e104acdad3a4f89a43ddfa6f8ad67b9` — stale AUDIO contract marker alignment
