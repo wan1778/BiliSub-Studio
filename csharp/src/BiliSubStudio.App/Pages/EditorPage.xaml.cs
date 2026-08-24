@@ -848,8 +848,14 @@ public sealed partial class EditorPage : Page
     private void EffectBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (!IsLoaded || _syncingInputs) return;
-        ApplyInputsToDocument();
-        NotifyEditorCompositeChanged();
+        var normalized = NormalizeEffectStrength(SelectedEffect(), StrengthBox.Value, CurrentStoredStrength());
+        if (StrengthBox.Value != normalized)
+        {
+            _syncingInputs = true;
+            try { StrengthBox.Value = normalized; }
+            finally { _syncingInputs = false; }
+        }
+        if (ApplyInputsToDocument()) NotifyEditorCompositeChanged();
     }
 
     private void EditInput_ValueChanged(NumberBox sender, NumberBoxValueChangedEventArgs args)
@@ -859,12 +865,14 @@ public sealed partial class EditorPage : Page
         NotifyEditorCompositeChanged();
     }
 
-    private void BlurStrength_ValueChanged(NumberBox sender, NumberBoxValueChangedEventArgs args)
+    private void EffectStrength_ValueChanged(NumberBox sender, NumberBoxValueChangedEventArgs args)
     {
         if (!IsLoaded || _syncingInputs) return;
-        if (!EditorBlurStrength.TryFromInput(args.NewValue, out var strength))
+        var effect = SelectedEffect();
+        if (!TryEffectStrength(effect, args.NewValue, out var strength))
         {
-            RegionValidationText.Text = $"Cường độ làm mờ phải từ {EditorBlurStrength.Minimum} đến {EditorBlurStrength.Maximum}.";
+            var name = effect == "mosaic" ? "Mosaic" : "làm mờ";
+            RegionValidationText.Text = $"Cường độ {name} phải từ {EffectStrengthMinimum(effect)} đến {EffectStrengthMaximum(effect)}.";
             RefreshEditorActions();
             return;
         }
@@ -876,6 +884,27 @@ public sealed partial class EditorPage : Page
         }
         if (ApplyInputsToDocument()) NotifyEditorCompositeChanged();
     }
+
+    private static bool TryEffectStrength(string effect, double value, out int strength) =>
+        effect == "mosaic"
+            ? EditorMosaicStrength.TryFromInput(value, out strength)
+            : EditorBlurStrength.TryFromInput(value, out strength);
+
+    private static int NormalizeEffectStrength(string effect, double value, int fallback) =>
+        effect == "mosaic"
+            ? EditorMosaicStrength.NormalizeInput(value, fallback)
+            : EditorBlurStrength.NormalizeInput(value, fallback);
+
+    private static int EffectStrengthMinimum(string effect) =>
+        effect == "mosaic" ? EditorMosaicStrength.Minimum : EditorBlurStrength.Minimum;
+
+    private static int EffectStrengthMaximum(string effect) =>
+        effect == "mosaic" ? EditorMosaicStrength.Maximum : EditorBlurStrength.Maximum;
+
+    private int CurrentStoredStrength() =>
+        _document.Selected?.Strength
+        ?? _draftRegion?.Strength
+        ?? (SelectedEffect() == "mosaic" ? EditorMosaicStrength.Default : EditorBlurStrength.Default);
 
     private void RegionCoordinates_ValueChanged(NumberBox sender, NumberBoxValueChangedEventArgs args)
     {
@@ -1649,9 +1678,9 @@ public sealed partial class EditorPage : Page
 
     private int CurrentEffectStrength()
     {
-        if (EditorBlurStrength.TryFromInput(StrengthBox.Value, out var strength)) return strength;
-        return EditorBlurStrength.NormalizeStored(
-            _document.Selected?.Strength ?? _draftRegion?.Strength ?? EditorBlurStrength.Default);
+        var effect = SelectedEffect();
+        if (TryEffectStrength(effect, StrengthBox.Value, out var strength)) return strength;
+        return NormalizeEffectStrength(effect, double.NaN, CurrentStoredStrength());
     }
 
     private EditRegion? ReadRegionFromInputs(string id)

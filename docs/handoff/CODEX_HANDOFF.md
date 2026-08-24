@@ -2,13 +2,13 @@
 
 - Base/current upstream main: `origin/main@8eb2a8a2600b37d29bfd0deaae9eeb94b3cda635`
 - Current local branch: `main`
-- Local base before this task: `38ebfcfe6a0f67964d0e3a9bfd03b567e3262aa6`
+- Local base before this task: `61448498d365dacf771ca225b33680a346e74f80`
 - Pull request: none; local Preview/Blur task commits are not pushed or merged
 - Last completed before Blur phase: `PREVIEW-15 — Cleanup preview cache`
-- Task completed in this handoff: `BLUR-07 — Blur strength`
+- Task completed in this handoff: `BLUR-08 — Mosaic`
 - Task result: `PASS`
 - Task currently running: none
-- Exact next task after this task passes: `BLUR-08 — Mosaic`
+- Exact next task after this task passes: `BLUR-09 — Cover`
 
 ## Recent task commits
 
@@ -18,16 +18,17 @@
 - `BLUR-04`: `014f23de2335a986bc4fe39df032d624c408eeca` — bounded Move geometry and clean cancel transaction.
 - `BLUR-05`: `48c3963e05334e267d5b46428f123348c68d9234` — eight source-pixel-valid Resize handles.
 - `BLUR-06`: `38ebfcfe6a0f67964d0e3a9bfd03b567e3262aa6` — source-pixel-valid X/Y/W/H inputs without invalid/no-op refresh.
-- `BLUR-07`: the commit containing this handoff; resolve its exact SHA with `git rev-parse HEAD` after checkout. The exact SHA is also reported in the task completion message because a commit cannot contain its own cryptographic ID.
+- `BLUR-07`: `61448498d365dacf771ca225b33680a346e74f80` — one Blur strength owner and pixel-safe boxblur Preview/Export policy.
+- `BLUR-08`: the commit containing this handoff; resolve its exact SHA with `git rev-parse HEAD` after checkout. The exact SHA is also reported in the task completion message because a commit cannot contain its own cryptographic ID.
 
-## Files changed by BLUR-07
+## Files changed by BLUR-08
 
+- `csharp/src/BiliSubStudio.Core/Editor/EditorMosaicStrength.cs`
 - `csharp/src/BiliSubStudio.Core/Editor/EditorBlurStrength.cs`
 - `csharp/src/BiliSubStudio.Core/Editor/VideoEditorService.cs`
 - `csharp/src/BiliSubStudio.Core/Editor/EditorProjectStore.cs`
 - `csharp/src/BiliSubStudio.App/Pages/EditorPage.xaml`
 - `csharp/src/BiliSubStudio.App/Pages/EditorPage.xaml.cs`
-- `csharp/src/BiliSubStudio.App/Pages/EditorPage.ParityFixes.cs`
 - `csharp/tests/BiliSubStudio.Core.ContractTests/Program.cs`
 - `csharp/scripts/validate_csharp_migration.py`
 - `docs/migration/CSHARP_CODE_MAP.generated.md`
@@ -35,41 +36,41 @@
 
 ## Root cause
 
-Blur strength had no single invariant owner. XAML declared 2–40, `EnsureEditorParityInitialized` wrote Maximum again at runtime, code-behind cast/clamped `StrengthBox.Value` directly, project normalization clamped separately and FFmpeg render clamped a fourth time. Clearing the NumberBox could therefore feed a non-finite value into integer state, while the shared generic handler still requested processed Preview even for invalid or unchanged input. Render also used the requested boxblur radius without respecting FFmpeg's strict pixel bound; a real local FFmpeg probe proved radius 1 fails on a 2×2 crop because radius must remain below half the cropped plane dimension.
+Mosaic exposed and persisted the Blur range 2–40 while `VideoEditorService` silently clamped Mosaic to 4–64. A visible value of 2 therefore rendered as 4, and valid Mosaic levels 41–64 were impossible to enter. The shared input helper always used Blur normalization; effect selection also rebuilt processed Preview even for an unchanged result. Separately, processed Preview scaled the source to a 1280-pixel proxy before applying Mosaic, while Export applied the same pixel-block strength at source resolution. This changed the number of Mosaic cells and made processed Preview visibly coarser than Export.
 
 ## Implementation
 
-- Added `EditorBlurStrength` as the Core owner for the 2–40 user range, default value, finite input normalization, persisted-state normalization and pixel-safe effective radius.
-- Strength now has one dedicated XAML event route, integer spin step and no runtime Minimum/Maximum rewrite.
-- Invalid/NaN strength leaves the selected region/draft unchanged, shows the real range and does not save or request Preview work.
-- Fractional typed values normalize deterministically to the nearest integer; valid unchanged values do not rewrite the document or rebuild Preview.
-- Removed the direct NumberBox-to-int cast and retained the selected/draft strength safely while an input is temporarily invalid.
-- Project persistence uses the same blur-strength normalization owner.
-- Static frame Preview, processed Preview and Export continue through the same `VideoEditorService.BuildFilterCore`; its boxblur luma radius now respects `(min(pixelWidth,pixelHeight)-1)/2` and its chroma expression applies the equivalent per-plane bound.
-- Added a BLUR-07 Core contract covering finite/range validation, rounding, persistence clamp, effective pixel radius, selected filter strength and 2×2 safety.
-- Added a static BLUR-07 ownership contract and regenerated the C# code map.
+- Added `EditorMosaicStrength` as the Core owner for finite 4–64 input, default 12, deterministic rounding, persisted normalization and downsample dimensions.
+- StrengthBox now exposes the shared 2–64 envelope through one `EffectStrength_ValueChanged` route; Blur still validates 2–40 and Mosaic validates 4–64 through their respective Core owners.
+- Switching Blur ↔ Mosaic normalizes the current value into the selected effect range under `_syncingInputs`, then updates the document only if the result really changed.
+- Invalid/NaN Mosaic input leaves document/draft unchanged, reports the real 4–64 range and does not save or rebuild Preview.
+- Mosaic persistence now uses `EditorMosaicStrength.NormalizeStored`; reopen preserves valid 41–64 values and normalizes stale/out-of-range state.
+- `VideoEditorService` delegates Mosaic scale dimensions to the Core owner instead of clamping and dividing inline.
+- `VideoEditRequest` carries internal `MosaicScaleX/Y`. Processed Preview sets them to proxy/source ratios; the Mosaic owner compensates before downsampling, so source Export and proxy Preview retain the same Mosaic grid density. Static frame Preview and Export retain scale 1.
+- Added a BLUR-08 Core contract covering range/rounding, invalid input, persistence, tiny regions, selected graph dimensions and exact processed-Preview/Export grid parity.
+- Added a static BLUR-08 ownership contract and regenerated the C# code map.
 
 ## Tests and results
 
-- Fail-first `python csharp/scripts/validate_csharp_migration.py` — expected FAIL before implementation: `BLUR-07 blur strength must have one validated UI owner and a pixel-safe shared render radius`.
+- Fail-first `python csharp/scripts/validate_csharp_migration.py` — expected FAIL before implementation: `BLUR-08 Mosaic must expose its full validated strength range and share one Preview Export pixelation policy`.
 - `python csharp/scripts/validate_csharp_migration.py` — PASS (`4.0.0-beta.42-csharp-p5`).
-- `python csharp/scripts/generate_csharp_code_map.py --check` — PASS; generated map is current.
-- Core contract runner with exact SDK `10.0.400` — PASS, 61/61.
+- `python csharp/scripts/generate_csharp_code_map.py --check` — PASS; generated map includes `EditorMosaicStrength.DownsampleDimensions`.
+- Core contract runner with exact SDK `10.0.400` — PASS, 62/62.
+- Real local application FFmpeg probes — PASS for 2×2/strength-64, 576×270/strength-12, and matched Export 3840×2160 versus processed Preview 1280×720 filters using the same 96×45 Mosaic grid.
 - Targeted Windows x64 Release solution build — PASS, 0 warnings and 0 errors.
-- Real local application FFmpeg probe — initial 2×2/radius-1 probe correctly FAILed and exposed the strict runtime bound; corrected 2×2/radius-0 and 30×20/radius-9 production-shape filter probes PASS.
 - Git diff whitespace check — PASS.
-- Full clean-checkout `csharp/scripts/verify.ps1` — PASS, including source identity, 61/61 contracts, Range regressions, PE32+ x64, embedded worker identity, self-contained publish and real WinUI startup/layout smoke.
+- Full clean-checkout `csharp/scripts/verify.ps1` — PASS, including source identity, 62/62 contracts, Range regressions, PE32+ x64, embedded worker identity, self-contained publish and real WinUI startup/layout smoke.
 - No CI workflow was dispatched; no installer/package/release was built or published.
 
 ## Verification level
 
-- Blur strength Core contract PASS: finite 2–40 input, deterministic fractional normalization, persisted clamp and pixel-safe effective radius.
-- Preview/Export graph contract PASS: the chosen strength enters the common boxblur graph and tiny regions use a runtime-valid radius.
-- Real FFmpeg filter probe PASS for the minimum 2×2 crop and a 30×20 crop using the same luma/chroma bounds as production.
-- Static UI route PASS: one dedicated XAML handler, no runtime range owner and invalid/no-op changes do not request processed Preview.
+- Mosaic Core contract PASS: finite 4–64 input, deterministic fractional normalization, persisted clamp and valid downsample dimensions.
+- Preview/Export graph contract PASS: selected strength controls the neighbor-scale chain; processed Preview and Export retain the same grid density after proxy scaling.
+- Real FFmpeg probes PASS for minimum region, normal region and matched source/proxy graphs.
+- Static UI route PASS: one effect-aware XAML handler; invalid/no-op strength/effect changes do not request processed Preview.
 - Compile PASS: Windows x64 Release solution build, 0 warnings/errors.
 - Functional WinUI startup/layout PASS: the published executable initialized the real Editor XAML through the startup smoke path.
-- Real interactive strength editing while static/playing Preview is visible on a physical Windows desktop: not run; still required before release.
+- Real interactive Mosaic strength editing while static/playing Preview is visible on a physical Windows desktop: not run; still required before release.
 
 ## Constraints to preserve
 
@@ -78,9 +79,9 @@ Blur strength had no single invariant owner. XAML declared 2–40, `EnsureEditor
 - Translation, ASR and TTS remain local; Chinese → Vietnamese uses the project translation skill.
 - Keep the three-column Editor and contextual tool scope; do not turn it into a full NLE.
 - Keep one event/owner, one button/handler, no handler-calls-handler and the single `EditorPlaybackController` playback owner.
-- Blur strength invariants must remain in `EditorBlurStrength`; do not restore runtime range mutation or direct casts from `StrengthBox.Value`.
-- All Preview and Export blur paths must retain the common pixel-safe boxblur radius policy.
+- Mosaic strength invariants and downsample geometry must remain in `EditorMosaicStrength`; do not restore UI/render/persistence clamp duplication.
+- Processed Preview must preserve Mosaic grid density through `MosaicScaleX/Y`; static Preview and Export remain scale 1.
 - Do not add Repair/Fix/Parity layers when the real owner can be corrected; remove dead/superseded logic.
-- One small task and targeted regression at a time; do not start BLUR-08 until BLUR-07 has final clean verification and its own commit.
+- One small task and targeted regression at a time; do not start BLUR-09 until BLUR-08 has final clean verification and its own commit.
 - Do not reopen already-passed Subtitle work without a demonstrated regression.
 - No version bump, release, push, PR merge or merge without explicit authorization and passing gates.

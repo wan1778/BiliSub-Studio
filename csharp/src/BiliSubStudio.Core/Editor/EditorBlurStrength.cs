@@ -14,6 +14,12 @@ public static class EditorBlurStrength
         return true;
     }
 
+    public static int NormalizeInput(double value, int fallback = Default)
+    {
+        if (!double.IsFinite(value)) return NormalizeStored(fallback);
+        return (int)Math.Round(Math.Clamp(value, Minimum, Maximum), MidpointRounding.AwayFromZero);
+    }
+
     public static int NormalizeStored(int strength) => Math.Clamp(strength, Minimum, Maximum);
 
     public static int EffectiveRadius(int strength, int pixelWidth, int pixelHeight)

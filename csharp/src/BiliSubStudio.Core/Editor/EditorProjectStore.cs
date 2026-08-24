@@ -291,9 +291,12 @@ public sealed class EditorProjectStore
             {
                 Id = identity,
                 Effect = effect,
-                Strength = effect == "blur"
-                    ? EditorBlurStrength.NormalizeStored(region.Strength)
-                    : Math.Clamp(region.Strength, 2, 40),
+                Strength = effect switch
+                {
+                    "blur" => EditorBlurStrength.NormalizeStored(region.Strength),
+                    "mosaic" => EditorMosaicStrength.NormalizeStored(region.Strength),
+                    _ => Math.Clamp(region.Strength, 2, 40),
+                },
             });
         }
         return normalized;

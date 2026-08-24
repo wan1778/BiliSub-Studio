@@ -59,6 +59,7 @@ internal static class Program
         ("editor region resize keeps all eight handles pixel-valid", EditorRegionResizeContractAsync),
         ("editor numeric X Y W H inputs require source-pixel-valid geometry", EditorRegionNumericInputsContractAsync),
         ("editor blur strength validates input and shares Preview Export radius", EditorBlurStrengthContractAsync),
+        ("editor Mosaic strength drives pixelated Preview Export dimensions", EditorMosaicStrengthContractAsync),
         ("editor project persists, isolates source drift and quarantines corrupt state", EditorProjectContractAsync),
         ("editor SRT keeps exact blocks order and timecodes", EditorSubtitleDocumentContractAsync),
         ("editor manual cue state persists locks and preserves timeline", EditorSubtitleManualContract.RunAsync),
@@ -1127,6 +1128,51 @@ internal static class Program
         return Task.CompletedTask;
     }
 
+    private static Task EditorMosaicStrengthContractAsync()
+    {
+        True(EditorMosaicStrength.TryFromInput(4, out var minimum) && minimum == 4,
+            "minimum Mosaic strength was rejected");
+        True(EditorMosaicStrength.TryFromInput(64, out var maximum) && maximum == 64,
+            "maximum Mosaic strength was rejected");
+        True(EditorMosaicStrength.TryFromInput(12.4, out var roundedDown) && roundedDown == 12,
+            "fractional Mosaic strength did not normalize down");
+        True(EditorMosaicStrength.TryFromInput(12.5, out var roundedUp) && roundedUp == 13,
+            "fractional Mosaic strength did not normalize up");
+        True(!EditorMosaicStrength.TryFromInput(double.NaN, out _), "NaN Mosaic strength entered editor state");
+        True(!EditorMosaicStrength.TryFromInput(3, out _), "below-minimum Mosaic strength entered editor state");
+        True(!EditorMosaicStrength.TryFromInput(65, out _), "above-maximum Mosaic strength entered editor state");
+        Equal(4, EditorMosaicStrength.NormalizeInput(2));
+        Equal(64, EditorMosaicStrength.NormalizeInput(100));
+        Equal(50, EditorMosaicStrength.NormalizeInput(double.NaN, 50));
+        Equal(new EditorMosaicDimensions(48, 22), EditorMosaicStrength.DownsampleDimensions(12, 576, 270));
+        Equal(new EditorMosaicDimensions(1, 1), EditorMosaicStrength.DownsampleDimensions(64, 30, 20));
+        Equal(new EditorMosaicDimensions(1, 1), EditorMosaicStrength.DownsampleDimensions(4, 2, 2));
+        Equal(new EditorMosaicDimensions(96, 45), EditorMosaicStrength.DownsampleDimensions(12, 384, 180, 1d / 3, 1d / 3));
+
+        var region = new EditRegion(.1, .2, .3, .25, "mosaic", 12, true, 0, 10, "mosaic-strength");
+        var request = new VideoEditRequest("input.mp4", ".", "output.mp4", 3840, 2160, 10, [region]);
+        var graph = VideoEditorService.BuildFilter(request);
+        True(graph.Contains("crop=1152:540:384:432,scale=96:45:flags=neighbor,scale=1152:540:flags=neighbor", StringComparison.Ordinal),
+            "Preview/Export Mosaic filter lost the selected pixelation strength");
+
+        var sliceMethod = typeof(VideoEditorService).GetMethod(
+            "BuildPreviewSlice", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing Mosaic processed-preview slice policy");
+        var preview = (VideoEditRequest)sliceMethod.Invoke(null, [request, 0d, 10d, 1280, 720])!;
+        Equal(1d / 3, preview.MosaicScaleX);
+        Equal(1d / 3, preview.MosaicScaleY);
+        graph = VideoEditorService.BuildFilter(preview);
+        True(graph.Contains("crop=384:180:128:144,scale=96:45:flags=neighbor,scale=384:180:flags=neighbor", StringComparison.Ordinal),
+            "processed Preview changed Mosaic block density from Export");
+
+        var tiny = region with { X = 0, Y = 0, Width = .02, Height = .02, Strength = 64 };
+        graph = VideoEditorService.BuildFilter(
+            new VideoEditRequest("input.mp4", ".", "output.mp4", 100, 100, 10, [tiny]));
+        True(graph.Contains("crop=2:2:0:0,scale=1:1:flags=neighbor,scale=2:2:flags=neighbor", StringComparison.Ordinal),
+            "tiny Mosaic region did not retain a valid pixelation chain");
+        return Task.CompletedTask;
+    }
+
     private static async Task EditorProjectContractAsync()
     {
         await WithTemporaryRootAsync(async root =>
@@ -1162,10 +1208,11 @@ internal static class Program
             var ttsManifest = Path.Combine(root, "tts-result.json");
             await File.WriteAllTextAsync(ttsManifest, "{\"schema\":1}");
             var ttsManifestSha = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(await File.ReadAllBytesAsync(ttsManifest)));
+            var mosaicRegion = new EditRegion(.55, .15, .2, .2, "mosaic", 99, true, 0, 120, "stable-mosaic");
             await store.SaveAsync(created with
             {
                 FileName = "episode-edited.mp4",
-                Regions = [region],
+                Regions = [region, mosaicRegion],
                 Subtitle = subtitleProject,
                 Audio = new EditorAudioSettings("duck", .35),
                 Asr = new EditorAsrProject("complete", "fixture ASR", "536b0662742c02347bc0e980a01041f333bce120",
@@ -1179,10 +1226,12 @@ internal static class Program
 
             var reopened = await store.LoadOrCreateAsync(video, 1920, 1080, 120, CancellationToken.None);
             Equal("episode-edited.mp4", reopened.FileName);
-            Equal(1, reopened.Regions.Count);
+            Equal(2, reopened.Regions.Count);
             Equal("stable-region", reopened.Regions[0].Id);
             Equal(.1, reopened.Regions[0].X);
             Equal(EditorBlurStrength.Maximum, reopened.Regions[0].Strength);
+            Equal("stable-mosaic", reopened.Regions[1].Id);
+            Equal(EditorMosaicStrength.Maximum, reopened.Regions[1].Strength);
             Equal("Xin chào", reopened.Subtitle!.Cues[0].VietnameseText);
             Equal(.72, reopened.Subtitle.Placement.Y);
             Equal("duck", reopened.Audio!.SourceMode);

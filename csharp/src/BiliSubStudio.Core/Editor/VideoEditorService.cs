@@ -21,7 +21,9 @@ public sealed record VideoEditRequest(
     IReadOnlyList<EditRegion> Regions,
     EditorSubtitleBurn? Subtitle = null,
     EditorAudioSettings? Audio = null,
-    EditorVoiceTrack? VoiceTrack = null);
+    EditorVoiceTrack? VoiceTrack = null,
+    double MosaicScaleX = 1,
+    double MosaicScaleY = 1);
 
 public sealed record EditorSubtitleBurn(IReadOnlyList<EditorSubtitleCue> Cues, EditorSubtitlePlacement Placement, IReadOnlyList<EditorCueSpeechTiming>? SpeechTiming = null, bool Karaoke = true);
 
@@ -354,6 +356,7 @@ public sealed class VideoEditorService
         if (!double.IsFinite(sourceStart) || sourceStart < 0 || !double.IsFinite(segmentDuration) || segmentDuration <= 0)
             throw new ArgumentException("Khoảng thời gian preview không hợp lệ.");
         if (previewWidth <= 0 || previewHeight <= 0) throw new ArgumentException("Kích thước preview không hợp lệ.");
+        if (request.SourceWidth <= 0 || request.SourceHeight <= 0) throw new ArgumentException("Kích thước source không hợp lệ.");
         var sourceEnd = sourceStart + segmentDuration;
         var regions = request.Regions
             .Where(region => region.WholeVideo || region.End > sourceStart && region.Start < sourceEnd)
@@ -421,6 +424,8 @@ public sealed class VideoEditorService
             Duration = segmentDuration,
             Regions = regions,
             Subtitle = subtitle,
+            MosaicScaleX = previewWidth / (double)request.SourceWidth,
+            MosaicScaleY = previewHeight / (double)request.SourceHeight,
         };
     }
 
@@ -538,9 +543,8 @@ public sealed class VideoEditorService
             }
             else if (effect == "mosaic")
             {
-                var strength = Math.Clamp(region.Strength, 4, 64);
-                var smallWidth = Math.Max(1, width / strength);
-                var smallHeight = Math.Max(1, height / strength);
+                var (smallWidth, smallHeight) = EditorMosaicStrength.DownsampleDimensions(
+                    region.Strength, width, height, request.MosaicScaleX, request.MosaicScaleY);
                 parts.Add($"[{current}]split=2[base{index}][fx{index}]");
                 parts.Add($"[fx{index}]crop={width}:{height}:{x}:{y},scale={smallWidth}:{smallHeight}:flags=neighbor,scale={width}:{height}:flags=neighbor[rendered{index}]");
                 parts.Add($"[base{index}][rendered{index}]overlay={x}:{y}{enable}[{output}]");

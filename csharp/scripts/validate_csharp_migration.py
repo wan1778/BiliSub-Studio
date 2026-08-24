@@ -394,7 +394,7 @@ blur_input_bindings = {
     "RegionWidthBox": ("ValueChanged", "RegionCoordinates_ValueChanged"),
     "RegionHeightBox": ("ValueChanged", "RegionCoordinates_ValueChanged"),
     "EffectBox": ("SelectionChanged", "EffectBox_SelectionChanged"),
-    "StrengthBox": ("ValueChanged", "BlurStrength_ValueChanged"),
+    "StrengthBox": ("ValueChanged", "EffectStrength_ValueChanged"),
     "WholeToggle": ("Toggled", "WholeToggle_Toggled"),
     "StartBox": ("ValueChanged", "EditInput_ValueChanged"),
     "EndBox": ("ValueChanged", "EditInput_ValueChanged"),
@@ -469,13 +469,13 @@ require("if (ApplyInputsToDocument()) NotifyEditorCompositeChanged();" in blur_n
         "BLUR-06 numeric geometry must use source-pixel validation and suppress invalid or no-op refresh")
 blur_strength_path = CSHARP / "src/BiliSubStudio.Core/Editor/EditorBlurStrength.cs"
 blur_strength_source = read(blur_strength_path) if blur_strength_path.is_file() else ""
-blur_strength_handler_source = editor_main.split("private void BlurStrength_ValueChanged(", 1)[1].split("private void RegionCoordinates_ValueChanged(", 1)[0] if "private void BlurStrength_ValueChanged(" in editor_main else ""
+blur_strength_handler_source = editor_main.split("private void EffectStrength_ValueChanged(", 1)[1].split("private void RegionCoordinates_ValueChanged(", 1)[0] if "private void EffectStrength_ValueChanged(" in editor_main else ""
 require('x:Name="StrengthBox"' in editor
-        and 'ValueChanged="BlurStrength_ValueChanged"' in editor
+        and 'ValueChanged="EffectStrength_ValueChanged"' in editor
         and blur_controls["StrengthBox"].get("Minimum") == "2"
-        and blur_controls["StrengthBox"].get("Maximum") == "40"
+        and blur_controls["StrengthBox"].get("Maximum") == "64"
         and blur_controls["StrengthBox"].get("SmallChange") == "1"
-        and "EditorBlurStrength.TryFromInput(args.NewValue, out var strength)" in blur_strength_handler_source
+        and "EditorBlurStrength.TryFromInput(value, out strength)" in blur_strength_handler_source
         and "if (ApplyInputsToDocument()) NotifyEditorCompositeChanged();" in blur_strength_handler_source
         and "StrengthBox.Maximum =" not in editor_partials
         and "StrengthBox.Minimum =" not in editor_partials
@@ -485,6 +485,22 @@ require('x:Name="StrengthBox"' in editor
         and "public static class EditorBlurStrength" in blur_strength_source
         and "editor blur strength validates input and shares Preview Export radius" in contract_tests_source,
         "BLUR-07 blur strength must have one validated UI owner and a pixel-safe shared render radius")
+mosaic_strength_path = CSHARP / "src/BiliSubStudio.Core/Editor/EditorMosaicStrength.cs"
+mosaic_strength_source = read(mosaic_strength_path) if mosaic_strength_path.is_file() else ""
+mosaic_handler_source = editor_main.split("private void EffectStrength_ValueChanged(", 1)[1].split("private void RegionCoordinates_ValueChanged(", 1)[0] if "private void EffectStrength_ValueChanged(" in editor_main else ""
+mosaic_effect_source = editor_main.split("private void EffectBox_SelectionChanged(", 1)[1].split("private void EditInput_ValueChanged(", 1)[0]
+require('ValueChanged="EffectStrength_ValueChanged"' in editor
+        and blur_controls["StrengthBox"].get("Maximum") == "64"
+        and "EditorMosaicStrength.TryFromInput(" in mosaic_handler_source
+        and "NormalizeEffectStrength(" in mosaic_effect_source
+        and "if (ApplyInputsToDocument()) NotifyEditorCompositeChanged();" in mosaic_effect_source
+        and "EditorMosaicStrength.DownsampleDimensions(" in video_editor_source
+        and "MosaicScaleX = previewWidth / (double)request.SourceWidth" in video_editor_source
+        and "MosaicScaleY = previewHeight / (double)request.SourceHeight" in video_editor_source
+        and "EditorMosaicStrength.NormalizeStored(" in region_document_source
+        and "public static class EditorMosaicStrength" in mosaic_strength_source
+        and "editor Mosaic strength drives pixelated Preview Export dimensions" in contract_tests_source,
+        "BLUR-08 Mosaic must expose its full validated strength range and share one Preview Export pixelation policy")
 require("SubtitleCueList" in editor and "SubtitleRetranslateCueButton" in editor and "SubtitleSaveSrtButton" in editor,
         "Editor static subtitle cue editor controls missing")
 require("ForceFresh = false" in read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalSubtitleTranslationService.cs")
