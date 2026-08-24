@@ -33,6 +33,8 @@ validated Vietnamese master into processed Preview and its MediaPlayer activatio
 - Added the VOICE-12 contract to `csharp/scripts/verify.ps1`.
 - Updated the stale AUDIO contract marker to match the current `internal`
   `BuildPreviewArguments` owner; production audio behavior is unchanged.
+- Quoted the Windows startup-smoke sentinel argument so verification works from
+  the current workspace path containing spaces; production startup behavior is unchanged.
 - Regenerated `docs/migration/CSHARP_CODE_MAP.generated.md` so the checked-in map
   matches the already-landed VOICE-11 LocalTtsService method list.
 - No production Editor, Subtitle, TTS, audio graph or media-source behavior was changed.
@@ -48,7 +50,8 @@ Targeted checks completed before the Windows gate:
 - `python csharp/scripts/verify_editor_voice_subtitle_invalidation_contract.py`: PASS
 - .NET 10.0.400 Core contract tests: `71/71` PASS
 - `python csharp/scripts/generate_csharp_code_map.py --check`: PASS after regeneration
-- Windows x64 `csharp/scripts/verify.ps1`: pending on the committed clean checkout
+- Windows x64 `csharp/scripts/verify.ps1`: build, WinUI compile, publish and startup smoke
+  are being rerun after the verification-harness fixes
 
 Compile/static PASS is not a functional Windows field-test. The following remain
 untested here until the real WinUI app is exercised with a source video, completed

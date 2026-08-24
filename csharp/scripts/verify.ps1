@@ -188,7 +188,8 @@ $smokeSentinel = Join-Path $env:RUNNER_TEMP "bilisub-winui-startup-smoke.txt"
 if (Test-Path $smokeSentinel) { Remove-Item $smokeSentinel -Force }
 $startupLog = Join-Path $env:LOCALAPPDATA "BiliSub Studio\Logs\startup.log"
 if (Test-Path $startupLog) { Remove-Item $startupLog -Force }
-$smokeProcess = Start-Process $exe -ArgumentList "--startup-smoke-test=$smokeSentinel" -PassThru
+$smokeArgument = '--startup-smoke-test="' + $smokeSentinel + '"'
+$smokeProcess = Start-Process $exe -ArgumentList $smokeArgument -PassThru
 if (-not $smokeProcess.WaitForExit(30000)) {
     Stop-Process -Id $smokeProcess.Id -Force -ErrorAction SilentlyContinue
     throw "WinUI startup smoke test timed out"
