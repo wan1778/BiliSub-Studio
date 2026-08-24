@@ -168,7 +168,7 @@ public sealed class EditorProjectStore
                     Asr = NormalizeAsr(loaded.Asr),
                     Speech = NormalizeSpeech(loaded.Speech),
                     Tts = subtitle is null ? null : NormalizeTts(loaded.Tts),
-                    VoiceOverrides = NormalizeVoiceOverrides(loaded.VoiceOverrides),
+                    VoiceOverrides = subtitle is null ? null : NormalizeVoiceOverrides(loaded.VoiceOverrides),
                 };
             }
             catch (OperationCanceledException) { throw; }
@@ -264,7 +264,7 @@ public sealed class EditorProjectStore
             Asr = NormalizeAsr(project.Asr),
             Speech = NormalizeSpeech(project.Speech),
             Tts = subtitle is null ? null : NormalizeTts(project.Tts),
-            VoiceOverrides = NormalizeVoiceOverrides(project.VoiceOverrides),
+            VoiceOverrides = subtitle is null ? null : NormalizeVoiceOverrides(project.VoiceOverrides),
             UpdatedUtc = DateTimeOffset.UtcNow,
         };
 
@@ -354,8 +354,8 @@ public sealed class EditorProjectStore
         if (subtitle.SourceSize <= 0 || subtitle.SourceLastWriteUtcTicks <= 0 ||
             subtitle.SourceSha256.Length != 64 || subtitle.SourceSha256.Any(x => !Uri.IsHexDigit(x)))
             throw new InvalidDataException("Project Editor chứa nguồn SRT không hợp lệ.");
-        var info = new FileInfo(path);
-        if (!info.Exists || info.Length != subtitle.SourceSize || !FileShaMatches(path, subtitle.SourceSha256)) return null;
+        if (!EditorSubtitleDocument.SourceFingerprintMatchesCurrent(
+                path, subtitle.SourceSize, subtitle.SourceLastWriteUtcTicks, subtitle.SourceSha256)) return null;
         if (subtitle.Cues is null || subtitle.Cues.Count is 0 or > EditorSubtitleDocument.MaxCues)
             throw new InvalidDataException("Project Editor chứa số cue SRT không hợp lệ.");
         var ids = new HashSet<string>(StringComparer.Ordinal);

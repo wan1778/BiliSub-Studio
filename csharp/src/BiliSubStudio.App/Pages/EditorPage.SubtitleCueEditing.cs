@@ -138,6 +138,7 @@ public sealed partial class EditorPage
     private async Task SaveCurrentSubtitleCueAsync()
     {
         if (_subtitleSource is null || _subtitleCueSelectedIndex < 0 || _subtitleCueSelectedIndex >= _subtitleSource.Cues.Count) return;
+        EnsureCurrentSubtitleFingerprint();
         var sourceText = SubtitleSourceEdit.Text.Trim();
         var vietnamese = SubtitleVietnameseEdit.Text.Trim();
         if (sourceText.Length == 0) throw new InvalidDataException("Lời nguồn không được để trống.");
@@ -213,6 +214,7 @@ public sealed partial class EditorPage
                 }
                 if (snapshot.Result is not EditorTranslationResult result)
                     throw new InvalidOperationException(snapshot.Error ?? snapshot.Message);
+                EnsureCurrentSubtitleFingerprint();
                 var merged = result.Cues.Select(c => locked.TryGetValue(c.Id, out var keep)
                     ? c with { SourceText = keep.SourceText, VietnameseText = keep.VietnameseText }
                     : c).ToArray();
@@ -295,6 +297,7 @@ public sealed partial class EditorPage
             }
             if (snapshot.Result is not EditorTranslationResult result || result.Cues.Count != 1)
                 throw new InvalidOperationException(snapshot.Error ?? snapshot.Message);
+            EnsureCurrentSubtitleFingerprint();
             var translated = result.Cues[0].VietnameseText;
             var cues = _subtitleSource.Cues.ToArray();
             cues[_subtitleCueSelectedIndex] = cue with { VietnameseText = translated };

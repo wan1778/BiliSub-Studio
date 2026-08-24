@@ -309,6 +309,15 @@ public sealed partial class EditorPage : Page
             throw new InvalidDataException("Video nguồn đã thay đổi ngoài ứng dụng; hãy mở lại chính video này để reset project trước khi Preview/Export.");
     }
 
+    private bool CurrentSubtitleFingerprintMatches() =>
+        _subtitleSource is null || EditorSubtitleDocument.SourceFingerprintMatchesCurrent(_subtitleSource);
+
+    private void EnsureCurrentSubtitleFingerprint()
+    {
+        if (_subtitleSource is not null && !CurrentSubtitleFingerprintMatches())
+            throw new InvalidDataException("SRT nguồn đã thay đổi ngoài ứng dụng; hãy chọn lại file SRT để reset Vietsub/voice trước khi tiếp tục.");
+    }
+
     private async void Refresh_Click(object sender, RoutedEventArgs e)
     {
         try { await UpdateFrameAsync(); }
@@ -437,13 +446,20 @@ public sealed partial class EditorPage : Page
             throw new InvalidDataException(detail, error);
         }
 
+        var subtitleSourceChanged = _subtitleSource is not null
+            && (!string.Equals(Path.GetFullPath(_subtitleSource.Path), Path.GetFullPath(candidate.Path), StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(_subtitleSource.Sha256, candidate.Sha256, StringComparison.OrdinalIgnoreCase));
         _subtitleSource = candidate;
         _subtitlePlacement = EditorSubtitlePlacement.Default;
         if (_project is not null)
         {
-            // SUB-03: attach the validated SRT to the already-open project and invalidate stale voice output.
+            // SUB-03 / PROJECT-06: a new SRT invalidates TTS and cue-keyed voice overrides from the old SRT.
             _voiceTrack = null;
-            _project = _project with { Tts = null };
+            _project = _project with
+            {
+                Tts = null,
+                VoiceOverrides = subtitleSourceChanged ? null : _project.VoiceOverrides,
+            };
             AttachSubtitleToProject(string.Empty);
             await RefreshSpeechTimingForSubtitleAsync();
         }
@@ -575,6 +591,11 @@ public sealed partial class EditorPage : Page
     private async void GenerateTts_Click(object sender, RoutedEventArgs e)
     {
         if (_ttsJobId is not null || _project is null || _media is null || _subtitleSource is null || string.IsNullOrWhiteSpace(_path)) return;
+        if (!CurrentSubtitleFingerprintMatches())
+        {
+            VoiceStatusText.Text = "SRT nguồn đã thay đổi ngoài ứng dụng; hãy chọn lại SRT trước khi tạo voice.";
+            return;
+        }
         if (_project.Speech is not { Status: "complete" } speech)
         {
             VoiceStatusText.Text = "Hãy chạy Phân tích nhịp + Nam/Nữ trước khi tạo voice.";
@@ -619,6 +640,7 @@ public sealed partial class EditorPage : Page
             {
                 if (snapshot.Result is EditorTtsResult result && _project is not null)
                 {
+                    EnsureCurrentSubtitleFingerprint();
                     _voiceTrack = result.VoiceTrack;
                     _project = _project with
                     {
@@ -768,6 +790,11 @@ public sealed partial class EditorPage : Page
     private async void SaveKaraokeAss_Click(object sender, RoutedEventArgs e)
     {
         if (_media is null || _subtitleSource is null) return;
+        if (!CurrentSubtitleFingerprintMatches())
+        {
+            TranslationStatusText.Text = "SRT nguồn đã thay đổi ngoài ứng dụng; hãy chọn lại SRT trước khi lưu ASS karaoke.";
+            return;
+        }
         var burn = CompletedSubtitleBurn();
         if (burn is null || !KaraokeToggle.IsOn || _cueSpeechTiming.Count == 0)
         {
@@ -788,6 +815,11 @@ public sealed partial class EditorPage : Page
 
     private async void OpenTranslatedSrt_Click(object sender, RoutedEventArgs e)
     {
+        if (_subtitleSource is not null && !CurrentSubtitleFingerprintMatches())
+        {
+            TranslationStatusText.Text = "SRT nguồn đã thay đổi ngoài ứng dụng; output Vietsub cũ đã bị khóa cho tới khi chọn lại SRT.";
+            return;
+        }
         var output = _project?.Subtitle?.OutputPath;
         if (string.IsNullOrWhiteSpace(output) || !File.Exists(output)) return;
         try
@@ -1226,6 +1258,7 @@ public sealed partial class EditorPage : Page
         var path = _path ?? throw new InvalidOperationException("Chưa chọn video.");
         var media = _media ?? throw new InvalidOperationException("Chưa đọc được video.");
         EnsureCurrentSourceFingerprint();
+        if (subtitle is not null || _voiceTrack is not null) EnsureCurrentSubtitleFingerprint();
         return new VideoEditRequest(
             path,
             _application.Config.OutputDirectory,
