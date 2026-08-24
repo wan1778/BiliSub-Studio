@@ -41,6 +41,11 @@ public sealed partial class EditorPage
         private double _sourceDuration;
         private FullscreenSnapshot? _fullscreenSnapshot;
         private long? _fullWindowChangedToken;
+        private bool _foregroundRendering;
+        private long _playbackRevision;
+        private Task _prefetchTask = Task.CompletedTask;
+        private EditorPreviewSegment? _prefetchedSegment;
+        private double? _prefetchedStart;
 
         private readonly record struct FullscreenSnapshot(bool PreviewMode, bool Playing, bool Ended);
 
@@ -48,14 +53,14 @@ public sealed partial class EditorPage
 
         internal bool IsPreviewMode { get; private set; }
         internal bool HasEnded { get; private set; }
-        internal bool IsRendering => _previewRequests.IsActive;
+        internal bool IsRendering => _foregroundRendering;
         internal bool IsReady => _player is not null;
         internal bool IsPlaying => IsPreviewMode &&
             _player?.PlaybackSession.PlaybackState == MediaPlaybackState.Playing;
 
         internal async Task PrepareAsync()
         {
-            await _previewRequests.CancelAsync();
+            await CancelPreviewWorkAsync();
             ClearFullscreenTracking(unregisterCallback: true);
             DisposePlayer();
 
@@ -199,7 +204,7 @@ public sealed partial class EditorPage
                 return;
             }
 
-            await _previewRequests.CancelAsync();
+            await CancelPreviewWorkAsync();
             if (!IsPreviewMode && !IsRendering) return;
             HasEnded = false;
             var sourcePosition = IsPreviewMode
@@ -253,7 +258,7 @@ public sealed partial class EditorPage
 
         private async Task ResetAsync()
         {
-            await _previewRequests.CancelAsync();
+            await CancelPreviewWorkAsync();
             ClearFullscreenTracking(unregisterCallback: true);
             DisposePlayer();
             IsPreviewMode = false;
@@ -267,23 +272,36 @@ public sealed partial class EditorPage
                 await _page._application.DeleteEditorPreviewSegmentAsync(previewPath);
         }
 
-        private async Task LoadSegmentAsync(double requestedStart, bool play)
+        private async Task LoadSegmentAsync(
+            double requestedStart,
+            bool play,
+            bool announcePreparation = true,
+            bool announcePlayback = true,
+            bool foreground = true)
         {
+            var revision = ++_playbackRevision;
+            await DiscardPrefetchedSegmentAsync();
+            if (foreground) _foregroundRendering = true;
             try
             {
                 await _previewRequests.RunLatestAsync(
-                    cancellationToken => LoadSegmentCoreAsync(requestedStart, play, cancellationToken));
+                    cancellationToken => LoadSegmentCoreAsync(
+                        requestedStart, play, announcePreparation, announcePlayback, cancellationToken));
             }
             finally
             {
+                if (foreground && revision == _playbackRevision) _foregroundRendering = false;
                 _page.RefreshEditorActions();
                 _page.SyncShellPlayerControls();
             }
+            if (revision == _playbackRevision && IsPreviewMode) StartNextSegmentPrefetch();
         }
 
         private async Task LoadSegmentCoreAsync(
             double requestedStart,
             bool play,
+            bool announcePreparation,
+            bool announcePlayback,
             CancellationToken cancellationToken)
         {
             var player = _player ?? throw new InvalidOperationException("Chưa chọn video để xem bản chỉnh.");
@@ -295,32 +313,14 @@ public sealed partial class EditorPage
             try
             {
                 _page.RefreshEditorActions();
-                _page.StatusText.Text = "Đang chuẩn bị bản xem trước tại vị trí hiện tại...";
+                if (announcePreparation)
+                    _page.StatusText.Text = "Đang chuẩn bị bản xem trước tại vị trí hiện tại...";
                 segment = await _page._application.CreateEditorPreviewSegmentAsync(
                     _page.CurrentEditRequest(_page.PreviewSubtitleBurn()), requestedStart, cancellationToken);
                 cancellationToken.ThrowIfCancellationRequested();
-                var file = await StorageFile.GetFileFromPathAsync(segment.Path);
-                cancellationToken.ThrowIfCancellationRequested();
-                var segmentPosition = PositionInSegment(segment, requestedStart);
-                var sourcePosition = segment.SourceStart + segmentPosition;
-                player.Pause();
-                player.Source = MediaSource.CreateFromStorageFile(file);
-                _previewPath = segment.Path;
-                _sourceStart = segment.SourceStart;
-                _sourceDuration = segment.Duration;
-                HasEnded = false;
-                IsPreviewMode = true;
-                ApplyPresentation(processed: true);
-                _page._syncingTimeline = true;
-                try { _page.Timeline.Value = Math.Clamp(sourcePosition, _page.Timeline.Minimum, _page.Timeline.Maximum); }
-                finally { _page._syncingTimeline = false; }
-                player.PlaybackSession.Position = TimeSpan.FromSeconds(segmentPosition);
-                if (play) player.Play();
-                _page.StatusText.Text =
-                    $"Đang xem bản chỉnh từ {FormatClock(sourcePosition)}. Preview sẽ tiếp tục tự động đến hết video.";
+                await ActivateSegmentAsync(
+                    player, segment, requestedStart, play, announcePlayback, previousPath, cancellationToken);
                 segment = null;
-                if (previousPath is not null && !string.Equals(previousPath, _previewPath, StringComparison.OrdinalIgnoreCase))
-                    await _page._application.DeleteEditorPreviewSegmentAsync(previousPath);
             }
             catch
             {
@@ -339,6 +339,115 @@ public sealed partial class EditorPage
                 if (segment is not null)
                     await _page._application.DeleteEditorPreviewSegmentAsync(segment.Path);
             }
+        }
+
+        private async Task ActivateSegmentAsync(
+            MediaPlayer player,
+            EditorPreviewSegment segment,
+            double requestedStart,
+            bool play,
+            bool announcePlayback,
+            string? previousPath,
+            CancellationToken cancellationToken)
+        {
+            var file = await StorageFile.GetFileFromPathAsync(segment.Path);
+            cancellationToken.ThrowIfCancellationRequested();
+            var segmentPosition = PositionInSegment(segment, requestedStart);
+            var sourcePosition = segment.SourceStart + segmentPosition;
+            player.Pause();
+            player.Source = MediaSource.CreateFromStorageFile(file);
+            _previewPath = segment.Path;
+            _sourceStart = segment.SourceStart;
+            _sourceDuration = segment.Duration;
+            HasEnded = false;
+            IsPreviewMode = true;
+            ApplyPresentation(processed: true);
+            _page._syncingTimeline = true;
+            try { _page.Timeline.Value = Math.Clamp(sourcePosition, _page.Timeline.Minimum, _page.Timeline.Maximum); }
+            finally { _page._syncingTimeline = false; }
+            player.PlaybackSession.Position = TimeSpan.FromSeconds(segmentPosition);
+            if (play) player.Play();
+            if (announcePlayback)
+                _page.StatusText.Text =
+                    $"Đang xem bản chỉnh từ {FormatClock(sourcePosition)}. Preview sẽ tiếp tục tự động đến hết video.";
+            if (previousPath is not null && !string.Equals(previousPath, _previewPath, StringComparison.OrdinalIgnoreCase))
+                await _page._application.DeleteEditorPreviewSegmentAsync(previousPath);
+        }
+
+        private void StartNextSegmentPrefetch()
+        {
+            if (!IsPreviewMode || _page._media is null || _page._path is null) return;
+            try
+            {
+                var nextStart = VideoEditorService.NextPreviewStart(
+                    _sourceStart, _sourceDuration, _page._media.Duration);
+                if (nextStart is null)
+                {
+                    _prefetchTask = Task.CompletedTask;
+                    _prefetchedStart = null;
+                    return;
+                }
+
+                var revision = _playbackRevision;
+                var request = _page.CurrentEditRequest(_page.PreviewSubtitleBurn());
+                _prefetchedStart = nextStart;
+                _prefetchTask = PrefetchNextSegmentAsync(request, nextStart.Value, revision);
+            }
+            catch
+            {
+                _prefetchTask = Task.CompletedTask;
+                _prefetchedStart = null;
+            }
+        }
+
+        private async Task PrefetchNextSegmentAsync(
+            VideoEditRequest request,
+            double nextStart,
+            long revision)
+        {
+            EditorPreviewSegment? rendered = null;
+            try
+            {
+                await _previewRequests.RunLatestAsync(async cancellationToken =>
+                {
+                    rendered = await _page._application.CreateEditorPreviewSegmentAsync(
+                        request, nextStart, cancellationToken);
+                    cancellationToken.ThrowIfCancellationRequested();
+                });
+                if (revision != _playbackRevision || !IsPreviewMode) return;
+                _prefetchedSegment = rendered;
+                rendered = null;
+            }
+            catch (OperationCanceledException) { }
+            catch { }
+            finally
+            {
+                if (rendered is not null)
+                {
+                    try { await _page._application.DeleteEditorPreviewSegmentAsync(rendered.Path); }
+                    catch { }
+                }
+            }
+        }
+
+        private async Task DiscardPrefetchedSegmentAsync()
+        {
+            var segment = _prefetchedSegment;
+            _prefetchedSegment = null;
+            _prefetchedStart = null;
+            if (segment is not null)
+                await _page._application.DeleteEditorPreviewSegmentAsync(segment.Path);
+        }
+
+        private async Task CancelPreviewWorkAsync()
+        {
+            ++_playbackRevision;
+            await _previewRequests.CancelAsync();
+            try { await _prefetchTask; }
+            catch { }
+            _prefetchTask = Task.CompletedTask;
+            _foregroundRendering = false;
+            await DiscardPrefetchedSegmentAsync();
         }
 
         private static double PositionInSegment(EditorPreviewSegment segment, double requestedStart)
@@ -417,10 +526,46 @@ public sealed partial class EditorPage
                     await CompletePlaybackAsync();
                     return;
                 }
-                await LoadSegmentAsync(nextStart.Value, play: true);
+                await ContinueWithPrefetchedSegmentAsync(nextStart.Value);
             }
             catch (OperationCanceledException) { }
             catch (Exception error) { _page.StatusText.Text = "Không tiếp tục được preview: " + error.Message; }
+        }
+
+        private async Task ContinueWithPrefetchedSegmentAsync(double nextStart)
+        {
+            var revision = _playbackRevision;
+            await _prefetchTask;
+            if (revision != _playbackRevision || !IsPreviewMode) return;
+
+            var segment = _prefetchedStart is { } prefetchedStart
+                && Math.Abs(prefetchedStart - nextStart) <= .05
+                ? _prefetchedSegment
+                : null;
+            _prefetchedSegment = null;
+            _prefetchedStart = null;
+            _prefetchTask = Task.CompletedTask;
+            if (segment is null)
+            {
+                await LoadSegmentAsync(
+                    nextStart, play: true, announcePreparation: false, announcePlayback: false, foreground: false);
+                return;
+            }
+
+            try
+            {
+                var player = _player ?? throw new InvalidOperationException("Player preview chưa sẵn sàng.");
+                await ActivateSegmentAsync(
+                    player, segment, nextStart, play: true, announcePlayback: false,
+                    _previewPath, CancellationToken.None);
+                segment = null;
+                StartNextSegmentPrefetch();
+            }
+            finally
+            {
+                if (segment is not null)
+                    await _page._application.DeleteEditorPreviewSegmentAsync(segment.Path);
+            }
         }
 
         private async Task CompletePlaybackAsync()

@@ -276,7 +276,7 @@ for legacy_owner in (
     require(legacy_owner not in editor_main, f"PREVIEW-03 legacy page playback owner returned: {legacy_owner}")
 for owned_state in (
     "private MediaPlayer? _player;", "private readonly EditorPreviewRequestCoordinator _previewRequests = new();",
-    "internal bool IsPreviewMode { get; private set; }", "internal bool IsRendering => _previewRequests.IsActive;",
+    "internal bool IsPreviewMode { get; private set; }", "internal bool IsRendering => _foregroundRendering;",
     "private string? _previewPath;", "private void PlayerMediaEnded(", "private void PlayerMediaFailed(",
 ):
     require(owned_state in playback_source, f"PREVIEW-03 playback controller ownership missing: {owned_state}")
@@ -330,7 +330,7 @@ require("EditorPreviewRequestCoordinator" in playback_source
         "PREVIEW-09 rapid Seek must use one latest-request owner that serializes cancellation cleanup")
 contract_tests_source = read(CSHARP / "tests/BiliSubStudio.Core.ContractTests/Program.cs")
 require("VideoEditorService.NextPreviewStart(" in playback_source
-        and "await LoadSegmentAsync(nextStart.Value, play: true);" in playback_source
+        and "await ContinueWithPrefetchedSegmentAsync(nextStart.Value);" in playback_source
         and "EditorFullVideoPlaybackContractAsync" in contract_tests_source,
         "PREVIEW-10 MediaEnded must follow tested segment boundaries until the full source end")
 replay_load_source = playback_source.split("private async Task LoadSegmentCoreAsync(", 1)[1].split("private static double PositionInSegment", 1)[0]
@@ -365,6 +365,20 @@ require("var errorMessage = args.ErrorMessage;" in player_failure_recovery
         and "_page.RefreshEditorActions();" in player_failure_recovery
         and "TryEnqueue(async" not in player_failure_recovery,
         "PREVIEW-13 MediaFailed must replace the failed player, ignore stale callbacks and unlock Editor actions")
+require("private bool _foregroundRendering;" in playback_source
+        and "internal bool IsRendering => _foregroundRendering;" in playback_source
+        and "private Task _prefetchTask = Task.CompletedTask;" in playback_source
+        and "private EditorPreviewSegment? _prefetchedSegment;" in playback_source
+        and "private void StartNextSegmentPrefetch()" in playback_source
+        and "private async Task PrefetchNextSegmentAsync(" in playback_source
+        and "private async Task ContinueWithPrefetchedSegmentAsync(double nextStart)" in playback_source
+        and "await ContinueWithPrefetchedSegmentAsync(nextStart.Value);" in playback_source
+        and "if (revision != _playbackRevision || !IsPreviewMode) return;" in playback_source
+        and playback_source.count("await CancelPreviewWorkAsync();") == 3
+        and "if (announcePreparation)" in playback_source
+        and "if (announcePlayback)" in playback_source
+        and "announcePlayback: false, foreground: false" in playback_source,
+        "PREVIEW-14 internal segment rendering must prefetch without locking controls or exposing boundary status")
 require("SubtitleCueList" in editor and "SubtitleRetranslateCueButton" in editor and "SubtitleSaveSrtButton" in editor,
         "Editor static subtitle cue editor controls missing")
 require("ForceFresh = false" in read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalSubtitleTranslationService.cs")
