@@ -2,13 +2,13 @@
 
 - Base/current upstream main: `origin/main@8eb2a8a2600b37d29bfd0deaae9eeb94b3cda635`
 - Current local branch: `main`
-- Local base before this task: `61448498d365dacf771ca225b33680a346e74f80`
+- Local base before this task: `06b3b18e863285093fcec41111bf3f9da627dab2`
 - Pull request: none; local Preview/Blur task commits are not pushed or merged
 - Last completed before Blur phase: `PREVIEW-15 — Cleanup preview cache`
-- Task completed in this handoff: `BLUR-08 — Mosaic`
+- Task completed in this handoff: `BLUR-09 — Cover`
 - Task result: `PASS`
 - Task currently running: none
-- Exact next task after this task passes: `BLUR-09 — Cover`
+- Exact next task after this task passes: `BLUR-10 — Whole video`
 
 ## Recent task commits
 
@@ -19,15 +19,13 @@
 - `BLUR-05`: `48c3963e05334e267d5b46428f123348c68d9234` — eight source-pixel-valid Resize handles.
 - `BLUR-06`: `38ebfcfe6a0f67964d0e3a9bfd03b567e3262aa6` — source-pixel-valid X/Y/W/H inputs without invalid/no-op refresh.
 - `BLUR-07`: `61448498d365dacf771ca225b33680a346e74f80` — one Blur strength owner and pixel-safe boxblur Preview/Export policy.
-- `BLUR-08`: the commit containing this handoff; resolve its exact SHA with `git rev-parse HEAD` after checkout. The exact SHA is also reported in the task completion message because a commit cannot contain its own cryptographic ID.
+- `BLUR-08`: `06b3b18e863285093fcec41111bf3f9da627dab2` — Mosaic strength owner and matched processed-Preview/Export grid density.
+- `BLUR-09`: the commit containing this handoff; resolve its exact SHA with `git rev-parse HEAD` after checkout. The exact SHA is also reported in the task completion message because a commit cannot contain its own cryptographic ID.
 
-## Files changed by BLUR-08
+## Files changed by BLUR-09
 
-- `csharp/src/BiliSubStudio.Core/Editor/EditorMosaicStrength.cs`
-- `csharp/src/BiliSubStudio.Core/Editor/EditorBlurStrength.cs`
-- `csharp/src/BiliSubStudio.Core/Editor/VideoEditorService.cs`
+- `csharp/src/BiliSubStudio.Core/Editor/EditorCoverEffect.cs`
 - `csharp/src/BiliSubStudio.Core/Editor/EditorProjectStore.cs`
-- `csharp/src/BiliSubStudio.App/Pages/EditorPage.xaml`
 - `csharp/src/BiliSubStudio.App/Pages/EditorPage.xaml.cs`
 - `csharp/tests/BiliSubStudio.Core.ContractTests/Program.cs`
 - `csharp/scripts/validate_csharp_migration.py`
@@ -36,41 +34,39 @@
 
 ## Root cause
 
-Mosaic exposed and persisted the Blur range 2–40 while `VideoEditorService` silently clamped Mosaic to 4–64. A visible value of 2 therefore rendered as 4, and valid Mosaic levels 41–64 were impossible to enter. The shared input helper always used Blur normalization; effect selection also rebuilt processed Preview even for an unchanged result. Separately, processed Preview scaled the source to a 1280-pixel proxy before applying Mosaic, while Export applied the same pixel-block strength at source resolution. This changed the number of Mosaic cells and made processed Preview visibly coarser than Export.
+Cover already rendered through FFmpeg as an opaque black `drawbox`, but the Editor still treated it as a Blur-strength effect. The shared StrengthBox remained enabled, its handler wrote a meaningless value into region state, switching effects normalized that value with Blur rules, and project reopen retained a meaningless 2–40 strength. Cover Preview/Export geometry relied on the shared normalized-region graph but had no dedicated regression contract.
 
 ## Implementation
 
-- Added `EditorMosaicStrength` as the Core owner for finite 4–64 input, default 12, deterministic rounding, persisted normalization and downsample dimensions.
-- StrengthBox now exposes the shared 2–64 envelope through one `EffectStrength_ValueChanged` route; Blur still validates 2–40 and Mosaic validates 4–64 through their respective Core owners.
-- Switching Blur ↔ Mosaic normalizes the current value into the selected effect range under `_syncingInputs`, then updates the document only if the result really changed.
-- Invalid/NaN Mosaic input leaves document/draft unchanged, reports the real 4–64 range and does not save or rebuild Preview.
-- Mosaic persistence now uses `EditorMosaicStrength.NormalizeStored`; reopen preserves valid 41–64 values and normalizes stale/out-of-range state.
-- `VideoEditorService` delegates Mosaic scale dimensions to the Core owner instead of clamping and dividing inline.
-- `VideoEditRequest` carries internal `MosaicScaleX/Y`. Processed Preview sets them to proxy/source ratios; the Mosaic owner compensates before downsampling, so source Export and proxy Preview retain the same Mosaic grid density. Static frame Preview and Export retain scale 1.
-- Added a BLUR-08 Core contract covering range/rounding, invalid input, persistence, tiny regions, selected graph dimensions and exact processed-Preview/Export grid parity.
-- Added a static BLUR-08 ownership contract and regenerated the C# code map.
+- Added `EditorCoverEffect` as the Core owner of the compatibility-only stored strength, canonicalized to `0` because Cover has no user-adjustable strength.
+- Cover selection disables StrengthBox; the single strength handler exits before touching document, save or Preview state when Cover is active.
+- Creating or editing a Cover region writes only `EditorCoverEffect.StoredStrength`; loading a Cover region does not push the compatibility value into the disabled NumberBox.
+- Project normalization converts legacy Cover strength values to the canonical value while leaving Blur and Mosaic policies unchanged.
+- Kept the existing production `drawbox` implementation: opaque `black@1`, normalized region geometry, shared by static Preview, processed Preview and Export.
+- Added a BLUR-09 Core contract for legacy persistence normalization, strength-independent rendering, opaque black fill and exact normalized geometry at 3840×2160 Export versus 1280×720 processed Preview.
+- Added a static BLUR-09 ownership contract and regenerated the C# code map.
 
 ## Tests and results
 
-- Fail-first `python csharp/scripts/validate_csharp_migration.py` — expected FAIL before implementation: `BLUR-08 Mosaic must expose its full validated strength range and share one Preview Export pixelation policy`.
+- Fail-first `python csharp/scripts/validate_csharp_migration.py` — expected FAIL before implementation: `BLUR-09 Cover must be opaque, strength-free and share normalized Preview Export geometry`.
 - `python csharp/scripts/validate_csharp_migration.py` — PASS (`4.0.0-beta.42-csharp-p5`).
-- `python csharp/scripts/generate_csharp_code_map.py --check` — PASS; generated map includes `EditorMosaicStrength.DownsampleDimensions`.
-- Core contract runner with exact SDK `10.0.400` — PASS, 62/62.
-- Real local application FFmpeg probes — PASS for 2×2/strength-64, 576×270/strength-12, and matched Export 3840×2160 versus processed Preview 1280×720 filters using the same 96×45 Mosaic grid.
-- Targeted Windows x64 Release solution build — PASS, 0 warnings and 0 errors.
+- `python csharp/scripts/generate_csharp_code_map.py --check` — PASS.
+- Core contract runner with exact SDK `10.0.400` — PASS, 63/63.
+- Real local application FFmpeg probes — PASS for opaque Cover at 3840×2160 Export geometry and 1280×720 processed-Preview geometry.
+- Targeted Windows x64 Release solution build — PASS, 0 warnings and 0 errors. The first sandboxed attempt failed only because NuGet network access was blocked; the authorized rerun restored and built successfully.
 - Git diff whitespace check — PASS.
-- Full clean-checkout `csharp/scripts/verify.ps1` — PASS, including source identity, 62/62 contracts, Range regressions, PE32+ x64, embedded worker identity, self-contained publish and real WinUI startup/layout smoke.
+- Full clean-checkout `csharp/scripts/verify.ps1` — PASS, including source identity, 63/63 contracts, Range regressions, PE32+ x64, embedded worker identity, self-contained publish and real WinUI startup/layout smoke.
 - No CI workflow was dispatched; no installer/package/release was built or published.
 
 ## Verification level
 
-- Mosaic Core contract PASS: finite 4–64 input, deterministic fractional normalization, persisted clamp and valid downsample dimensions.
-- Preview/Export graph contract PASS: selected strength controls the neighbor-scale chain; processed Preview and Export retain the same grid density after proxy scaling.
-- Real FFmpeg probes PASS for minimum region, normal region and matched source/proxy graphs.
-- Static UI route PASS: one effect-aware XAML handler; invalid/no-op strength/effect changes do not request processed Preview.
+- Cover Core contract PASS: compatibility state canonicalization and strength-independent filter output.
+- Preview/Export graph contract PASS: both paths use opaque black fill and the same normalized rectangle.
+- Real FFmpeg graph probes PASS at source and proxy dimensions.
+- Static UI route PASS: Cover disables strength and the one strength event owner cannot mutate Cover state.
 - Compile PASS: Windows x64 Release solution build, 0 warnings/errors.
 - Functional WinUI startup/layout PASS: the published executable initialized the real Editor XAML through the startup smoke path.
-- Real interactive Mosaic strength editing while static/playing Preview is visible on a physical Windows desktop: not run; still required before release.
+- Real interactive Cover create/select/move/resize while static/playing Preview is visible on a physical Windows desktop: not run; still required before release.
 
 ## Constraints to preserve
 
@@ -79,9 +75,9 @@ Mosaic exposed and persisted the Blur range 2–40 while `VideoEditorService` si
 - Translation, ASR and TTS remain local; Chinese → Vietnamese uses the project translation skill.
 - Keep the three-column Editor and contextual tool scope; do not turn it into a full NLE.
 - Keep one event/owner, one button/handler, no handler-calls-handler and the single `EditorPlaybackController` playback owner.
-- Mosaic strength invariants and downsample geometry must remain in `EditorMosaicStrength`; do not restore UI/render/persistence clamp duplication.
-- Processed Preview must preserve Mosaic grid density through `MosaicScaleX/Y`; static Preview and Export remain scale 1.
+- Cover remains opaque black and strength-free; `EditorCoverEffect` owns its compatibility-only stored value.
+- Blur strength remains owned by `EditorBlurStrength`; Mosaic strength/grid geometry remains owned by `EditorMosaicStrength`.
 - Do not add Repair/Fix/Parity layers when the real owner can be corrected; remove dead/superseded logic.
-- One small task and targeted regression at a time; do not start BLUR-09 until BLUR-08 has final clean verification and its own commit.
+- One small task and targeted regression at a time; do not start BLUR-10 until BLUR-09 has final clean verification and its own commit.
 - Do not reopen already-passed Subtitle work without a demonstrated regression.
 - No version bump, release, push, PR merge or merge without explicit authorization and passing gates.

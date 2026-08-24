@@ -60,6 +60,7 @@ internal static class Program
         ("editor numeric X Y W H inputs require source-pixel-valid geometry", EditorRegionNumericInputsContractAsync),
         ("editor blur strength validates input and shares Preview Export radius", EditorBlurStrengthContractAsync),
         ("editor Mosaic strength drives pixelated Preview Export dimensions", EditorMosaicStrengthContractAsync),
+        ("editor Cover is opaque strength-free and preserves Preview Export geometry", EditorCoverEffectContractAsync),
         ("editor project persists, isolates source drift and quarantines corrupt state", EditorProjectContractAsync),
         ("editor SRT keeps exact blocks order and timecodes", EditorSubtitleDocumentContractAsync),
         ("editor manual cue state persists locks and preserves timeline", EditorSubtitleManualContract.RunAsync),
@@ -1170,6 +1171,35 @@ internal static class Program
             new VideoEditRequest("input.mp4", ".", "output.mp4", 100, 100, 10, [tiny]));
         True(graph.Contains("crop=2:2:0:0,scale=1:1:flags=neighbor,scale=2:2:flags=neighbor", StringComparison.Ordinal),
             "tiny Mosaic region did not retain a valid pixelation chain");
+        return Task.CompletedTask;
+    }
+
+    private static Task EditorCoverEffectContractAsync()
+    {
+        Equal(EditorCoverEffect.StoredStrength, EditorCoverEffect.NormalizeStored(-100));
+        Equal(EditorCoverEffect.StoredStrength, EditorCoverEffect.NormalizeStored(100));
+
+        var normalizeMethod = typeof(EditorProjectStore).GetMethod(
+            "NormalizeRegions", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing Cover persistence normalization policy");
+        var normalized = (IReadOnlyList<EditRegion>)normalizeMethod.Invoke(null,
+            [new[] { new EditRegion(.1, .2, .3, .25, "cover", 37, true, 0, 10, "cover-persisted") }])!;
+        Equal(EditorCoverEffect.StoredStrength, normalized[0].Strength);
+
+        var region = new EditRegion(.1, .2, .3, .25, "cover", EditorCoverEffect.StoredStrength, true, 0, 10, "cover");
+        var request = new VideoEditRequest("input.mp4", ".", "output.mp4", 3840, 2160, 10, [region]);
+        var exportGraph = VideoEditorService.BuildFilter(request);
+        True(exportGraph.Contains("drawbox=x=384:y=432:w=1152:h=540:color=black@1:t=fill", StringComparison.Ordinal),
+            "Export Cover lost opaque black fill or normalized source geometry");
+        Equal(exportGraph, VideoEditorService.BuildFilter(request with { Regions = [region with { Strength = 63 }] }));
+
+        var sliceMethod = typeof(VideoEditorService).GetMethod(
+            "BuildPreviewSlice", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing Cover processed-preview slice policy");
+        var preview = (VideoEditRequest)sliceMethod.Invoke(null, [request, 0d, 10d, 1280, 720])!;
+        var previewGraph = VideoEditorService.BuildFilter(preview);
+        True(previewGraph.Contains("drawbox=x=128:y=144:w=384:h=180:color=black@1:t=fill", StringComparison.Ordinal),
+            "processed Preview changed Cover opacity or normalized geometry from Export");
         return Task.CompletedTask;
     }
 

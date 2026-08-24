@@ -848,12 +848,16 @@ public sealed partial class EditorPage : Page
     private void EffectBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (!IsLoaded || _syncingInputs) return;
-        var normalized = NormalizeEffectStrength(SelectedEffect(), StrengthBox.Value, CurrentStoredStrength());
-        if (StrengthBox.Value != normalized)
+        var effect = SelectedEffect();
+        if (EffectUsesStrength(effect))
         {
-            _syncingInputs = true;
-            try { StrengthBox.Value = normalized; }
-            finally { _syncingInputs = false; }
+            var normalized = NormalizeEffectStrength(effect, StrengthBox.Value, CurrentStoredStrength());
+            if (StrengthBox.Value != normalized)
+            {
+                _syncingInputs = true;
+                try { StrengthBox.Value = normalized; }
+                finally { _syncingInputs = false; }
+            }
         }
         if (ApplyInputsToDocument()) NotifyEditorCompositeChanged();
     }
@@ -869,6 +873,7 @@ public sealed partial class EditorPage : Page
     {
         if (!IsLoaded || _syncingInputs) return;
         var effect = SelectedEffect();
+        if (!EffectUsesStrength(effect)) return;
         if (!TryEffectStrength(effect, args.NewValue, out var strength))
         {
             var name = effect == "mosaic" ? "Mosaic" : "làm mờ";
@@ -890,6 +895,9 @@ public sealed partial class EditorPage : Page
             ? EditorMosaicStrength.TryFromInput(value, out strength)
             : EditorBlurStrength.TryFromInput(value, out strength);
 
+    private static bool EffectUsesStrength(string effect) =>
+        !string.Equals(effect, "cover", StringComparison.OrdinalIgnoreCase);
+
     private static int NormalizeEffectStrength(string effect, double value, int fallback) =>
         effect == "mosaic"
             ? EditorMosaicStrength.NormalizeInput(value, fallback)
@@ -904,7 +912,12 @@ public sealed partial class EditorPage : Page
     private int CurrentStoredStrength() =>
         _document.Selected?.Strength
         ?? _draftRegion?.Strength
-        ?? (SelectedEffect() == "mosaic" ? EditorMosaicStrength.Default : EditorBlurStrength.Default);
+        ?? SelectedEffect() switch
+        {
+            "mosaic" => EditorMosaicStrength.Default,
+            "cover" => EditorCoverEffect.StoredStrength,
+            _ => EditorBlurStrength.Default,
+        };
 
     private void RegionCoordinates_ValueChanged(NumberBox sender, NumberBoxValueChangedEventArgs args)
     {
@@ -1679,6 +1692,7 @@ public sealed partial class EditorPage : Page
     private int CurrentEffectStrength()
     {
         var effect = SelectedEffect();
+        if (!EffectUsesStrength(effect)) return EditorCoverEffect.StoredStrength;
         if (TryEffectStrength(effect, StrengthBox.Value, out var strength)) return strength;
         return NormalizeEffectStrength(effect, double.NaN, CurrentStoredStrength());
     }
@@ -1711,7 +1725,7 @@ public sealed partial class EditorPage : Page
         {
             SetCoordinateBoxes(region.X, region.Y, region.Width, region.Height);
             SelectEffect(region.Effect);
-            StrengthBox.Value = region.Strength;
+            if (EffectUsesStrength(region.Effect)) StrengthBox.Value = region.Strength;
             WholeToggle.IsOn = region.WholeVideo;
             StartBox.Value = region.Start;
             EndBox.Value = region.End;
@@ -1850,7 +1864,8 @@ public sealed partial class EditorPage : Page
         PlayerPlayPauseButton.IsEnabled = idle && hasMedia && _playback.IsReady;
         FullscreenButton.IsEnabled = idle && hasMedia && _playback.IsReady;
         RegionXBox.IsEnabled = RegionYBox.IsEnabled = RegionWidthBox.IsEnabled = RegionHeightBox.IsEnabled = editable;
-        EffectBox.IsEnabled = StrengthBox.IsEnabled = WholeToggle.IsEnabled = editable;
+        EffectBox.IsEnabled = WholeToggle.IsEnabled = editable;
+        StrengthBox.IsEnabled = editable && EffectUsesStrength(SelectedEffect());
         StartBox.IsEnabled = EndBox.IsEnabled = editable && !WholeToggle.IsOn;
         FileNameBox.IsEnabled = editable;
         ImportSrtButton.IsEnabled = idle && !_playback.IsPreviewMode;

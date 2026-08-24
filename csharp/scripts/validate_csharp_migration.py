@@ -501,6 +501,22 @@ require('ValueChanged="EffectStrength_ValueChanged"' in editor
         and "public static class EditorMosaicStrength" in mosaic_strength_source
         and "editor Mosaic strength drives pixelated Preview Export dimensions" in contract_tests_source,
         "BLUR-08 Mosaic must expose its full validated strength range and share one Preview Export pixelation policy")
+cover_effect_path = CSHARP / "src/BiliSubStudio.Core/Editor/EditorCoverEffect.cs"
+cover_effect_source = read(cover_effect_path) if cover_effect_path.is_file() else ""
+cover_handler_source = editor_main.split("private void EffectStrength_ValueChanged(", 1)[1].split("private void RegionCoordinates_ValueChanged(", 1)[0] if "private void EffectStrength_ValueChanged(" in editor_main else ""
+cover_load_source = editor_main.split("private void LoadSelectedIntoInputs()", 1)[1].split("private void SetCoordinateBoxes(", 1)[0] if "private void LoadSelectedIntoInputs()" in editor_main else ""
+cover_actions_source = editor_main.split("private void RefreshEditorActions()", 1)[1].split("private static string FormatClock(", 1)[0] if "private static string FormatClock(" in editor_main else ""
+require('Tag="cover" Content="Che đen"' in editor
+        and "private static bool EffectUsesStrength(string effect)" in editor_main
+        and "if (!EffectUsesStrength(effect)) return;" in cover_handler_source
+        and "StrengthBox.IsEnabled = editable && EffectUsesStrength(SelectedEffect());" in cover_actions_source
+        and "if (EffectUsesStrength(region.Effect)) StrengthBox.Value = region.Strength;" in cover_load_source
+        and "EditorCoverEffect.StoredStrength" in editor_main
+        and "EditorCoverEffect.NormalizeStored(" in region_document_source
+        and "public static class EditorCoverEffect" in cover_effect_source
+        and "color=black@1:t=fill" in video_editor_source
+        and "editor Cover is opaque strength-free and preserves Preview Export geometry" in contract_tests_source,
+        "BLUR-09 Cover must be opaque, strength-free and share normalized Preview Export geometry")
 require("SubtitleCueList" in editor and "SubtitleRetranslateCueButton" in editor and "SubtitleSaveSrtButton" in editor,
         "Editor static subtitle cue editor controls missing")
 require("ForceFresh = false" in read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalSubtitleTranslationService.cs")

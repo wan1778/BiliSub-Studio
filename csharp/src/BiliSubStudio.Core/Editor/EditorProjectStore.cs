@@ -295,7 +295,7 @@ public sealed class EditorProjectStore
                 {
                     "blur" => EditorBlurStrength.NormalizeStored(region.Strength),
                     "mosaic" => EditorMosaicStrength.NormalizeStored(region.Strength),
-                    _ => Math.Clamp(region.Strength, 2, 40),
+                    _ => EditorCoverEffect.NormalizeStored(region.Strength),
                 },
             });
         }
