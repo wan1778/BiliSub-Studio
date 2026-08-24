@@ -303,3 +303,44 @@ require('audio.SourceMode != "mute"' in video_editor,
         "AUDIO-05 final render validation must require an audio stream for Duck")
 
 print("PASS: AUDIO-01 single monitor owner + AUDIO-02 Preview volume + AUDIO-03 Preview mute + AUDIO-04 Keep original audio + AUDIO-05 Duck original audio contract")
+
+# AUDIO-06 — Mute original audio. Mute is the persisted render policy that removes
+# the source audio stream entirely. Without Voice the output is silent/no-audio;
+# with Voice, only the generated Voice track is routed. Player monitor state is separate.
+require('"mute" => 0,' in audio_update,
+        "AUDIO-06 Mute UI path must canonicalize source gain to zero")
+require('"mute" => "Preview và video xuất sẽ không có âm thanh gốc.",' in audio_update,
+        "AUDIO-06 Mute status must describe the shared Preview/Export no-source-audio policy")
+require("QueueProjectSave();" in audio_update and "NotifyEditorCompositeChanged();" in audio_update,
+        "AUDIO-06 Mute changes must persist and refresh processed Preview")
+for forbidden in ("_playback.SetMuted(", "_playback.SetVolume(", "_monitorAudio"):
+    require(forbidden not in audio_update,
+            f"AUDIO-06 source Mute policy must not mutate Player monitor state; found {forbidden}")
+
+require('SourceAudioGainSlider.IsEnabled = editable && _audioSettings.SourceMode == "duck";' in editor_main,
+        "AUDIO-06 Mute must keep the Duck-only gain slider disabled")
+require('"mute" => new EditorAudioSettings("mute", 0),' in normalize_audio,
+        "AUDIO-06 persisted Mute state must canonicalize to zero source gain")
+require("Audio = _audioSettings," in project_snapshot and "_audioSettings," in current_request,
+        "AUDIO-06 Mute must persist into the project and flow into Preview/Export requests")
+
+require('if (audio.SourceMode == "mute") return ["-an"];' in audio_arguments,
+        "AUDIO-06 no-Voice Preview/Export must remove the audio stream instead of attenuating it")
+require("BuildAudioArgumentsCore(audio, mp4: true, resetTimestamps: true)" in preview_arguments,
+        "AUDIO-06 processed Preview must use the same Mute audio-policy core as Export")
+
+require('if (audio.SourceMode == "mute") return voiceChain + ";[voicea]anull[aout]";' in voice_audio,
+        "AUDIO-06 Mute+Voice must route only Voice to the output")
+mute_voice_prefix = voice_audio.split('if (audio.SourceMode == "mute")', 1)[1].split(
+    "var sourceFilters", 1)[0]
+require("[0:a]" not in mute_voice_prefix and "sourcea" not in mute_voice_prefix,
+        "AUDIO-06 Mute+Voice must not route source audio before returning the Voice-only graph")
+
+require('voice is not null || audio.SourceMode != "mute"' in video_editor,
+        "AUDIO-06 final render validation must expect no audio only for Mute without Voice")
+require('if (!expectAudio && audioStreams != 0)' in video_editor,
+        "AUDIO-06 final validation must reject leaked source audio for silent Mute output")
+require('EditorProjectStore.NormalizeAudio(request.Audio).SourceMode != "keep"' in video_editor,
+        "AUDIO-06 Mute-only change must count as an exportable Editor edit")
+
+print("PASS: AUDIO-06 Mute original audio contract")
