@@ -135,16 +135,17 @@ public sealed class EditorProjectStore
                     return CreateFreshProject(source, id, loaded.Name, loaded.FileName);
                 }
                 var regions = NormalizeRegions(loaded.Regions, source.Duration, normalizeStored: true);
+                var subtitle = NormalizeSubtitle(loaded.Subtitle);
                 return loaded with
                 {
                     Schema = CurrentSchema,
                     Source = source,
                     Regions = regions,
-                    Subtitle = NormalizeSubtitle(loaded.Subtitle),
+                    Subtitle = subtitle,
                     Audio = NormalizeAudio(loaded.Audio),
                     Asr = NormalizeAsr(loaded.Asr),
                     Speech = NormalizeSpeech(loaded.Speech),
-                    Tts = NormalizeTts(loaded.Tts),
+                    Tts = subtitle is null ? null : NormalizeTts(loaded.Tts),
                     VoiceOverrides = NormalizeVoiceOverrides(loaded.VoiceOverrides),
                 };
             }
@@ -213,16 +214,17 @@ public sealed class EditorProjectStore
         var expectedId = ProjectId(Path.GetFullPath(project.Source.Path));
         if (!string.Equals(project.Id, expectedId, StringComparison.Ordinal)) throw new InvalidDataException("Project Editor không khớp video nguồn.");
         var normalizedSource = Fingerprint(project.Source.Path, project.Source.Width, project.Source.Height, project.Source.Duration);
+        var subtitle = NormalizeSubtitle(project.Subtitle);
         var normalized = project with
         {
             Source = normalizedSource,
             FileName = string.IsNullOrWhiteSpace(project.FileName) ? project.Name + "_edited.mp4" : project.FileName.Trim(),
             Regions = NormalizeRegions(project.Regions, normalizedSource.Duration, normalizeStored: false),
-            Subtitle = NormalizeSubtitle(project.Subtitle),
+            Subtitle = subtitle,
             Audio = NormalizeAudio(project.Audio),
             Asr = NormalizeAsr(project.Asr),
             Speech = NormalizeSpeech(project.Speech),
-            Tts = NormalizeTts(project.Tts),
+            Tts = subtitle is null ? null : NormalizeTts(project.Tts),
             VoiceOverrides = NormalizeVoiceOverrides(project.VoiceOverrides),
             UpdatedUtc = DateTimeOffset.UtcNow,
         };
@@ -310,9 +312,11 @@ public sealed class EditorProjectStore
     {
         if (subtitle is null) return null;
         var path = Path.GetFullPath(subtitle.SourcePath.Trim());
-        if (!File.Exists(path) || subtitle.SourceSize <= 0 || subtitle.SourceLastWriteUtcTicks <= 0 ||
+        if (subtitle.SourceSize <= 0 || subtitle.SourceLastWriteUtcTicks <= 0 ||
             subtitle.SourceSha256.Length != 64 || subtitle.SourceSha256.Any(x => !Uri.IsHexDigit(x)))
             throw new InvalidDataException("Project Editor chứa nguồn SRT không hợp lệ.");
+        var info = new FileInfo(path);
+        if (!info.Exists || info.Length != subtitle.SourceSize || !FileShaMatches(path, subtitle.SourceSha256)) return null;
         if (subtitle.Cues is null || subtitle.Cues.Count is 0 or > EditorSubtitleDocument.MaxCues)
             throw new InvalidDataException("Project Editor chứa số cue SRT không hợp lệ.");
         var ids = new HashSet<string>(StringComparer.Ordinal);
