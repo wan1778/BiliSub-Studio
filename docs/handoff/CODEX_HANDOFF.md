@@ -5,7 +5,7 @@
 - Remote branch: `origin/editor-preview-blur-01-17`
 - PR: none; do not create, merge, release or bump version without explicit authorization
 - Last completed task: `VOICE-12 — Preview track Việt` (`af30b463d80388ce6e060cd9c0029bc223a05c5c`)
-- Task currently running: `VOICE-13 — Mix voice + original audio`
+- Task completed: `VOICE-13 — Mix voice + original audio`
 - Exact next task after this one: `VOICE-14 — Preview = Export`
 
 ## VOICE-12 scope and ownership
@@ -72,7 +72,16 @@ Targeted checks:
 - `python csharp/scripts/verify_editor_voice_subtitle_invalidation_contract.py`: PASS
 - .NET 10.0.400 Core contract tests: `71/71` PASS
 - `python csharp/scripts/generate_csharp_code_map.py --check`: PASS after regeneration
-- Windows x64 `csharp/scripts/verify.ps1`: pending for VOICE-13 on a committed clean checkout
+- Windows x64 `csharp/scripts/verify.ps1`: PASS
+  - SDK `10.0.400`
+  - Release x64 WinUI build: 0 warnings, 0 errors
+  - Core contracts: `71/71` PASS
+  - RangeRegression: PASS
+  - self-contained WinUI publish: PASS
+  - real startup smoke: PASS
+  - PE32+ x64 / worker identity / checksum readback: PASS
+  - published `BiliSubStudio.exe` SHA-256: `bbb0e46db7c8fba72e61ff0647797617518e24ae86323c34a05750c324b01f8c`
+  - source tree SHA-256: `19b23595d579537a6252c638d38796538ee5da7301fb01f9efc9f838fc8f9757`
   - SDK `10.0.400`
   - Release x64 WinUI build: 0 warnings, 0 errors
   - Core contracts: `71/71` PASS
@@ -88,6 +97,7 @@ Previous task commits pushed to GitHub:
 - `31c5627726cb1cafafa1d08288b693422d3274c4` — VOICE-12 Preview contract + handoff/code map
 - `ae0069570e104acdad3a4f89a43ddfa6f8ad67b9` — stale AUDIO contract marker alignment
 - `881e28af2baadd38db703c34c85df05f73548dd2` — Windows startup-smoke path quoting
+- `a8b0db2497f85aeefcdef16d6fa0dbb54906091d` — VOICE-13 voice/source mix contract
 
 The gate gives compile/static and startup functional PASS, but it is not a voice
 audio field-test. The following remain untested here until the real Editor is
