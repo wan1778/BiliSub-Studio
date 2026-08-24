@@ -10,6 +10,9 @@ PAGES = ROOT / "csharp/src/BiliSubStudio.App/Pages"
 PLAYBACK = PAGES / "EditorPage.Playback.cs"
 EDITOR_MAIN = PAGES / "EditorPage.xaml.cs"
 EDITOR_XAML = PAGES / "EditorPage.xaml"
+EDITOR_PARITY = PAGES / "EditorPage.ParityFixes.cs"
+PROJECT_STORE = ROOT / "csharp/src/BiliSubStudio.Core/Editor/EditorProjectStore.cs"
+VIDEO_EDITOR = ROOT / "csharp/src/BiliSubStudio.Core/Editor/VideoEditorService.cs"
 XAML_NS = "http://schemas.microsoft.com/winfx/2006/xaml"
 
 
@@ -40,6 +43,9 @@ def named_xaml_control(name: str) -> dict[str, str]:
 playback = read(PLAYBACK)
 editor_main = read(EDITOR_MAIN)
 editor_xaml = read(EDITOR_XAML)
+editor_parity = read(EDITOR_PARITY)
+project_store = read(PROJECT_STORE)
+video_editor = read(VIDEO_EDITOR)
 
 require('Toggled="PreviewMute_Toggled"' in editor_xaml,
         "AUDIO-01 mute UI must keep one reviewed XAML handler")
@@ -156,4 +162,95 @@ require(editor_main.count("_playback.SetMuted(") == 0,
 require(playback.count("_playback.SetMuted(") == 1,
         "AUDIO-03 Preview mute must have one UI-to-owner write path")
 
-print("PASS: AUDIO-01 single monitor owner + AUDIO-02 Preview volume + AUDIO-03 Preview mute contract")
+# AUDIO-04 — Keep original audio. Keep is the project/render policy that preserves
+# the complete source mix at unity gain in both processed Preview and final Export.
+# It remains independent from the Player's monitor-only mute/volume state.
+source_audio_mode = named_xaml_control("SourceAudioModeBox")
+require(source_audio_mode.get("SelectedIndex") == "0",
+        "AUDIO-04 Keep original audio must remain the default source-audio selection")
+require(source_audio_mode.get("SelectionChanged") == "SourceAudioMode_SelectionChanged",
+        "AUDIO-04 source-audio mode must keep one reviewed SelectionChanged handler")
+
+keep_item = '<ComboBoxItem Tag="keep" Content="Giữ nguyên" />'
+duck_item = '<ComboBoxItem Tag="duck" Content="Giảm âm lượng" />'
+mute_item = '<ComboBoxItem Tag="mute" Content="Tắt tiếng gốc" />'
+require(keep_item in editor_xaml and duck_item in editor_xaml and mute_item in editor_xaml
+        and editor_xaml.index(keep_item) < editor_xaml.index(duck_item) < editor_xaml.index(mute_item),
+        "AUDIO-04 Keep must remain the first explicit source-audio mode")
+require('Text="Preview và video xuất sẽ giữ nguyên âm thanh gốc."' in editor_xaml,
+        "AUDIO-04 UI copy must keep Preview/Export Keep semantics explicit")
+
+audio_update = editor_main.split("private void UpdateAudioSettingsFromUi()", 1)[1].split(
+    "private void ApplyAudioSettingsToUi()", 1)[0]
+require('?? "keep";' in audio_update,
+        "AUDIO-04 missing/unknown UI selection must fall back to Keep")
+require('_ => 1,' in audio_update,
+        "AUDIO-04 Keep UI path must force unity source gain")
+require("_audioSettings = EditorProjectStore.NormalizeAudio(new EditorAudioSettings(mode, gain));" in audio_update,
+        "AUDIO-04 UI must write Keep through the project-owned audio normalizer")
+require('_ => "Preview và video xuất sẽ giữ nguyên âm thanh gốc.",' in audio_update,
+        "AUDIO-04 Keep status must describe the shared Preview/Export policy")
+require("QueueProjectSave();" in audio_update and "NotifyEditorCompositeChanged();" in audio_update,
+        "AUDIO-04 changing source-audio mode must persist and refresh processed Preview")
+for forbidden in ("_playback.SetMuted(", "_playback.SetVolume(", "_monitorAudio"):
+    require(forbidden not in audio_update,
+            f"AUDIO-04 Keep render policy must not mutate Player monitor state; found {forbidden}")
+
+require('SourceAudioGainSlider.IsEnabled = editable && _audioSettings.SourceMode == "duck";' in editor_main,
+        "AUDIO-04 Keep must not expose the Duck-only source gain control")
+
+require('public static EditorAudioSettings Default { get; } = new("keep", 1);' in project_store,
+        "AUDIO-04 fresh projects must default to Keep at unity gain")
+normalize_audio = project_store.split("public static EditorAudioSettings NormalizeAudio", 1)[1].split(
+    "private static EditorAsrProject? NormalizeAsr", 1)[0]
+require('"keep" => new EditorAudioSettings("keep", 1),' in normalize_audio,
+        "AUDIO-04 persisted Keep state must canonicalize to unity gain")
+
+project_snapshot = editor_main.split("private EditorProject ProjectSnapshot()", 1)[1].split(
+    "private void RefreshEditorActions()", 1)[0]
+require("Audio = _audioSettings," in project_snapshot,
+        "AUDIO-04 project snapshot must persist the active Keep policy")
+
+current_request = editor_main.split("private VideoEditRequest CurrentEditRequest(", 1)[1].split(
+    "private async void Render_Click", 1)[0]
+require("_audioSettings," in current_request,
+        "AUDIO-04 Preview/Export request must carry the project-owned Keep policy")
+
+notify_composite = editor_parity.split("private void NotifyEditorCompositeChanged()", 1)[1].split(
+    "private void EditorAutoComposite_Toggled", 1)[0]
+require("QueueEditorCompositeRefresh();" in notify_composite,
+        "AUDIO-04 Keep changes must reach the processed Preview rebuild owner")
+
+audio_arguments = video_editor.split(
+    "private static IReadOnlyList<string> BuildAudioArgumentsCore", 1)[1].split(
+    "private static string BuildVoiceAudioFilter", 1)[0]
+require('var audio = EditorProjectStore.NormalizeAudio(settings);' in audio_arguments,
+        "AUDIO-04 render path must normalize source-audio policy once")
+require('var arguments = new List<string> { "-map", "0:a?" };' in audio_arguments,
+        "AUDIO-04 Keep must map the original source audio stream")
+require('if (audio.SourceMode == "duck") filters.Add("volume=" + audio.SourceGain.ToString("0.000", CultureInfo.InvariantCulture));' in audio_arguments,
+        "AUDIO-04 source gain filter must remain Duck-only")
+require('if (mp4 || audio.SourceMode == "duck") arguments.AddRange(["-c:a", "aac", "-b:a", "192k"]);' in audio_arguments
+        and 'else arguments.AddRange(["-c:a", "copy"]);' in audio_arguments,
+        "AUDIO-04 Keep must preserve source level while allowing container-compatible audio encoding")
+
+preview_arguments = video_editor.split("private static IReadOnlyList<string> BuildPreviewArguments", 1)[1].split(
+    "internal static IReadOnlyList<string> BuildAudioArguments", 1)[0]
+require("BuildAudioArgumentsCore(audio, mp4: true, resetTimestamps: true)" in preview_arguments,
+        "AUDIO-04 processed Preview must use the same source-audio policy core as Export")
+
+voice_audio = video_editor.split("private static string BuildVoiceAudioFilter", 1)[1].split(
+    "public static bool IsActiveAt", 1)[0]
+require('var sourceFilters = new List<string> { "asetpts=PTS-STARTPTS" };' in voice_audio,
+        "AUDIO-04 Keep+Voice must retain the source audio chain")
+require('if (audio.SourceMode == "duck") sourceFilters.Add("volume=" + audio.SourceGain.ToString("0.000", CultureInfo.InvariantCulture));' in voice_audio,
+        "AUDIO-04 Keep+Voice must not inherit Duck attenuation")
+require("[sourcea][voicea]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0[aout]" in voice_audio,
+        "AUDIO-04 Keep+Voice must mix full-level source audio with the Voice track without normalization attenuation")
+
+require('audio.SourceMode != "mute"' in video_editor,
+        "AUDIO-04 final render validation must require an audio stream for Keep")
+require("_monitorAudio" not in video_editor,
+        "AUDIO-04 render/export owner must remain independent from Player monitor mute/volume")
+
+print("PASS: AUDIO-01 single monitor owner + AUDIO-02 Preview volume + AUDIO-03 Preview mute + AUDIO-04 Keep original audio contract")
