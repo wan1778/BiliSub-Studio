@@ -107,7 +107,7 @@ public sealed partial class EditorPage : Page
         if (CreateAsrButton.IsEnabled)
             throw new InvalidOperationException("Editor không được cho chạy ASR khi chưa có video nguồn.");
         if (!string.Equals(PlaybackButton.Content?.ToString(), "Xem bản chỉnh", StringComparison.Ordinal))
-            throw new InvalidOperationException("Editor preview không được quay lại contract 12 giây cũ.");
+            throw new InvalidOperationException("Editor preview phải giữ hành động xem bản chỉnh toàn video.");
         if (PreviewPlayer.AreTransportControlsEnabled)
             throw new InvalidOperationException("Editor không được bật native MediaPlayer transport trên preview.");
         if (_imageModeButton is null || _imageInspectorPanel is null || _imageOverlayCanvas is null)

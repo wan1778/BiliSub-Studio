@@ -394,14 +394,15 @@ EditorPage processed preview
        -> translated cue when available; Chinese source text is the explicit pre-translation fallback
        -> BiliSubApplication.CreateEditorPreviewSegmentAsync
        -> VideoEditorService.CreatePreviewSegmentAsync
-            -> bounded 12-second source window from current playhead
+            -> short internal source window from current playhead
             -> BuildPreviewSlice shifts/clips timed regions, subtitle cues and Whisper word/pause timing into proxy time
             -> app-owned Temp/Editor/Preview only
             -> exact BuildFilterCore + BuildAss + source/TTS audio graph used by final render
             -> H.264/AAC yuv420p MP4 proxy for deterministic WinUI playback
        -> MediaPlayer position + source-window offset -> main source timeline
        -> playback hides handles/locks all edit inputs
-       -> MediaEnded or Về khung chỉnh -> release source, delete proxy, refresh processed frame, unlock ROI
+       -> MediaEnded -> create/play the next internal segment until the full source reaches its end
+       -> Về khung chỉnh or full source end -> release source, delete proxy, refresh processed frame, unlock ROI
        -> page unload cancels proxy FFmpeg and removes the current proxy
 
 EditorPage.Audio inspector

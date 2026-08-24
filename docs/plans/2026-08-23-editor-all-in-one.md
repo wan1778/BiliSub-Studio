@@ -81,7 +81,7 @@ EditorPage
        -> Blur/Mosaic/Cover
        -> ASS/karaoke
        -> source Keep/Duck/Mute + TTS
-       -> processed 12-second preview
+       -> processed full-video preview through chained internal segments
        -> validated atomic final render
 ```
 
@@ -203,14 +203,14 @@ MediaPlayer mute/volume is monitor-only. It is not the render policy.
 
 The editable surface uses a processed still frame for direct manipulation.
 
-`Xem bản chỉnh (12 giây)` renders an app-owned temporary H.264/AAC proxy from the current playhead using the same semantic builders as final render:
+`Xem bản chỉnh` plays from the current playhead through the full source using app-owned temporary H.264/AAC proxy segments and the same semantic builders as final render:
 
 - current regions;
 - subtitle/karaoke ASS;
 - source Keep/Duck/Mute;
 - current TTS master track.
 
-Intersecting region/cue/word/pause timing is clipped and shifted into the preview window. The preview clock maps back to source time. Editing is locked while the proxy plays; ending/stopping/page close removes the temporary proxy and restores the editable frame.
+Intersecting region/cue/word/pause timing is clipped and shifted into each internal preview window. The preview clock maps back to source time and playback automatically continues with the next segment. Editing is locked while the proxy plays; stopping, reaching the full source end or closing the page removes temporary proxies and restores the editable frame.
 
 ## 12. Final export and hardening
 
@@ -290,7 +290,7 @@ The owner is not asked to test intermediate checkpoints. After the final Windows
 2. Run local translation and verify several names/terms.
 3. Run `Phân tích nhịp + Nam/Nữ`.
 4. Override at least one cue Nam/Nữ and generate local Vietnamese voice.
-5. Play `Xem bản chỉnh (12 giây)` and confirm subtitle/effects/voice are visible/audible before export.
+5. Play `Xem bản chỉnh` through multiple internal segment boundaries and confirm continuous full-video playback plus visible/audible subtitle/effects/voice before export.
 6. Spot-check Keep, Duck and Mute behavior.
 7. Create/move/resize Blur/Mosaic/Cover and verify preview.
 8. Close/reopen once and confirm project/override/valid voice state restores.

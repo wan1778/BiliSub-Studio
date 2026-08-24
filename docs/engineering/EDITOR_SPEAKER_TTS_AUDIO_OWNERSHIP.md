@@ -118,7 +118,7 @@ Voice is not a MediaPlayer-volume approximation.
 - `duck`: reduced complete source mix + Vietnamese TTS;
 - `mute`: Vietnamese TTS only.
 
-The 12-second proxy seeks the same source time in video and `voice-master.flac`. Karaoke cue/word/pause timing is shifted into proxy time by `BuildPreviewSlice`.
+Every internal preview segment seeks the same source time in video and `voice-master.flac`. Karaoke cue/word/pause timing is shifted into segment time by `BuildPreviewSlice`; consecutive segments remain an implementation detail behind continuous full-video playback.
 
 ## User-facing Audio inspector
 
