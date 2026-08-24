@@ -539,6 +539,18 @@ public sealed class EditorRegionDocument
     public bool Undo() => Restore(_undo, _redo);
     public bool Redo() => Restore(_redo, _undo);
 
+    public bool CancelChange()
+    {
+        if (_undo.Count == 0) return false;
+        var snapshot = _undo.Pop();
+        _regions.Clear();
+        _regions.AddRange(snapshot.Regions);
+        SelectedIndex = snapshot.SelectedIndex >= 0 && snapshot.SelectedIndex < _regions.Count
+            ? snapshot.SelectedIndex
+            : _regions.Count - 1;
+        return true;
+    }
+
     private bool Restore(Stack<Snapshot> source, Stack<Snapshot> destination)
     {
         if (source.Count == 0) return false;

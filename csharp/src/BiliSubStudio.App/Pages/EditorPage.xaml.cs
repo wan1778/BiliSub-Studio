@@ -1125,7 +1125,11 @@ public sealed partial class EditorPage : Page
     private void Overlay_PointerMoved(object sender, PointerRoutedEventArgs e)
     {
         if (_dragStartNormalized is null || _media is null || !e.GetCurrentPoint(Overlay).Properties.IsLeftButtonPressed) return;
-        if (!TryNormalize(e.GetCurrentPoint(Overlay).Position, out var current)) return;
+        var position = e.GetCurrentPoint(Overlay).Position;
+        if (!TryNormalize(position, out var current))
+        {
+            if (_subtitleDrag || _dragKind != DragKind.Move || !TryNormalizeClamped(position, out current)) return;
+        }
         if (_subtitleDrag && _subtitleDragOriginal is not null)
         {
             _subtitlePlacement = ResizeOrMove(_subtitleDragOriginal, _dragStartNormalized.Value, current, _dragKind);
@@ -1146,8 +1150,14 @@ public sealed partial class EditorPage : Page
             RenderOverlays();
             return;
         }
-        if (_dragOriginal is null || _document.Selected is null) return;
-        var updated = ResizeOrMove(_dragOriginal, _dragStartNormalized.Value, current, _dragKind);
+        if (_dragOriginal is null || _document.Selected is not { } selected) return;
+        var updated = _dragKind == DragKind.Move
+            ? EditorRegionGeometry.MoveBy(
+                _dragOriginal,
+                current.X - _dragStartNormalized.Value.X,
+                current.Y - _dragStartNormalized.Value.Y)
+            : ResizeRegion(_dragOriginal, _dragStartNormalized.Value, current, _dragKind);
+        if (_dragKind == DragKind.Move && updated.X == selected.X && updated.Y == selected.Y) return;
         if (!_dragHistoryCaptured)
         {
             _document.BeginChange();
@@ -1181,7 +1191,7 @@ public sealed partial class EditorPage : Page
             RefreshEditorActions();
             return;
         }
-        if (!commit && _dragHistoryCaptured) _document.Undo();
+        if (!commit && _dragHistoryCaptured) _document.CancelChange();
         if (commit && _dragKind == DragKind.Create && _draftRegion is { } created)
         {
             TryCommitCreatedRegion(created);
@@ -1538,18 +1548,10 @@ public sealed partial class EditorPage : Page
         return DragKind.None;
     }
 
-    private static EditRegion ResizeOrMove(EditRegion original, Point start, Point current, DragKind kind)
+    private static EditRegion ResizeRegion(EditRegion original, Point start, Point current, DragKind kind)
     {
         var dx = current.X - start.X;
         var dy = current.Y - start.Y;
-        if (kind == DragKind.Move)
-        {
-            return original with
-            {
-                X = Math.Clamp(original.X + dx, 0, 1 - original.Width),
-                Y = Math.Clamp(original.Y + dy, 0, 1 - original.Height),
-            };
-        }
         var x1 = original.X;
         var y1 = original.Y;
         var x2 = original.X + original.Width;
@@ -1593,6 +1595,20 @@ public sealed partial class EditorPage : Page
             return false;
         }
         normalized = new Point((point.X - video.X) / video.Width, (point.Y - video.Y) / video.Height);
+        return true;
+    }
+
+    private bool TryNormalizeClamped(Point point, out Point normalized)
+    {
+        var video = VideoRect();
+        if (video.Width <= 0 || video.Height <= 0)
+        {
+            normalized = default;
+            return false;
+        }
+        normalized = new Point(
+            Math.Clamp((point.X - video.X) / video.Width, 0, 1),
+            Math.Clamp((point.Y - video.Y) / video.Height, 0, 1));
         return true;
     }
 

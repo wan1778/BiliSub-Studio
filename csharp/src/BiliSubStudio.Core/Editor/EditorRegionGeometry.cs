@@ -65,4 +65,20 @@ public static class EditorRegionGeometry
 
         return -1;
     }
+
+    public static EditRegion MoveBy(EditRegion original, double deltaX, double deltaY)
+    {
+        if (!double.IsFinite(deltaX) || !double.IsFinite(deltaY)
+            || !double.IsFinite(original.X) || !double.IsFinite(original.Y)
+            || !double.IsFinite(original.Width) || !double.IsFinite(original.Height)
+            || original.Width <= 0 || original.Width > 1
+            || original.Height <= 0 || original.Height > 1)
+            return original;
+
+        return original with
+        {
+            X = Math.Clamp(original.X + deltaX, 0, 1 - original.Width),
+            Y = Math.Clamp(original.Y + deltaY, 0, 1 - original.Height),
+        };
+    }
 }

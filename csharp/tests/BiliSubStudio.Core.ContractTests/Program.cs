@@ -55,6 +55,7 @@ internal static class Program
         ("editor document preserves identity through undo redo", EditorDocumentContractAsync),
         ("editor mouse drag creates only pixel-valid regions in either direction", EditorMouseRegionGeometryContractAsync),
         ("editor region selection picks the topmost hit and synchronizes document state", EditorRegionSelectionContractAsync),
+        ("editor region move clamps bounds and cancellation leaves no history", EditorRegionMoveContractAsync),
         ("editor project persists, isolates source drift and quarantines corrupt state", EditorProjectContractAsync),
         ("editor SRT keeps exact blocks order and timecodes", EditorSubtitleDocumentContractAsync),
         ("editor manual cue state persists locks and preserves timeline", EditorSubtitleManualContract.RunAsync),
@@ -943,6 +944,46 @@ internal static class Program
         document.Select(-1);
         Equal(-1, document.SelectedIndex);
         True(document.Selected is null, "clearing region selection left stale document state");
+        return Task.CompletedTask;
+    }
+
+    private static Task EditorRegionMoveContractAsync()
+    {
+        var original = new EditRegion(.1, .2, .3, .25, "mosaic", 12, false, 2, 8, "moving");
+        var moved = EditorRegionGeometry.MoveBy(original, .25, -.1);
+        Equal(.35, moved.X);
+        Equal(.1, moved.Y);
+        Equal(original.Width, moved.Width);
+        Equal(original.Height, moved.Height);
+        Equal(original.Effect, moved.Effect);
+        Equal(original.Strength, moved.Strength);
+        Equal(original.WholeVideo, moved.WholeVideo);
+        Equal(original.Start, moved.Start);
+        Equal(original.End, moved.End);
+        Equal(original.Id, moved.Id);
+
+        var clamped = EditorRegionGeometry.MoveBy(original, 2, -2);
+        Equal(.7, clamped.X);
+        Equal(0d, clamped.Y);
+        var oppositeEdges = EditorRegionGeometry.MoveBy(original, -2, 2);
+        Equal(0d, oppositeEdges.X);
+        Equal(.75, oppositeEdges.Y);
+        Equal(original, EditorRegionGeometry.MoveBy(original, double.NaN, 0));
+
+        var document = new EditorRegionDocument();
+        document.Reset([original]);
+        document.BeginChange();
+        True(document.ReplaceSelected(moved, capture: false), "live move did not update the selected region");
+        True(document.CancelChange(), "canceled move did not restore its transaction");
+        Equal(original, document.Selected);
+        True(!document.CanUndo && !document.CanRedo, "canceled move leaked into undo or redo history");
+
+        document.BeginChange();
+        True(document.ReplaceSelected(moved, capture: false), "committed move did not update the selected region");
+        True(document.Undo(), "committed move could not be undone");
+        Equal(original, document.Selected);
+        True(document.Redo(), "committed move could not be redone");
+        Equal(moved, document.Selected);
         return Task.CompletedTask;
     }
 

@@ -436,6 +436,17 @@ require('SelectionChanged="RegionList_SelectionChanged"' in editor
         and "public static int FindTopmostContaining(" in region_geometry_source
         and "editor region selection picks the topmost hit and synchronizes document state" in contract_tests_source,
         "BLUR-03 region selection must have one state owner and tested topmost hit-testing")
+blur_move_source = editor_main.split("private void Overlay_PointerMoved(", 1)[1].split("private void Overlay_PointerReleased(", 1)[0]
+region_document_source = read(CSHARP / "src/BiliSubStudio.Core/Editor/EditorProjectStore.cs")
+require("EditorRegionGeometry.MoveBy(" in blur_move_source
+        and "TryNormalizeClamped(" in blur_move_source
+        and "private static EditRegion ResizeRegion(" in editor_main
+        and "private static EditRegion ResizeOrMove(" not in editor_main
+        and "_document.CancelChange();" in blur_finish_source
+        and "public static EditRegion MoveBy(" in region_geometry_source
+        and "public bool CancelChange()" in region_document_source
+        and "editor region move clamps bounds and cancellation leaves no history" in contract_tests_source,
+        "BLUR-04 move must use tested bounded geometry and cancel its history transaction")
 require("SubtitleCueList" in editor and "SubtitleRetranslateCueButton" in editor and "SubtitleSaveSrtButton" in editor,
         "Editor static subtitle cue editor controls missing")
 require("ForceFresh = false" in read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalSubtitleTranslationService.cs")
