@@ -2,6 +2,8 @@ namespace BiliSubStudio.Core.IO;
 
 public static class FileNamePolicy
 {
+    private const int MaxSanitizedLength = 150;
+
     public static string Sanitize(string? value, string fallback)
     {
         var text = (value ?? string.Empty).Trim();
@@ -10,14 +12,23 @@ public static class FileNamePolicy
             text = text.Replace(c, '_');
         }
         text = text.Trim(' ', '.');
-        if (text.Length > 150)
+        if (text.Length > MaxSanitizedLength)
         {
-            text = text[..150];
+            text = text[..MaxSanitizedLength];
         }
         if (string.IsNullOrWhiteSpace(text)) return fallback;
-        var stem = Path.GetFileNameWithoutExtension(text);
-        if (ReservedNames.Contains(stem)) text = "_" + text;
-        return text;
+        if (IsReservedWindowsName(text)) text = "_" + text;
+        if (text.Length > MaxSanitizedLength) text = text[..MaxSanitizedLength];
+        text = text.TrimEnd(' ', '.');
+        return string.IsNullOrWhiteSpace(text) ? fallback : text;
+    }
+
+    public static string NormalizeVideoOutputName(string? value, string fallback = "BiliSub_edited.mp4")
+    {
+        var fileName = Sanitize(value, fallback);
+        if (Path.GetExtension(fileName).ToLowerInvariant() is not (".mp4" or ".mkv"))
+            fileName += ".mp4";
+        return fileName;
     }
 
     public static string UniquePath(string candidate, string? forbiddenInput = null)
@@ -40,6 +51,13 @@ public static class FileNamePolicy
             }
         }
         throw new IOException("Không thể tạo tên file đầu ra duy nhất.");
+    }
+
+    private static bool IsReservedWindowsName(string text)
+    {
+        var dot = text.IndexOf('.');
+        var deviceName = dot < 0 ? text : text[..dot];
+        return ReservedNames.Contains(deviceName);
     }
 
     private static readonly HashSet<string> ReservedNames = new(

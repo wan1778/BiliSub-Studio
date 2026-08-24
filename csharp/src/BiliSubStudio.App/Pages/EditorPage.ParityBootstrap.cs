@@ -91,6 +91,7 @@ public sealed partial class EditorPage
         EditorAutoCompositeToggle.Toggled += EditorAutoComposite_Toggled;
         EditorChooseOutputButton.Click += EditorChooseOutput_Click;
         EditorOpenOutputButton.Click += EditorOpenOutput_Click;
+        FileNameBox.LostFocus += EditorFileName_LostFocus;
 
         // UI-11: MainWindow startup smoke resizes to 800x600, 1000x700 and 1500x900.
         // Validate the real shell at those layouts without affecting normal user resize.
