@@ -30,6 +30,7 @@ public sealed partial class EditorPage
             }
 
             EnsureEditorExportProgressTimer();
+            StartVoiceArtifactMonitor();
             if (_path is not null && _media is not null && !_playback.IsReady)
             {
                 try
@@ -186,6 +187,7 @@ public sealed partial class EditorPage
 
     private void EditorProgress_Unloaded(object sender, RoutedEventArgs e)
     {
+        StopVoiceArtifactMonitor();
         if (_editorExportProgressTimer is not null)
         {
             _editorExportProgressTimer.Stop();
