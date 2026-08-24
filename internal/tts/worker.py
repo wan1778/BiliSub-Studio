@@ -308,6 +308,7 @@ def main() -> int:
 
     master_wav = output_root / "voice-master.wav"
     master_flac = output_root / "voice-master.flac"
+    master_flac_temp = output_root / ("voice-master.flac.tmp-" + os.urandom(6).hex())
     block_by_start = {round(float(item["start"]), 6): Path(item["path"]) for item in blocks}
     total_samples = max(1, int(math.ceil(max_end * sample_rate)))
     with wave.open(str(master_wav), "wb") as master:
@@ -339,10 +340,11 @@ def main() -> int:
                 chunk_frames = min(remaining, sample_rate)
                 master.writeframesraw(zero_chunk[:chunk_frames * 2])
                 remaining -= chunk_frames
-    command = [str(ffmpeg), "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", str(master_wav), "-c:a", "flac", "-compression_level", "5", str(master_flac)]
+    command = [str(ffmpeg), "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", str(master_wav), "-c:a", "flac", "-compression_level", "5", str(master_flac_temp)]
     compressed = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
-    if compressed.returncode != 0 or not master_flac.is_file() or master_flac.stat().st_size <= 64:
+    if compressed.returncode != 0 or not master_flac_temp.is_file() or master_flac_temp.stat().st_size <= 64:
         raise RuntimeError("Could not build TTS master FLAC: " + (compressed.stderr.strip().splitlines()[-1] if compressed.stderr.strip() else "unknown error"))
+    master_flac_temp.replace(master_flac)
     try:
         master_wav.unlink()
     except OSError:
