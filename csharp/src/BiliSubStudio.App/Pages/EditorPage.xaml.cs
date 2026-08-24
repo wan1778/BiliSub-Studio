@@ -1008,12 +1008,18 @@ public sealed partial class EditorPage : Page
 
     private void RemoveRegion_Click(object sender, RoutedEventArgs e)
     {
-        if (_document.RemoveSelected())
-        {
-            if (_document.Selected is not null) LoadSelectedIntoInputs();
-            else SetCoordinateBoxes(0, 0, 0, 0);
-            DocumentChanged("Đã xóa vùng chọn. Có thể Hoàn tác.");
-        }
+        TryDeleteSelectedRegion();
+    }
+
+    private bool TryDeleteSelectedRegion()
+    {
+        if (EditorBusy || _playback.IsPreviewMode || _dragStartNormalized is not null) return false;
+        if (!_document.RemoveSelected()) return false;
+        _draftRegion = null;
+        if (_document.Selected is not null) LoadSelectedIntoInputs();
+        else SetCoordinateBoxes(0, 0, 0, 0);
+        DocumentChanged("Đã xóa vùng chọn. Có thể Hoàn tác.");
+        return true;
     }
 
     private void RegionList_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -1379,12 +1385,8 @@ public sealed partial class EditorPage : Page
             if (TryRedoDocument()) e.Handled = true;
             return;
         }
-        if (e.Key is not (VirtualKey.Delete or VirtualKey.Back) || _document.Selected is null) return;
-        if (_document.RemoveSelected())
-        {
-            e.Handled = true;
-            DocumentChanged("Đã xóa vùng chọn. Có thể Hoàn tác.");
-        }
+        if (e.Key is not (VirtualKey.Delete or VirtualKey.Back)) return;
+        if (TryDeleteSelectedRegion()) e.Handled = true;
     }
 
     private void DocumentChanged(string status)

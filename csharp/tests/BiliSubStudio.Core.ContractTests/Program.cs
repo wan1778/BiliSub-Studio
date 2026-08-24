@@ -55,6 +55,7 @@ internal static class Program
         ("editor document preserves identity through undo redo", EditorDocumentContractAsync),
         ("editor Undo restores ordered region selection and bounded history", EditorUndoContractAsync),
         ("editor Redo restores ordered region selection and invalidates divergent history", EditorRedoContractAsync),
+        ("editor Delete preserves neighboring selection and exact undo redo history", EditorDeleteContractAsync),
         ("editor mouse drag creates only pixel-valid regions in either direction", EditorMouseRegionGeometryContractAsync),
         ("editor region selection picks the topmost hit and synchronizes document state", EditorRegionSelectionContractAsync),
         ("editor region move clamps bounds and cancellation leaves no history", EditorRegionMoveContractAsync),
@@ -982,6 +983,56 @@ internal static class Program
 
         document.Reset([first]);
         True(!document.CanUndo && !document.CanRedo, "document reset retained Undo or Redo history");
+        return Task.CompletedTask;
+    }
+
+    private static Task EditorDeleteContractAsync()
+    {
+        var document = new EditorRegionDocument();
+        document.Reset([]);
+        True(!document.RemoveSelected(), "empty document unexpectedly allowed Delete");
+        True(!document.CanUndo && !document.CanRedo, "empty Delete changed history");
+
+        var first = new EditRegion(.1, .1, .2, .2, "blur", 18, true, 0, 10, "delete-first");
+        var middle = new EditRegion(.4, .1, .2, .2, "mosaic", 12, true, 0, 10, "delete-middle");
+        var last = new EditRegion(.7, .1, .2, .2, "cover", 0, true, 0, 10, "delete-last");
+        document.Reset([first, middle, last]);
+        document.Select(1);
+        True(document.RemoveSelected(), "selected middle region could not be deleted");
+        Equal(2, document.Regions.Count);
+        Equal(last, document.Selected);
+        Equal(1, document.SelectedIndex);
+        True(document.CanUndo && !document.CanRedo, "Delete did not create exactly one Undo branch");
+
+        True(document.Undo(), "middle Delete could not be undone");
+        Equal(3, document.Regions.Count);
+        Equal(middle, document.Selected);
+        Equal(1, document.SelectedIndex);
+        True(document.Redo(), "middle Delete could not be redone");
+        Equal(last, document.Selected);
+        Equal(1, document.SelectedIndex);
+
+        True(document.Undo(), "last-selection fixture could not restore the middle region");
+        document.Select(2);
+        True(document.RemoveSelected(), "selected last region could not be deleted");
+        Equal(2, document.Regions.Count);
+        Equal(middle, document.Selected);
+        Equal(1, document.SelectedIndex);
+        True(!document.CanRedo, "new Delete did not invalidate the previous Redo branch");
+        True(document.Undo(), "last Delete could not be undone");
+        Equal(last, document.Selected);
+        Equal(2, document.SelectedIndex);
+
+        document.Reset([first]);
+        True(document.RemoveSelected(), "only region could not be deleted");
+        Equal(0, document.Regions.Count);
+        Equal(-1, document.SelectedIndex);
+        True(document.Selected is null, "Delete left a stale selection in an empty document");
+        True(document.Undo(), "empty-state Delete could not be undone");
+        Equal(first, document.Selected);
+        Equal(0, document.SelectedIndex);
+        True(document.Redo(), "empty-state Delete could not be redone");
+        True(document.Selected is null && document.Regions.Count == 0, "Redo did not restore the exact empty Delete state");
         return Task.CompletedTask;
     }
 

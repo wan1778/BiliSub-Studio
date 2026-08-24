@@ -2,13 +2,13 @@
 
 - Base/current upstream main: `origin/main@8eb2a8a2600b37d29bfd0deaae9eeb94b3cda635`
 - Current local branch: `main`
-- Local base before this task: `9fb53063526a5b542356b38135c4b3a28f197c64`
+- Local base before this task: `f3dc6db2f2d8ec34c0d3a74f26d1fb5daf1e9868`
 - Pull request: none; local Preview/Blur task commits are not pushed or merged
 - Last completed before Blur phase: `PREVIEW-15 — Cleanup preview cache`
-- Task completed in this handoff: `BLUR-13 — Redo`
+- Task completed in this handoff: `BLUR-14 — Delete`
 - Task result: `PASS`
 - Task currently running: none
-- Exact next task after this task passes: `BLUR-14 — Delete`
+- Exact next task after this task passes: `BLUR-15 — Preset nếu còn giữ`
 
 ## Recent task commits
 
@@ -24,9 +24,10 @@
 - `BLUR-10`: `ab3b3625ab56e5000fdb12613e011eddb801bc4e` — canonical whole-video time scope across UI, project, Preview and Export.
 - `BLUR-11`: `8cff071ee44f9f7f8a90196577486505a33b3470` — strict numeric/current-position timed ranges with direct XAML event ownership.
 - `BLUR-12`: `9fb53063526a5b542356b38135c4b3a28f197c64` — guarded Undo button/Ctrl+Z owner with exact input restoration and bounded history.
-- `BLUR-13`: the commit containing this handoff; resolve its exact SHA with `git rev-parse HEAD` after checkout. The exact SHA is also reported in the task completion message because a commit cannot contain its own cryptographic ID.
+- `BLUR-13`: `f3dc6db2f2d8ec34c0d3a74f26d1fb5daf1e9868` — guarded Redo button/Ctrl+Y/Shift+Ctrl+Z owner with exact history restoration.
+- `BLUR-14`: the commit containing this handoff; resolve its exact SHA with `git rev-parse HEAD` after checkout. The exact SHA is also reported in the task completion message because a commit cannot contain its own cryptographic ID.
 
-## Files changed by BLUR-13
+## Files changed by BLUR-14
 
 - `csharp/src/BiliSubStudio.App/Pages/EditorPage.xaml.cs`
 - `csharp/tests/BiliSubStudio.Core.ContractTests/Program.cs`
@@ -36,37 +37,37 @@
 
 ## Root cause
 
-Core already had symmetric snapshot restoration for Redo, but the UI event handler called `_document.Redo()` directly instead of routing through an independent owner. It had no explicit guard for busy, processed-Preview or active drag state, did not clear draft state or coordinate inputs when restoring an empty snapshot, and exposed no Ctrl+Y or Shift+Ctrl+Z keyboard route. Existing coverage proved one edit could be redone but did not prove ordered add/edit restoration, exact selection/identity, no-op retention, divergent-branch invalidation or reset cleanup.
+Delete had two action owners: `RemoveRegion_Click` and `Page_KeyDown` each called `_document.RemoveSelected()` and performed different follow-up work. The keyboard path did not clear coordinate inputs when deleting the last region, while neither path shared explicit active-drag/processed-Preview guards or draft cleanup. Existing coverage only deleted one region inside the broad document test; it did not prove neighboring selection after deleting middle/last regions, exact Undo/Redo restoration, empty-state selection or divergent-branch invalidation.
 
 ## Implementation
 
-- Added one independent `TryRedoDocument()` owner used by `RedoButton.Click`, Ctrl+Y and Shift+Ctrl+Z; no event handler calls another handler.
-- Redo is rejected while Editor is busy, processed Preview is active or a pointer drag transaction is open.
-- Successful Redo clears draft state, restores selected-region inputs or clears coordinates for an exact empty snapshot, then routes through existing `DocumentChanged` to refresh list/overlay/timeline/actions, autosave and static/processed Preview.
-- Keyboard Redo is scoped to Blur mode and ignored while a text editor owns focus; Ctrl+Z remains owned only by Undo.
-- Added a BLUR-13 Core contract covering empty Redo, ordered add/edit restoration, exact identity/selection, Redo retention after a no-op, divergent-branch invalidation and Reset cleanup.
-- Added static UI ownership/guard/keyboard/save/Preview-route coverage and regenerated the C# code map. Core history production logic did not need modification.
+- Added one independent `TryDeleteSelectedRegion()` owner used by `RemoveRegionButton.Click` and page Delete/Backspace; no event handler calls another handler.
+- Delete is rejected while Editor is busy, processed Preview is active, a pointer drag transaction is open or no region is selected.
+- Successful Delete clears draft state, selects the correct neighboring region and loads its inputs, or clears coordinates when the document becomes empty.
+- Delete then routes through existing `DocumentChanged` exactly once to refresh list/overlay/timeline/actions, autosave and static/processed Preview.
+- Added a BLUR-14 Core contract covering empty Delete, middle/last/only-region selection policy, exact Undo/Redo restoration and divergent-branch invalidation.
+- Added static direct-XAML/action-owner/guard/keyboard/save/Preview-route coverage and regenerated the C# code map. Core `RemoveSelected` production logic did not need modification.
 
 ## Tests and results
 
-- Fail-first `python csharp/scripts/validate_csharp_migration.py` — expected FAIL before implementation: `BLUR-13 Redo must have one guarded owner that restores exact document selection inputs persistence and Preview state`.
+- Fail-first `python csharp/scripts/validate_csharp_migration.py` — expected FAIL before implementation: `BLUR-14 Delete must have one guarded owner that clears stale inputs and preserves exact selection history persistence and Preview state`.
 - `python csharp/scripts/validate_csharp_migration.py` — PASS (`4.0.0-beta.42-csharp-p5`).
 - `python csharp/scripts/generate_csharp_code_map.py --check` — PASS.
-- Core contract runner with exact SDK `10.0.400` — PASS, 67/67.
-- Targeted Windows x64 Release solution build with cached restore — PASS, 0 warnings and 0 errors; this compiled the WinUI Ctrl+Y/Shift+Ctrl+Z path.
+- Core contract runner with exact SDK `10.0.400` — PASS, 68/68.
+- Targeted Windows x64 Release solution build with cached restore — PASS, 0 warnings and 0 errors; this compiled the unified WinUI button/keyboard Delete path.
 - Git diff whitespace check — PASS.
-- Full clean-checkout `csharp/scripts/verify.ps1` on the commit containing this handoff — PASS: Windows compile, 67/67 Core contracts, global-log/shell and OCR contracts, range/short-read regression, self-contained WinUI x64 publish, real startup smoke, worker identity, PE32+ x64 and checksum readback.
-- No FFmpeg probe was needed because BLUR-13 changes history/UI orchestration, not the filter graph.
+- Full clean-checkout `csharp/scripts/verify.ps1` on the commit containing this handoff — PASS: Windows compile, 68/68 Core contracts, global-log/shell and OCR contracts, range/short-read regression, self-contained WinUI x64 publish, real startup smoke, worker identity, PE32+ x64 and checksum readback.
+- No FFmpeg probe was needed because BLUR-14 changes history/UI orchestration, not the filter graph.
 - No CI workflow was dispatched; no installer/package/release was built or published.
 
 ## Verification level
 
-- Redo Core contract PASS: ordered multi-step restoration, exact stable IDs/selection, empty state, no-op retention, divergent branch invalidation and Reset cleanup.
-- Static UI ownership PASS: one XAML Redo Click; button, Ctrl+Y and Shift+Ctrl+Z call one independent guarded owner; no handler-to-handler call.
-- Persistence/Preview route PASS by source contract: successful Redo calls the existing `DocumentChanged` owner, which renders, queues project save and queues Preview refresh once.
+- Delete Core contract PASS: neighboring selection after middle/last Delete, exact empty selection, identity-preserving Undo/Redo and divergent branch invalidation.
+- Static UI ownership PASS: one XAML Remove Click; button and Delete/Backspace call one independent guarded owner; no handler-to-handler call.
+- Persistence/Preview route PASS by source contract: successful Delete calls the existing `DocumentChanged` owner, which renders, queues project save and queues Preview refresh once.
 - Compile PASS: Windows x64 Release solution build, 0 warnings/errors.
 - Functional WinUI startup/layout on the commit containing this handoff: PASS via clean-checkout real startup smoke.
-- Real interactive Redo button/Ctrl+Y/Shift+Ctrl+Z after Undo of add/edit/move/resize/delete on a physical Windows desktop: not run; still required before release.
+- Real interactive Delete button/Delete/Backspace after selecting middle/last/only regions on a physical Windows desktop: not run; still required before release.
 
 ## Constraints to preserve
 
@@ -75,10 +76,10 @@ Core already had symmetric snapshot restoration for Redo, but the UI event handl
 - Translation, ASR and TTS remain local; Chinese → Vietnamese uses the project translation skill.
 - Keep the three-column Editor and contextual tool scope; do not turn it into a full NLE or add a large multi-track timeline.
 - Keep one event/owner, one button/handler, no handler-calls-handler and the single `EditorPlaybackController` playback owner.
-- `TryUndoDocument` and `TryRedoDocument` remain the only UI history owners; do not duplicate save/Preview synchronization or call event handlers from keyboard code.
+- `TryUndoDocument`, `TryRedoDocument` and `TryDeleteSelectedRegion` remain the only UI history action owners; do not duplicate save/Preview synchronization or call event handlers from keyboard code.
 - `EditorRegionDocument` owns bounded snapshots, no-op suppression and divergent-branch invalidation.
 - `EditorRegionTimeScope` continues to own whole/timed invariants; current-position buttons retain direct XAML ownership.
 - Do not add Repair/Fix/Parity layers when the real owner can be corrected; remove dead/superseded logic.
-- One small task and targeted regression at a time; do not start BLUR-14 until BLUR-13 has final clean verification and its own commit.
+- One small task and targeted regression at a time; do not start BLUR-15 until BLUR-14 has final clean verification and its own commit.
 - Do not reopen already-passed Subtitle work without a demonstrated regression.
 - No version bump, release, push, PR merge or merge without explicit authorization and passing gates.

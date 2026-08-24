@@ -597,6 +597,26 @@ require('x:Name="RedoButton"' in editor_xaml
         and "e.Key == VirtualKey.Z" in undo_key_source
         and "editor Redo restores ordered region selection and invalidates divergent history" in contract_tests_source,
         "BLUR-13 Redo must have one guarded owner that restores exact document selection inputs persistence and Preview state")
+delete_click_source = editor_main.split("private void RemoveRegion_Click(", 1)[1].split("private bool TryDeleteSelectedRegion()", 1)[0] if "private bool TryDeleteSelectedRegion()" in editor_main else ""
+delete_owner_source = editor_main.split("private bool TryDeleteSelectedRegion()", 1)[1].split("private void RegionList_SelectionChanged(", 1)[0] if "private bool TryDeleteSelectedRegion()" in editor_main else ""
+require('x:Name="RemoveRegionButton"' in editor_xaml
+        and 'Click="RemoveRegion_Click"' in editor_xaml
+        and "RemoveRegionButton.Click +=" not in editor_partials
+        and editor_partials.count("private void RemoveRegion_Click(") == 1
+        and "TryDeleteSelectedRegion();" in delete_click_source
+        and "_document.RemoveSelected()" not in delete_click_source
+        and "if (EditorBusy || _playback.IsPreviewMode || _dragStartNormalized is not null) return false;" in delete_owner_source
+        and "if (!_document.RemoveSelected()) return false;" in delete_owner_source
+        and "_draftRegion = null;" in delete_owner_source
+        and "else SetCoordinateBoxes(0, 0, 0, 0);" in delete_owner_source
+        and 'DocumentChanged("Đã xóa vùng chọn. Có thể Hoàn tác.");' in delete_owner_source
+        and "if (TryDeleteSelectedRegion()) e.Handled = true;" in undo_key_source
+        and "_document.RemoveSelected()" not in undo_key_source
+        and "RemoveRegion_Click(" not in undo_key_source
+        and "VirtualKey.Delete" in undo_key_source
+        and "VirtualKey.Back" in undo_key_source
+        and "editor Delete preserves neighboring selection and exact undo redo history" in contract_tests_source,
+        "BLUR-14 Delete must have one guarded owner that clears stale inputs and preserves exact selection history persistence and Preview state")
 require("SubtitleCueList" in editor and "SubtitleRetranslateCueButton" in editor and "SubtitleSaveSrtButton" in editor,
         "Editor static subtitle cue editor controls missing")
 require("ForceFresh = false" in read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalSubtitleTranslationService.cs")
