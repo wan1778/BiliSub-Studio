@@ -530,8 +530,10 @@ public sealed class EditorRegionDocument
     public bool ReplaceSelected(EditRegion region, bool capture = true)
     {
         if (SelectedIndex < 0 || SelectedIndex >= _regions.Count) return false;
+        var replacement = EnsureIdentity(region with { Id = _regions[SelectedIndex].Id });
+        if (replacement == _regions[SelectedIndex]) return false;
         if (capture) BeginChange();
-        _regions[SelectedIndex] = EnsureIdentity(region with { Id = _regions[SelectedIndex].Id });
+        _regions[SelectedIndex] = replacement;
         return true;
     }
 

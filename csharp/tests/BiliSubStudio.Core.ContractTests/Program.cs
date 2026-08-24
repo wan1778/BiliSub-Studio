@@ -53,6 +53,7 @@ internal static class Program
         ("editor final render validates streams duration and audio policy", EditorRenderValidationContractAsync),
         ("Vietnamese TTS text normalization stays deterministic", VietnameseTtsNormalizerContractAsync),
         ("editor document preserves identity through undo redo", EditorDocumentContractAsync),
+        ("editor Undo restores ordered region selection and bounded history", EditorUndoContractAsync),
         ("editor mouse drag creates only pixel-valid regions in either direction", EditorMouseRegionGeometryContractAsync),
         ("editor region selection picks the topmost hit and synchronizes document state", EditorRegionSelectionContractAsync),
         ("editor region move clamps bounds and cancellation leaves no history", EditorRegionMoveContractAsync),
@@ -898,6 +899,42 @@ internal static class Program
         Equal(0, document.Regions.Count);
         True(document.Undo(), "editor removal could not be undone");
         Equal(identity, document.Selected!.Id);
+        return Task.CompletedTask;
+    }
+
+    private static Task EditorUndoContractAsync()
+    {
+        var document = new EditorRegionDocument();
+        document.Reset([]);
+        True(!document.Undo(), "empty document unexpectedly exposed Undo");
+
+        document.Add(new EditRegion(.1, .2, .3, .25, "blur", 18, true, 0, 10, "first"));
+        document.Add(new EditRegion(.5, .1, .2, .2, "mosaic", 12, false, 2, 8, "second"));
+        var second = document.Selected ?? throw new InvalidOperationException("second Undo fixture region was not selected");
+        True(document.ReplaceSelected(second with { X = .55, Strength = 20 }), "Undo fixture edit was rejected");
+
+        True(document.Undo(), "latest region edit could not be undone");
+        Equal(second, document.Selected);
+        Equal(1, document.SelectedIndex);
+        True(document.Undo(), "second region add could not be undone");
+        Equal(1, document.Regions.Count);
+        Equal("first", document.Selected?.Id);
+        Equal(0, document.SelectedIndex);
+        True(document.Undo(), "first region add could not be undone");
+        Equal(0, document.Regions.Count);
+        Equal(-1, document.SelectedIndex);
+        True(document.Selected is null && !document.CanUndo, "Undo did not restore the exact empty document state");
+
+        document.Reset([new EditRegion(.1, .2, .3, .25, "blur", 0, true, 0, 10, "bounded")]);
+        True(!document.ReplaceSelected(document.Selected!), "no-op replacement entered Undo history");
+        True(!document.CanUndo, "no-op replacement enabled Undo");
+        for (var strength = 1; strength <= 55; strength++)
+            True(document.ReplaceSelected(document.Selected! with { Strength = strength }), "bounded Undo fixture edit was rejected");
+        var undoCount = 0;
+        while (document.Undo()) undoCount++;
+        Equal(50, undoCount);
+        Equal(5, document.Selected?.Strength);
+        Equal("bounded", document.Selected?.Id);
         return Task.CompletedTask;
     }
 

@@ -558,6 +558,26 @@ require('x:Name="StartBox"' in editor_xaml
         and "EditorRegionTimeScope.Normalize(" in video_editor_source
         and "editor timed range validates numeric and current-position Preview Export state" in contract_tests_source,
         "BLUR-11 timed range must own numeric and current-position input without runtime handler patching or silent render clamps")
+undo_click_source = editor_main.split("private void Undo_Click(", 1)[1].split("private bool TryUndoDocument()", 1)[0] if "private bool TryUndoDocument()" in editor_main else ""
+undo_owner_source = editor_main.split("private bool TryUndoDocument()", 1)[1].split("private void Redo_Click(", 1)[0] if "private bool TryUndoDocument()" in editor_main else ""
+undo_key_source = editor_main.split("private void Page_KeyDown(", 1)[1].split("private void DocumentChanged(", 1)[0] if "private void Page_KeyDown(" in editor_main else ""
+require('x:Name="UndoButton"' in editor_xaml
+        and 'Click="Undo_Click"' in editor_xaml
+        and "UndoButton.Click +=" not in editor_partials
+        and editor_partials.count("private void Undo_Click(") == 1
+        and "TryUndoDocument();" in undo_click_source
+        and "_document.Undo()" not in undo_click_source
+        and "if (EditorBusy || _playback.IsPreviewMode || _dragStartNormalized is not null) return false;" in undo_owner_source
+        and "_document.Undo()" in undo_owner_source
+        and "_draftRegion = null;" in undo_owner_source
+        and "else SetCoordinateBoxes(0, 0, 0, 0);" in undo_owner_source
+        and 'DocumentChanged("Đã hoàn tác.");' in undo_owner_source
+        and "TryUndoDocument()" in undo_key_source
+        and "Undo_Click(" not in undo_key_source
+        and "InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Control)" in undo_key_source
+        and "if (replacement == _regions[SelectedIndex]) return false;" in region_document_source
+        and "editor Undo restores ordered region selection and bounded history" in contract_tests_source,
+        "BLUR-12 Undo must have one guarded owner that restores exact document selection inputs persistence and Preview state")
 require("SubtitleCueList" in editor and "SubtitleRetranslateCueButton" in editor and "SubtitleSaveSrtButton" in editor,
         "Editor static subtitle cue editor controls missing")
 require("ForceFresh = false" in read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalSubtitleTranslationService.cs")

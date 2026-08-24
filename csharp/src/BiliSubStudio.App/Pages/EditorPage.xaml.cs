@@ -3,6 +3,7 @@ using BiliSubStudio.Core.Application;
 using BiliSubStudio.Core.Editor;
 using BiliSubStudio.Core.Media;
 using Microsoft.UI;
+using Microsoft.UI.Input;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
@@ -13,6 +14,7 @@ using Windows.Foundation;
 using Windows.Storage;
 using Windows.Storage.Streams;
 using Windows.System;
+using Windows.UI.Core;
 
 namespace BiliSubStudio.App.Pages;
 
@@ -1030,11 +1032,18 @@ public sealed partial class EditorPage : Page
 
     private void Undo_Click(object sender, RoutedEventArgs e)
     {
-        if (_document.Undo())
-        {
-            if (_document.Selected is not null) LoadSelectedIntoInputs();
-            DocumentChanged("Đã hoàn tác.");
-        }
+        TryUndoDocument();
+    }
+
+    private bool TryUndoDocument()
+    {
+        if (EditorBusy || _playback.IsPreviewMode || _dragStartNormalized is not null) return false;
+        if (!_document.Undo()) return false;
+        _draftRegion = null;
+        if (_document.Selected is not null) LoadSelectedIntoInputs();
+        else SetCoordinateBoxes(0, 0, 0, 0);
+        DocumentChanged("Đã hoàn tác.");
+        return true;
     }
 
     private void Redo_Click(object sender, RoutedEventArgs e)
@@ -1347,8 +1356,16 @@ public sealed partial class EditorPage : Page
 
     private void Page_KeyDown(object sender, KeyRoutedEventArgs e)
     {
-        if (_inspectorMode != InspectorMode.Blur || e.Key is not (VirtualKey.Delete or VirtualKey.Back) || EditorBusy || _document.Selected is null) return;
+        if (_inspectorMode != InspectorMode.Blur || EditorBusy) return;
         if (FocusManager.GetFocusedElement(XamlRoot) is TextBox) return;
+        var controlDown = (InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Control) & CoreVirtualKeyStates.Down) != 0;
+        var shiftDown = (InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Shift) & CoreVirtualKeyStates.Down) != 0;
+        if (e.Key == VirtualKey.Z && controlDown && !shiftDown)
+        {
+            if (TryUndoDocument()) e.Handled = true;
+            return;
+        }
+        if (e.Key is not (VirtualKey.Delete or VirtualKey.Back) || _document.Selected is null) return;
         if (_document.RemoveSelected())
         {
             e.Handled = true;
