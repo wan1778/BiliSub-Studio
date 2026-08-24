@@ -277,7 +277,7 @@ for forbidden in ("_playback.SetMuted(", "_playback.SetVolume(", "_monitorAudio"
             f"AUDIO-05 Duck render policy must not mutate Player monitor state; found {forbidden}")
 
 apply_audio = editor_main.split("private void ApplyAudioSettingsToUi()", 1)[1].split(
-    "private async void Translate_Click", 1)[0]
+    "private EditorSubtitleBurn? CompletedSubtitleBurn", 1)[0]
 require('if (_audioSettings.SourceMode == "duck") SourceAudioGainSlider.Value = _audioSettings.SourceGain * 100;' in apply_audio,
         "AUDIO-05 reopening a Duck project must restore its exact gain into the UI")
 require('SourceAudioGainSlider.IsEnabled = editable && _audioSettings.SourceMode == "duck";' in editor_main,
@@ -344,3 +344,61 @@ require('EditorProjectStore.NormalizeAudio(request.Audio).SourceMode != "keep"' 
         "AUDIO-06 Mute-only change must count as an exportable Editor edit")
 
 print("PASS: AUDIO-06 Mute original audio contract")
+
+# AUDIO-07 — Player ↔ Details control synchronization without event loops. The two
+# surfaces stay coordinated through their own owners: Player controls are monitor-only,
+# while Details controls are project/render policy. They must never mirror values across
+# those domains or call each other's event handlers.
+require("if (_syncingAudio || !IsLoaded) return;" in audio_update,
+        "AUDIO-07 Details audio handlers must ignore programmatic owner-to-UI synchronization")
+require("_syncingAudio = true;" in apply_audio
+        and "finally { _syncingAudio = false; }" in apply_audio,
+        "AUDIO-07 project-audio owner-to-Details synchronization must be guarded")
+require("SourceAudioModeBox.SelectedIndex = index;" in apply_audio,
+        "AUDIO-07 Details mode control must rehydrate from project-owned audio state")
+require('if (_audioSettings.SourceMode == "duck") SourceAudioGainSlider.Value = _audioSettings.SourceGain * 100;' in apply_audio,
+        "AUDIO-07 Details Duck gain must rehydrate from project-owned audio state")
+
+for forbidden in ("SourceAudioModeBox", "SourceAudioGainSlider", "UpdateAudioSettingsFromUi", "ApplyAudioSettingsToUi"):
+    require(forbidden not in preview_mute_handler and forbidden not in preview_volume_handler,
+            f"AUDIO-07 Player monitor handlers must never write/read Details render controls; found {forbidden}")
+for forbidden in ("PreviewMuteToggle", "PreviewVolumeSlider", "_playback.SetMuted(", "_playback.SetVolume("):
+    require(forbidden not in audio_update,
+            f"AUDIO-07 Details handlers must never write/read Player monitor controls; found {forbidden}")
+
+require("_page.PreviewMuteToggle" not in controller and "_page.PreviewVolumeSlider" not in controller,
+        "AUDIO-07 playback owner must not use Player controls as a second state owner")
+require("SourceAudioModeBox" not in controller and "SourceAudioGainSlider" not in controller,
+        "AUDIO-07 playback monitor owner must remain independent from Details controls")
+
+refresh_actions = editor_main.split("private void RefreshEditorActions()", 1)[1].split(
+    "private static string FormatClock", 1)[0]
+require("PreviewMuteToggle.IsEnabled = PreviewVolumeSlider.IsEnabled = idle && hasMedia;" in refresh_actions,
+        "AUDIO-07 Player monitor controls must share the reviewed availability refresh")
+require("SourceAudioModeBox.IsEnabled = editable;" in refresh_actions
+        and 'SourceAudioGainSlider.IsEnabled = editable && _audioSettings.SourceMode == "duck";' in refresh_actions,
+        "AUDIO-07 Details controls must share the reviewed editability refresh without changing values")
+for forbidden in (
+    "PreviewMuteToggle.IsOn =", "PreviewVolumeSlider.Value =",
+    "SourceAudioModeBox.SelectedIndex =", "SourceAudioGainSlider.Value =",
+):
+    require(forbidden not in refresh_actions,
+            f"AUDIO-07 availability refresh must not fire audio value events; found {forbidden}")
+
+open_video = editor_main.split("private async Task OpenVideoAsync()", 1)[1].split(
+    "private async Task SaveCurrentSourceStateForSwitchAsync", 1)[0]
+require("_audioSettings = EditorProjectStore.NormalizeAudio(_project.Audio);" in open_video
+        and "ApplyAudioSettingsToUi();" in open_video
+        and open_video.index("_audioSettings = EditorProjectStore.NormalizeAudio(_project.Audio);")
+            < open_video.index("ApplyAudioSettingsToUi();"),
+        "AUDIO-07 reopening a project must hydrate the owner before synchronizing Details controls")
+
+require("PreviewMute_Toggled(" not in audio_update and "PreviewVolume_ValueChanged(" not in audio_update,
+        "AUDIO-07 Details event path must not call Player event handlers")
+require("SourceAudioMode_SelectionChanged(" not in preview_mute_handler
+        and "SourceAudioGain_ValueChanged(" not in preview_mute_handler
+        and "SourceAudioMode_SelectionChanged(" not in preview_volume_handler
+        and "SourceAudioGain_ValueChanged(" not in preview_volume_handler,
+        "AUDIO-07 Player event path must not call Details event handlers")
+
+print("PASS: AUDIO-07 Player/Details audio controls stay synchronized to separate owners without event loops")
