@@ -607,11 +607,16 @@ public sealed partial class EditorPage
                         await Task.Delay(250);
                         continue;
                     }
+                    var completedJobId = _jobId ?? throw new InvalidOperationException("Mất job render trung gian.");
                     _jobId = null;
                     if (snapshot.Result is VideoEditResult result)
                     {
                         baseOutput = result.OutputPath;
                         composerInput = result.OutputPath;
+                        if (_application.Jobs.TryGet(completedJobId, out var completedJob)
+                            && completedJob is not null
+                            && completedJob.CancellationToken.IsCancellationRequested)
+                            throw new OperationCanceledException("Đã hủy xuất video.");
                         break;
                     }
                     if (snapshot.Message.Contains("hủy", StringComparison.OrdinalIgnoreCase))
