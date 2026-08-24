@@ -31,6 +31,8 @@ validated Vietnamese master into processed Preview and its MediaPlayer activatio
 
 - Added `csharp/scripts/verify_editor_voice_preview_contract.py`.
 - Added the VOICE-12 contract to `csharp/scripts/verify.ps1`.
+- Updated the stale AUDIO contract marker to match the current `internal`
+  `BuildPreviewArguments` owner; production audio behavior is unchanged.
 - Regenerated `docs/migration/CSHARP_CODE_MAP.generated.md` so the checked-in map
   matches the already-landed VOICE-11 LocalTtsService method list.
 - No production Editor, Subtitle, TTS, audio graph or media-source behavior was changed.

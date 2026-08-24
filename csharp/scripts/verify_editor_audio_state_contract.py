@@ -234,7 +234,7 @@ require('if (mp4 || audio.SourceMode == "duck") arguments.AddRange(["-c:a", "aac
         and 'else arguments.AddRange(["-c:a", "copy"]);' in audio_arguments,
         "AUDIO-04 Keep must preserve source level while allowing container-compatible audio encoding")
 
-preview_arguments = video_editor.split("private static IReadOnlyList<string> BuildPreviewArguments", 1)[1].split(
+preview_arguments = video_editor.split("internal static IReadOnlyList<string> BuildPreviewArguments", 1)[1].split(
     "internal static IReadOnlyList<string> BuildAudioArguments", 1)[0]
 require("BuildAudioArgumentsCore(audio, mp4: true, resetTimestamps: true)" in preview_arguments,
         "AUDIO-04 processed Preview must use the same source-audio policy core as Export")
