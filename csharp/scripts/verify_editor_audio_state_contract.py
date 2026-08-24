@@ -118,4 +118,42 @@ require(editor_main.count("_playback.SetVolume(") == 0,
 require(playback.count("_playback.SetVolume(") == 1,
         "AUDIO-02 Preview volume must have one UI-to-owner write path")
 
-print("PASS: AUDIO-01 single monitor owner + AUDIO-02 Preview volume contract")
+# AUDIO-03 — Preview mute. The compact Player mute is monitor-only state:
+# the ToggleSwitch boolean maps directly to MediaPlayer.IsMuted, applies immediately,
+# preserves the selected Preview volume, survives player recreation, and never changes
+# project-owned source Keep/Duck/Mute render policy.
+preview_mute = named_xaml_control("PreviewMuteToggle")
+require(preview_mute.get("Toggled") == "PreviewMute_Toggled",
+        "AUDIO-03 Preview mute must keep exactly one reviewed Toggled handler")
+require(preview_mute.get("IsOn") in (None, "False", "false"),
+        "AUDIO-03 Preview mute must default to unmuted")
+require(playback.count("private void PreviewMute_Toggled(") == 1,
+        "AUDIO-03 Preview mute handler must have exactly one implementation")
+
+preview_mute_handler = playback.split("private void PreviewMute_Toggled(", 1)[1].split(
+    "private void PreviewVolume_ValueChanged(", 1)[0]
+require("_playback.SetMuted(sender is ToggleSwitch toggle && toggle.IsOn);" in preview_mute_handler,
+        "AUDIO-03 toggle state must map directly to the playback mute owner")
+for forbidden in (
+    "_audioSettings", "SourceAudioModeBox", "SourceAudioGainSlider", "QueueProjectSave",
+    "QueuePreviewRefresh", "NotifyEditorCompositeChanged", "SetVolume(",
+):
+    require(forbidden not in preview_mute_handler,
+            f"AUDIO-03 Preview mute handler must remain monitor-only; found {forbidden}")
+
+require("_monitorAudio.Muted = muted;" in muted_source,
+        "AUDIO-03 playback owner must store the selected Preview mute state")
+require("_player.IsMuted = _monitorAudio.Muted;" in muted_source,
+        "AUDIO-03 Preview mute must apply immediately to the current MediaPlayer")
+for forbidden in ("_monitorAudio.Volume", "_player.Volume", "_audioSettings"):
+    require(forbidden not in muted_source,
+            f"AUDIO-03 changing Preview mute must preserve volume/render state; found {forbidden}")
+
+require("IsMuted = _monitorAudio.Muted," in create_player,
+        "AUDIO-03 recreated MediaPlayer must retain the selected Preview mute state")
+require(editor_main.count("_playback.SetMuted(") == 0,
+        "AUDIO-03 project/source-audio code must never write monitor Preview mute")
+require(playback.count("_playback.SetMuted(") == 1,
+        "AUDIO-03 Preview mute must have one UI-to-owner write path")
+
+print("PASS: AUDIO-01 single monitor owner + AUDIO-02 Preview volume + AUDIO-03 Preview mute contract")
