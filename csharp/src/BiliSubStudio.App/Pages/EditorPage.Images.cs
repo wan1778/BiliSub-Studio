@@ -237,7 +237,7 @@ public sealed partial class EditorPage
         if (_imageDragStart is null || _imageDragOriginal is null || _imageOverlayCanvas is null || !e.GetCurrentPoint(_imageOverlayCanvas).Properties.IsLeftButtonPressed) return;
         if (!TryNormalize(e.GetCurrentPoint(_imageOverlayCanvas).Position, out var current)) return;
         var original = _imageDragOriginal;
-        var placement = ResizeOrMove(new EditorSubtitlePlacement(original.X, original.Y, original.Width, original.Height), _imageDragStart.Value, current, _imageDragKind);
+        var placement = ResizeImagePlacement(original, _imageDragStart.Value, current, _imageDragKind);
         _imageOverlays[_selectedImageIndex] = original with
         {
             X = placement.X,
@@ -312,6 +312,31 @@ public sealed partial class EditorPage
         if (nearLeft && withinY) return DragKind.West;
         if (nearRight && withinY) return DragKind.East;
         return DragKind.None;
+    }
+
+    private static EditorSubtitlePlacement ResizeImagePlacement(EditorImageOverlayState original, Point start, Point current, DragKind kind)
+    {
+        var dx = current.X - start.X;
+        var dy = current.Y - start.Y;
+        if (kind == DragKind.Move)
+        {
+            return new EditorSubtitlePlacement(
+                Math.Clamp(original.X + dx, 0, 1 - original.Width),
+                Math.Clamp(original.Y + dy, 0, 1 - original.Height),
+                original.Width,
+                original.Height);
+        }
+
+        const double minimum = .02;
+        var x1 = original.X;
+        var y1 = original.Y;
+        var x2 = original.X + original.Width;
+        var y2 = original.Y + original.Height;
+        if (kind is DragKind.West or DragKind.NorthWest or DragKind.SouthWest) x1 = Math.Clamp(x1 + dx, 0, x2 - minimum);
+        if (kind is DragKind.East or DragKind.NorthEast or DragKind.SouthEast) x2 = Math.Clamp(x2 + dx, x1 + minimum, 1);
+        if (kind is DragKind.North or DragKind.NorthEast or DragKind.NorthWest) y1 = Math.Clamp(y1 + dy, 0, y2 - minimum);
+        if (kind is DragKind.South or DragKind.SouthEast or DragKind.SouthWest) y2 = Math.Clamp(y2 + dy, y1 + minimum, 1);
+        return new EditorSubtitlePlacement(x1, y1, x2 - x1, y2 - y1);
     }
 
     private void RenderImageOverlays()
