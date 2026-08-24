@@ -33,6 +33,10 @@ internal static class EditorSubtitleManualContract
                 throw new InvalidOperationException("manual cue overrides were not applied");
             if (applied.Cues[0].Timing != source.Cues[0].Timing || applied.Cues[1] != source.Cues[1])
                 throw new InvalidOperationException("manual cue state changed untouched timeline/cues");
+            EditorSubtitleDocument.ValidateUnchangedTimeline(source.Cues, applied.Cues);
+            var renderedLatest = EditorSubtitleDocument.RenderVietnamese(applied.Cues);
+            if (!renderedLatest.Contains("Sư tôn đại nhân", StringComparison.Ordinal) || renderedLatest.Contains("Sư tôn\r\n", StringComparison.Ordinal))
+                throw new InvalidOperationException("latest manual Vietnamese edit was not used for SRT output");
             await store.SaveAsync(sha, new Dictionary<string, EditorManualCueState>(), CancellationToken.None);
             if ((await store.LoadAsync(sha, CancellationToken.None)).Count != 0)
                 throw new InvalidOperationException("empty manual cue state was not removed");

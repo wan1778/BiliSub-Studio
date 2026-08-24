@@ -1388,8 +1388,7 @@ public sealed partial class EditorPage : Page
         Overlay.Children.Add(rectangle);
 
         var cue = CurrentSubtitleCue();
-        var text = cue is null ? "Kéo để đặt vị trí phụ đề" :
-            string.IsNullOrWhiteSpace(cue.VietnameseText) ? cue.SourceText : cue.VietnameseText;
+        var text = cue is null ? "Kéo để đặt vị trí phụ đề" : SubtitlePreviewText(cue);
         var preview = new TextBlock
         {
             Text = text,
