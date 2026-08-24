@@ -104,6 +104,24 @@ public sealed class EditorProjectStore
         _directory = Path.Combine(paths.Data, "Projects");
     }
 
+    public static bool SourceFingerprintMatchesCurrent(
+        EditorSourceFingerprint? previous,
+        string inputPath,
+        int width,
+        int height,
+        double duration)
+    {
+        if (previous is null) return false;
+        try
+        {
+            return !SourceFingerprintChanged(previous, Fingerprint(inputPath, width, height, duration));
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     public async Task<EditorProject> LoadOrCreateAsync(
         string inputPath,
         int width,
@@ -131,6 +149,10 @@ public sealed class EditorProjectStore
                     throw new InvalidDataException("Project Editor không đúng phiên bản hoặc nguồn.");
                 if (SourceFingerprintChanged(loaded.Source, source))
                 {
+                    // PROJECT-05: the image sidecar shares the path-derived project ID,
+                    // so archive it before the project file or stale logos could attach
+                    // to a replacement video at the same path.
+                    ArchiveSourceChanged(ImageSidecarPath(id));
                     ArchiveSourceChanged(projectPath);
                     return CreateFreshProject(source, id, loaded.Name, loaded.FileName);
                 }
@@ -150,6 +172,7 @@ public sealed class EditorProjectStore
                 };
             }
             catch (OperationCanceledException) { throw; }
+            catch (SourceChangeArchiveException) { throw; }
             catch
             {
                 Quarantine(projectPath);
@@ -196,15 +219,29 @@ public sealed class EditorProjectStore
 
     private static void ArchiveSourceChanged(string path)
     {
-        var archive = path + ".source-changed-" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        if (!File.Exists(path)) return;
+        var archive = path + ".source-changed-" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + "-" + Guid.NewGuid().ToString("N");
+        Exception? last = null;
         try
         {
             File.Move(path, archive, overwrite: false);
             return;
         }
-        catch { }
-        try { File.Copy(path, archive, overwrite: false); }
-        catch { }
+        catch (Exception error)
+        {
+            last = error;
+        }
+        try
+        {
+            File.Copy(path, archive, overwrite: false);
+            File.Delete(path);
+            if (!File.Exists(path)) return;
+        }
+        catch (Exception error)
+        {
+            last = error;
+        }
+        throw new SourceChangeArchiveException("Không thể lưu trữ state Editor cũ sau khi video nguồn thay đổi.", last ?? new IOException("Không rõ lỗi lưu trữ source cũ."));
     }
 
     public async Task SaveAsync(EditorProject project, CancellationToken cancellationToken)
@@ -214,6 +251,8 @@ public sealed class EditorProjectStore
         var expectedId = ProjectId(Path.GetFullPath(project.Source.Path));
         if (!string.Equals(project.Id, expectedId, StringComparison.Ordinal)) throw new InvalidDataException("Project Editor không khớp video nguồn.");
         var normalizedSource = Fingerprint(project.Source.Path, project.Source.Width, project.Source.Height, project.Source.Duration);
+        if (SourceFingerprintChanged(project.Source, normalizedSource))
+            throw new InvalidDataException("Video nguồn đã thay đổi ngoài ứng dụng; hãy mở lại video trước khi tiếp tục lưu project.");
         var subtitle = NormalizeSubtitle(project.Subtitle);
         var normalized = project with
         {
@@ -477,6 +516,12 @@ public sealed class EditorProjectStore
     }
 
     private string ProjectPath(string id) => Path.Combine(_directory, id + ".json");
+    private string ImageSidecarPath(string id) => Path.Combine(_directory, id + ".images.json");
+
+    private sealed class SourceChangeArchiveException : IOException
+    {
+        public SourceChangeArchiveException(string message, Exception innerException) : base(message, innerException) { }
+    }
 
     private static void Quarantine(string path)
     {

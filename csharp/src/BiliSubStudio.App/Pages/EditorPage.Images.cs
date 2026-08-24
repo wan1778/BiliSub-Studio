@@ -505,6 +505,8 @@ public sealed partial class EditorPage
     private async Task SaveImageSidecarAsync()
     {
         if (_project is null || !string.Equals(_imageProjectId, _project.Id, StringComparison.Ordinal)) return;
+        // Never rewrite a source-specific sidecar after the underlying video was replaced.
+        if (!CurrentSourceFingerprintMatches()) return;
         var path = ImageSidecarPath(_project.Id);
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         if (_imageOverlays.Count == 0)
@@ -529,6 +531,43 @@ public sealed partial class EditorPage
 
     private string ImageSidecarPath(string projectId) => Path.Combine(_application.Paths.Data, "Projects", projectId + ".images.json");
 
+    private void ArchiveImageSidecarForSourceChange(string projectId)
+    {
+        var path = ImageSidecarPath(projectId);
+        if (File.Exists(path))
+        {
+            var archive = path + ".source-changed-" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + "-" + Guid.NewGuid().ToString("N");
+            Exception? last = null;
+            try
+            {
+                File.Move(path, archive, overwrite: false);
+            }
+            catch (Exception error)
+            {
+                last = error;
+                try
+                {
+                    File.Copy(path, archive, overwrite: false);
+                    File.Delete(path);
+                }
+                catch (Exception copyError)
+                {
+                    last = copyError;
+                }
+            }
+            if (File.Exists(path))
+                throw new IOException("Không thể lưu trữ ảnh/logo của video nguồn cũ.", last);
+        }
+
+        _imageProjectId = null;
+        _imageOverlays.Clear();
+        _imageBitmaps.Clear();
+        _selectedImageIndex = -1;
+        RenderImageList();
+        LoadSelectedImageIntoInputs();
+        RenderImageOverlays();
+    }
+
     private async Task RenderProjectAsync()
     {
         try { await EnsureImageProjectLoadedAsync(); }
@@ -543,6 +582,12 @@ public sealed partial class EditorPage
             return;
         }
         if (EditorBusy) return;
+        try { EnsureCurrentSourceFingerprint(); }
+        catch (Exception error)
+        {
+            StatusText.Text = error.Message;
+            return;
+        }
 
         var subtitle = CompletedSubtitleBurn();
         var hasBaseEdit = _document.Regions.Count > 0 || subtitle is not null || _audioSettings.SourceMode != "keep" || _voiceTrack is not null;

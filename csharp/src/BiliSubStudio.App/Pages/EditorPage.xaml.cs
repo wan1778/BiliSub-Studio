@@ -166,13 +166,10 @@ public sealed partial class EditorPage : Page
         if (string.IsNullOrWhiteSpace(pickedPath)) return;
 
         var candidatePath = EditorSourceSelection.NormalizeCandidatePath(pickedPath);
-        if (EditorSourceSelection.IsSameSource(_path, candidatePath))
-        {
-            StatusText.Text = "Video này đang được mở; giữ nguyên project và preview hiện tại.";
-            return;
-        }
+        var sameSourcePath = EditorSourceSelection.IsSameSource(_path, candidatePath);
 
-        // SOURCE-05: probe and load the candidate before mutating any current Editor state.
+        // SOURCE-05 / PROJECT-05: probe even when the path is unchanged. A file can
+        // be replaced outside the app while keeping the exact same path.
         MediaPreviewInfo candidateMedia;
         try
         {
@@ -183,6 +180,24 @@ public sealed partial class EditorPage : Page
             throw new InvalidDataException(
                 "File video không hợp lệ, đã hỏng hoặc codec không đọc được. Project hiện tại vẫn được giữ nguyên. " + error.Message,
                 error);
+        }
+
+        var currentSourceChanged = _project is not null && _path is not null && _media is not null
+            && !EditorProjectStore.SourceFingerprintMatchesCurrent(
+                _project.Source, _path, _media.Width, _media.Height, _media.Duration);
+        if (sameSourcePath && !currentSourceChanged)
+        {
+            StatusText.Text = "Video này đang được mở và fingerprint không đổi; giữ nguyên project và preview hiện tại.";
+            return;
+        }
+
+        if (currentSourceChanged)
+        {
+            // Do not let a pending stale snapshot race the replacement-source load.
+            StopProjectSaveTimer();
+            _pendingProjectSave = null;
+            await WaitForProjectSaveIdleAsync();
+            ArchiveImageSidecarForSourceChange(_project!.Id);
         }
 
         EditorProject candidateProject;
@@ -200,8 +215,10 @@ public sealed partial class EditorPage : Page
         var pendingSubtitle = _project is null ? _subtitleSource : null;
         var pendingPlacement = _subtitlePlacement;
 
-        // SOURCE-04: one explicit old-state save, then one explicit preview disposal.
-        await SaveCurrentSourceStateForSwitchAsync();
+        // A replaced source invalidates the open state. Saving it now would stamp
+        // old regions/subtitle/voice onto the new file, so only save an unchanged source.
+        if (!currentSourceChanged)
+            await SaveCurrentSourceStateForSwitchAsync();
         await DisposePreviewForSourceChangeAsync();
 
         _path = candidatePath;
@@ -243,11 +260,13 @@ public sealed partial class EditorPage : Page
         RenderImageList();
         RenderImageOverlays();
         await UpdateFrameAsync();
-        StatusText.Text = _document.Regions.Count > 0
-            ? $"Đã mở lại project với {_document.Regions.Count} vùng."
-            : _subtitleSource is not null
-                ? $"Đã mở lại SRT {_subtitleSource.Cues.Count} câu; khung phụ đề có thể kéo/resize trực tiếp."
-                : "Chọn SRT tiếng Trung để bắt đầu Vietsub, hoặc kéo frame để tạo vùng hiệu ứng.";
+        StatusText.Text = currentSourceChanged
+            ? "Video nguồn đã thay đổi ngoài ứng dụng; project cũ đã được lưu trữ và state dẫn xuất đã reset cho file mới."
+            : _document.Regions.Count > 0
+                ? $"Đã mở lại project với {_document.Regions.Count} vùng."
+                : _subtitleSource is not null
+                    ? $"Đã mở lại SRT {_subtitleSource.Cues.Count} câu; khung phụ đề có thể kéo/resize trực tiếp."
+                    : "Chọn SRT tiếng Trung để bắt đầu Vietsub, hoặc kéo frame để tạo vùng hiệu ứng.";
         RefreshEditorActions();
         QueueProjectSave();
     }
@@ -271,6 +290,23 @@ public sealed partial class EditorPage : Page
         }
         ++_previewRevision;
         await _playback.DisposeForSourceChangeAsync();
+    }
+
+    private async Task WaitForProjectSaveIdleAsync()
+    {
+        await _projectSaveGate.WaitAsync();
+        _projectSaveGate.Release();
+    }
+
+    private bool CurrentSourceFingerprintMatches() =>
+        _project is not null && _path is not null && _media is not null
+        && EditorProjectStore.SourceFingerprintMatchesCurrent(
+            _project.Source, _path, _media.Width, _media.Height, _media.Duration);
+
+    private void EnsureCurrentSourceFingerprint()
+    {
+        if (!CurrentSourceFingerprintMatches())
+            throw new InvalidDataException("Video nguồn đã thay đổi ngoài ứng dụng; hãy mở lại chính video này để reset project trước khi Preview/Export.");
     }
 
     private async void Refresh_Click(object sender, RoutedEventArgs e)
@@ -1189,6 +1225,7 @@ public sealed partial class EditorPage : Page
     {
         var path = _path ?? throw new InvalidOperationException("Chưa chọn video.");
         var media = _media ?? throw new InvalidOperationException("Chưa đọc được video.");
+        EnsureCurrentSourceFingerprint();
         return new VideoEditRequest(
             path,
             _application.Config.OutputDirectory,
