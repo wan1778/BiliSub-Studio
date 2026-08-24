@@ -862,11 +862,10 @@ public sealed partial class EditorPage : Page
     private void RegionCoordinates_ValueChanged(NumberBox sender, NumberBoxValueChangedEventArgs args)
     {
         if (!IsLoaded || _syncingInputs) return;
-        ApplyInputsToDocument();
-        NotifyEditorCompositeChanged();
+        if (ApplyInputsToDocument()) NotifyEditorCompositeChanged();
     }
 
-    private void ApplyInputsToDocument()
+    private bool ApplyInputsToDocument()
     {
         var region = ReadRegionFromInputs(_document.Selected?.Id ?? string.Empty);
         if (region is null)
@@ -874,35 +873,40 @@ public sealed partial class EditorPage : Page
             _draftRegion = null;
             RegionValidationText.Text = _media is null
                 ? "Chọn video rồi kéo để tạo vùng."
-                : "Vùng phải lớn hơn 0, nằm trong video và có thời gian hợp lệ.";
+                : "X/Y/W/H phải nằm trong video; W và H phải đạt ít nhất 2 pixel nguồn.";
             RefreshEditorActions();
-            return;
+            return false;
         }
         try
         {
             ValidateRegion(region);
             if (_document.Selected is not null)
             {
+                if (region == _document.Selected) return false;
                 _document.ReplaceSelected(region);
                 _draftRegion = null;
                 RegionValidationText.Text = "Đã cập nhật vùng đang chọn.";
                 RenderDocument();
                 QueueProjectSave();
                 QueuePreviewRefresh();
+                RefreshEditorActions();
+                return true;
             }
-            else
-            {
-                _draftRegion = region;
-                RegionValidationText.Text = "Tọa độ hợp lệ; bấm Thêm để lưu vùng.";
-                RenderOverlays();
-            }
+
+            if (_draftRegion == region) return false;
+            _draftRegion = region;
+            RegionValidationText.Text = "Tọa độ hợp lệ; bấm Thêm để lưu vùng.";
+            RenderOverlays();
+            RefreshEditorActions();
+            return true;
         }
         catch (Exception error)
         {
             _draftRegion = null;
             RegionValidationText.Text = error.Message;
+            RefreshEditorActions();
+            return false;
         }
-        RefreshEditorActions();
     }
 
     private void AddRegion_Click(object sender, RoutedEventArgs e)
@@ -1628,13 +1632,14 @@ public sealed partial class EditorPage : Page
     private EditRegion? ReadRegionFromInputs(string id)
     {
         if (_media is null) return null;
-        var x = RegionXBox.Value / 100;
-        var y = RegionYBox.Value / 100;
-        var width = RegionWidthBox.Value / 100;
-        var height = RegionHeightBox.Value / 100;
-        if (!double.IsFinite(x) || !double.IsFinite(y) || !double.IsFinite(width) || !double.IsFinite(height) ||
-            x < 0 || y < 0 || width <= 0 || height <= 0 || x + width > 1.0001 || y + height > 1.0001) return null;
-        return RegionWithCurrentSettings(x, y, width, height, id);
+        return EditorRegionGeometry.FromPercentInputs(
+            RegionWithCurrentSettings(0, 0, 0, 0, id),
+            RegionXBox.Value,
+            RegionYBox.Value,
+            RegionWidthBox.Value,
+            RegionHeightBox.Value,
+            _media.Width,
+            _media.Height);
     }
 
     private void ValidateRegion(EditRegion region)

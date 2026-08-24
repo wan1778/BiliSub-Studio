@@ -458,6 +458,15 @@ require("EditorRegionGeometry.ResizeBy(" in blur_move_source
         and all(f"EditorRegionResizeHandle.{direction}" in editor_main for direction in resize_directions)
         and "editor region resize keeps all eight handles pixel-valid" in contract_tests_source,
         "BLUR-05 resize must route all eight handles through tested source-pixel geometry")
+blur_numeric_handler_source = editor_main.split("private void RegionCoordinates_ValueChanged(", 1)[1].split("private bool ApplyInputsToDocument(", 1)[0] if "private bool ApplyInputsToDocument(" in editor_main else ""
+blur_numeric_read_source = editor_main.split("private EditRegion? ReadRegionFromInputs(", 1)[1].split("private void ValidateRegion(", 1)[0]
+require("if (ApplyInputsToDocument()) NotifyEditorCompositeChanged();" in blur_numeric_handler_source
+        and "EditorRegionGeometry.FromPercentInputs(" in blur_numeric_read_source
+        and "private bool ApplyInputsToDocument()" in editor_main
+        and "if (region == _document.Selected) return false;" in editor_main
+        and "public static EditRegion? FromPercentInputs(" in region_geometry_source
+        and "editor numeric X Y W H inputs require source-pixel-valid geometry" in contract_tests_source,
+        "BLUR-06 numeric geometry must use source-pixel validation and suppress invalid or no-op refresh")
 require("SubtitleCueList" in editor and "SubtitleRetranslateCueButton" in editor and "SubtitleSaveSrtButton" in editor,
         "Editor static subtitle cue editor controls missing")
 require("ForceFresh = false" in read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalSubtitleTranslationService.cs")

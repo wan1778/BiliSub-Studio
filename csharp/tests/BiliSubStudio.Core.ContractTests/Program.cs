@@ -57,6 +57,7 @@ internal static class Program
         ("editor region selection picks the topmost hit and synchronizes document state", EditorRegionSelectionContractAsync),
         ("editor region move clamps bounds and cancellation leaves no history", EditorRegionMoveContractAsync),
         ("editor region resize keeps all eight handles pixel-valid", EditorRegionResizeContractAsync),
+        ("editor numeric X Y W H inputs require source-pixel-valid geometry", EditorRegionNumericInputsContractAsync),
         ("editor project persists, isolates source drift and quarantines corrupt state", EditorProjectContractAsync),
         ("editor SRT keeps exact blocks order and timecodes", EditorSubtitleDocumentContractAsync),
         ("editor manual cue state persists locks and preserves timeline", EditorSubtitleManualContract.RunAsync),
@@ -1051,6 +1052,43 @@ internal static class Program
         var oppositeBounds = EditorRegionGeometry.ResizeBy(original, -2, -2, EditorRegionResizeHandle.NorthWest, 640, 360);
         True(oppositeBounds.X >= 0 && oppositeBounds.Y >= 0, "resize escaped the top-left source bounds");
         Equal(original, EditorRegionGeometry.ResizeBy(original, double.NaN, 0, EditorRegionResizeHandle.East, 640, 360));
+        return Task.CompletedTask;
+    }
+
+    private static Task EditorRegionNumericInputsContractAsync()
+    {
+        var settings = new EditRegion(0, 0, 0, 0, "mosaic", 12, false, 2, 8, "numeric");
+        var region = EditorRegionGeometry.FromPercentInputs(settings, 20, 10, 60, 70, 1000, 500)
+            ?? throw new InvalidOperationException("valid numeric geometry was rejected");
+        True(Math.Abs(region.X - .2) < .000_001 && Math.Abs(region.Y - .1) < .000_001
+            && Math.Abs(region.Width - .6) < .000_001 && Math.Abs(region.Height - .7) < .000_001,
+            "numeric percentages were not normalized");
+        Equal(settings.Effect, region.Effect);
+        Equal(settings.Strength, region.Strength);
+        Equal(settings.WholeVideo, region.WholeVideo);
+        Equal(settings.Start, region.Start);
+        Equal(settings.End, region.End);
+        Equal(settings.Id, region.Id);
+        _ = VideoEditorService.BuildFilter(new VideoEditRequest("input.mp4", ".", "output.mp4", 1000, 500, 10, [region]));
+
+        var edge = EditorRegionGeometry.FromPercentInputs(settings, 99, 98, 1, 2, 1000, 500);
+        True(edge is not null, "numeric geometry ending at the source edge was rejected");
+        True(EditorRegionGeometry.FromPercentInputs(settings, double.NaN, 0, 10, 10, 640, 360) is null,
+            "non-finite numeric geometry was accepted");
+        True(EditorRegionGeometry.FromPercentInputs(settings, -1, 0, 10, 10, 640, 360) is null,
+            "negative numeric geometry was accepted");
+        True(EditorRegionGeometry.FromPercentInputs(settings, 0, 0, 0, 10, 640, 360) is null,
+            "zero-width numeric geometry was accepted");
+        True(EditorRegionGeometry.FromPercentInputs(settings, 95, 0, 6, 10, 640, 360) is null,
+            "numeric geometry outside the right source bound was accepted");
+        True(EditorRegionGeometry.FromPercentInputs(settings, 0, 95, 10, 6, 640, 360) is null,
+            "numeric geometry outside the bottom source bound was accepted");
+        True(EditorRegionGeometry.FromPercentInputs(settings, 0, 0, .3, 10, 640, 360) is null,
+            "sub-two-pixel numeric width was accepted");
+        True(EditorRegionGeometry.FromPercentInputs(settings, 0, 0, 10, .5, 640, 360) is null,
+            "sub-two-pixel numeric height was accepted");
+        True(EditorRegionGeometry.FromPercentInputs(settings, 0, 0, .32, .56, 640, 360) is not null,
+            "source-pixel-valid numeric minimum was rejected");
         return Task.CompletedTask;
     }
 

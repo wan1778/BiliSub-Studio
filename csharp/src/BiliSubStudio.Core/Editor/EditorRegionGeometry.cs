@@ -14,6 +14,30 @@ public enum EditorRegionResizeHandle
 
 public static class EditorRegionGeometry
 {
+    public static EditRegion? FromPercentInputs(
+        EditRegion settings,
+        double xPercent,
+        double yPercent,
+        double widthPercent,
+        double heightPercent,
+        int sourceWidth,
+        int sourceHeight)
+    {
+        if (sourceWidth <= 0 || sourceHeight <= 0
+            || !double.IsFinite(xPercent) || !double.IsFinite(yPercent)
+            || !double.IsFinite(widthPercent) || !double.IsFinite(heightPercent))
+            return null;
+
+        var region = settings with
+        {
+            X = xPercent / 100,
+            Y = yPercent / 100,
+            Width = widthPercent / 100,
+            Height = heightPercent / 100,
+        };
+        return IsPixelValid(region, sourceWidth, sourceHeight) ? region : null;
+    }
+
     public static EditRegion? FromNormalizedDrag(
         EditRegion settings,
         double startX,
