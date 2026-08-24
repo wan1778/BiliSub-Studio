@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using BiliSubStudio.Core.Application;
 using BiliSubStudio.Core.Authentication;
@@ -41,7 +42,7 @@ internal static class Program
         ("subtitle VTT and SRT normalize before export", SubtitleTimedTextContractAsync),
         ("editor filter graph preserves normalized regions", EditorFilterContractAsync),
         ("editor audio modes map to exact FFmpeg policy", EditorAudioContractAsync),
-        ("editor processed preview slices the exact render graph and audio policy", EditorProcessedPreviewContractAsync),
+        ("editor processed preview accepts arbitrary internal windows and preserves render graph and audio policy", EditorProcessedPreviewContractAsync),
         ("Whisper word timing maps pauses and karaoke ASS", EditorSpeechTimingKaraokeContractAsync),
         ("local NghiTTS manifest and rhythm grouping stay pinned", LocalTtsContractAsync),
         ("voice track mixes identically for keep duck mute", EditorVoiceMixContractAsync),
@@ -570,10 +571,12 @@ internal static class Program
             ],
             subtitle,
             new EditorAudioSettings("duck", .35));
-        var sliced = (VideoEditRequest)sliceMethod.Invoke(null, [request, 100d, 12d, 1280, 720])!;
+        const double previewStart = 100;
+        const double previewDuration = 9.5;
+        var sliced = (VideoEditRequest)sliceMethod.Invoke(null, [request, previewStart, previewDuration, 1280, 720])!;
         Equal(1280, sliced.SourceWidth);
         Equal(720, sliced.SourceHeight);
-        Equal(12d, sliced.Duration);
+        Equal(previewDuration, sliced.Duration);
         Equal(1, sliced.Regions.Count);
         Equal(0d, sliced.Regions[0].Start);
         Equal(5d, sliced.Regions[0].End);
@@ -589,8 +592,10 @@ internal static class Program
         var graph = VideoEditorService.BuildFilter(sliced, "C:\\Temp\\preview.ass");
         True(graph.Contains("enable='between(t,0.000,5.000)'", StringComparison.Ordinal), "preview effect time was not shifted to proxy time");
         var ffmpeg = string.Join(' ', (IReadOnlyList<string>)argumentsMethod.Invoke(null,
-            ["input.mp4", "preview.mp4", graph, sliced.Audio, 100d, 12d, null])!);
-        True(ffmpeg.Contains("-ss 100.000 -i input.mp4 -t 12.000", StringComparison.Ordinal), "preview source window drift");
+            ["input.mp4", "preview.mp4", graph, sliced.Audio, previewStart, previewDuration, null])!);
+        var expectedWindow = $"-ss {previewStart.ToString("0.000", CultureInfo.InvariantCulture)} -i input.mp4 " +
+            $"-t {previewDuration.ToString("0.000", CultureInfo.InvariantCulture)}";
+        True(ffmpeg.Contains(expectedWindow, StringComparison.Ordinal), "preview source window drift");
         True(ffmpeg.Contains("-filter_complex", StringComparison.Ordinal) && ffmpeg.Contains("-map [vout]", StringComparison.Ordinal), "preview bypassed render graph");
         True(ffmpeg.Contains("-preset ultrafast", StringComparison.Ordinal) && ffmpeg.Contains("-pix_fmt yuv420p", StringComparison.Ordinal), "preview proxy is not native-player compatible");
         True(ffmpeg.Contains("-af asetpts=PTS-STARTPTS,volume=0.350", StringComparison.Ordinal), "preview bypassed timestamp reset/source-audio duck policy");
