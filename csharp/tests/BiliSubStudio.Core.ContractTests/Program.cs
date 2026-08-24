@@ -69,6 +69,7 @@ internal static class Program
         ("editor timed range validates numeric and current-position Preview Export state", EditorTimedRangeContractAsync),
         ("editor project persists, isolates source drift and quarantines corrupt state", EditorProjectContractAsync),
         ("editor project reopen preserves exact region order geometry identity and source bytes", EditorRegionProjectReopenContractAsync),
+        ("editor Preview and Export preserve exact normalized region geometry within one pixel", EditorRegionPreviewExportGeometryContractAsync),
         ("editor SRT keeps exact blocks order and timecodes", EditorSubtitleDocumentContractAsync),
         ("editor manual cue state persists locks and preserves timeline", EditorSubtitleManualContract.RunAsync),
         ("editor source selection keeps cancel/same-source transitions safe", EditorSourceSelectionContract.RunAsync),
@@ -1613,6 +1614,91 @@ internal static class Program
             True(sourceBytes.SequenceEqual(sourceAfterSecondSave),
                 "repeated region project reopen/save changed source media bytes");
         });
+    }
+
+    private static Task EditorRegionPreviewExportGeometryContractAsync()
+    {
+        var sliceMethod = typeof(VideoEditorService).GetMethod(
+            "BuildPreviewSlice", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing processed-preview slice geometry owner");
+        var pixelsMethod = typeof(VideoEditorService).GetMethod(
+            "RegionPixels", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing shared Preview Export pixel geometry owner");
+        EditRegion[] regions =
+        [
+            new(.1234, .2345, .4567, .3456, "blur", 18, true, 0, 60, "geometry-blur"),
+            new(.3333, .1111, .4444, .5555, "mosaic", 12, true, 0, 60, "geometry-mosaic"),
+            new(.9375, .85, .0625, .15, "cover", EditorCoverEffect.StoredStrength, true, 0, 60, "geometry-cover"),
+        ];
+        var dimensions = new[]
+        {
+            (SourceWidth: 3840, SourceHeight: 2160, PreviewWidth: 1280, PreviewHeight: 720),
+            (SourceWidth: 4096, SourceHeight: 2160, PreviewWidth: 1280, PreviewHeight: 676),
+        };
+
+        foreach (var size in dimensions)
+        {
+            var exportRequest = new VideoEditRequest(
+                "input.mp4", ".", "output.mp4", size.SourceWidth, size.SourceHeight, 60, regions);
+            var previewRequest = (VideoEditRequest)sliceMethod.Invoke(null,
+                [exportRequest, 24d, 12d, size.PreviewWidth, size.PreviewHeight])!;
+            Equal(regions.Length, previewRequest.Regions.Count);
+            var exportGraph = VideoEditorService.BuildFilter(exportRequest);
+            var previewGraph = VideoEditorService.BuildFilter(previewRequest);
+
+            for (var index = 0; index < regions.Length; index++)
+            {
+                var region = regions[index];
+                var previewRegion = previewRequest.Regions[index];
+                Equal(region.X, previewRegion.X);
+                Equal(region.Y, previewRegion.Y);
+                Equal(region.Width, previewRegion.Width);
+                Equal(region.Height, previewRegion.Height);
+                Equal(region.Effect, previewRegion.Effect);
+                Equal(region.Id, previewRegion.Id);
+
+                var sourcePixels = ((int X, int Y, int Width, int Height))pixelsMethod.Invoke(
+                    null, [region, size.SourceWidth, size.SourceHeight])!;
+                var previewPixels = ((int X, int Y, int Width, int Height))pixelsMethod.Invoke(
+                    null, [previewRegion, size.PreviewWidth, size.PreviewHeight])!;
+                AssertProjectedBoundary(sourcePixels.X, size.SourceWidth, previewPixels.X, size.PreviewWidth, "left");
+                AssertProjectedBoundary(sourcePixels.Y, size.SourceHeight, previewPixels.Y, size.PreviewHeight, "top");
+                AssertProjectedBoundary(sourcePixels.X + sourcePixels.Width, size.SourceWidth,
+                    previewPixels.X + previewPixels.Width, size.PreviewWidth, "right");
+                AssertProjectedBoundary(sourcePixels.Y + sourcePixels.Height, size.SourceHeight,
+                    previewPixels.Y + previewPixels.Height, size.PreviewHeight, "bottom");
+
+                AssertGraphGeometry(exportGraph, region.Effect, sourcePixels);
+                AssertGraphGeometry(previewGraph, region.Effect, previewPixels);
+            }
+        }
+        return Task.CompletedTask;
+
+        static void AssertProjectedBoundary(int source, int sourceSize, int preview, int previewSize, string edge)
+        {
+            var projected = source * previewSize / (double)sourceSize;
+            True(Math.Abs(preview - projected) < 1,
+                $"processed Preview {edge} edge diverged from scaled Export geometry by one pixel or more");
+        }
+
+        static void AssertGraphGeometry(
+            string graph,
+            string effect,
+            (int X, int Y, int Width, int Height) pixels)
+        {
+            var rectangle = $"{pixels.Width}:{pixels.Height}:{pixels.X}:{pixels.Y}";
+            if (effect == "cover")
+            {
+                True(graph.Contains(
+                    $"drawbox=x={pixels.X}:y={pixels.Y}:w={pixels.Width}:h={pixels.Height}",
+                    StringComparison.Ordinal), "Cover graph bypassed shared pixel geometry");
+                return;
+            }
+            True(graph.Contains("crop=" + rectangle, StringComparison.Ordinal),
+                $"{effect} crop bypassed shared pixel geometry");
+            True(graph.Contains($"overlay={pixels.X}:{pixels.Y}", StringComparison.Ordinal),
+                $"{effect} overlay bypassed shared pixel geometry");
+        }
     }
 
     private static Task EditorSubtitleDocumentContractAsync()

@@ -664,6 +664,15 @@ require("candidateProject = await _application.LoadEditorProjectAsync(candidateP
         and "Regions = NormalizeRegions(project.Regions, normalizedSource.Duration, normalizeStored: false)," in region_document_source
         and "editor project reopen preserves exact region order geometry identity and source bytes" in contract_tests_source,
         "BLUR-16 project reopen must hydrate the exact persisted region document and prove stable non-destructive roundtrip")
+require("BuildFilterCore(sliced, subtitleAss, \"previewbase\", requireEdit: false)" in video_editor_source
+        and "var graph = BuildFilter(request, subtitleAss);" in video_editor_source
+        and "var graph = BuildFilter(new VideoEditRequest(input, \".\", \"preview.mp4\", sourceWidth, sourceHeight, duration, active));" in video_editor_source
+        and video_editor_source.count("RegionPixels(region, request.SourceWidth, request.SourceHeight)") == 1
+        and "_page.CurrentEditRequest(_page.PreviewSubtitleBurn())" in editor_partials
+        and "_application.StartEditor(CurrentEditRequest(subtitle))" in editor_partials
+        and "Regions = _document.Regions.ToArray()," in editor_main
+        and "editor Preview and Export preserve exact normalized region geometry within one pixel" in contract_tests_source,
+        "BLUR-17 Preview frame playback and Export must share one tested normalized region geometry owner")
 require("SubtitleCueList" in editor and "SubtitleRetranslateCueButton" in editor and "SubtitleSaveSrtButton" in editor,
         "Editor static subtitle cue editor controls missing")
 require("ForceFresh = false" in read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalSubtitleTranslationService.cs")
