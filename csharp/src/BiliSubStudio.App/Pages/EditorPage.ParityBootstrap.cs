@@ -11,24 +11,57 @@ public sealed partial class EditorPage
     private string? _observedImageProgressJobId;
     private double _imageStageProgressFloor;
     private double _imageStageDisplayProgress;
+    private readonly SemaphoreSlim _editorTabLifecycleGate = new(1, 1);
 
     // Compatibility objects only. They are never attached to the visual tree.
     private readonly Button RefreshFrameButton = new();
     private readonly Canvas RegionTimelineCanvas = new();
 
-    private void EditorPage_Loaded(object sender, RoutedEventArgs e)
+    private async void EditorPage_Loaded(object sender, RoutedEventArgs e)
     {
-        if (!_editorCoreInitialized)
+        await _editorTabLifecycleGate.WaitAsync();
+        try
         {
-            BindStaticUiShell();
-            _editorCoreInitialized = true;
-        }
+            if (!IsLoaded) return;
+            if (!_editorCoreInitialized)
+            {
+                BindStaticUiShell();
+                _editorCoreInitialized = true;
+            }
 
-        EnsureEditorExportProgressTimer();
-        RefreshEditorActions();
-        RefreshImageControls();
-        RefreshEditorParityControls();
-        SyncShellPlayerControls();
+            EnsureEditorExportProgressTimer();
+            if (_path is not null && _media is not null && !_playback.IsReady)
+            {
+                try
+                {
+                    await _playback.PrepareAsync();
+                    if (!IsLoaded)
+                    {
+                        await _playback.UnloadAsync();
+                        return;
+                    }
+                    await UpdateFrameAsync();
+                    RenderOverlays();
+                    RenderImageOverlays();
+                }
+                catch (OperationCanceledException)
+                {
+                    if (IsLoaded) StatusText.Text = "Đã dừng khôi phục preview khi mở lại tab Chỉnh video.";
+                }
+                catch (Exception error)
+                {
+                    if (IsLoaded) StatusText.Text = "Không khôi phục được preview khi mở lại tab: " + error.Message;
+                }
+            }
+            RefreshEditorActions();
+            RefreshImageControls();
+            RefreshEditorParityControls();
+            SyncShellPlayerControls();
+        }
+        finally
+        {
+            _editorTabLifecycleGate.Release();
+        }
     }
 
     void BindStaticUiShell()

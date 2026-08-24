@@ -123,20 +123,28 @@ public sealed partial class EditorPage : Page
 
     private async void EditorPage_Unloaded(object sender, RoutedEventArgs e)
     {
-        _previewCancellation?.Cancel();
-        _previewCancellation?.Dispose();
-        _previewCancellation = null;
-        StopProjectSaveTimer();
+        await _editorTabLifecycleGate.WaitAsync();
         try
         {
-            CleanupEditorParity();
-            await _playback.UnloadAsync();
-            try { await SaveImageSidecarAsync(); } catch { }
-            await SaveProjectNowAsync();
+            _previewCancellation?.Cancel();
+            _previewCancellation?.Dispose();
+            _previewCancellation = null;
+            StopProjectSaveTimer();
+            try
+            {
+                CleanupEditorParity();
+                await _playback.UnloadAsync();
+                try { await SaveImageSidecarAsync(); } catch { }
+                await SaveProjectNowAsync();
+            }
+            finally
+            {
+                CleanupProjectAutosave();
+            }
         }
         finally
         {
-            CleanupProjectAutosave();
+            _editorTabLifecycleGate.Release();
         }
     }
 
