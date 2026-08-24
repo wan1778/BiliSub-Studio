@@ -134,7 +134,7 @@
                             <StackPanel x:Name="SubtitleInspectorPanel" Spacing="10">
                                 <TextBlock FontSize="14" FontWeight="SemiBold" Text="Subtitle / Vietsub" />
                                 <TextBlock Style="{StaticResource MutedTextStyle}" Text="SRT Trung → Việt bằng AI local + skill. Timecode và thứ tự block được giữ nguyên." TextWrapping="Wrap" />
-                                <Button x:Name="ImportSrtButton" Click="ImportSrt_Click" Content="Chọn SRT tiếng Trung" />
+                                <Button x:Name="ImportSrtButton" Click="ImportSubtitle_Click" Content="Chọn SRT tiếng Trung" />
                                 <TextBlock x:Name="AsrStatusText" Style="{StaticResource MutedTextStyle}" Text="Whisper timing chưa chạy." TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
                                 <TextBlock x:Name="SrtSummaryText" Style="{StaticResource MutedTextStyle}" Text="Skill: Dịch Trung Tu Tiên." TextWrapping="Wrap" />
                                 <Grid ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>

@@ -855,6 +855,19 @@ internal static class Program
         var sourceRendered = EditorSubtitleDocument.RenderSource(cues);
         True(sourceRendered.Contains("你是谁？", StringComparison.Ordinal), "ASR/source SRT renderer lost Chinese text");
         Equal(2, EditorSubtitleDocument.Parse(sourceRendered).Count);
+        foreach (var invalid in new[]
+        {
+            string.Empty,
+            "1\nnot-a-timecode\n你好\n",
+            "1\n00:00:02,000 --> 00:00:01,000\n你好\n",
+            "1\n00:00:01,000 --> 00:00:02,000\n\n",
+        })
+        {
+            var rejected = false;
+            try { _ = EditorSubtitleDocument.Parse(invalid); }
+            catch (InvalidDataException) { rejected = true; }
+            True(rejected, "invalid Editor SRT was accepted");
+        }
         return Task.CompletedTask;
     }
 
