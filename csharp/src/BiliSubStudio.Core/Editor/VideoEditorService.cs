@@ -724,6 +724,18 @@ public sealed class VideoEditorService
         request.Regions.Count > 0 || request.Subtitle is not null || request.VoiceTrack is not null
         || EditorProjectStore.NormalizeAudio(request.Audio).SourceMode != "keep";
 
+    public static double? NextPreviewStart(double sourceStart, double segmentDuration, double sourceDuration)
+    {
+        if (!double.IsFinite(sourceDuration) || sourceDuration <= 0)
+            throw new ArgumentOutOfRangeException(nameof(sourceDuration));
+        if (!double.IsFinite(sourceStart) || sourceStart < 0 || sourceStart > sourceDuration)
+            throw new ArgumentOutOfRangeException(nameof(sourceStart));
+        if (!double.IsFinite(segmentDuration) || segmentDuration <= 0)
+            throw new ArgumentOutOfRangeException(nameof(segmentDuration));
+        var sourceEnd = Math.Min(sourceDuration, sourceStart + segmentDuration);
+        return sourceEnd >= sourceDuration - .05 ? null : sourceEnd;
+    }
+
     private static (double Start, double Duration) PreviewWindow(double sourceDuration, double requestedStart)
     {
         const double targetDuration = 12;

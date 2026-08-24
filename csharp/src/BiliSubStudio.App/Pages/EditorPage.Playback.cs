@@ -311,17 +311,18 @@ public sealed partial class EditorPage
             _page.DispatcherQueue.TryEnqueue(async () =>
             {
                 if (!IsPreviewMode || _page._media is null) return;
-                var nextStart = _sourceStart + _sourceDuration;
+                var nextStart = VideoEditorService.NextPreviewStart(
+                    _sourceStart, _sourceDuration, _page._media.Duration);
                 try
                 {
-                    if (nextStart >= _page._media.Duration - .05)
+                    if (nextStart is null)
                     {
                         await SetModeAsync(enabled: false, play: false);
                         _page.Timeline.Value = _page.Timeline.Maximum;
                         _page.StatusText.Text = "Đã xem hết bản chỉnh.";
                         return;
                     }
-                    await LoadSegmentAsync(nextStart, play: true);
+                    await LoadSegmentAsync(nextStart.Value, play: true);
                 }
                 catch (OperationCanceledException) { }
                 catch (Exception error) { _page.StatusText.Text = "Không tiếp tục được preview: " + error.Message; }

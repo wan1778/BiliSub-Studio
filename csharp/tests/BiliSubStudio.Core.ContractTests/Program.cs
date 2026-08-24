@@ -43,6 +43,7 @@ internal static class Program
         ("editor filter graph preserves normalized regions", EditorFilterContractAsync),
         ("editor audio modes map to exact FFmpeg policy", EditorAudioContractAsync),
         ("editor processed preview accepts arbitrary internal windows and preserves render graph and audio policy", EditorProcessedPreviewContractAsync),
+        ("editor processed preview advances every segment to the full source end", EditorFullVideoPlaybackContractAsync),
         ("editor rapid preview requests serialize cleanup and run only the latest request", EditorRapidPreviewRequestContractAsync),
         ("Whisper word timing maps pauses and karaoke ASS", EditorSpeechTimingKaraokeContractAsync),
         ("local NghiTTS manifest and rhythm grouping stay pinned", LocalTtsContractAsync),
@@ -611,6 +612,42 @@ internal static class Program
         True(ffmpeg.Contains("-preset ultrafast", StringComparison.Ordinal) && ffmpeg.Contains("-pix_fmt yuv420p", StringComparison.Ordinal), "preview proxy is not native-player compatible");
         True(ffmpeg.Contains("-af asetpts=PTS-STARTPTS,volume=0.350", StringComparison.Ordinal), "preview bypassed timestamp reset/source-audio duck policy");
         True(ffmpeg.Contains("-movflags +faststart", StringComparison.Ordinal), "preview MP4 faststart contract missing");
+        return Task.CompletedTask;
+    }
+
+    private static Task EditorFullVideoPlaybackContractAsync()
+    {
+        var windowMethod = typeof(VideoEditorService).GetMethod("PreviewWindow", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing editor processed-preview window policy");
+        var durations = new[] { .04, 1, 11.9, 12, 12.1, 24, 24.5, 25, 299, 300, 3_600 };
+        foreach (var sourceDuration in durations)
+        {
+            var requestedStart = 0d;
+            var windows = 0;
+            while (true)
+            {
+                if (++windows > 1_000)
+                    throw new InvalidOperationException($"preview segment sequence did not terminate for {sourceDuration}s source");
+                var window = ((double Start, double Duration))windowMethod.Invoke(
+                    null, [sourceDuration, requestedStart])!;
+                var windowEnd = window.Start + window.Duration;
+                True(requestedStart >= window.Start - .000_001 && requestedStart <= windowEnd + .000_001,
+                    $"preview window skipped requested source time {requestedStart:0.###} for {sourceDuration:0.###}s source");
+                var nextStart = VideoEditorService.NextPreviewStart(
+                    window.Start, window.Duration, sourceDuration);
+                if (nextStart is null)
+                {
+                    True(windowEnd >= sourceDuration - .05,
+                        $"preview stopped at {windowEnd:0.###}s before full source end {sourceDuration:0.###}s");
+                    break;
+                }
+                True(nextStart.Value > requestedStart,
+                    $"preview did not advance beyond {requestedStart:0.###}s for {sourceDuration:0.###}s source");
+                requestedStart = nextStart.Value;
+            }
+            if (sourceDuration > 12.05)
+                True(windows > 1, $"long source {sourceDuration:0.###}s stopped after its first internal segment");
+        }
         return Task.CompletedTask;
     }
 

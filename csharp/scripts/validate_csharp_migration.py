@@ -328,6 +328,11 @@ require("EditorPreviewRequestCoordinator" in playback_source
         and "cancellation.Dispose();" in preview_request_source
         and "completion.TrySetResult(true);" in preview_request_source,
         "PREVIEW-09 rapid Seek must use one latest-request owner that serializes cancellation cleanup")
+contract_tests_source = read(CSHARP / "tests/BiliSubStudio.Core.ContractTests/Program.cs")
+require("VideoEditorService.NextPreviewStart(" in playback_source
+        and "await LoadSegmentAsync(nextStart.Value, play: true);" in playback_source
+        and "EditorFullVideoPlaybackContractAsync" in contract_tests_source,
+        "PREVIEW-10 MediaEnded must follow tested segment boundaries until the full source end")
 require("SubtitleCueList" in editor and "SubtitleRetranslateCueButton" in editor and "SubtitleSaveSrtButton" in editor,
         "Editor static subtitle cue editor controls missing")
 require("ForceFresh = false" in read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalSubtitleTranslationService.cs")
