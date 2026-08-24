@@ -333,6 +333,17 @@ require("VideoEditorService.NextPreviewStart(" in playback_source
         and "await LoadSegmentAsync(nextStart.Value, play: true);" in playback_source
         and "EditorFullVideoPlaybackContractAsync" in contract_tests_source,
         "PREVIEW-10 MediaEnded must follow tested segment boundaries until the full source end")
+replay_load_source = playback_source.split("private async Task LoadSegmentCoreAsync(", 1)[1].split("private static double PositionInSegment", 1)[0]
+require("internal bool HasEnded { get; private set; }" in playback_source
+        and playback_source.count("internal bool HasEnded { get; private set; }") == 1
+        and "if (HasEnded) await ReplayFromStartAsync();" in toggle_playback
+        and "private Task ReplayFromStartAsync() => PlayFromStartAsync();" in playback_source
+        and "_page.DispatcherQueue.TryEnqueue(() => _ = ContinueAfterSegmentAsync());" in playback_source
+        and "private async Task CompletePlaybackAsync()" in playback_source
+        and "await CompletePlaybackAsync();" in playback_source
+        and "HasEnded = true;" in playback_source
+        and "HasEnded = false;" in replay_load_source,
+        "PREVIEW-11 replay must use an explicit controller-owned ended state and restart from source zero")
 require("SubtitleCueList" in editor and "SubtitleRetranslateCueButton" in editor and "SubtitleSaveSrtButton" in editor,
         "Editor static subtitle cue editor controls missing")
 require("ForceFresh = false" in read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalSubtitleTranslationService.cs")

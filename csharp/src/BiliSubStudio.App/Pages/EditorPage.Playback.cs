@@ -42,6 +42,7 @@ public sealed partial class EditorPage
         internal EditorPlaybackController(EditorPage page) => _page = page;
 
         internal bool IsPreviewMode { get; private set; }
+        internal bool HasEnded { get; private set; }
         internal bool IsRendering => _previewRequests.IsActive;
         internal bool IsReady => _player is not null;
         internal bool IsPlaying => IsPreviewMode &&
@@ -55,6 +56,7 @@ public sealed partial class EditorPage
             var stalePreview = _previewPath;
             _previewPath = null;
             IsPreviewMode = false;
+            HasEnded = false;
             _sourceStart = 0;
             _sourceDuration = 0;
             ApplyPresentation(processed: false);
@@ -76,7 +78,8 @@ public sealed partial class EditorPage
 
         internal async Task ToggleAsync()
         {
-            if (IsPreviewMode && _player is not null)
+            if (HasEnded) await ReplayFromStartAsync();
+            else if (IsPreviewMode && _player is not null)
             {
                 if (IsPlaying) PauseAtCurrentFrame();
                 else ResumeFromCurrentFrame();
@@ -93,6 +96,8 @@ public sealed partial class EditorPage
         private void ResumeFromCurrentFrame() => _player?.Play();
 
         private Task PlayFromStartAsync() => LoadSegmentAsync(0, play: true);
+
+        private Task ReplayFromStartAsync() => PlayFromStartAsync();
 
         internal async Task EnterFullscreenAsync()
         {
@@ -125,6 +130,7 @@ public sealed partial class EditorPage
 
             await _previewRequests.CancelAsync();
             if (!IsPreviewMode && !IsRendering) return;
+            HasEnded = false;
             var sourcePosition = IsPreviewMode
                 ? _sourceStart + Math.Clamp(_player?.PlaybackSession.Position.TotalSeconds ?? 0, 0, _sourceDuration)
                 : _page.Timeline.Value;
@@ -180,6 +186,7 @@ public sealed partial class EditorPage
             DisposePlayer();
             _page.PreviewPlayer.IsFullWindow = false;
             IsPreviewMode = false;
+            HasEnded = false;
             _sourceStart = 0;
             _sourceDuration = 0;
             ApplyPresentation(processed: false);
@@ -230,6 +237,7 @@ public sealed partial class EditorPage
                 _previewPath = segment.Path;
                 _sourceStart = segment.SourceStart;
                 _sourceDuration = segment.Duration;
+                HasEnded = false;
                 IsPreviewMode = true;
                 ApplyPresentation(processed: true);
                 _page._syncingTimeline = true;
@@ -308,25 +316,37 @@ public sealed partial class EditorPage
 
         private void PlayerMediaEnded(MediaPlayer sender, object args)
         {
-            _page.DispatcherQueue.TryEnqueue(async () =>
+            _page.DispatcherQueue.TryEnqueue(() => _ = ContinueAfterSegmentAsync());
+        }
+
+        private async Task ContinueAfterSegmentAsync()
+        {
+            try
             {
                 if (!IsPreviewMode || _page._media is null) return;
                 var nextStart = VideoEditorService.NextPreviewStart(
                     _sourceStart, _sourceDuration, _page._media.Duration);
-                try
+                if (nextStart is null)
                 {
-                    if (nextStart is null)
-                    {
-                        await SetModeAsync(enabled: false, play: false);
-                        _page.Timeline.Value = _page.Timeline.Maximum;
-                        _page.StatusText.Text = "Đã xem hết bản chỉnh.";
-                        return;
-                    }
-                    await LoadSegmentAsync(nextStart.Value, play: true);
+                    await CompletePlaybackAsync();
+                    return;
                 }
-                catch (OperationCanceledException) { }
-                catch (Exception error) { _page.StatusText.Text = "Không tiếp tục được preview: " + error.Message; }
-            });
+                await LoadSegmentAsync(nextStart.Value, play: true);
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception error) { _page.StatusText.Text = "Không tiếp tục được preview: " + error.Message; }
+        }
+
+        private async Task CompletePlaybackAsync()
+        {
+            await SetModeAsync(enabled: false, play: false);
+            HasEnded = true;
+            _page._syncingTimeline = true;
+            try { _page.Timeline.Value = _page.Timeline.Maximum; }
+            finally { _page._syncingTimeline = false; }
+            _page.UpdateClock();
+            _page.StatusText.Text = "Đã xem hết bản chỉnh. Bấm Play để phát lại từ đầu.";
+            _page.SyncShellPlayerControls();
         }
 
         private void PlayerMediaFailed(MediaPlayer sender, MediaPlayerFailedEventArgs args)
