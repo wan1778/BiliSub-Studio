@@ -134,7 +134,7 @@ public sealed class EditorProjectStore
                     ArchiveSourceChanged(projectPath);
                     return CreateFreshProject(source, id, loaded.Name, loaded.FileName);
                 }
-                var regions = NormalizeRegions(loaded.Regions);
+                var regions = NormalizeRegions(loaded.Regions, source.Duration);
                 return loaded with
                 {
                     Schema = CurrentSchema,
@@ -212,11 +212,12 @@ public sealed class EditorProjectStore
         if (project.Schema != CurrentSchema) throw new InvalidDataException("Không thể lưu project Editor khác phiên bản.");
         var expectedId = ProjectId(Path.GetFullPath(project.Source.Path));
         if (!string.Equals(project.Id, expectedId, StringComparison.Ordinal)) throw new InvalidDataException("Project Editor không khớp video nguồn.");
+        var normalizedSource = Fingerprint(project.Source.Path, project.Source.Width, project.Source.Height, project.Source.Duration);
         var normalized = project with
         {
-            Source = Fingerprint(project.Source.Path, project.Source.Width, project.Source.Height, project.Source.Duration),
+            Source = normalizedSource,
             FileName = string.IsNullOrWhiteSpace(project.FileName) ? project.Name + "_edited.mp4" : project.FileName.Trim(),
-            Regions = NormalizeRegions(project.Regions),
+            Regions = NormalizeRegions(project.Regions, normalizedSource.Duration),
             Subtitle = NormalizeSubtitle(project.Subtitle),
             Audio = NormalizeAudio(project.Audio),
             Asr = NormalizeAsr(project.Asr),
@@ -264,7 +265,7 @@ public sealed class EditorProjectStore
         return new EditorSourceFingerprint(path, info.Length, info.LastWriteTimeUtc.Ticks, width, height, Math.Max(0, duration));
     }
 
-    private static IReadOnlyList<EditRegion> NormalizeRegions(IReadOnlyList<EditRegion>? source)
+    private static IReadOnlyList<EditRegion> NormalizeRegions(IReadOnlyList<EditRegion>? source, double duration)
     {
         if (source is null) return [];
         if (source.Count > 32) throw new InvalidDataException("Project Editor vượt quá 32 vùng.");
@@ -287,7 +288,7 @@ public sealed class EditorProjectStore
                 do { identity = Guid.NewGuid().ToString("N"); }
                 while (!identities.Add(identity));
             }
-            normalized.Add(region with
+            var normalizedRegion = region with
             {
                 Id = identity,
                 Effect = effect,
@@ -297,7 +298,8 @@ public sealed class EditorProjectStore
                     "mosaic" => EditorMosaicStrength.NormalizeStored(region.Strength),
                     _ => EditorCoverEffect.NormalizeStored(region.Strength),
                 },
-            });
+            };
+            normalized.Add(EditorRegionTimeScope.NormalizeWholeVideo(normalizedRegion, duration));
         }
         return normalized;
     }

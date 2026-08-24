@@ -61,6 +61,7 @@ internal static class Program
         ("editor blur strength validates input and shares Preview Export radius", EditorBlurStrengthContractAsync),
         ("editor Mosaic strength drives pixelated Preview Export dimensions", EditorMosaicStrengthContractAsync),
         ("editor Cover is opaque strength-free and preserves Preview Export geometry", EditorCoverEffectContractAsync),
+        ("editor whole-video scope canonicalizes state and spans Preview Export", EditorWholeVideoScopeContractAsync),
         ("editor project persists, isolates source drift and quarantines corrupt state", EditorProjectContractAsync),
         ("editor SRT keeps exact blocks order and timecodes", EditorSubtitleDocumentContractAsync),
         ("editor manual cue state persists locks and preserves timeline", EditorSubtitleManualContract.RunAsync),
@@ -1183,7 +1184,7 @@ internal static class Program
             "NormalizeRegions", BindingFlags.Static | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("missing Cover persistence normalization policy");
         var normalized = (IReadOnlyList<EditRegion>)normalizeMethod.Invoke(null,
-            [new[] { new EditRegion(.1, .2, .3, .25, "cover", 37, true, 0, 10, "cover-persisted") }])!;
+            [new[] { new EditRegion(.1, .2, .3, .25, "cover", 37, true, 0, 10, "cover-persisted") }, 10d])!;
         Equal(EditorCoverEffect.StoredStrength, normalized[0].Strength);
 
         var region = new EditRegion(.1, .2, .3, .25, "cover", EditorCoverEffect.StoredStrength, true, 0, 10, "cover");
@@ -1200,6 +1201,35 @@ internal static class Program
         var previewGraph = VideoEditorService.BuildFilter(preview);
         True(previewGraph.Contains("drawbox=x=128:y=144:w=384:h=180:color=black@1:t=fill", StringComparison.Ordinal),
             "processed Preview changed Cover opacity or normalized geometry from Export");
+        return Task.CompletedTask;
+    }
+
+    private static Task EditorWholeVideoScopeContractAsync()
+    {
+        var stale = new EditRegion(.1, .2, .3, .25, "cover", EditorCoverEffect.StoredStrength, true, 37, 42, "whole");
+        var whole = EditorRegionTimeScope.NormalizeWholeVideo(stale, 120);
+        Equal(0d, whole.Start);
+        Equal(120d, whole.End);
+        True(VideoEditorService.IsActiveAt(whole, 0) && VideoEditorService.IsActiveAt(whole, 120),
+            "whole-video region was not active across the source duration");
+
+        var exportRequest = new VideoEditRequest("input.mp4", ".", "output.mp4", 1920, 1080, 120, [whole]);
+        var exportGraph = VideoEditorService.BuildFilter(exportRequest);
+        True(!exportGraph.Contains("enable='between", StringComparison.Ordinal),
+            "whole-video Export unexpectedly retained a timed enable guard");
+
+        var sliceMethod = typeof(VideoEditorService).GetMethod(
+            "BuildPreviewSlice", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing whole-video processed-preview slice policy");
+        var preview = (VideoEditRequest)sliceMethod.Invoke(null, [exportRequest, 80d, 9.5d, 1280, 720])!;
+        Equal(1, preview.Regions.Count);
+        Equal(0d, preview.Regions[0].Start);
+        Equal(9.5d, preview.Regions[0].End);
+        True(!VideoEditorService.BuildFilter(preview).Contains("enable='between", StringComparison.Ordinal),
+            "whole-video processed Preview unexpectedly retained a timed enable guard");
+
+        var timed = stale with { WholeVideo = false, Start = 37, End = 42 };
+        Equal(timed, EditorRegionTimeScope.NormalizeWholeVideo(timed, 120));
         return Task.CompletedTask;
     }
 
@@ -1238,7 +1268,7 @@ internal static class Program
             var ttsManifest = Path.Combine(root, "tts-result.json");
             await File.WriteAllTextAsync(ttsManifest, "{\"schema\":1}");
             var ttsManifestSha = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(await File.ReadAllBytesAsync(ttsManifest)));
-            var mosaicRegion = new EditRegion(.55, .15, .2, .2, "mosaic", 99, true, 0, 120, "stable-mosaic");
+            var mosaicRegion = new EditRegion(.55, .15, .2, .2, "mosaic", 99, true, 55, 56, "stable-mosaic");
             await store.SaveAsync(created with
             {
                 FileName = "episode-edited.mp4",
@@ -1262,6 +1292,8 @@ internal static class Program
             Equal(EditorBlurStrength.Maximum, reopened.Regions[0].Strength);
             Equal("stable-mosaic", reopened.Regions[1].Id);
             Equal(EditorMosaicStrength.Maximum, reopened.Regions[1].Strength);
+            Equal(0d, reopened.Regions[1].Start);
+            Equal(120d, reopened.Regions[1].End);
             Equal("Xin chào", reopened.Subtitle!.Cues[0].VietnameseText);
             Equal(.72, reopened.Subtitle.Placement.Y);
             Equal("duck", reopened.Audio!.SourceMode);

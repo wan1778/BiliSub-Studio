@@ -517,6 +517,19 @@ require('Tag="cover" Content="Che đen"' in editor
         and "color=black@1:t=fill" in video_editor_source
         and "editor Cover is opaque strength-free and preserves Preview Export geometry" in contract_tests_source,
         "BLUR-09 Cover must be opaque, strength-free and share normalized Preview Export geometry")
+region_time_scope_path = CSHARP / "src/BiliSubStudio.Core/Editor/EditorRegionTimeScope.cs"
+region_time_scope_source = read(region_time_scope_path) if region_time_scope_path.is_file() else ""
+whole_toggle_source = editor_main.split("private void WholeToggle_Toggled(", 1)[1].split("private void EffectBox_SelectionChanged(", 1)[0] if "private void WholeToggle_Toggled(" in editor_main else ""
+require('x:Name="WholeToggle"' in editor
+        and 'Toggled="WholeToggle_Toggled"' in editor
+        and "if (ApplyInputsToDocument()) NotifyEditorCompositeChanged();" in whole_toggle_source
+        and "EditorRegionTimeScope.NormalizeWholeVideo(" in editor_main
+        and "EditorRegionTimeScope.NormalizeWholeVideo(" in region_document_source
+        and "EditorRegionTimeScope.NormalizeWholeVideo(" in video_editor_source
+        and "public static class EditorRegionTimeScope" in region_time_scope_source
+        and "if (region.WholeVideo) return string.Empty;" in video_editor_source
+        and "editor whole-video scope canonicalizes state and spans Preview Export" in contract_tests_source,
+        "BLUR-10 Whole video must have one canonical time-scope owner across UI persistence Preview and Export")
 require("SubtitleCueList" in editor and "SubtitleRetranslateCueButton" in editor and "SubtitleSaveSrtButton" in editor,
         "Editor static subtitle cue editor controls missing")
 require("ForceFresh = false" in read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalSubtitleTranslationService.cs")

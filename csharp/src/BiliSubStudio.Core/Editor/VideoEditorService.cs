@@ -361,7 +361,7 @@ public sealed class VideoEditorService
         var regions = request.Regions
             .Where(region => region.WholeVideo || region.End > sourceStart && region.Start < sourceEnd)
             .Select(region => region.WholeVideo
-                ? region with { Start = 0, End = segmentDuration }
+                ? EditorRegionTimeScope.NormalizeWholeVideo(region, segmentDuration)
                 : region with
                 {
                     Start = Math.Max(0, region.Start - sourceStart),
@@ -491,12 +491,8 @@ public sealed class VideoEditorService
         var input = Path.GetFullPath(inputPath.Trim());
         if (!File.Exists(input) || new FileInfo(input).Length <= 0) throw new FileNotFoundException("Video nguồn không hợp lệ.", input);
         var ffmpeg = await _tools.EnsureFfmpegAsync(cancellationToken);
-        var active = regions.Where(region => IsActiveAt(region, seconds)).Select(region => region with
-        {
-            WholeVideo = true,
-            Start = 0,
-            End = Math.Max(0, duration),
-        }).ToArray();
+        var active = regions.Where(region => IsActiveAt(region, seconds)).Select(region =>
+            EditorRegionTimeScope.NormalizeWholeVideo(region with { WholeVideo = true }, Math.Max(0, duration))).ToArray();
         var args = new List<string>
         {
             "-hide_banner", "-loglevel", "error", "-nostdin",

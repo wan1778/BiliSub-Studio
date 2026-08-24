@@ -841,8 +841,7 @@ public sealed partial class EditorPage : Page
             }
             finally { _syncingInputs = false; }
         }
-        ApplyInputsToDocument();
-        NotifyEditorCompositeChanged();
+        if (ApplyInputsToDocument()) NotifyEditorCompositeChanged();
     }
 
     private void EffectBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -1684,9 +1683,10 @@ public sealed partial class EditorPage : Page
     private EditRegion RegionWithCurrentSettings(double x, double y, double width, double height, string id)
     {
         var duration = _media?.Duration ?? 0;
-        var start = WholeToggle.IsOn || double.IsNaN(StartBox.Value) ? 0 : StartBox.Value;
-        var end = WholeToggle.IsOn || double.IsNaN(EndBox.Value) ? duration : EndBox.Value;
-        return new EditRegion(x, y, width, height, SelectedEffect(), CurrentEffectStrength(), WholeToggle.IsOn, start, end, id);
+        var start = double.IsNaN(StartBox.Value) ? 0 : StartBox.Value;
+        var end = double.IsNaN(EndBox.Value) ? duration : EndBox.Value;
+        var region = new EditRegion(x, y, width, height, SelectedEffect(), CurrentEffectStrength(), WholeToggle.IsOn, start, end, id);
+        return EditorRegionTimeScope.NormalizeWholeVideo(region, duration);
     }
 
     private int CurrentEffectStrength()
