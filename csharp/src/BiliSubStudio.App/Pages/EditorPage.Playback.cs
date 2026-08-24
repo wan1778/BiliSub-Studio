@@ -158,11 +158,17 @@ public sealed partial class EditorPage
             if (!IsPreviewMode || _page._media is null) return;
             try
             {
-                if (IsPlaying) await LoadSegmentAsync(sourcePosition, play: true);
+                if (IsPlaying) await SeekPlayingAsync(sourcePosition);
                 else await SeekPausedAsync(sourcePosition);
             }
             catch (OperationCanceledException) { }
             catch (Exception error) { _page.StatusText.Text = "Không seek được preview: " + error.Message; }
+        }
+
+        private async Task SeekPlayingAsync(double sourcePosition)
+        {
+            PauseAtCurrentFrame();
+            await LoadSegmentAsync(sourcePosition, play: true);
         }
 
         private Task SeekPausedAsync(double sourcePosition) => LoadSegmentAsync(sourcePosition, play: false);

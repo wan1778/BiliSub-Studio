@@ -307,6 +307,14 @@ require("else await SeekPausedAsync(sourcePosition);" in seek_playback
         and "var lastFrame = Math.Max(0, segment.Duration - .05);" in playback_source
         and "return Math.Clamp(requestedStart - segment.SourceStart, 0, lastFrame);" in playback_source,
         "PREVIEW-07 paused Seek must show the requested source frame inside the cache segment and remain paused")
+require("if (IsPlaying) await SeekPlayingAsync(sourcePosition);" in seek_playback
+        and "private async Task SeekPlayingAsync(double sourcePosition)" in playback_source,
+        "PREVIEW-08 playing Seek must use an explicit pause-render-resume operation")
+seek_playing = playback_source.split("private async Task SeekPlayingAsync(double sourcePosition)", 1)[1].split("private Task SeekPausedAsync", 1)[0]
+require("PauseAtCurrentFrame();" in seek_playing
+        and "await LoadSegmentAsync(sourcePosition, play: true);" in seek_playing
+        and seek_playing.index("PauseAtCurrentFrame();") < seek_playing.index("await LoadSegmentAsync(sourcePosition, play: true);"),
+        "PREVIEW-08 playing Seek must stop the old position before rendering and resume at the target")
 require("SubtitleCueList" in editor and "SubtitleRetranslateCueButton" in editor and "SubtitleSaveSrtButton" in editor,
         "Editor static subtitle cue editor controls missing")
 require("ForceFresh = false" in read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalSubtitleTranslationService.cs")
