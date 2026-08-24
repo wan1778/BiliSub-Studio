@@ -4,7 +4,8 @@
 - Current local branch: `main`
 - Local base before this task: `ed94f7a911ff0f11ac537e41d51c713ee143b537`
 - Current local commit: the commit containing this handoff; resolve it with `git rev-parse HEAD`
-- Pull request: none; local Preview/Blur task commits are not pushed or merged
+- Remote continuation branch: `origin/editor-preview-blur-01-17`
+- Pull request: none; the continuation branch is pushed but not merged into `main`
 - Last completed before this task: `BLUR-16 — Reopen project giữ region`
 - Task completed in this handoff: `BLUR-17 — Preview và Export geometry giống nhau`
 - Task result: `PASS`
