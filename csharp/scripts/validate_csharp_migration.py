@@ -290,6 +290,11 @@ require("await PlayFromStartAsync();" in toggle_playback
         and "_page.Timeline.Value" not in toggle_playback
         and "private Task PlayFromStartAsync() => LoadSegmentAsync(0, play: true);" in playback_source,
         "PREVIEW-04 initial Play must request source time zero instead of the edit/seek position")
+require("if (IsPlaying) PauseAtCurrentFrame();" in toggle_playback
+        and "private void PauseAtCurrentFrame() => _player?.Pause();" in playback_source
+        and "SetModeAsync(enabled: false" not in toggle_playback
+        and "ApplyPresentation(processed: false)" not in toggle_playback,
+        "PREVIEW-05 Pause must hold the current MediaPlayer frame without leaving processed preview")
 require("SubtitleCueList" in editor and "SubtitleRetranslateCueButton" in editor and "SubtitleSaveSrtButton" in editor,
         "Editor static subtitle cue editor controls missing")
 require("ForceFresh = false" in read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalSubtitleTranslationService.cs")

@@ -81,7 +81,7 @@ public sealed partial class EditorPage
         {
             if (IsPreviewMode && _player is not null)
             {
-                if (IsPlaying) _player.Pause();
+                if (IsPlaying) PauseAtCurrentFrame();
                 else _player.Play();
             }
             else
@@ -90,6 +90,8 @@ public sealed partial class EditorPage
             }
             _page.SyncShellPlayerControls();
         }
+
+        private void PauseAtCurrentFrame() => _player?.Pause();
 
         private Task PlayFromStartAsync() => LoadSegmentAsync(0, play: true);
 
