@@ -33,8 +33,8 @@ public sealed partial class EditorPage
     private sealed class EditorPlaybackController
     {
         private readonly EditorPage _page;
+        private readonly EditorPreviewRequestCoordinator _previewRequests = new();
         private MediaPlayer? _player;
-        private CancellationTokenSource? _renderCancellation;
         private string? _previewPath;
         private double _sourceStart;
         private double _sourceDuration;
@@ -42,22 +42,19 @@ public sealed partial class EditorPage
         internal EditorPlaybackController(EditorPage page) => _page = page;
 
         internal bool IsPreviewMode { get; private set; }
-        internal bool IsRendering { get; private set; }
+        internal bool IsRendering => _previewRequests.IsActive;
         internal bool IsReady => _player is not null;
         internal bool IsPlaying => IsPreviewMode &&
             _player?.PlaybackSession.PlaybackState == MediaPlaybackState.Playing;
 
         internal async Task PrepareAsync()
         {
-            _renderCancellation?.Cancel();
-            _renderCancellation?.Dispose();
-            _renderCancellation = null;
+            await _previewRequests.CancelAsync();
             DisposePlayer();
 
             var stalePreview = _previewPath;
             _previewPath = null;
             IsPreviewMode = false;
-            IsRendering = false;
             _sourceStart = 0;
             _sourceDuration = 0;
             ApplyPresentation(processed: false);
@@ -126,7 +123,7 @@ public sealed partial class EditorPage
                 return;
             }
 
-            _renderCancellation?.Cancel();
+            await _previewRequests.CancelAsync();
             if (!IsPreviewMode && !IsRendering) return;
             var sourcePosition = IsPreviewMode
                 ? _sourceStart + Math.Clamp(_player?.PlaybackSession.Position.TotalSeconds ?? 0, 0, _sourceDuration)
@@ -179,13 +176,10 @@ public sealed partial class EditorPage
 
         private async Task ResetAsync()
         {
-            _renderCancellation?.Cancel();
-            _renderCancellation?.Dispose();
-            _renderCancellation = null;
+            await _previewRequests.CancelAsync();
             DisposePlayer();
             _page.PreviewPlayer.IsFullWindow = false;
             IsPreviewMode = false;
-            IsRendering = false;
             _sourceStart = 0;
             _sourceDuration = 0;
             ApplyPresentation(processed: false);
@@ -197,15 +191,27 @@ public sealed partial class EditorPage
 
         private async Task LoadSegmentAsync(double requestedStart, bool play)
         {
+            try
+            {
+                await _previewRequests.RunLatestAsync(
+                    cancellationToken => LoadSegmentCoreAsync(requestedStart, play, cancellationToken));
+            }
+            finally
+            {
+                _page.RefreshEditorActions();
+                _page.SyncShellPlayerControls();
+            }
+        }
+
+        private async Task LoadSegmentCoreAsync(
+            double requestedStart,
+            bool play,
+            CancellationToken cancellationToken)
+        {
             var player = _player ?? throw new InvalidOperationException("Chưa chọn video để xem bản chỉnh.");
             if (_page._path is null || _page._media is null)
                 throw new InvalidOperationException("Chưa chọn video để xem bản chỉnh.");
             _page._previewCancellation?.Cancel();
-            _renderCancellation?.Cancel();
-            _renderCancellation?.Dispose();
-            var cancellation = new CancellationTokenSource();
-            _renderCancellation = cancellation;
-            IsRendering = true;
             var previousPath = _previewPath;
             EditorPreviewSegment? segment = null;
             try
@@ -213,10 +219,10 @@ public sealed partial class EditorPage
                 _page.RefreshEditorActions();
                 _page.StatusText.Text = "Đang chuẩn bị bản xem trước tại vị trí hiện tại...";
                 segment = await _page._application.CreateEditorPreviewSegmentAsync(
-                    _page.CurrentEditRequest(_page.PreviewSubtitleBurn()), requestedStart, cancellation.Token);
-                cancellation.Token.ThrowIfCancellationRequested();
+                    _page.CurrentEditRequest(_page.PreviewSubtitleBurn()), requestedStart, cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
                 var file = await StorageFile.GetFileFromPathAsync(segment.Path);
-                cancellation.Token.ThrowIfCancellationRequested();
+                cancellationToken.ThrowIfCancellationRequested();
                 var segmentPosition = PositionInSegment(segment, requestedStart);
                 var sourcePosition = segment.SourceStart + segmentPosition;
                 player.Pause();
@@ -251,16 +257,8 @@ public sealed partial class EditorPage
             }
             finally
             {
-                if (ReferenceEquals(_renderCancellation, cancellation))
-                {
-                    _renderCancellation = null;
-                    IsRendering = false;
-                }
-                cancellation.Dispose();
                 if (segment is not null)
                     await _page._application.DeleteEditorPreviewSegmentAsync(segment.Path);
-                _page.RefreshEditorActions();
-                _page.SyncShellPlayerControls();
             }
         }
 

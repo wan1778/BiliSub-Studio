@@ -275,13 +275,14 @@ for legacy_owner in (
 ):
     require(legacy_owner not in editor_main, f"PREVIEW-03 legacy page playback owner returned: {legacy_owner}")
 for owned_state in (
-    "private MediaPlayer? _player;", "private CancellationTokenSource? _renderCancellation;",
-    "internal bool IsPreviewMode { get; private set; }", "internal bool IsRendering { get; private set; }",
+    "private MediaPlayer? _player;", "private readonly EditorPreviewRequestCoordinator _previewRequests = new();",
+    "internal bool IsPreviewMode { get; private set; }", "internal bool IsRendering => _previewRequests.IsActive;",
     "private string? _previewPath;", "private void PlayerMediaEnded(", "private void PlayerMediaFailed(",
 ):
     require(owned_state in playback_source, f"PREVIEW-03 playback controller ownership missing: {owned_state}")
 require(editor_partials.count("private MediaPlayer? _player;") == 1
-        and editor_partials.count("private CancellationTokenSource? _renderCancellation;") == 1
+        and editor_partials.count("private readonly EditorPreviewRequestCoordinator _previewRequests = new();") == 1
+        and "private CancellationTokenSource? _renderCancellation;" not in editor_partials
         and editor_partials.count("internal bool IsPreviewMode { get; private set; }") == 1,
         "PREVIEW-03 playback state must have exactly one owner")
 toggle_playback = playback_source.split("internal async Task ToggleAsync()", 1)[1].split("internal async Task EnterFullscreenAsync()", 1)[0]
@@ -315,6 +316,18 @@ require("PauseAtCurrentFrame();" in seek_playing
         and "await LoadSegmentAsync(sourcePosition, play: true);" in seek_playing
         and seek_playing.index("PauseAtCurrentFrame();") < seek_playing.index("await LoadSegmentAsync(sourcePosition, play: true);"),
         "PREVIEW-08 playing Seek must stop the old position before rendering and resume at the target")
+preview_request_source = read(CSHARP / "src/BiliSubStudio.Core/Editor/EditorPreviewRequestCoordinator.cs")
+require("EditorPreviewRequestCoordinator" in playback_source
+        and "_previewRequests.RunLatestAsync" in playback_source
+        and "await _previewRequests.CancelAsync();" in playback_source
+        and "private CancellationTokenSource? _renderCancellation;" not in playback_source
+        and "await previousCompletion;" in preview_request_source
+        and preview_request_source.index("await previousCompletion;")
+            < preview_request_source.index("await operation(cancellation.Token);")
+        and "RequestCancellation(previousCancellation);" in preview_request_source
+        and "cancellation.Dispose();" in preview_request_source
+        and "completion.TrySetResult(true);" in preview_request_source,
+        "PREVIEW-09 rapid Seek must use one latest-request owner that serializes cancellation cleanup")
 require("SubtitleCueList" in editor and "SubtitleRetranslateCueButton" in editor and "SubtitleSaveSrtButton" in editor,
         "Editor static subtitle cue editor controls missing")
 require("ForceFresh = false" in read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalSubtitleTranslationService.cs")

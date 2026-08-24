@@ -43,6 +43,7 @@ internal static class Program
         ("editor filter graph preserves normalized regions", EditorFilterContractAsync),
         ("editor audio modes map to exact FFmpeg policy", EditorAudioContractAsync),
         ("editor processed preview accepts arbitrary internal windows and preserves render graph and audio policy", EditorProcessedPreviewContractAsync),
+        ("editor rapid preview requests serialize cleanup and run only the latest request", EditorRapidPreviewRequestContractAsync),
         ("Whisper word timing maps pauses and karaoke ASS", EditorSpeechTimingKaraokeContractAsync),
         ("local NghiTTS manifest and rhythm grouping stay pinned", LocalTtsContractAsync),
         ("voice track mixes identically for keep duck mute", EditorVoiceMixContractAsync),
@@ -611,6 +612,76 @@ internal static class Program
         True(ffmpeg.Contains("-af asetpts=PTS-STARTPTS,volume=0.350", StringComparison.Ordinal), "preview bypassed timestamp reset/source-audio duck policy");
         True(ffmpeg.Contains("-movflags +faststart", StringComparison.Ordinal), "preview MP4 faststart contract missing");
         return Task.CompletedTask;
+    }
+
+    private static async Task EditorRapidPreviewRequestContractAsync()
+    {
+        var coordinator = new EditorPreviewRequestCoordinator();
+        var firstStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var firstCleanupStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirstCleanup = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var activeOperations = 0;
+        var secondRan = false;
+        var thirdRan = false;
+
+        var first = coordinator.RunLatestAsync(async cancellationToken =>
+        {
+            Equal(1, Interlocked.Increment(ref activeOperations));
+            firstStarted.TrySetResult(true);
+            try { await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken); }
+            finally
+            {
+                firstCleanupStarted.TrySetResult(true);
+                await releaseFirstCleanup.Task;
+                Interlocked.Decrement(ref activeOperations);
+            }
+        });
+        await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        var second = coordinator.RunLatestAsync(cancellationToken =>
+        {
+            secondRan = true;
+            return Task.CompletedTask;
+        });
+        var third = coordinator.RunLatestAsync(async cancellationToken =>
+        {
+            Equal(1, Interlocked.Increment(ref activeOperations));
+            try
+            {
+                thirdRan = true;
+                await Task.Yield();
+            }
+            finally { Interlocked.Decrement(ref activeOperations); }
+        });
+
+        await firstCleanupStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        True(coordinator.IsActive, "latest preview request stopped owning the queue during prior FFmpeg cleanup");
+        releaseFirstCleanup.TrySetResult(true);
+        await ThrowsAsync<OperationCanceledException>(() => first);
+        await ThrowsAsync<OperationCanceledException>(() => second);
+        await third.WaitAsync(TimeSpan.FromSeconds(2));
+        True(!secondRan, "superseded queued preview request still started its render");
+        True(thirdRan, "latest preview request did not run after prior cleanup");
+        Equal(0, activeOperations);
+        True(!coordinator.IsActive, "preview request coordinator stayed active after the latest request completed");
+
+        var cancelStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cancelCleanupFinished = false;
+        var cancellable = coordinator.RunLatestAsync(async cancellationToken =>
+        {
+            cancelStarted.TrySetResult(true);
+            try { await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken); }
+            finally
+            {
+                await Task.Delay(20);
+                cancelCleanupFinished = true;
+            }
+        });
+        await cancelStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await coordinator.CancelAsync().WaitAsync(TimeSpan.FromSeconds(2));
+        True(cancelCleanupFinished, "Cancel returned before preview cleanup completed");
+        True(!coordinator.IsActive, "Cancel left an active preview request/CTS owner");
+        await ThrowsAsync<OperationCanceledException>(() => cancellable);
     }
 
     private static async Task EditorSpeechTimingKaraokeContractAsync()
