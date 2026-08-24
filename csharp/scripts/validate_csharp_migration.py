@@ -647,6 +647,23 @@ require('x:Name="SubtitlePresetButton"' in editor_xaml
         and "EditorMosaicStrength.Default" in region_geometry_source
         and "editor region presets stay pixel valid and add exact whole-video effects" in contract_tests_source,
         "BLUR-15 retained presets must have clear labels one guarded owner and tested source-pixel-valid whole-video policy")
+blur_reopen_source = editor_main.split("private async Task OpenVideoAsync()", 1)[1].split("private async Task SaveCurrentSourceStateForSwitchAsync()", 1)[0]
+blur_snapshot_source = editor_main.split("private EditorProject ProjectSnapshot()", 1)[1].split("private void RefreshEditorActions()", 1)[0]
+require("candidateProject = await _application.LoadEditorProjectAsync(candidatePath, candidateMedia, CancellationToken.None);" in blur_reopen_source
+        and blur_reopen_source.index("candidateProject = await _application.LoadEditorProjectAsync") < blur_reopen_source.index("_project = candidateProject;")
+        and "_document.Reset(_project.Regions);" in blur_reopen_source
+        and "_document.Add(" not in blur_reopen_source
+        and "_draftRegion = null;" in blur_reopen_source
+        and "if (_document.Selected is not null) LoadSelectedIntoInputs();" in blur_reopen_source
+        and "else SetCoordinateBoxes(0, 0, 0, 0);" in blur_reopen_source
+        and "RenderDocument();" in blur_reopen_source
+        and "await UpdateFrameAsync();" in blur_reopen_source
+        and "QueueProjectSave();" in blur_reopen_source
+        and "Regions = _document.Regions.ToArray()," in blur_snapshot_source
+        and "var regions = NormalizeRegions(loaded.Regions, source.Duration, normalizeStored: true);" in region_document_source
+        and "Regions = NormalizeRegions(project.Regions, normalizedSource.Duration, normalizeStored: false)," in region_document_source
+        and "editor project reopen preserves exact region order geometry identity and source bytes" in contract_tests_source,
+        "BLUR-16 project reopen must hydrate the exact persisted region document and prove stable non-destructive roundtrip")
 require("SubtitleCueList" in editor and "SubtitleRetranslateCueButton" in editor and "SubtitleSaveSrtButton" in editor,
         "Editor static subtitle cue editor controls missing")
 require("ForceFresh = false" in read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalSubtitleTranslationService.cs")

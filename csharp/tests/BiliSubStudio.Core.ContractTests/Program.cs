@@ -68,6 +68,7 @@ internal static class Program
         ("editor whole-video scope canonicalizes state and spans Preview Export", EditorWholeVideoScopeContractAsync),
         ("editor timed range validates numeric and current-position Preview Export state", EditorTimedRangeContractAsync),
         ("editor project persists, isolates source drift and quarantines corrupt state", EditorProjectContractAsync),
+        ("editor project reopen preserves exact region order geometry identity and source bytes", EditorRegionProjectReopenContractAsync),
         ("editor SRT keeps exact blocks order and timecodes", EditorSubtitleDocumentContractAsync),
         ("editor manual cue state persists locks and preserves timeline", EditorSubtitleManualContract.RunAsync),
         ("editor source selection keeps cancel/same-source transitions safe", EditorSourceSelectionContract.RunAsync),
@@ -1556,6 +1557,61 @@ internal static class Program
             Equal(0, recovered.Regions.Count);
             True(Directory.GetFiles(Path.GetDirectoryName(projectPath)!, Path.GetFileName(projectPath) + ".corrupt-*").Length == 1,
                 "corrupt editor project was not quarantined");
+        });
+    }
+
+    private static async Task EditorRegionProjectReopenContractAsync()
+    {
+        await WithTemporaryRootAsync(async root =>
+        {
+            var paths = AppPaths.FromRoot(root);
+            paths.EnsureBootstrapDirectories();
+            var video = Path.Combine(root, "region-reopen-source.mp4");
+            var sourceBytes = Enumerable.Range(0, 4096).Select(index => (byte)(index % 251)).ToArray();
+            await File.WriteAllBytesAsync(video, sourceBytes);
+            const int width = 1920;
+            const int height = 1080;
+            const double duration = 120;
+
+            var firstStore = new EditorProjectStore(paths);
+            var created = await firstStore.LoadOrCreateAsync(video, width, height, duration, CancellationToken.None);
+            var editedDocument = new EditorRegionDocument();
+            editedDocument.Reset([]);
+            EditRegion[] expected =
+            [
+                new(.101, .202, .303, .204, "blur", 18, false, 1.25, 5.75, "reopen-blur"),
+                new(.55, .15, .2, .2, "mosaic", 12, true, 0, duration, "reopen-mosaic"),
+                new(.02, .03, .1, .08, "cover", 0, false, 10, 20, "reopen-cover"),
+            ];
+            foreach (var region in expected) editedDocument.Add(region);
+            await firstStore.SaveAsync(created with { Regions = editedDocument.Regions.ToArray() }, CancellationToken.None);
+            var sourceAfterFirstSave = await File.ReadAllBytesAsync(video);
+            True(sourceBytes.SequenceEqual(sourceAfterFirstSave),
+                "saving region project overwrote source media bytes");
+
+            var reopened = await new EditorProjectStore(paths)
+                .LoadOrCreateAsync(video, width, height, duration, CancellationToken.None);
+            Equal(expected.Length, reopened.Regions.Count);
+            for (var index = 0; index < expected.Length; index++)
+                Equal(expected[index], reopened.Regions[index]);
+
+            var reopenedDocument = new EditorRegionDocument();
+            reopenedDocument.Reset(reopened.Regions);
+            Equal(0, reopenedDocument.SelectedIndex);
+            Equal(expected[0], reopenedDocument.Selected);
+            True(!reopenedDocument.CanUndo && !reopenedDocument.CanRedo,
+                "project reopen leaked prior-session region history");
+
+            var secondStore = new EditorProjectStore(paths);
+            await secondStore.SaveAsync(reopened with { Regions = reopenedDocument.Regions.ToArray() }, CancellationToken.None);
+            var reopenedAgain = await new EditorProjectStore(paths)
+                .LoadOrCreateAsync(video, width, height, duration, CancellationToken.None);
+            Equal(expected.Length, reopenedAgain.Regions.Count);
+            for (var index = 0; index < expected.Length; index++)
+                Equal(expected[index], reopenedAgain.Regions[index]);
+            var sourceAfterSecondSave = await File.ReadAllBytesAsync(video);
+            True(sourceBytes.SequenceEqual(sourceAfterSecondSave),
+                "repeated region project reopen/save changed source media bytes");
         });
     }
 
