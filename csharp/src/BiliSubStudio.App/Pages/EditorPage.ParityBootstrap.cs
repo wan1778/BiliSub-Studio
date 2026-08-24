@@ -80,8 +80,8 @@ public sealed partial class EditorPage
         ImageOverlayCanvas.SizeChanged += ImageOverlay_SizeChanged;
         AddImageButton.Click += AddImage_Click;
         RemoveImageButton.Click += RemoveImage_Click;
-        ImageTopLeftButton.Click += ImageTopLeft_Click;
-        ImageTopRightButton.Click += ImageTopRight_Click;
+        ImageTopLeftButton.Click += ImageCornerPreset_Click;
+        ImageTopRightButton.Click += ImageCornerPreset_Click;
         ImageXBox.ValueChanged += ImageGeometry_ValueChanged;
         ImageYBox.ValueChanged += ImageGeometry_ValueChanged;
         ImageWidthBox.ValueChanged += ImageGeometry_ValueChanged;
