@@ -430,7 +430,8 @@ public sealed class EditorProjectStore
             || !double.IsFinite(track.Duration) || track.Duration <= 0 || !double.IsFinite(track.Gain) || track.Gain is < 0 or > 4)
             return null;
         var trackPath = Path.GetFullPath(track.Path.Trim());
-        if (status == "complete" && (manifest.Length == 0 || !File.Exists(manifest) || !FileShaMatches(manifest, tts.ManifestSha256) || !File.Exists(trackPath))) return null;
+        if (status == "complete" && (manifest.Length == 0 || !File.Exists(manifest) || !FileShaMatches(manifest, tts.ManifestSha256)
+            || !File.Exists(trackPath) || new FileInfo(trackPath).Length <= 64)) return null;
         return tts with
         {
             Status = status,
