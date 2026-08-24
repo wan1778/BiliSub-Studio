@@ -288,6 +288,40 @@ require("SeekEditorToSubtitleCueAsync" in editor_partials and "await SeekEditorT
         "SUB-06 cue selection must seek the compact Player to cue start")
 require("if (_playerMode) await SetPlaybackModeAsync(false, false);" not in editor_partials,
         "SUB-06 cue selection regressed to leaving processed Player mode before seek")
+require("RenderSubtitlePlacement" in editor_partials and "SubtitlePreviewText(cue)" in editor_partials
+        and "PreviewSubtitleBurn()" in editor_partials,
+        "SUB-07 subtitle caption must render on edit-frame and processed Preview paths")
+require("_subtitleDrag = true;" in editor_partials and "HitTestSubtitle(point)" in editor_partials
+        and "ResizeOrMove(_subtitleDragOriginal" in editor_partials,
+        "SUB-08 subtitle drag ownership missing")
+for direction in ("North", "South", "East", "West", "NorthEast", "NorthWest", "SouthEast", "SouthWest"):
+    require(f"DragKind.{direction}" in editor_partials, f"SUB-09 subtitle resize direction missing: {direction}")
+require("SourceOverride" in editor_partials and "SubtitleSourceEdit.Text.Trim()" in editor_partials,
+        "SUB-10 Chinese cue edit state missing")
+require("Preview hiển thị bản nháp" in editor_partials and "RenderOverlays();" in editor_partials
+        and "SubtitleVietnameseEdit.Text.Trim()" in editor_partials,
+        "SUB-11 Vietnamese cue edit must update Preview draft immediately")
+require("state.Locked" in editor_partials and "locked.TryGetValue(c.Id, out var keep)" in editor_partials,
+        "SUB-12 locked cue protection missing from full Vietsub merge")
+require("await RetranslateSelectedCueAsync();" in editor_partials and "ForceFresh: true" in editor_partials
+        and "SubtitleRetranslateCue_Click(sender" not in editor_partials,
+        "SUB-13 clean force-fresh cue retranslation contract missing")
+translation_source = read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalSubtitleTranslationService.cs")
+require("TranslationSkillBundle.Load" in translation_source and "ValidateUnchangedTimeline(source, translated)" in translation_source
+        and "Qwen3-8B" in translation_source,
+        "SUB-14 local AI + skill + exact timeline Vietsub contract missing")
+require('string.Equals(snapshot.Status, "cancelled"' in editor_partials
+        and "finally { TryDelete(temporary); }" in translation_source
+        and "cleanupAwareCancel: true" in composition,
+        "SUB-15 translation cancellation/checkpoint cleanup contract missing")
+require("await SaveCurrentSubtitleCueAsync();" in editor_partials and "EditorSubtitleDocument.RenderVietnamese(cues)" in editor_partials,
+        "SUB-16 save Vietnamese SRT must include latest cue edit")
+require("MarkTranslatedOutputStale();" in editor_partials and "OutputPath = string.Empty" in editor_partials
+        and "File.Exists(_project?.Subtitle?.OutputPath)" in editor_partials,
+        "SUB-17 stale Vietnamese SRT protection missing")
+require("RestoreSubtitleAsync(_project.Subtitle)" in editor_partials and "SubtitleManualStore.LoadAsync" in editor_partials
+        and "EditorSubtitleManualStore.Apply" in editor_partials,
+        "SUB-18 project reopen must restore translation/edit/lock state")
 require("Loaded += EditorPage_Loaded;" in editor and "private void EditorPage_Loaded" in editor_partials,
         "Editor must use the actual Loaded event as its single feature initialization lifecycle")
 

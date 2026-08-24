@@ -103,9 +103,23 @@ public sealed partial class EditorPage
     {
         if (_subtitleCueSyncing || _subtitleSource is null || _subtitleCueSelectedIndex < 0) return;
         _subtitleManualDirty = true;
-        SubtitleCueEditorStatus.Text = "Câu đang có thay đổi chưa lưu. Render/TTS/SRT Việt tạm khóa để tránh dùng bản cũ.";
+        SubtitleCueEditorStatus.Text = "Câu đang có thay đổi chưa lưu. Preview hiển thị bản nháp; Render/TTS/SRT Việt tạm khóa để tránh dùng bản cũ.";
+        RenderOverlays();
         RefreshEditorActions();
         RefreshSubtitleCueEditorControls();
+    }
+
+    private string SubtitlePreviewText(EditorSubtitleCue cue)
+    {
+        if (_subtitleManualDirty && _subtitleSource is not null &&
+            _subtitleCueSelectedIndex >= 0 && _subtitleCueSelectedIndex < _subtitleSource.Cues.Count &&
+            string.Equals(_subtitleSource.Cues[_subtitleCueSelectedIndex].Id, cue.Id, StringComparison.Ordinal))
+        {
+            var vietnamese = SubtitleVietnameseEdit.Text.Trim();
+            var source = SubtitleSourceEdit.Text.Trim();
+            return string.IsNullOrWhiteSpace(vietnamese) ? source : vietnamese;
+        }
+        return string.IsNullOrWhiteSpace(cue.VietnameseText) ? cue.SourceText : cue.VietnameseText;
     }
 
     private async void SubtitleLock_Toggled(object sender, RoutedEventArgs e)
@@ -192,6 +206,11 @@ public sealed partial class EditorPage
                 TranslationProgress.Value = snapshot.Progress;
                 TranslationStatusText.Text = snapshot.Message;
                 if (!snapshot.Done) { await Task.Delay(350); continue; }
+                if (string.Equals(snapshot.Status, "cancelled", StringComparison.OrdinalIgnoreCase))
+                {
+                    TranslationStatusText.Text = "Đã hủy Vietsub an toàn. Chỉ checkpoint của các batch hoàn tất được giữ để có thể tiếp tục sau; output cũ vẫn bị khóa.";
+                    return;
+                }
                 if (snapshot.Result is not EditorTranslationResult result)
                     throw new InvalidOperationException(snapshot.Error ?? snapshot.Message);
                 var merged = result.Cues.Select(c => locked.TryGetValue(c.Id, out var keep)
@@ -266,6 +285,14 @@ public sealed partial class EditorPage
             var snapshot = _application.Jobs.GetSnapshot(_translationJobId);
             SubtitleCueEditorStatus.Text = snapshot.Message;
             if (!snapshot.Done) { await Task.Delay(300); continue; }
+            if (string.Equals(snapshot.Status, "cancelled", StringComparison.OrdinalIgnoreCase))
+            {
+                _translationJobId = null;
+                SubtitleCueEditorStatus.Text = $"Đã hủy dịch lại câu {cue.Number}. Không áp dụng kết quả dở; lần Dịch lại tiếp theo vẫn bắt đầu fresh.";
+                RefreshEditorActions();
+                RefreshSubtitleCueEditorControls();
+                return;
+            }
             if (snapshot.Result is not EditorTranslationResult result || result.Cues.Count != 1)
                 throw new InvalidOperationException(snapshot.Error ?? snapshot.Message);
             var translated = result.Cues[0].VietnameseText;
