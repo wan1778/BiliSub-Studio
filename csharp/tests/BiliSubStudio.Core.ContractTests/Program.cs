@@ -545,6 +545,8 @@ internal static class Program
 
     private static Task EditorProcessedPreviewContractAsync()
     {
+        var windowMethod = typeof(VideoEditorService).GetMethod("PreviewWindow", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing editor processed-preview window policy");
         var sliceMethod = typeof(VideoEditorService).GetMethod("BuildPreviewSlice", BindingFlags.Static | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("missing editor processed-preview slice policy");
         var argumentsMethod = typeof(VideoEditorService).GetMethod("BuildPreviewArguments", BindingFlags.Static | BindingFlags.NonPublic)
@@ -571,6 +573,9 @@ internal static class Program
             ],
             subtitle,
             new EditorAudioSettings("duck", .35));
+        var initialWindow = ((double Start, double Duration))windowMethod.Invoke(null, [request.Duration, 0d])!;
+        Equal(0d, initialWindow.Start);
+        True(initialWindow.Duration > 0, "initial processed-preview window must be playable");
         const double previewStart = 100;
         const double previewDuration = 9.5;
         var sliced = (VideoEditRequest)sliceMethod.Invoke(null, [request, previewStart, previewDuration, 1280, 720])!;

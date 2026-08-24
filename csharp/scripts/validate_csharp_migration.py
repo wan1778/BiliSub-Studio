@@ -284,6 +284,12 @@ require(editor_partials.count("private MediaPlayer? _player;") == 1
         and editor_partials.count("private CancellationTokenSource? _renderCancellation;") == 1
         and editor_partials.count("internal bool IsPreviewMode { get; private set; }") == 1,
         "PREVIEW-03 playback state must have exactly one owner")
+toggle_playback = playback_source.split("internal async Task ToggleAsync()", 1)[1].split("internal async Task EnterFullscreenAsync()", 1)[0]
+require("await PlayFromStartAsync();" in toggle_playback
+        and "SetModeAsync(enabled: true, play: true)" not in toggle_playback
+        and "_page.Timeline.Value" not in toggle_playback
+        and "private Task PlayFromStartAsync() => LoadSegmentAsync(0, play: true);" in playback_source,
+        "PREVIEW-04 initial Play must request source time zero instead of the edit/seek position")
 require("SubtitleCueList" in editor and "SubtitleRetranslateCueButton" in editor and "SubtitleSaveSrtButton" in editor,
         "Editor static subtitle cue editor controls missing")
 require("ForceFresh = false" in read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalSubtitleTranslationService.cs")

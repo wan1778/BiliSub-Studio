@@ -86,10 +86,12 @@ public sealed partial class EditorPage
             }
             else
             {
-                await SetModeAsync(enabled: true, play: true);
+                await PlayFromStartAsync();
             }
             _page.SyncShellPlayerControls();
         }
+
+        private Task PlayFromStartAsync() => LoadSegmentAsync(0, play: true);
 
         internal async Task EnterFullscreenAsync()
         {
