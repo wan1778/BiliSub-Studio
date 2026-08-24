@@ -53,6 +53,7 @@ internal static class Program
         ("editor final render validates streams duration and audio policy", EditorRenderValidationContractAsync),
         ("Vietnamese TTS text normalization stays deterministic", VietnameseTtsNormalizerContractAsync),
         ("editor document preserves identity through undo redo", EditorDocumentContractAsync),
+        ("editor mouse drag creates only pixel-valid regions in either direction", EditorMouseRegionGeometryContractAsync),
         ("editor project persists, isolates source drift and quarantines corrupt state", EditorProjectContractAsync),
         ("editor SRT keeps exact blocks order and timecodes", EditorSubtitleDocumentContractAsync),
         ("editor manual cue state persists locks and preserves timeline", EditorSubtitleManualContract.RunAsync),
@@ -888,6 +889,34 @@ internal static class Program
         Equal(0, document.Regions.Count);
         True(document.Undo(), "editor removal could not be undone");
         Equal(identity, document.Selected!.Id);
+        return Task.CompletedTask;
+    }
+
+    private static Task EditorMouseRegionGeometryContractAsync()
+    {
+        var settings = new EditRegion(0, 0, 0, 0, "mosaic", 12, false, 2, 8);
+        var forward = EditorRegionGeometry.FromNormalizedDrag(settings, .2, .1, .8, .7, 1000, 500)
+            ?? throw new InvalidOperationException("forward mouse drag did not create a region");
+        var reverse = EditorRegionGeometry.FromNormalizedDrag(settings, .8, .7, .2, .1, 1000, 500)
+            ?? throw new InvalidOperationException("reverse mouse drag did not create a region");
+        True(Math.Abs(forward.X - .2) < .000_001 && Math.Abs(forward.Y - .1) < .000_001,
+            "mouse drag origin was not normalized");
+        True(Math.Abs(forward.Width - .6) < .000_001 && Math.Abs(forward.Height - .6) < .000_001,
+            "mouse drag size was not normalized");
+        Equal(forward, reverse);
+        Equal("mosaic", forward.Effect);
+        Equal(12, forward.Strength);
+        Equal(2d, forward.Start);
+        Equal(8d, forward.End);
+
+        var clamped = EditorRegionGeometry.FromNormalizedDrag(settings, -.2, 1.2, .5, .5, 100, 100)
+            ?? throw new InvalidOperationException("bounded mouse drag was rejected");
+        True(clamped.X == 0 && clamped.Y == .5 && clamped.Width == .5 && clamped.Height == .5,
+            "mouse drag did not clamp to source bounds");
+        True(EditorRegionGeometry.FromNormalizedDrag(settings, .1, .1, .109, .109, 100, 100) is null,
+            "sub-two-pixel mouse drag entered the document");
+        True(EditorRegionGeometry.FromNormalizedDrag(settings, double.NaN, .1, .5, .5, 100, 100) is null,
+            "non-finite mouse drag entered the document");
         return Task.CompletedTask;
     }
 

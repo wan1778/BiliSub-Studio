@@ -1133,11 +1133,15 @@ public sealed partial class EditorPage : Page
         }
         if (_dragKind == DragKind.Create)
         {
-            var x = Math.Min(_dragStartNormalized.Value.X, current.X);
-            var y = Math.Min(_dragStartNormalized.Value.Y, current.Y);
-            var width = Math.Abs(current.X - _dragStartNormalized.Value.X);
-            var height = Math.Abs(current.Y - _dragStartNormalized.Value.Y);
-            _draftRegion = RegionWithCurrentSettings(x, y, width, height, string.Empty);
+            var settings = RegionWithCurrentSettings(0, 0, 0, 0, string.Empty);
+            _draftRegion = EditorRegionGeometry.FromNormalizedDrag(
+                settings,
+                _dragStartNormalized.Value.X,
+                _dragStartNormalized.Value.Y,
+                current.X,
+                current.Y,
+                _media.Width,
+                _media.Height);
             RenderOverlays();
             return;
         }
@@ -1177,12 +1181,9 @@ public sealed partial class EditorPage : Page
             return;
         }
         if (!commit && _dragHistoryCaptured) _document.Undo();
-        if (commit && _dragKind == DragKind.Create && _draftRegion is { Width: >= .002, Height: >= .002 } created)
+        if (commit && _dragKind == DragKind.Create && _draftRegion is { } created)
         {
-            _document.Add(created);
-            _draftRegion = null;
-            LoadSelectedIntoInputs();
-            DocumentChanged($"Đã tạo vùng {_document.Regions.Count}.");
+            TryCommitCreatedRegion(created);
         }
         else if (commit && _dragHistoryCaptured)
         {
@@ -1202,6 +1203,27 @@ public sealed partial class EditorPage : Page
         _subtitleDragOriginal = null;
         Overlay.ReleasePointerCapture(e.Pointer);
         RefreshEditorActions();
+    }
+
+    private bool TryCommitCreatedRegion(EditRegion created)
+    {
+        try
+        {
+            ValidateRegion(created);
+            _document.Add(created);
+            _draftRegion = null;
+            LoadSelectedIntoInputs();
+            DocumentChanged($"Đã tạo vùng {_document.Regions.Count}.");
+            return true;
+        }
+        catch (Exception error)
+        {
+            _draftRegion = null;
+            RegionValidationText.Text = error.Message;
+            StatusText.Text = "Không tạo được vùng: " + error.Message;
+            RenderDocument();
+            return false;
+        }
     }
 
     private void EditorPage_LayoutUpdated(object? sender, object e)

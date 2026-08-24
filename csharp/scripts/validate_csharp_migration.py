@@ -414,6 +414,16 @@ for control, (event_name, handler) in blur_input_bindings.items():
 for handler in {binding[1] for binding in blur_input_bindings.values()}:
     require(len(re.findall(rf"\b{re.escape(handler)}\s*\(", editor_partials)) == 1,
             f"BLUR-01 handler {handler} must have exactly one implementation and no handler-to-handler call")
+blur_create_source = editor_main.split("private void Overlay_PointerMoved(", 1)[1].split("private void Overlay_PointerReleased(", 1)[0]
+blur_finish_source = editor_main.split("private void FinishDrag(", 1)[1].split("private void EditorPage_LayoutUpdated(", 1)[0]
+region_geometry_source = read(CSHARP / "src/BiliSubStudio.Core/Editor/EditorRegionGeometry.cs") if (CSHARP / "src/BiliSubStudio.Core/Editor/EditorRegionGeometry.cs").is_file() else ""
+require("EditorRegionGeometry.FromNormalizedDrag(" in blur_create_source
+        and "private bool TryCommitCreatedRegion(EditRegion created)" in blur_finish_source
+        and "ValidateRegion(created);" in blur_finish_source
+        and "_document.Add(created);" in blur_finish_source
+        and "public static EditRegion? FromNormalizedDrag(" in region_geometry_source
+        and "editor mouse drag creates only pixel-valid regions in either direction" in contract_tests_source,
+        "BLUR-02 mouse creation must use tested normalized geometry and validate before document commit")
 require("SubtitleCueList" in editor and "SubtitleRetranslateCueButton" in editor and "SubtitleSaveSrtButton" in editor,
         "Editor static subtitle cue editor controls missing")
 require("ForceFresh = false" in read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalSubtitleTranslationService.cs")
