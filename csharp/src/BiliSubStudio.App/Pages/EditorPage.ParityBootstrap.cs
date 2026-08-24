@@ -79,7 +79,7 @@ public sealed partial class EditorPage
         ImageOverlayCanvas.PointerCanceled += ImageOverlay_PointerCanceled;
         ImageOverlayCanvas.SizeChanged += ImageOverlay_SizeChanged;
         AddImageButton.Click += AddImage_Click;
-        RemoveImageButton.Click += RemoveImage_Click;
+        RemoveImageButton.Click += RemoveImageSafe_Click;
         ImageTopLeftButton.Click += ImageCornerPreset_Click;
         ImageTopRightButton.Click += ImageCornerPreset_Click;
         ImageXBox.ValueChanged += ImageGeometry_ValueChanged;
