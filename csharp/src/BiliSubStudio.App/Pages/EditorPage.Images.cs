@@ -29,8 +29,10 @@ public sealed partial class EditorPage
     private const int MaxEditorImages = 8;
     private readonly List<EditorImageOverlayState> _imageOverlays = [];
     private readonly Dictionary<string, BitmapImage> _imageBitmaps = new(StringComparer.OrdinalIgnoreCase);
+    private readonly SemaphoreSlim _imageMissingReconcileGate = new(1, 1);
     private bool _imageFeatureInitialized;
     private bool _syncingImageInputs;
+    private bool _imageMissingReconcileInProgress;
     private string? _imageProjectId;
     private int _selectedImageIndex = -1;
     private Point? _imageDragStart;
@@ -79,6 +81,7 @@ public sealed partial class EditorPage
         _imageOverlays.Clear();
         _imageBitmaps.Clear();
         _selectedImageIndex = -1;
+        var missingImageCount = 0;
         var path = ImageSidecarPath(_project.Id);
         if (File.Exists(path))
         {
@@ -86,14 +89,23 @@ public sealed partial class EditorPage
             var loaded = await JsonSerializer.DeserializeAsync<List<EditorImageOverlayState>>(stream) ?? [];
             foreach (var image in loaded.Take(MaxEditorImages))
             {
+                if (IsMissingImageFile(image))
+                {
+                    missingImageCount++;
+                    continue;
+                }
                 if (TryNormalizeImageState(image, out var normalized)) _imageOverlays.Add(normalized);
             }
         }
         for (var index = 0; index < _imageOverlays.Count; index++)
             await EnsureBitmapLoadedAsync(_imageOverlays[index].Path);
         if (_imageOverlays.Count > 0) _selectedImageIndex = 0;
+        if (missingImageCount > 0)
+            await SaveImageSidecarStrictAsync();
         RenderImageList();
         LoadSelectedImageIntoInputs();
+        if (missingImageCount > 0 && _imageStatusText is not null)
+            _imageStatusText.Text = $"Đã gỡ {missingImageCount} ảnh/logo bị mất khỏi project đã lưu.";
     }
 
     private async void AddImage_Click(object sender, RoutedEventArgs e)
@@ -344,6 +356,11 @@ public sealed partial class EditorPage
         if (_imageOverlayCanvas is null) return;
         _imageOverlayCanvas.Children.Clear();
         if (_media is null || _imageOverlays.Count == 0) return;
+        if (_imageOverlays.Any(IsMissingImageFile))
+        {
+            if (!_imageMissingReconcileInProgress) _ = ReconcileMissingImageFilesFromRenderAsync();
+            return;
+        }
         var video = VideoRect();
         if (video.Width <= 0 || video.Height <= 0) return;
 
@@ -484,6 +501,57 @@ public sealed partial class EditorPage
         return false;
     }
 
+    private static bool IsMissingImageFile(EditorImageOverlayState image)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(image.Path)) return false;
+            var path = Path.GetFullPath(image.Path.Trim());
+            var extension = Path.GetExtension(path).ToLowerInvariant();
+            if (extension is not (".png" or ".jpg" or ".jpeg")) return false;
+            return !File.Exists(path);
+        }
+        catch { return false; }
+    }
+
+    private async Task<int> ReconcileMissingImageFilesAsync()
+    {
+        if (_project is null || !string.Equals(_imageProjectId, _project.Id, StringComparison.Ordinal)) return 0;
+        await _imageMissingReconcileGate.WaitAsync();
+        try
+        {
+            var missing = _imageOverlays.Where(IsMissingImageFile).ToArray();
+            if (missing.Length == 0) return 0;
+
+            var paths = missing.Select(image => image.Path).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            _imageOverlays.RemoveAll(image => paths.Contains(image.Path));
+            foreach (var missingPath in paths) _imageBitmaps.Remove(missingPath);
+            _selectedImageIndex = Math.Min(_selectedImageIndex, _imageOverlays.Count - 1);
+            RenderImageList();
+            LoadSelectedImageIntoInputs();
+            RenderImageOverlays();
+            RefreshImageControls();
+            await SaveImageSidecarStrictAsync();
+            if (_imageStatusText is not null)
+                _imageStatusText.Text = $"Đã gỡ {missing.Length} ảnh/logo bị mất khỏi project.";
+            return missing.Length;
+        }
+        finally { _imageMissingReconcileGate.Release(); }
+    }
+
+    private async Task ReconcileMissingImageFilesFromRenderAsync()
+    {
+        if (_imageMissingReconcileInProgress) return;
+        _imageMissingReconcileInProgress = true;
+        try { await ReconcileMissingImageFilesAsync(); }
+        catch (Exception error)
+        {
+            if (_imageStatusText is not null)
+                _imageStatusText.Text = "Không thể cập nhật project sau khi ảnh/logo bị mất: " + error.Message;
+        }
+        finally { _imageMissingReconcileInProgress = false; }
+    }
+
     private bool TryNormalizeImageState(EditorImageOverlayState image, out EditorImageOverlayState normalized)
     {
         normalized = image;
@@ -527,6 +595,20 @@ public sealed partial class EditorPage
         {
             try { File.Delete(temporary); } catch { }
         }
+    }
+
+    private async Task SaveImageSidecarStrictAsync()
+    {
+        if (_project is null || !string.Equals(_imageProjectId, _project.Id, StringComparison.Ordinal)) return;
+        if (!CurrentSourceFingerprintMatches()) return;
+        if (_imageOverlays.Count > 0)
+        {
+            await SaveImageSidecarAsync();
+            return;
+        }
+        var path = ImageSidecarPath(_project.Id);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.Delete(path);
     }
 
     private string ImageSidecarPath(string projectId) => Path.Combine(_application.Paths.Data, "Projects", projectId + ".images.json");
@@ -586,6 +668,12 @@ public sealed partial class EditorPage
         catch (Exception error)
         {
             StatusText.Text = error.Message;
+            return;
+        }
+        try { await ReconcileMissingImageFilesAsync(); }
+        catch (Exception error)
+        {
+            StatusText.Text = "Không thể cập nhật project sau khi ảnh/logo bị mất: " + error.Message;
             return;
         }
 
