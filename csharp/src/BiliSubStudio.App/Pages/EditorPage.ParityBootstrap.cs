@@ -1,3 +1,4 @@
+using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 
@@ -6,6 +7,10 @@ namespace BiliSubStudio.App.Pages;
 public sealed partial class EditorPage
 {
     private bool _editorCoreInitialized;
+    private DispatcherQueueTimer? _editorExportProgressTimer;
+    private string? _observedImageProgressJobId;
+    private double _imageStageProgressFloor;
+    private double _imageStageDisplayProgress;
 
     // Compatibility objects only. They are never attached to the visual tree.
     private readonly Button RefreshFrameButton = new();
@@ -19,6 +24,7 @@ public sealed partial class EditorPage
             _editorCoreInitialized = true;
         }
 
+        EnsureEditorExportProgressTimer();
         RefreshEditorActions();
         RefreshImageControls();
         RefreshEditorParityControls();
@@ -92,6 +98,7 @@ public sealed partial class EditorPage
         EditorChooseOutputButton.Click += EditorChooseOutput_Click;
         EditorOpenOutputButton.Click += EditorOpenOutput_Click;
         FileNameBox.LostFocus += EditorFileName_LostFocus;
+        Unloaded += EditorProgress_Unloaded;
 
         // UI-11: MainWindow startup smoke resizes to 800x600, 1000x700 and 1500x900.
         // Validate the real shell at those layouts without affecting normal user resize.
@@ -102,6 +109,59 @@ public sealed partial class EditorPage
         SelectShellTool("Subtitle");
         RefreshImageControls();
         RefreshEditorParityControls();
+    }
+
+    private void EnsureEditorExportProgressTimer()
+    {
+        if (_editorExportProgressTimer is not null) return;
+        var timer = DispatcherQueue.CreateTimer();
+        timer.Interval = TimeSpan.FromMilliseconds(150);
+        timer.Tick += EditorExportProgressTimer_Tick;
+        timer.Start();
+        _editorExportProgressTimer = timer;
+    }
+
+    private void EditorExportProgressTimer_Tick(DispatcherQueueTimer sender, object args)
+    {
+        var jobId = _jobId;
+        if (string.IsNullOrWhiteSpace(jobId)) return;
+        if (!_application.Jobs.TryGet(jobId, out var job) || job is null) return;
+        var snapshot = job.Snapshot();
+        if (!string.Equals(snapshot.Kind, "editor-image", StringComparison.Ordinal)) return;
+
+        if (!string.Equals(_observedImageProgressJobId, jobId, StringComparison.Ordinal))
+        {
+            _observedImageProgressJobId = jobId;
+            var hasBaseEdit = _document.Regions.Count > 0
+                || CompletedSubtitleBurn() is not null
+                || _audioSettings.SourceMode != "keep"
+                || _voiceTrack is not null;
+            _imageStageProgressFloor = hasBaseEdit ? 68d : 0d;
+            _imageStageDisplayProgress = _imageStageProgressFloor;
+            Progress.Value = _imageStageProgressFloor;
+        }
+
+        var childProgress = Math.Clamp(snapshot.Progress, 0, 99);
+        var mapped = _imageStageProgressFloor
+            + (99d - _imageStageProgressFloor) * childProgress / 99d;
+        _imageStageDisplayProgress = Math.Max(_imageStageDisplayProgress, mapped);
+        Progress.Value = Math.Clamp(_imageStageDisplayProgress, _imageStageProgressFloor, 99d);
+        StatusText.Text = _imageStageProgressFloor > 0
+            ? "Giai đoạn 2/2 · " + snapshot.Message
+            : snapshot.Message;
+    }
+
+    private void EditorProgress_Unloaded(object sender, RoutedEventArgs e)
+    {
+        if (_editorExportProgressTimer is not null)
+        {
+            _editorExportProgressTimer.Stop();
+            _editorExportProgressTimer.Tick -= EditorExportProgressTimer_Tick;
+            _editorExportProgressTimer = null;
+        }
+        _observedImageProgressJobId = null;
+        _imageStageProgressFloor = 0;
+        _imageStageDisplayProgress = 0;
     }
 
     void ShellTool_Click(object sender, RoutedEventArgs e)
