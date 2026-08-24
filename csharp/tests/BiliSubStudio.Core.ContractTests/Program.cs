@@ -56,6 +56,7 @@ internal static class Program
         ("editor mouse drag creates only pixel-valid regions in either direction", EditorMouseRegionGeometryContractAsync),
         ("editor region selection picks the topmost hit and synchronizes document state", EditorRegionSelectionContractAsync),
         ("editor region move clamps bounds and cancellation leaves no history", EditorRegionMoveContractAsync),
+        ("editor region resize keeps all eight handles pixel-valid", EditorRegionResizeContractAsync),
         ("editor project persists, isolates source drift and quarantines corrupt state", EditorProjectContractAsync),
         ("editor SRT keeps exact blocks order and timecodes", EditorSubtitleDocumentContractAsync),
         ("editor manual cue state persists locks and preserves timeline", EditorSubtitleManualContract.RunAsync),
@@ -984,6 +985,72 @@ internal static class Program
         Equal(original, document.Selected);
         True(document.Redo(), "committed move could not be redone");
         Equal(moved, document.Selected);
+        return Task.CompletedTask;
+    }
+
+    private static Task EditorRegionResizeContractAsync()
+    {
+        var original = new EditRegion(.2, .2, .4, .4, "blur", 18, false, 2, 8, "resizing");
+        var cases = new[]
+        {
+            (EditorRegionResizeHandle.North, 0d, -.1, .2, .1, .4, .5),
+            (EditorRegionResizeHandle.South, 0d, .1, .2, .2, .4, .5),
+            (EditorRegionResizeHandle.East, .1, 0d, .2, .2, .5, .4),
+            (EditorRegionResizeHandle.West, -.1, 0d, .1, .2, .5, .4),
+            (EditorRegionResizeHandle.NorthEast, .1, -.1, .2, .1, .5, .5),
+            (EditorRegionResizeHandle.NorthWest, -.1, -.1, .1, .1, .5, .5),
+            (EditorRegionResizeHandle.SouthEast, .1, .1, .2, .2, .5, .5),
+            (EditorRegionResizeHandle.SouthWest, -.1, .1, .1, .2, .5, .5),
+        };
+        Equal(8, Enum.GetValues<EditorRegionResizeHandle>().Length);
+        foreach (var (handle, deltaX, deltaY, x, y, width, height) in cases)
+        {
+            var resized = EditorRegionGeometry.ResizeBy(original, deltaX, deltaY, handle, 100, 100);
+            True(Math.Abs(resized.X - x) < .000_001 && Math.Abs(resized.Y - y) < .000_001
+                && Math.Abs(resized.Width - width) < .000_001 && Math.Abs(resized.Height - height) < .000_001,
+                $"{handle} produced wrong geometry");
+            Equal(original.Effect, resized.Effect);
+            Equal(original.Strength, resized.Strength);
+            Equal(original.WholeVideo, resized.WholeVideo);
+            Equal(original.Start, resized.Start);
+            Equal(original.End, resized.End);
+            Equal(original.Id, resized.Id);
+            _ = VideoEditorService.BuildFilter(new VideoEditRequest("input.mp4", ".", "output.mp4", 100, 100, 10, [resized]));
+        }
+
+        var minimumCases = new[]
+        {
+            (EditorRegionResizeHandle.North, 0d, 2d),
+            (EditorRegionResizeHandle.South, 0d, -2d),
+            (EditorRegionResizeHandle.East, -2d, 0d),
+            (EditorRegionResizeHandle.West, 2d, 0d),
+            (EditorRegionResizeHandle.NorthEast, -2d, 2d),
+            (EditorRegionResizeHandle.NorthWest, 2d, 2d),
+            (EditorRegionResizeHandle.SouthEast, -2d, -2d),
+            (EditorRegionResizeHandle.SouthWest, 2d, -2d),
+        };
+        foreach (var (handle, deltaX, deltaY) in minimumCases)
+        {
+            var minimum = EditorRegionGeometry.ResizeBy(original, deltaX, deltaY, handle, 640, 360);
+            True(minimum != original, $"{handle} minimum resize was ignored");
+            var pixelWidth = (int)((minimum.X + minimum.Width) * 640) - (int)(minimum.X * 640);
+            var pixelHeight = (int)((minimum.Y + minimum.Height) * 360) - (int)(minimum.Y * 360);
+            if (handle is EditorRegionResizeHandle.East or EditorRegionResizeHandle.West
+                or EditorRegionResizeHandle.NorthEast or EditorRegionResizeHandle.NorthWest
+                or EditorRegionResizeHandle.SouthEast or EditorRegionResizeHandle.SouthWest)
+                True(pixelWidth is >= 2 and <= 3, $"{handle} did not stop at the source-pixel width minimum");
+            if (handle is EditorRegionResizeHandle.North or EditorRegionResizeHandle.South
+                or EditorRegionResizeHandle.NorthEast or EditorRegionResizeHandle.NorthWest
+                or EditorRegionResizeHandle.SouthEast or EditorRegionResizeHandle.SouthWest)
+                True(pixelHeight is >= 2 and <= 3, $"{handle} did not stop at the source-pixel height minimum");
+            _ = VideoEditorService.BuildFilter(new VideoEditRequest("input.mp4", ".", "output.mp4", 640, 360, 10, [minimum]));
+        }
+        var fullBounds = EditorRegionGeometry.ResizeBy(original, 2, 2, EditorRegionResizeHandle.SouthEast, 640, 360);
+        True(fullBounds.X + fullBounds.Width <= 1 && fullBounds.Y + fullBounds.Height <= 1,
+            "resize escaped source bounds");
+        var oppositeBounds = EditorRegionGeometry.ResizeBy(original, -2, -2, EditorRegionResizeHandle.NorthWest, 640, 360);
+        True(oppositeBounds.X >= 0 && oppositeBounds.Y >= 0, "resize escaped the top-left source bounds");
+        Equal(original, EditorRegionGeometry.ResizeBy(original, double.NaN, 0, EditorRegionResizeHandle.East, 640, 360));
         return Task.CompletedTask;
     }
 

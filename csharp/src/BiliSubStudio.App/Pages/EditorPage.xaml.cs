@@ -1128,7 +1128,7 @@ public sealed partial class EditorPage : Page
         var position = e.GetCurrentPoint(Overlay).Position;
         if (!TryNormalize(position, out var current))
         {
-            if (_subtitleDrag || _dragKind != DragKind.Move || !TryNormalizeClamped(position, out current)) return;
+            if (_subtitleDrag || _dragKind is DragKind.None or DragKind.Create || !TryNormalizeClamped(position, out current)) return;
         }
         if (_subtitleDrag && _subtitleDragOriginal is not null)
         {
@@ -1156,8 +1156,15 @@ public sealed partial class EditorPage : Page
                 _dragOriginal,
                 current.X - _dragStartNormalized.Value.X,
                 current.Y - _dragStartNormalized.Value.Y)
-            : ResizeRegion(_dragOriginal, _dragStartNormalized.Value, current, _dragKind);
-        if (_dragKind == DragKind.Move && updated.X == selected.X && updated.Y == selected.Y) return;
+            : EditorRegionGeometry.ResizeBy(
+                _dragOriginal,
+                current.X - _dragStartNormalized.Value.X,
+                current.Y - _dragStartNormalized.Value.Y,
+                ResizeHandle(_dragKind),
+                _media.Width,
+                _media.Height);
+        if (updated.X == selected.X && updated.Y == selected.Y
+            && updated.Width == selected.Width && updated.Height == selected.Height) return;
         if (!_dragHistoryCaptured)
         {
             _document.BeginChange();
@@ -1548,20 +1555,18 @@ public sealed partial class EditorPage : Page
         return DragKind.None;
     }
 
-    private static EditRegion ResizeRegion(EditRegion original, Point start, Point current, DragKind kind)
+    private static EditorRegionResizeHandle ResizeHandle(DragKind kind) => kind switch
     {
-        var dx = current.X - start.X;
-        var dy = current.Y - start.Y;
-        var x1 = original.X;
-        var y1 = original.Y;
-        var x2 = original.X + original.Width;
-        var y2 = original.Y + original.Height;
-        if (kind is DragKind.West or DragKind.NorthWest or DragKind.SouthWest) x1 = Math.Clamp(x1 + dx, 0, x2 - .002);
-        if (kind is DragKind.East or DragKind.NorthEast or DragKind.SouthEast) x2 = Math.Clamp(x2 + dx, x1 + .002, 1);
-        if (kind is DragKind.North or DragKind.NorthEast or DragKind.NorthWest) y1 = Math.Clamp(y1 + dy, 0, y2 - .002);
-        if (kind is DragKind.South or DragKind.SouthEast or DragKind.SouthWest) y2 = Math.Clamp(y2 + dy, y1 + .002, 1);
-        return original with { X = x1, Y = y1, Width = x2 - x1, Height = y2 - y1 };
-    }
+        DragKind.North => EditorRegionResizeHandle.North,
+        DragKind.South => EditorRegionResizeHandle.South,
+        DragKind.East => EditorRegionResizeHandle.East,
+        DragKind.West => EditorRegionResizeHandle.West,
+        DragKind.NorthEast => EditorRegionResizeHandle.NorthEast,
+        DragKind.NorthWest => EditorRegionResizeHandle.NorthWest,
+        DragKind.SouthEast => EditorRegionResizeHandle.SouthEast,
+        DragKind.SouthWest => EditorRegionResizeHandle.SouthWest,
+        _ => throw new InvalidOperationException("Resize handle không hợp lệ."),
+    };
 
     private static EditorSubtitlePlacement ResizeOrMove(EditorSubtitlePlacement original, Point start, Point current, DragKind kind)
     {

@@ -440,13 +440,24 @@ blur_move_source = editor_main.split("private void Overlay_PointerMoved(", 1)[1]
 region_document_source = read(CSHARP / "src/BiliSubStudio.Core/Editor/EditorProjectStore.cs")
 require("EditorRegionGeometry.MoveBy(" in blur_move_source
         and "TryNormalizeClamped(" in blur_move_source
-        and "private static EditRegion ResizeRegion(" in editor_main
         and "private static EditRegion ResizeOrMove(" not in editor_main
         and "_document.CancelChange();" in blur_finish_source
         and "public static EditRegion MoveBy(" in region_geometry_source
         and "public bool CancelChange()" in region_document_source
         and "editor region move clamps bounds and cancellation leaves no history" in contract_tests_source,
         "BLUR-04 move must use tested bounded geometry and cancel its history transaction")
+blur_handle_source = editor_main.split("private static DragKind HitSelectedHandles(", 1)[1].split("private static EditorSubtitlePlacement ResizeOrMove(", 1)[0]
+resize_directions = ("North", "South", "East", "West", "NorthEast", "NorthWest", "SouthEast", "SouthWest")
+require("EditorRegionGeometry.ResizeBy(" in blur_move_source
+        and "TryNormalizeClamped(" in blur_move_source
+        and "private static EditorRegionResizeHandle ResizeHandle(" in editor_main
+        and "private static EditRegion ResizeRegion(" not in editor_main
+        and "public enum EditorRegionResizeHandle" in region_geometry_source
+        and "public static EditRegion ResizeBy(" in region_geometry_source
+        and all(f"DragKind.{direction}" in blur_handle_source for direction in resize_directions)
+        and all(f"EditorRegionResizeHandle.{direction}" in editor_main for direction in resize_directions)
+        and "editor region resize keeps all eight handles pixel-valid" in contract_tests_source,
+        "BLUR-05 resize must route all eight handles through tested source-pixel geometry")
 require("SubtitleCueList" in editor and "SubtitleRetranslateCueButton" in editor and "SubtitleSaveSrtButton" in editor,
         "Editor static subtitle cue editor controls missing")
 require("ForceFresh = false" in read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalSubtitleTranslationService.cs")
