@@ -56,7 +56,7 @@ event_map = read(EVENT_MAP)
 # VOICE-08 — Cancel TTS.
 # Cancellation must keep a single UI/job owner, remain non-terminal until child
 # cleanup finishes, never promote a cancelled run, kill/reap the Python/FFmpeg tree,
-# and never corrupt an already-valid master track while a replacement is being built.
+# and never mutate the last completed project-owned master/result files.
 
 cancel_button = named_xaml_control("CancelVoiceButton")
 require(cancel_button.get("Click") == "CancelVoice_Click",
@@ -151,6 +151,17 @@ require("_processes.RunStreamingAsync(" in generate
         "VOICE-08 worker process must be cancellation-aware")
 require("finally" in generate and "await processes.StopAsync()" in generate,
         "VOICE-08 TTS finally must stop owned child processes before unwinding")
+require("var reportedResult = string.Empty;" in generate
+        and "!completed || string.IsNullOrWhiteSpace(reportedResult)" in generate,
+        "VOICE-08 must only accept a result explicitly reported by a completed worker")
+
+read_result = local_tts.split("private async Task<TtsWorkerResult> ReadResultAsync(", 1)[1].split(
+    "private static void ValidateRequest", 1
+)[0]
+require("absolute.StartsWith(safeRoot, StringComparison.OrdinalIgnoreCase)" in read_result,
+        "VOICE-08 reported result path must stay inside the project TTS cache")
+require("masterPath.StartsWith(safeRoot, StringComparison.OrdinalIgnoreCase)" in read_result,
+        "VOICE-08 reported master path must stay inside the project TTS cache")
 
 require("cancellationToken.Register(() => Kill(process))" in process_runner,
         "VOICE-08 cancellation must immediately kill the active child")
@@ -169,29 +180,31 @@ require("if (_processes.IsEmpty) return;" in stop_group,
 require("process.Kill(entireProcessTree: true)" in owned_group,
         "VOICE-08 owned group must kill nested process trees")
 
-# The completed master must be transaction-like. A cancelled replacement run may
-# leave only a temp FLAC; the project-visible master is replaced only after FFmpeg
-# has returned success and the temp file has passed a size check.
-require('master_flac = output_root / "voice-master.flac"' in worker,
-        "VOICE-08 worker must keep one canonical master path")
-require('master_flac_temp = output_root / ("voice-master.flac.tmp-" + os.urandom(6).hex())' in worker,
+# Every run owns immutable output filenames. A cancelled replacement can leave an
+# orphan from its own run, but it cannot overwrite the master/result referenced by
+# the last completed project.
+require("run_id = os.urandom(8).hex()" in worker,
+        "VOICE-08 each worker run must own a fresh output version id")
+require('master_flac = output_root / f"voice-master-{run_id}.flac"' in worker,
+        "VOICE-08 completed master filename must be immutable per run")
+require('master_flac_temp = output_root / (master_flac.name + ".tmp-" + os.urandom(6).hex())' in worker,
         "VOICE-08 replacement master must render to a unique temp file")
-require('str(master_flac_temp)' in worker,
-        "VOICE-08 FFmpeg must write the replacement to the temp master")
 require("not master_flac_temp.is_file()" in worker
         and "master_flac_temp.stat().st_size <= 64" in worker,
         "VOICE-08 temp master must be validated before commit")
 require("master_flac_temp.replace(master_flac)" in worker,
-        "VOICE-08 validated replacement must atomically replace the canonical master")
+        "VOICE-08 validated replacement must atomically commit its own master")
 require(worker.index("master_flac_temp.replace(master_flac)") > worker.index("compressed.returncode != 0"),
-        "VOICE-08 master replacement must occur only after FFmpeg success validation")
+        "VOICE-08 master commit must occur only after FFmpeg success validation")
+require('master_flac = output_root / "voice-master.flac"' not in worker,
+        "VOICE-08 cancelled runs must never overwrite a shared canonical master")
 
-direct_command = '"-compression_level", "5", str(master_flac)]'
-require(direct_command not in worker,
-        "VOICE-08 FFmpeg must never truncate the canonical master directly")
-
-require('temp_path = output_root / ("result.json.tmp-" + os.urandom(6).hex())' in worker
+require('result_path = output_root / f"result-{run_id}.json"' in worker,
+        "VOICE-08 result manifest filename must also be immutable per run")
+require('temp_path = output_root / (result_path.name + ".tmp-" + os.urandom(6).hex())' in worker
         and "temp_path.replace(result_path)" in worker,
-        "VOICE-08 result metadata must remain atomic as well")
+        "VOICE-08 result metadata must commit atomically to its run-owned path")
+require('result_path = output_root / "result.json"' not in worker,
+        "VOICE-08 cancelled runs must never overwrite a shared canonical result manifest")
 
-print("PASS: VOICE-08 Cancel TTS cleanup and master-safety contract")
+print("PASS: VOICE-08 Cancel TTS cleanup and immutable-output safety contract")

@@ -178,6 +178,12 @@ def ensure_profile_cache(output_root: Path) -> None:
             (output_root / name).unlink()
         except OSError:
             pass
+    for pattern in ("voice-master-*.flac*", "result-*.json*"):
+        for path in output_root.glob(pattern):
+            try:
+                path.unlink()
+            except OSError:
+                pass
     output_root.mkdir(parents=True, exist_ok=True)
     temporary = marker.with_name(marker.name + ".tmp-" + os.urandom(6).hex())
     temporary.write_text(VOICE_PROFILE_REVISION + "\n", encoding="utf-8")
@@ -215,6 +221,7 @@ def main() -> int:
         voices = {"male": male, "female": base}
     output_root.mkdir(parents=True, exist_ok=True)
     ensure_profile_cache(output_root)
+    run_id = os.urandom(8).hex()
     clip_root = output_root / "clips"
     block_root = output_root / "blocks"
     clip_root.mkdir(parents=True, exist_ok=True)
@@ -307,8 +314,8 @@ def main() -> int:
         emit({"event": "block", "index": block_index + 1, "total": block_count, "path": str(block_path)})
 
     master_wav = output_root / "voice-master.wav"
-    master_flac = output_root / "voice-master.flac"
-    master_flac_temp = output_root / ("voice-master.flac.tmp-" + os.urandom(6).hex())
+    master_flac = output_root / f"voice-master-{run_id}.flac"
+    master_flac_temp = output_root / (master_flac.name + ".tmp-" + os.urandom(6).hex())
     block_by_start = {round(float(item["start"]), 6): Path(item["path"]) for item in blocks}
     total_samples = max(1, int(math.ceil(max_end * sample_rate)))
     with wave.open(str(master_wav), "wb") as master:
@@ -361,8 +368,8 @@ def main() -> int:
         "master": {"path": str(master_flac), "start": 0.0, "duration": max_end},
         "review_count": sum(1 for cue in cue_results if cue["status"] != "fit"),
     }
-    result_path = output_root / "result.json"
-    temp_path = output_root / ("result.json.tmp-" + os.urandom(6).hex())
+    result_path = output_root / f"result-{run_id}.json"
+    temp_path = output_root / (result_path.name + ".tmp-" + os.urandom(6).hex())
     temp_path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     temp_path.replace(result_path)
     emit({"event": "complete", "result": str(result_path), "blocks": len(blocks), "review_count": result["review_count"]})

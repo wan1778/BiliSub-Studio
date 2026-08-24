@@ -77,7 +77,6 @@ internal sealed class LocalTtsService : IDisposable
         var outputRoot = Path.Combine(_paths.Cache, "Editor", "TTS", request.ProjectId);
         Directory.CreateDirectory(outputRoot);
         var inputPath = Path.Combine(outputRoot, "input.json");
-        var resultPath = Path.Combine(outputRoot, "result.json");
         var cues = new List<TtsCueManifest>(request.Subtitle.Cues.Count);
         foreach (var cue in request.Subtitle.Cues)
         {
@@ -107,11 +106,11 @@ internal sealed class LocalTtsService : IDisposable
 
         job.Set("tts-generate", 37, $"Đang tạo voice Việt local · {cues.Count} câu · canh theo word timing Whisper...");
         await using var processes = new OwnedProcessGroup();
+        var reportedResult = string.Empty;
         try
         {
             var ready = false;
             var completed = false;
-            var reportedResult = string.Empty;
             var result = await _processes.RunStreamingAsync(
                 runtime.Python,
                 [
@@ -154,16 +153,15 @@ internal sealed class LocalTtsService : IDisposable
                     }
                     return ValueTask.CompletedTask;
                 }, runtime.Environment, processes);
-            if (result.ExitCode != 0 || !ready || !completed)
+            if (result.ExitCode != 0 || !ready || !completed || string.IsNullOrWhiteSpace(reportedResult))
                 throw new InvalidOperationException("TTS local dừng bất thường: " + LastLine(result.StandardError));
-            if (!string.IsNullOrWhiteSpace(reportedResult) && !SamePath(reportedResult, resultPath))
-                throw new InvalidDataException("Worker TTS trả result ngoài cache project.");
         }
         finally
         {
             try { await processes.StopAsync(); } catch { }
         }
 
+        var resultPath = reportedResult;
         var parsedResult = await ReadResultAsync(resultPath, outputRoot, request.Duration, job.CancellationToken);
         var manifestSha = await HashAsync(resultPath, job.CancellationToken);
         var timingById = cueTiming;
@@ -267,8 +265,10 @@ internal sealed class LocalTtsService : IDisposable
     private async Task<TtsWorkerResult> ReadResultAsync(string path, string root, double duration, CancellationToken cancellationToken)
     {
         var absolute = Path.GetFullPath(path);
-        if (!File.Exists(absolute) || new FileInfo(absolute).Length is <= 0 or > 32L * 1024 * 1024)
-            throw new InvalidDataException("Worker TTS không tạo result hợp lệ.");
+        var safeRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        if (!absolute.StartsWith(safeRoot, StringComparison.OrdinalIgnoreCase)
+            || !File.Exists(absolute) || new FileInfo(absolute).Length is <= 0 or > 32L * 1024 * 1024)
+            throw new InvalidDataException("Worker TTS không tạo result hợp lệ trong cache project.");
         await using var stream = File.OpenRead(absolute);
         var result = await JsonSerializer.DeserializeAsync<TtsWorkerResult>(stream, _json, cancellationToken)
             ?? throw new InvalidDataException("Result TTS rỗng.");
@@ -276,7 +276,6 @@ internal sealed class LocalTtsService : IDisposable
             || string.IsNullOrWhiteSpace(result.Engine) || string.IsNullOrWhiteSpace(result.EngineVersion))
             throw new InvalidDataException("Result TTS sai schema.");
         var masterPath = Path.GetFullPath(result.Master.Path);
-        var safeRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
         if (!masterPath.StartsWith(safeRoot, StringComparison.OrdinalIgnoreCase) || !File.Exists(masterPath) || new FileInfo(masterPath).Length <= 64
             || !double.IsFinite(result.Master.Start) || result.Master.Start < 0 || !double.IsFinite(result.Master.Duration)
             || result.Master.Duration <= 0 || result.Master.Duration > duration + 5)
@@ -326,7 +325,6 @@ internal sealed class LocalTtsService : IDisposable
     }
     private static string GetString(JsonElement root, string name) => root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() ?? string.Empty : string.Empty;
     private static int GetInt(JsonElement root, string name) => root.TryGetProperty(name, out var value) && value.TryGetInt32(out var result) ? result : 0;
-    private static bool SamePath(string left, string right) => string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
     private static string LastLine(string? text) => string.IsNullOrWhiteSpace(text) ? "không có chi tiết lỗi" : text.Trim().Split('\n', StringSplitOptions.RemoveEmptyEntries)[^1].Trim();
     private static async Task<string> HashAsync(string path, CancellationToken cancellationToken)
     {
