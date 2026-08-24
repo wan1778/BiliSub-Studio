@@ -298,7 +298,7 @@ require("if (IsPlaying) PauseAtCurrentFrame();" in toggle_playback
         "PREVIEW-05 Pause must hold the current MediaPlayer frame without leaving processed preview")
 require("else ResumeFromCurrentFrame();" in toggle_playback
         and "private void ResumeFromCurrentFrame() => _player?.Play();" in playback_source
-        and playback_source.count("ResumeFromCurrentFrame();") == 2,
+        and toggle_playback.count("ResumeFromCurrentFrame();") == 1,
         "PREVIEW-06 Resume must reuse the paused MediaPlayer source/position without rendering a segment")
 seek_playback = playback_source.split("internal async Task SeekAsync(double sourcePosition)", 1)[1].split("internal Task DisposeForSourceChangeAsync()", 1)[0]
 require("else await SeekPausedAsync(sourcePosition);" in seek_playback
@@ -344,6 +344,17 @@ require("internal bool HasEnded { get; private set; }" in playback_source
         and "HasEnded = true;" in playback_source
         and "HasEnded = false;" in replay_load_source,
         "PREVIEW-11 replay must use an explicit controller-owned ended state and restart from source zero")
+fullscreen_roundtrip = playback_source.split("internal async Task EnterFullscreenAsync()", 1)[1].split("internal void SetMuted", 1)[0]
+require("await _playback.ToggleFullscreenAsync();" in playback_source
+        and "private readonly record struct FullscreenSnapshot(" in playback_source
+        and "RegisterPropertyChangedCallback(" in playback_source
+        and "UnregisterPropertyChangedCallback(" in playback_source
+        and "private async Task RestoreFullscreenRoundtripAsync(" in playback_source
+        and "if (!snapshot.PreviewMode)" in fullscreen_roundtrip
+        and "await SetModeAsync(enabled: false, play: false);" in fullscreen_roundtrip
+        and "if (snapshot.Playing) ResumeFromCurrentFrame();" in fullscreen_roundtrip
+        and "else PauseAtCurrentFrame();" in fullscreen_roundtrip,
+        "PREVIEW-12 fullscreen roundtrip must restore presentation, position and play/pause intent")
 require("SubtitleCueList" in editor and "SubtitleRetranslateCueButton" in editor and "SubtitleSaveSrtButton" in editor,
         "Editor static subtitle cue editor controls missing")
 require("ForceFresh = false" in read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalSubtitleTranslationService.cs")

@@ -1,5 +1,6 @@
 using BiliSubStudio.Core.Editor;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Controls;
 using Windows.Media.Core;
 using Windows.Media.Playback;
 using Windows.Storage;
@@ -17,7 +18,7 @@ public sealed partial class EditorPage
 
     private async void Fullscreen_Click(object sender, RoutedEventArgs e)
     {
-        try { await _playback.EnterFullscreenAsync(); }
+        try { await _playback.ToggleFullscreenAsync(); }
         catch (OperationCanceledException) { StatusText.Text = "Đã dừng tạo bản xem trước."; }
         catch (Exception error) { StatusText.Text = "Toàn màn hình bản chỉnh: " + error.Message; }
     }
@@ -38,6 +39,10 @@ public sealed partial class EditorPage
         private string? _previewPath;
         private double _sourceStart;
         private double _sourceDuration;
+        private FullscreenSnapshot? _fullscreenSnapshot;
+        private long? _fullWindowChangedToken;
+
+        private readonly record struct FullscreenSnapshot(bool PreviewMode, bool Playing, bool Ended);
 
         internal EditorPlaybackController(EditorPage page) => _page = page;
 
@@ -51,6 +56,7 @@ public sealed partial class EditorPage
         internal async Task PrepareAsync()
         {
             await _previewRequests.CancelAsync();
+            ClearFullscreenTracking(unregisterCallback: true);
             DisposePlayer();
 
             var stalePreview = _previewPath;
@@ -101,8 +107,83 @@ public sealed partial class EditorPage
 
         internal async Task EnterFullscreenAsync()
         {
-            await SetModeAsync(enabled: true, play: false);
-            _page.PreviewPlayer.IsFullWindow = true;
+            if (_page.PreviewPlayer.IsFullWindow) return;
+            var snapshot = new FullscreenSnapshot(IsPreviewMode, IsPlaying, HasEnded);
+            EnsureFullscreenTracking();
+            _fullscreenSnapshot = snapshot;
+            try
+            {
+                await SetModeAsync(enabled: true, play: false);
+                HasEnded = snapshot.Ended;
+                _page.PreviewPlayer.IsFullWindow = true;
+            }
+            catch
+            {
+                _fullscreenSnapshot = null;
+                throw;
+            }
+        }
+
+        internal async Task ToggleFullscreenAsync()
+        {
+            if (!_page.PreviewPlayer.IsFullWindow)
+            {
+                await EnterFullscreenAsync();
+                return;
+            }
+
+            var snapshot = _fullscreenSnapshot;
+            _fullscreenSnapshot = null;
+            _page.PreviewPlayer.IsFullWindow = false;
+            if (snapshot is { } state) await RestoreFullscreenRoundtripAsync(state);
+        }
+
+        private void EnsureFullscreenTracking()
+        {
+            _fullWindowChangedToken ??= _page.PreviewPlayer.RegisterPropertyChangedCallback(
+                MediaPlayerElement.IsFullWindowProperty, PreviewPlayerFullWindowChanged);
+        }
+
+        private void PreviewPlayerFullWindowChanged(DependencyObject sender, DependencyProperty property)
+        {
+            if (_page.PreviewPlayer.IsFullWindow || _fullscreenSnapshot is not { } snapshot) return;
+            _fullscreenSnapshot = null;
+            _ = RestoreFullscreenRoundtripAsync(snapshot);
+        }
+
+        private async Task RestoreFullscreenRoundtripAsync(FullscreenSnapshot snapshot)
+        {
+            try
+            {
+                if (!snapshot.PreviewMode)
+                    await SetModeAsync(enabled: false, play: false);
+                HasEnded = snapshot.Ended;
+                if (snapshot.Ended)
+                {
+                    PauseAtCurrentFrame();
+                    _page.StatusText.Text = "Đã xem hết bản chỉnh. Bấm Play để phát lại từ đầu.";
+                }
+                else if (snapshot.Playing) ResumeFromCurrentFrame();
+                else PauseAtCurrentFrame();
+                _page.SyncShellPlayerControls();
+            }
+            catch (OperationCanceledException)
+            {
+                _page.StatusText.Text = "Đã dừng khôi phục preview sau toàn màn hình.";
+            }
+            catch (Exception error)
+            {
+                _page.StatusText.Text = "Không khôi phục được preview sau toàn màn hình: " + error.Message;
+            }
+        }
+
+        private void ClearFullscreenTracking(bool unregisterCallback)
+        {
+            _fullscreenSnapshot = null;
+            _page.PreviewPlayer.IsFullWindow = false;
+            if (!unregisterCallback || _fullWindowChangedToken is not { } token) return;
+            _page.PreviewPlayer.UnregisterPropertyChangedCallback(MediaPlayerElement.IsFullWindowProperty, token);
+            _fullWindowChangedToken = null;
         }
 
         internal void SetMuted(bool muted)
@@ -140,7 +221,7 @@ public sealed partial class EditorPage
                 _player.Pause();
                 _player.Source = null;
             }
-            _page.PreviewPlayer.IsFullWindow = false;
+            ClearFullscreenTracking(unregisterCallback: false);
             ApplyPresentation(processed: false);
             var previewPath = _previewPath;
             _previewPath = null;
@@ -183,8 +264,8 @@ public sealed partial class EditorPage
         private async Task ResetAsync()
         {
             await _previewRequests.CancelAsync();
+            ClearFullscreenTracking(unregisterCallback: true);
             DisposePlayer();
-            _page.PreviewPlayer.IsFullWindow = false;
             IsPreviewMode = false;
             HasEnded = false;
             _sourceStart = 0;
