@@ -122,6 +122,7 @@ if (Test-Path (Join-Path $root ".git") -PathType Container) {
 $sourceIdentity = Get-SourceIdentity $root
 
 Invoke-Checked python @("csharp/scripts/validate_csharp_migration.py")
+Invoke-Checked python @("csharp/scripts/verify_editor_audio_state_contract.py")
 Invoke-Checked python @("csharp/scripts/generate_csharp_code_map.py", "--check")
 Invoke-Checked python @("csharp/scripts/verify_global_log_ui_contract.py")
 Invoke-Checked python @("csharp/scripts/verify_ocr_worker_contract.py")
