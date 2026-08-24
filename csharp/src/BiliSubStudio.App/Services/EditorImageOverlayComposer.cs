@@ -54,6 +54,7 @@ internal sealed class EditorImageOverlayComposer(ToolManager tools, ProcessRunne
         var temporary = output + ".rendering" + extension;
         TryDelete(temporary);
 
+        var expectAudio = await HasAudioStreamAsync(input, job.CancellationToken);
         var ffmpeg = await tools.EnsureFfmpegAsync(job.CancellationToken);
         var args = new List<string>
         {
@@ -96,8 +97,8 @@ internal sealed class EditorImageOverlayComposer(ToolManager tools, ProcessRunne
             if (!File.Exists(temporary) || new FileInfo(temporary).Length <= 0)
                 throw new InvalidDataException("Video ghép ảnh/logo bị rỗng.");
 
-            job.Set("image-validate", 97, "Đang kiểm tra video có ảnh/logo...");
-            await ValidateAsync(temporary, sourceWidth, sourceHeight, duration, job.CancellationToken);
+            job.Set("image-validate", 97, "Đang kiểm tra stream, kích thước, audio và thời lượng...");
+            await ValidateAsync(temporary, sourceWidth, sourceHeight, duration, expectAudio, job.CancellationToken);
             File.Move(temporary, output);
             job.Set("image-complete", 99, "Đã ghép và xác minh ảnh/logo.");
             return output;
@@ -108,7 +109,33 @@ internal sealed class EditorImageOverlayComposer(ToolManager tools, ProcessRunne
         }
     }
 
-    private async Task ValidateAsync(string path, int expectedWidth, int expectedHeight, double expectedDuration, CancellationToken cancellationToken)
+    private async Task<bool> HasAudioStreamAsync(string path, CancellationToken cancellationToken)
+    {
+        var ffprobe = await tools.EnsureFfprobeAsync(cancellationToken);
+        var probe = await processes.RunAsync(ffprobe,
+        [
+            "-v", "error",
+            "-select_streams", "a:0",
+            "-show_entries", "stream=codec_type",
+            "-of", "json", path,
+        ], cancellationToken);
+        if (probe.ExitCode != 0)
+            throw new InvalidDataException("Không đọc được audio stream của video dùng để ghép ảnh/logo: " + probe.StandardError.Trim());
+
+        using var document = JsonDocument.Parse(probe.StandardOutput);
+        if (!document.RootElement.TryGetProperty("streams", out var streams) || streams.ValueKind != JsonValueKind.Array)
+            return false;
+        return streams.EnumerateArray().Any(stream =>
+            stream.TryGetProperty("codec_type", out var type) && type.GetString() == "audio");
+    }
+
+    private async Task ValidateAsync(
+        string path,
+        int expectedWidth,
+        int expectedHeight,
+        double expectedDuration,
+        bool expectAudio,
+        CancellationToken cancellationToken)
     {
         var ffprobe = await tools.EnsureFfprobeAsync(cancellationToken);
         var probe = await processes.RunAsync(ffprobe,
@@ -122,20 +149,36 @@ internal sealed class EditorImageOverlayComposer(ToolManager tools, ProcessRunne
 
         using var document = JsonDocument.Parse(probe.StandardOutput);
         var root = document.RootElement;
+        var videoStreams = 0;
+        var audioStreams = 0;
         var validVideo = false;
         if (root.TryGetProperty("streams", out var streams) && streams.ValueKind == JsonValueKind.Array)
         {
             foreach (var stream in streams.EnumerateArray())
             {
-                if (!stream.TryGetProperty("codec_type", out var type) || type.GetString() != "video") continue;
-                var width = stream.TryGetProperty("width", out var widthNode) && widthNode.TryGetInt32(out var parsedWidth) ? parsedWidth : 0;
-                var height = stream.TryGetProperty("height", out var heightNode) && heightNode.TryGetInt32(out var parsedHeight) ? parsedHeight : 0;
-                if (width == expectedWidth && height == expectedHeight) validVideo = true;
+                if (!stream.TryGetProperty("codec_type", out var type)) continue;
+                if (type.GetString() == "video")
+                {
+                    videoStreams++;
+                    var width = stream.TryGetProperty("width", out var widthNode) && widthNode.TryGetInt32(out var parsedWidth) ? parsedWidth : 0;
+                    var height = stream.TryGetProperty("height", out var heightNode) && heightNode.TryGetInt32(out var parsedHeight) ? parsedHeight : 0;
+                    if (width == expectedWidth && height == expectedHeight) validVideo = true;
+                }
+                else if (type.GetString() == "audio") audioStreams++;
             }
         }
-        if (!validVideo) throw new InvalidDataException("Kích thước video sau khi ghép ảnh/logo bị thay đổi ngoài dự kiến.");
-        if (!root.TryGetProperty("format", out var format) || !TryDouble(format, "duration", out var duration) || duration <= 0)
+        if (videoStreams == 0 || !validVideo)
+            throw new InvalidDataException("Kích thước video sau khi ghép ảnh/logo bị thay đổi ngoài dự kiến.");
+        if (expectAudio && audioStreams == 0)
+            throw new InvalidDataException("Video sau khi ghép ảnh/logo bị mất audio nguồn/base.");
+        if (!expectAudio && audioStreams != 0)
+            throw new InvalidDataException("Video sau khi ghép ảnh/logo xuất hiện audio ngoài dự kiến.");
+        if (!root.TryGetProperty("format", out var format) || format.ValueKind != JsonValueKind.Object)
+            throw new InvalidDataException("Video sau khi ghép ảnh/logo thiếu metadata container.");
+        if (!TryDouble(format, "duration", out var duration) || !double.IsFinite(duration) || duration <= 0)
             throw new InvalidDataException("Video sau khi ghép ảnh/logo không có duration hợp lệ.");
+        if (!TryDouble(format, "size", out var size) || !double.IsFinite(size) || size <= 0)
+            throw new InvalidDataException("Video sau khi ghép ảnh/logo không có kích thước container hợp lệ.");
         var tolerance = Math.Clamp(expectedDuration * .0005, 1.5, 5.0);
         if (Math.Abs(duration - expectedDuration) > tolerance)
             throw new InvalidDataException($"Duration video ghép ảnh/logo lệch {Math.Abs(duration - expectedDuration):0.000}s.");
