@@ -41,8 +41,8 @@ require("_audioSettings," in current_request and "_voiceTrack" in current_reques
 
 preview_load = playback.split("private async Task LoadSegmentCoreAsync(", 1)[1].split(
     "private async Task ActivateSegmentAsync(", 1)[0]
-require("_page.CurrentEditRequest(_page.PreviewSubtitleBurn())" in preview_load,
-        "AUDIO-08 processed Preview must originate from CurrentEditRequest")
+require("_page.CurrentEditRequest(_page.CompletedSubtitleBurn())" in preview_load,
+        "AUDIO-08 processed Preview must originate from the same exportable CurrentEditRequest")
 
 image_export = editor_images.split("private async Task RenderProjectAsync()", 1)[1].split(
     "private void RefreshImageControls()", 1)[0]

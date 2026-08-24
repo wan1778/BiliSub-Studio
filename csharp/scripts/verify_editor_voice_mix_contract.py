@@ -40,8 +40,8 @@ require("_audioSettings," in current_request and "_voiceTrack);" in current_requ
 preview_load = playback.split("private async Task LoadSegmentCoreAsync(", 1)[1].split(
     "private async Task ActivateSegmentAsync(", 1
 )[0]
-require("_page.CurrentEditRequest(_page.PreviewSubtitleBurn())" in preview_load,
-        "VOICE-13 Preview must use the current request-owned audio and voice state")
+require("_page.CurrentEditRequest(_page.CompletedSubtitleBurn())" in preview_load,
+        "VOICE-13 Preview must use the current exportable request-owned audio and voice state")
 
 preview_run = video_editor.split("public async Task<EditorPreviewSegment> CreatePreviewSegmentAsync(", 1)[1].split(
     "public async Task DeletePreviewSegmentAsync", 1
