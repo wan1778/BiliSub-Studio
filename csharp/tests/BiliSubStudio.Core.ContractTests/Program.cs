@@ -62,6 +62,7 @@ internal static class Program
         ("editor Mosaic strength drives pixelated Preview Export dimensions", EditorMosaicStrengthContractAsync),
         ("editor Cover is opaque strength-free and preserves Preview Export geometry", EditorCoverEffectContractAsync),
         ("editor whole-video scope canonicalizes state and spans Preview Export", EditorWholeVideoScopeContractAsync),
+        ("editor timed range validates numeric and current-position Preview Export state", EditorTimedRangeContractAsync),
         ("editor project persists, isolates source drift and quarantines corrupt state", EditorProjectContractAsync),
         ("editor SRT keeps exact blocks order and timecodes", EditorSubtitleDocumentContractAsync),
         ("editor manual cue state persists locks and preserves timeline", EditorSubtitleManualContract.RunAsync),
@@ -1184,7 +1185,7 @@ internal static class Program
             "NormalizeRegions", BindingFlags.Static | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("missing Cover persistence normalization policy");
         var normalized = (IReadOnlyList<EditRegion>)normalizeMethod.Invoke(null,
-            [new[] { new EditRegion(.1, .2, .3, .25, "cover", 37, true, 0, 10, "cover-persisted") }, 10d])!;
+            [new[] { new EditRegion(.1, .2, .3, .25, "cover", 37, true, 0, 10, "cover-persisted") }, 10d, false])!;
         Equal(EditorCoverEffect.StoredStrength, normalized[0].Strength);
 
         var region = new EditRegion(.1, .2, .3, .25, "cover", EditorCoverEffect.StoredStrength, true, 0, 10, "cover");
@@ -1230,6 +1231,42 @@ internal static class Program
 
         var timed = stale with { WholeVideo = false, Start = 37, End = 42 };
         Equal(timed, EditorRegionTimeScope.NormalizeWholeVideo(timed, 120));
+        return Task.CompletedTask;
+    }
+
+    private static Task EditorTimedRangeContractAsync()
+    {
+        var timed = new EditRegion(.1, .2, .3, .25, "blur", 18, false, 37, 42, "timed");
+        Equal(timed, EditorRegionTimeScope.Normalize(timed, 120));
+        Throws<ArgumentException>(() => EditorRegionTimeScope.Normalize(timed with { Start = double.NaN }, 120));
+        Throws<ArgumentException>(() => EditorRegionTimeScope.Normalize(timed with { Start = -1 }, 120));
+        Throws<ArgumentException>(() => EditorRegionTimeScope.Normalize(timed with { End = 121 }, 120));
+        Throws<ArgumentException>(() => EditorRegionTimeScope.Normalize(timed with { Start = 42 }, 120));
+
+        var migrated = EditorRegionTimeScope.NormalizeStored(timed with { Start = -2, End = 125 }, 120);
+        Equal(0d, migrated.Start);
+        Equal(120d, migrated.End);
+        Throws<InvalidDataException>(() => EditorRegionTimeScope.NormalizeStored(timed with { Start = 125, End = 130 }, 120));
+
+        Equal(new EditorRegionTimeRange(37, 42), EditorRegionTimeScope.CreateDefaultTimedRange(37, 120));
+        Equal(new EditorRegionTimeRange(115, 120), EditorRegionTimeScope.CreateDefaultTimedRange(120, 120));
+
+        var request = new VideoEditRequest("input.mp4", ".", "output.mp4", 1920, 1080, 120, [timed]);
+        var exportGraph = VideoEditorService.BuildFilter(request);
+        True(exportGraph.Contains("enable='between(t,37.000,42.000)'", StringComparison.Ordinal),
+            "Export changed the validated numeric time range");
+
+        var sliceMethod = typeof(VideoEditorService).GetMethod(
+            "BuildPreviewSlice", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing timed processed-preview slice policy");
+        var preview = (VideoEditRequest)sliceMethod.Invoke(null, [request, 40d, 5d, 1280, 720])!;
+        Equal(1, preview.Regions.Count);
+        Equal(0d, preview.Regions[0].Start);
+        Equal(2d, preview.Regions[0].End);
+        True(VideoEditorService.BuildFilter(preview).Contains("enable='between(t,0.000,2.000)'", StringComparison.Ordinal),
+            "processed Preview did not shift and clip the validated source time range");
+        var outside = (VideoEditRequest)sliceMethod.Invoke(null, [request, 50d, 5d, 1280, 720])!;
+        Equal(0, outside.Regions.Count);
         return Task.CompletedTask;
     }
 
@@ -1946,6 +1983,14 @@ internal static class Program
             return;
         }
 
+        throw new InvalidOperationException($"expected exception {typeof(TException).Name}");
+    }
+
+    private static void Throws<TException>(Action action)
+        where TException : Exception
+    {
+        try { action(); }
+        catch (TException) { return; }
         throw new InvalidOperationException($"expected exception {typeof(TException).Name}");
     }
 

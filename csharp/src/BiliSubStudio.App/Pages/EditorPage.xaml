@@ -183,12 +183,12 @@
                                 </Grid>
                                 <ToggleSwitch x:Name="WholeToggle" Header="Áp dụng toàn video" IsOn="True" Toggled="WholeToggle_Toggled" />
                                 <Grid ColumnSpacing="5"><Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
-                                    <NumberBox x:Name="StartBox" Header="Bắt đầu (s)" IsEnabled="False" ValueChanged="EditInput_ValueChanged" />
-                                    <NumberBox Grid.Column="1" x:Name="EndBox" Header="Kết thúc (s)" IsEnabled="False" ValueChanged="EditInput_ValueChanged" />
+                                    <NumberBox x:Name="StartBox" Header="Bắt đầu (s)" IsEnabled="False" Minimum="0" SmallChange="0.1" LargeChange="1" SpinButtonPlacementMode="Inline" ValueChanged="EditInput_ValueChanged" />
+                                    <NumberBox Grid.Column="1" x:Name="EndBox" Header="Kết thúc (s)" IsEnabled="False" Minimum="0" SmallChange="0.1" LargeChange="1" SpinButtonPlacementMode="Inline" ValueChanged="EditInput_ValueChanged" />
                                 </Grid>
                                 <Grid ColumnSpacing="5"><Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
-                                    <Button x:Name="EditorUseCurrentStartButton" Content="Lấy thời điểm → đầu" Style="{StaticResource SecondaryButtonStyle}" />
-                                    <Button Grid.Column="1" x:Name="EditorUseCurrentEndButton" Content="Lấy thời điểm → cuối" Style="{StaticResource SecondaryButtonStyle}" />
+                                    <Button x:Name="EditorUseCurrentStartButton" Click="EditorUseCurrentStart_Click" Content="Lấy thời điểm → đầu" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />
+                                    <Button Grid.Column="1" x:Name="EditorUseCurrentEndButton" Click="EditorUseCurrentEnd_Click" Content="Lấy thời điểm → cuối" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />
                                 </Grid>
                                 <TextBlock x:Name="RegionValidationText" Style="{StaticResource MutedTextStyle}" Text="Chọn video rồi kéo để tạo vùng." TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
                                 <Button x:Name="AddRegionButton" Click="AddRegion_Click" Content="Thêm vùng" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />

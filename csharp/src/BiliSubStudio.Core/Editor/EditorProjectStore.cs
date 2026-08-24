@@ -134,7 +134,7 @@ public sealed class EditorProjectStore
                     ArchiveSourceChanged(projectPath);
                     return CreateFreshProject(source, id, loaded.Name, loaded.FileName);
                 }
-                var regions = NormalizeRegions(loaded.Regions, source.Duration);
+                var regions = NormalizeRegions(loaded.Regions, source.Duration, normalizeStored: true);
                 return loaded with
                 {
                     Schema = CurrentSchema,
@@ -217,7 +217,7 @@ public sealed class EditorProjectStore
         {
             Source = normalizedSource,
             FileName = string.IsNullOrWhiteSpace(project.FileName) ? project.Name + "_edited.mp4" : project.FileName.Trim(),
-            Regions = NormalizeRegions(project.Regions, normalizedSource.Duration),
+            Regions = NormalizeRegions(project.Regions, normalizedSource.Duration, normalizeStored: false),
             Subtitle = NormalizeSubtitle(project.Subtitle),
             Audio = NormalizeAudio(project.Audio),
             Asr = NormalizeAsr(project.Asr),
@@ -265,7 +265,7 @@ public sealed class EditorProjectStore
         return new EditorSourceFingerprint(path, info.Length, info.LastWriteTimeUtc.Ticks, width, height, Math.Max(0, duration));
     }
 
-    private static IReadOnlyList<EditRegion> NormalizeRegions(IReadOnlyList<EditRegion>? source, double duration)
+    private static IReadOnlyList<EditRegion> NormalizeRegions(IReadOnlyList<EditRegion>? source, double duration, bool normalizeStored)
     {
         if (source is null) return [];
         if (source.Count > 32) throw new InvalidDataException("Project Editor vượt quá 32 vùng.");
@@ -299,7 +299,9 @@ public sealed class EditorProjectStore
                     _ => EditorCoverEffect.NormalizeStored(region.Strength),
                 },
             };
-            normalized.Add(EditorRegionTimeScope.NormalizeWholeVideo(normalizedRegion, duration));
+            normalized.Add(normalizeStored
+                ? EditorRegionTimeScope.NormalizeStored(normalizedRegion, duration)
+                : EditorRegionTimeScope.Normalize(normalizedRegion, duration));
         }
         return normalized;
     }

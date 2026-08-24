@@ -39,8 +39,6 @@ public sealed partial class EditorPage
         EnsureImageFeatureInitialized();
 
         _editorOutputPathText = EditorOutputPathText;
-        _editorUseCurrentStartButton = EditorUseCurrentStartButton;
-        _editorUseCurrentEndButton = EditorUseCurrentEndButton;
         _editorChooseOutputButton = EditorChooseOutputButton;
         _editorOpenOutputButton = EditorOpenOutputButton;
         _editorAutoCompositeToggle = EditorAutoCompositeToggle;
@@ -91,8 +89,6 @@ public sealed partial class EditorPage
         ImageOpacitySlider.ValueChanged += ImageOpacity_ValueChanged;
 
         EditorAutoCompositeToggle.Toggled += EditorAutoComposite_Toggled;
-        EditorUseCurrentStartButton.Click += EditorUseCurrentStart_Click;
-        EditorUseCurrentEndButton.Click += EditorUseCurrentEnd_Click;
         EditorChooseOutputButton.Click += EditorChooseOutput_Click;
         EditorOpenOutputButton.Click += EditorOpenOutput_Click;
 

@@ -359,6 +359,7 @@ public sealed class VideoEditorService
         if (request.SourceWidth <= 0 || request.SourceHeight <= 0) throw new ArgumentException("Kích thước source không hợp lệ.");
         var sourceEnd = sourceStart + segmentDuration;
         var regions = request.Regions
+            .Select(region => EditorRegionTimeScope.Normalize(region, request.Duration))
             .Where(region => region.WholeVideo || region.End > sourceStart && region.Start < sourceEnd)
             .Select(region => region.WholeVideo
                 ? EditorRegionTimeScope.NormalizeWholeVideo(region, segmentDuration)
@@ -491,7 +492,8 @@ public sealed class VideoEditorService
         var input = Path.GetFullPath(inputPath.Trim());
         if (!File.Exists(input) || new FileInfo(input).Length <= 0) throw new FileNotFoundException("Video nguồn không hợp lệ.", input);
         var ffmpeg = await _tools.EnsureFfmpegAsync(cancellationToken);
-        var active = regions.Where(region => IsActiveAt(region, seconds)).Select(region =>
+        var active = regions.Select(region => EditorRegionTimeScope.Normalize(region, duration))
+            .Where(region => IsActiveAt(region, seconds)).Select(region =>
             EditorRegionTimeScope.NormalizeWholeVideo(region with { WholeVideo = true }, Math.Max(0, duration))).ToArray();
         var args = new List<string>
         {
@@ -713,11 +715,9 @@ public sealed class VideoEditorService
 
     private static string RegionEnable(EditRegion region, double duration)
     {
-        if (region.WholeVideo) return string.Empty;
-        var start = Math.Max(0, region.Start);
-        var end = duration > 0 ? Math.Min(duration, region.End) : region.End;
-        if (end <= start) throw new ArgumentException("Thời gian kết thúc phải lớn hơn bắt đầu.");
-        return $":enable='between(t,{start.ToString("0.000", CultureInfo.InvariantCulture)},{end.ToString("0.000", CultureInfo.InvariantCulture)})'";
+        var normalized = EditorRegionTimeScope.Normalize(region, duration);
+        if (normalized.WholeVideo) return string.Empty;
+        return $":enable='between(t,{normalized.Start.ToString("0.000", CultureInfo.InvariantCulture)},{normalized.End.ToString("0.000", CultureInfo.InvariantCulture)})'";
     }
 
     private static string AssTime(double seconds)

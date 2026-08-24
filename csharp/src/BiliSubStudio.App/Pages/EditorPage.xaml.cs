@@ -214,6 +214,7 @@ public sealed partial class EditorPage : Page
         try
         {
             FileNameBox.Text = _project.FileName;
+            StartBox.Maximum = EndBox.Maximum = _media.Duration;
             EndBox.Value = _media.Duration;
         }
         finally { _syncingInputs = false; }
@@ -833,14 +834,35 @@ public sealed partial class EditorPage : Page
         if (!IsLoaded || _syncingInputs) return;
         if (!WholeToggle.IsOn && _media is not null && _document.Selected is null)
         {
+            var range = EditorRegionTimeScope.CreateDefaultTimedRange(Timeline.Value, _media.Duration);
             _syncingInputs = true;
             try
             {
-                StartBox.Value = Timeline.Value;
-                EndBox.Value = Math.Min(_media.Duration, Timeline.Value + 5);
+                StartBox.Value = range.Start;
+                EndBox.Value = range.End;
             }
             finally { _syncingInputs = false; }
         }
+        if (ApplyInputsToDocument()) NotifyEditorCompositeChanged();
+    }
+
+    private void EditorUseCurrentStart_Click(object sender, RoutedEventArgs e) =>
+        SetTimedBoundaryFromCurrent(setStart: true);
+
+    private void EditorUseCurrentEnd_Click(object sender, RoutedEventArgs e) =>
+        SetTimedBoundaryFromCurrent(setStart: false);
+
+    private void SetTimedBoundaryFromCurrent(bool setStart)
+    {
+        if (_media is null || WholeToggle.IsOn || EditorBusy || _playback.IsPreviewMode) return;
+        var value = Math.Clamp(Timeline.Value, 0, _media.Duration);
+        _syncingInputs = true;
+        try
+        {
+            if (setStart) StartBox.Value = value;
+            else EndBox.Value = value;
+        }
+        finally { _syncingInputs = false; }
         if (ApplyInputsToDocument()) NotifyEditorCompositeChanged();
     }
 
@@ -864,8 +886,7 @@ public sealed partial class EditorPage : Page
     private void EditInput_ValueChanged(NumberBox sender, NumberBoxValueChangedEventArgs args)
     {
         if (!IsLoaded || _syncingInputs) return;
-        ApplyInputsToDocument();
-        NotifyEditorCompositeChanged();
+        if (ApplyInputsToDocument()) NotifyEditorCompositeChanged();
     }
 
     private void EffectStrength_ValueChanged(NumberBox sender, NumberBoxValueChangedEventArgs args)
@@ -1683,8 +1704,8 @@ public sealed partial class EditorPage : Page
     private EditRegion RegionWithCurrentSettings(double x, double y, double width, double height, string id)
     {
         var duration = _media?.Duration ?? 0;
-        var start = double.IsNaN(StartBox.Value) ? 0 : StartBox.Value;
-        var end = double.IsNaN(EndBox.Value) ? duration : EndBox.Value;
+        var start = StartBox.Value;
+        var end = EndBox.Value;
         var region = new EditRegion(x, y, width, height, SelectedEffect(), CurrentEffectStrength(), WholeToggle.IsOn, start, end, id);
         return EditorRegionTimeScope.NormalizeWholeVideo(region, duration);
     }
@@ -1713,7 +1734,8 @@ public sealed partial class EditorPage : Page
     private void ValidateRegion(EditRegion region)
     {
         if (_media is null) throw new InvalidOperationException("Chưa chọn video.");
-        _ = VideoEditorService.BuildFilter(new VideoEditRequest(_path ?? "x", ".", "x.mp4", _media.Width, _media.Height, _media.Duration, [region]));
+        var normalized = EditorRegionTimeScope.Normalize(region, _media.Duration);
+        _ = VideoEditorService.BuildFilter(new VideoEditRequest(_path ?? "x", ".", "x.mp4", _media.Width, _media.Height, _media.Duration, [normalized]));
     }
 
     private void LoadSelectedIntoInputs()
@@ -1867,6 +1889,7 @@ public sealed partial class EditorPage : Page
         EffectBox.IsEnabled = WholeToggle.IsEnabled = editable;
         StrengthBox.IsEnabled = editable && EffectUsesStrength(SelectedEffect());
         StartBox.IsEnabled = EndBox.IsEnabled = editable && !WholeToggle.IsOn;
+        EditorUseCurrentStartButton.IsEnabled = EditorUseCurrentEndButton.IsEnabled = editable && !WholeToggle.IsOn;
         FileNameBox.IsEnabled = editable;
         ImportSrtButton.IsEnabled = idle && !_playback.IsPreviewMode;
         CreateAsrButton.IsEnabled = editable;

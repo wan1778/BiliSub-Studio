@@ -8,8 +8,6 @@ public sealed partial class EditorPage
 {
     private bool _editorParityInitialized;
     private TextBlock? _editorOutputPathText;
-    private Button? _editorUseCurrentStartButton;
-    private Button? _editorUseCurrentEndButton;
     private Button? _editorChooseOutputButton;
     private Button? _editorOpenOutputButton;
     private ToggleSwitch? _editorAutoCompositeToggle;
@@ -23,26 +21,6 @@ public sealed partial class EditorPage
         if (_editorParityInitialized) return;
         _editorParityInitialized = true;
         RefreshEditorParityControls();
-    }
-
-    private void EditorUseCurrentStart_Click(object sender, RoutedEventArgs e)
-    {
-        if (_media is null || WholeToggle.IsOn || EditorBusy) return;
-        _syncingInputs = true;
-        try { StartBox.Value = Math.Clamp(Timeline.Value, 0, _media.Duration); }
-        finally { _syncingInputs = false; }
-        ApplyInputsToDocument();
-        NotifyEditorCompositeChanged();
-    }
-
-    private void EditorUseCurrentEnd_Click(object sender, RoutedEventArgs e)
-    {
-        if (_media is null || WholeToggle.IsOn || EditorBusy) return;
-        _syncingInputs = true;
-        try { EndBox.Value = Math.Clamp(Timeline.Value, 0, _media.Duration); }
-        finally { _syncingInputs = false; }
-        ApplyInputsToDocument();
-        NotifyEditorCompositeChanged();
     }
 
     private async void EditorChooseOutput_Click(object sender, RoutedEventArgs e)
@@ -146,9 +124,6 @@ public sealed partial class EditorPage
     {
         if (!_editorParityInitialized) return;
         if (_editorOutputPathText is not null) _editorOutputPathText.Text = _application.Config.OutputDirectory;
-        var timeEnabled = _media is not null && !WholeToggle.IsOn && !EditorBusy && !_playback.IsPreviewMode;
-        if (_editorUseCurrentStartButton is not null) _editorUseCurrentStartButton.IsEnabled = timeEnabled;
-        if (_editorUseCurrentEndButton is not null) _editorUseCurrentEndButton.IsEnabled = timeEnabled;
         if (_editorChooseOutputButton is not null) _editorChooseOutputButton.IsEnabled = !EditorBusy && !_playback.IsPreviewMode;
         if (_editorOpenOutputButton is not null) _editorOpenOutputButton.IsEnabled = Directory.Exists(_application.Config.OutputDirectory);
         if (_editorAutoCompositeToggle is not null) _editorAutoCompositeToggle.IsEnabled = !EditorBusy;

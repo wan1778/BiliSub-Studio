@@ -524,12 +524,40 @@ require('x:Name="WholeToggle"' in editor
         and 'Toggled="WholeToggle_Toggled"' in editor
         and "if (ApplyInputsToDocument()) NotifyEditorCompositeChanged();" in whole_toggle_source
         and "EditorRegionTimeScope.NormalizeWholeVideo(" in editor_main
-        and "EditorRegionTimeScope.NormalizeWholeVideo(" in region_document_source
+        and "EditorRegionTimeScope.NormalizeStored(" in region_document_source
         and "EditorRegionTimeScope.NormalizeWholeVideo(" in video_editor_source
         and "public static class EditorRegionTimeScope" in region_time_scope_source
-        and "if (region.WholeVideo) return string.Empty;" in video_editor_source
+        and "if (normalized.WholeVideo) return string.Empty;" in video_editor_source
         and "editor whole-video scope canonicalizes state and spans Preview Export" in contract_tests_source,
         "BLUR-10 Whole video must have one canonical time-scope owner across UI persistence Preview and Export")
+parity_bootstrap_source = read(CSHARP / "src/BiliSubStudio.App/Pages/EditorPage.ParityBootstrap.cs")
+parity_fixes_source = read(CSHARP / "src/BiliSubStudio.App/Pages/EditorPage.ParityFixes.cs")
+timed_input_source = editor_main.split("private void EditorUseCurrentStart_Click(", 1)[1].split("private void EffectBox_SelectionChanged(", 1)[0] if "private void EditorUseCurrentStart_Click(" in editor_main else ""
+require('x:Name="StartBox"' in editor_xaml
+        and blur_controls["StartBox"].get("Minimum") == "0"
+        and blur_controls["EndBox"].get("Minimum") == "0"
+        and blur_controls["StartBox"].get("SmallChange") == "0.1"
+        and blur_controls["EndBox"].get("SmallChange") == "0.1"
+        and 'x:Name="EditorUseCurrentStartButton"' in editor_xaml
+        and 'Click="EditorUseCurrentStart_Click"' in editor_xaml
+        and 'x:Name="EditorUseCurrentEndButton"' in editor_xaml
+        and 'Click="EditorUseCurrentEnd_Click"' in editor_xaml
+        and "EditorUseCurrentStartButton.Click +=" not in parity_bootstrap_source
+        and "EditorUseCurrentEndButton.Click +=" not in parity_bootstrap_source
+        and "EditorUseCurrentStart_Click" not in parity_fixes_source
+        and "EditorUseCurrentEnd_Click" not in parity_fixes_source
+        and "EditorUseCurrentStartButton" not in parity_fixes_source
+        and "EditorUseCurrentEndButton" not in parity_fixes_source
+        and "private void SetTimedBoundaryFromCurrent(bool setStart)" in timed_input_source
+        and "if (ApplyInputsToDocument()) NotifyEditorCompositeChanged();" in timed_input_source
+        and "StartBox.Maximum = EndBox.Maximum = _media.Duration;" in editor_main
+        and "EditorUseCurrentStartButton.IsEnabled = EditorUseCurrentEndButton.IsEnabled = editable && !WholeToggle.IsOn;" in editor_main
+        and "EditorRegionTimeScope.CreateDefaultTimedRange(" in whole_toggle_source
+        and "EditorRegionTimeScope.Normalize(" in editor_main
+        and "EditorRegionTimeScope.Normalize(" in region_document_source
+        and "EditorRegionTimeScope.Normalize(" in video_editor_source
+        and "editor timed range validates numeric and current-position Preview Export state" in contract_tests_source,
+        "BLUR-11 timed range must own numeric and current-position input without runtime handler patching or silent render clamps")
 require("SubtitleCueList" in editor and "SubtitleRetranslateCueButton" in editor and "SubtitleSaveSrtButton" in editor,
         "Editor static subtitle cue editor controls missing")
 require("ForceFresh = false" in read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalSubtitleTranslationService.cs")
