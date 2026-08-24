@@ -1,6 +1,5 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Windows.Media.Playback;
 
 namespace BiliSubStudio.App.Pages;
 
@@ -9,9 +8,6 @@ public sealed partial class EditorPage
     private bool _editorCoreInitialized;
 
     // Compatibility objects only. They are never attached to the visual tree.
-    // Retained core logic can keep owning processed-preview/cache state while the
-    // user-facing Player exposes only the compact controls declared in XAML.
-    private readonly Button PlaybackButton = new() { Content = "Xem bản chỉnh" };
     private readonly Button RefreshFrameButton = new();
     private readonly Canvas RegionTimelineCanvas = new();
 
@@ -78,8 +74,6 @@ public sealed partial class EditorPage
         {
             toolButton.Click += ShellTool_Click;
         }
-        PlayerPlayPauseButton.Click += PlayerPlayPause_Click;
-
         ImageSourceList.SelectionChanged += ImageList_SelectionChanged;
         ImageOverlayCanvas.PointerPressed += ImageOverlay_PointerPressed;
         ImageOverlayCanvas.PointerMoved += ImageOverlay_PointerMoved;
@@ -101,10 +95,6 @@ public sealed partial class EditorPage
         EditorUseCurrentEndButton.Click += EditorUseCurrentEnd_Click;
         EditorChooseOutputButton.Click += EditorChooseOutput_Click;
         EditorOpenOutputButton.Click += EditorOpenOutput_Click;
-
-        // Do not mutate visual content from LayoutUpdated. That event participates in
-        // WinUI measure/arrange and previously caused a LayoutCycleException at 800x600.
-        PlaybackButton.IsEnabledChanged += (_, _) => SyncShellPlayerControls();
 
         // UI-11: MainWindow startup smoke resizes to 800x600, 1000x700 and 1500x900.
         // Validate the real shell at those layouts without affecting normal user resize.
@@ -160,35 +150,9 @@ public sealed partial class EditorPage
         SyncShellPlayerControls();
     }
 
-    async void PlayerPlayPause_Click(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            if (_playerMode && _player is not null)
-            {
-                if (_player.PlaybackSession.PlaybackState == MediaPlaybackState.Playing) _player.Pause();
-                else _player.Play();
-            }
-            else
-            {
-                await SetPlaybackModeAsync(enabled: true, play: true);
-            }
-            SyncShellPlayerControls();
-        }
-        catch (OperationCanceledException)
-        {
-            StatusText.Text = "Đã dừng tạo bản xem trước.";
-        }
-        catch (Exception error)
-        {
-            StatusText.Text = "Preview bản chỉnh: " + error.Message;
-        }
-    }
-
     void SyncShellPlayerControls()
     {
-        PlayerPlayPauseButton.IsEnabled = PlaybackButton.IsEnabled;
-        PlayerPlayPauseButton.Content = _playerMode && _player?.PlaybackSession.PlaybackState == MediaPlaybackState.Playing ? "⏸" : "▶";
+        PlayerPlayPauseButton.Content = _playback.IsPlaying ? "⏸" : "▶";
         PreviewMuteToggle.OffContent = "🔊";
         PreviewMuteToggle.OnContent = "🔇";
     }

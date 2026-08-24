@@ -1,0 +1,318 @@
+using BiliSubStudio.Core.Editor;
+using Microsoft.UI.Xaml;
+using Windows.Media.Core;
+using Windows.Media.Playback;
+using Windows.Storage;
+
+namespace BiliSubStudio.App.Pages;
+
+public sealed partial class EditorPage
+{
+    private async void PlayerPlayPause_Click(object sender, RoutedEventArgs e)
+    {
+        try { await _playback.ToggleAsync(); }
+        catch (OperationCanceledException) { StatusText.Text = "Đã dừng tạo bản xem trước."; }
+        catch (Exception error) { StatusText.Text = "Preview bản chỉnh: " + error.Message; }
+    }
+
+    private async void Fullscreen_Click(object sender, RoutedEventArgs e)
+    {
+        try { await _playback.EnterFullscreenAsync(); }
+        catch (OperationCanceledException) { StatusText.Text = "Đã dừng tạo bản xem trước."; }
+        catch (Exception error) { StatusText.Text = "Toàn màn hình bản chỉnh: " + error.Message; }
+    }
+
+    private void PreviewMute_Toggled(object sender, RoutedEventArgs e) =>
+        _playback.SetMuted(PreviewMuteToggle.IsOn);
+
+    private void PreviewVolume_ValueChanged(
+        object sender,
+        Microsoft.UI.Xaml.Controls.Primitives.RangeBaseValueChangedEventArgs e) =>
+        _playback.SetVolume(PreviewVolumeSlider.Value / 100);
+
+    private sealed class EditorPlaybackController
+    {
+        private readonly EditorPage _page;
+        private MediaPlayer? _player;
+        private CancellationTokenSource? _renderCancellation;
+        private string? _previewPath;
+        private double _sourceStart;
+        private double _sourceDuration;
+
+        internal EditorPlaybackController(EditorPage page) => _page = page;
+
+        internal bool IsPreviewMode { get; private set; }
+        internal bool IsRendering { get; private set; }
+        internal bool IsReady => _player is not null;
+        internal bool IsPlaying => IsPreviewMode &&
+            _player?.PlaybackSession.PlaybackState == MediaPlaybackState.Playing;
+
+        internal async Task PrepareAsync()
+        {
+            _renderCancellation?.Cancel();
+            _renderCancellation?.Dispose();
+            _renderCancellation = null;
+            DisposePlayer();
+
+            var stalePreview = _previewPath;
+            _previewPath = null;
+            IsPreviewMode = false;
+            IsRendering = false;
+            _sourceStart = 0;
+            _sourceDuration = 0;
+            ApplyPresentation(processed: false);
+            if (stalePreview is not null)
+                await _page._application.DeleteEditorPreviewSegmentAsync(stalePreview);
+
+            var player = new MediaPlayer
+            {
+                AutoPlay = false,
+                IsMuted = _page.PreviewMuteToggle.IsOn,
+                Volume = Math.Clamp(_page.PreviewVolumeSlider.Value / 100, 0, 1),
+            };
+            player.PlaybackSession.PositionChanged += PlayerPositionChanged;
+            player.MediaEnded += PlayerMediaEnded;
+            player.MediaFailed += PlayerMediaFailed;
+            _player = player;
+            _page.PreviewPlayer.SetMediaPlayer(player);
+        }
+
+        internal async Task ToggleAsync()
+        {
+            if (IsPreviewMode && _player is not null)
+            {
+                if (IsPlaying) _player.Pause();
+                else _player.Play();
+            }
+            else
+            {
+                await SetModeAsync(enabled: true, play: true);
+            }
+            _page.SyncShellPlayerControls();
+        }
+
+        internal async Task EnterFullscreenAsync()
+        {
+            await SetModeAsync(enabled: true, play: false);
+            _page.PreviewPlayer.IsFullWindow = true;
+        }
+
+        internal void SetMuted(bool muted)
+        {
+            if (_player is not null) _player.IsMuted = muted;
+        }
+
+        internal void SetVolume(double volume)
+        {
+            if (_player is not null) _player.Volume = Math.Clamp(volume, 0, 1);
+        }
+
+        internal async Task SetModeAsync(bool enabled, bool play)
+        {
+            if (enabled)
+            {
+                if (IsPreviewMode)
+                {
+                    if (play) _player?.Play();
+                    return;
+                }
+                await LoadSegmentAsync(_page.Timeline.Value, play);
+                return;
+            }
+
+            _renderCancellation?.Cancel();
+            if (!IsPreviewMode && !IsRendering) return;
+            var sourcePosition = IsPreviewMode
+                ? _sourceStart + Math.Clamp(_player?.PlaybackSession.Position.TotalSeconds ?? 0, 0, _sourceDuration)
+                : _page.Timeline.Value;
+            IsPreviewMode = false;
+            if (_player is not null)
+            {
+                _player.Pause();
+                _player.Source = null;
+            }
+            _page.PreviewPlayer.IsFullWindow = false;
+            ApplyPresentation(processed: false);
+            var previewPath = _previewPath;
+            _previewPath = null;
+            _sourceStart = 0;
+            _sourceDuration = 0;
+            _page._syncingTimeline = true;
+            try { _page.Timeline.Value = Math.Clamp(sourcePosition, _page.Timeline.Minimum, _page.Timeline.Maximum); }
+            finally { _page._syncingTimeline = false; }
+            if (previewPath is not null)
+                await _page._application.DeleteEditorPreviewSegmentAsync(previewPath);
+            await _page.UpdateFrameAsync();
+            _page.StatusText.Text = "Đã về khung chỉnh tại vị trí hiện tại.";
+            _page.RefreshEditorActions();
+        }
+
+        internal async Task SeekAsync(double sourcePosition)
+        {
+            if (!IsPreviewMode || _page._media is null) return;
+            var resume = IsPlaying;
+            try { await LoadSegmentAsync(sourcePosition, resume); }
+            catch (OperationCanceledException) { }
+            catch (Exception error) { _page.StatusText.Text = "Không seek được preview: " + error.Message; }
+        }
+
+        internal Task DisposeForSourceChangeAsync() => ResetAsync();
+
+        internal Task UnloadAsync() => ResetAsync();
+
+        private async Task ResetAsync()
+        {
+            _renderCancellation?.Cancel();
+            _renderCancellation?.Dispose();
+            _renderCancellation = null;
+            DisposePlayer();
+            _page.PreviewPlayer.IsFullWindow = false;
+            IsPreviewMode = false;
+            IsRendering = false;
+            _sourceStart = 0;
+            _sourceDuration = 0;
+            ApplyPresentation(processed: false);
+            var previewPath = _previewPath;
+            _previewPath = null;
+            if (previewPath is not null)
+                await _page._application.DeleteEditorPreviewSegmentAsync(previewPath);
+        }
+
+        private async Task LoadSegmentAsync(double requestedStart, bool play)
+        {
+            var player = _player ?? throw new InvalidOperationException("Chưa chọn video để xem bản chỉnh.");
+            if (_page._path is null || _page._media is null)
+                throw new InvalidOperationException("Chưa chọn video để xem bản chỉnh.");
+            _page._previewCancellation?.Cancel();
+            _renderCancellation?.Cancel();
+            _renderCancellation?.Dispose();
+            var cancellation = new CancellationTokenSource();
+            _renderCancellation = cancellation;
+            IsRendering = true;
+            var previousPath = _previewPath;
+            EditorPreviewSegment? segment = null;
+            try
+            {
+                _page.RefreshEditorActions();
+                _page.StatusText.Text = "Đang chuẩn bị bản xem trước tại vị trí hiện tại...";
+                segment = await _page._application.CreateEditorPreviewSegmentAsync(
+                    _page.CurrentEditRequest(_page.PreviewSubtitleBurn()), requestedStart, cancellation.Token);
+                cancellation.Token.ThrowIfCancellationRequested();
+                var file = await StorageFile.GetFileFromPathAsync(segment.Path);
+                cancellation.Token.ThrowIfCancellationRequested();
+                player.Pause();
+                player.Source = MediaSource.CreateFromStorageFile(file);
+                _previewPath = segment.Path;
+                _sourceStart = segment.SourceStart;
+                _sourceDuration = segment.Duration;
+                IsPreviewMode = true;
+                ApplyPresentation(processed: true);
+                _page._syncingTimeline = true;
+                try { _page.Timeline.Value = Math.Clamp(segment.SourceStart, _page.Timeline.Minimum, _page.Timeline.Maximum); }
+                finally { _page._syncingTimeline = false; }
+                player.PlaybackSession.Position = TimeSpan.Zero;
+                if (play) player.Play();
+                _page.StatusText.Text =
+                    $"Đang xem bản chỉnh từ {FormatClock(segment.SourceStart)}. Preview sẽ tiếp tục tự động đến hết video.";
+                segment = null;
+                if (previousPath is not null && !string.Equals(previousPath, _previewPath, StringComparison.OrdinalIgnoreCase))
+                    await _page._application.DeleteEditorPreviewSegmentAsync(previousPath);
+            }
+            catch
+            {
+                if (previousPath is null)
+                {
+                    player.Pause();
+                    player.Source = null;
+                    _previewPath = null;
+                    IsPreviewMode = false;
+                    ApplyPresentation(processed: false);
+                }
+                throw;
+            }
+            finally
+            {
+                if (ReferenceEquals(_renderCancellation, cancellation))
+                {
+                    _renderCancellation = null;
+                    IsRendering = false;
+                }
+                cancellation.Dispose();
+                if (segment is not null)
+                    await _page._application.DeleteEditorPreviewSegmentAsync(segment.Path);
+                _page.RefreshEditorActions();
+                _page.SyncShellPlayerControls();
+            }
+        }
+
+        private void ApplyPresentation(bool processed)
+        {
+            _page.PreviewPlayer.Visibility = processed ? Visibility.Visible : Visibility.Collapsed;
+            _page.PreviewImage.Visibility = processed ? Visibility.Collapsed : Visibility.Visible;
+            _page.Overlay.Visibility = processed ? Visibility.Collapsed : Visibility.Visible;
+            if (!processed) _page.RenderOverlays();
+            _page.RenderImageOverlays();
+            _page.SyncShellPlayerControls();
+        }
+
+        private void DisposePlayer()
+        {
+            if (_player is null) return;
+            _player.PlaybackSession.PositionChanged -= PlayerPositionChanged;
+            _player.MediaEnded -= PlayerMediaEnded;
+            _player.MediaFailed -= PlayerMediaFailed;
+            _player.Pause();
+            _player.Source = null;
+            _player.Dispose();
+            _player = null;
+        }
+
+        private void PlayerPositionChanged(MediaPlaybackSession sender, object args)
+        {
+            if (!IsPreviewMode) return;
+            var seconds = _sourceStart + Math.Clamp(sender.Position.TotalSeconds, 0, _sourceDuration);
+            _page.DispatcherQueue.TryEnqueue(() =>
+            {
+                if (!IsPreviewMode || _page._media is null) return;
+                _page._syncingTimeline = true;
+                try { _page.Timeline.Value = Math.Clamp(seconds, _page.Timeline.Minimum, _page.Timeline.Maximum); }
+                finally { _page._syncingTimeline = false; }
+                _page.UpdateClock();
+                _page.RenderOverlays();
+                _page.RenderTimelineRegions();
+            });
+        }
+
+        private void PlayerMediaEnded(MediaPlayer sender, object args)
+        {
+            _page.DispatcherQueue.TryEnqueue(async () =>
+            {
+                if (!IsPreviewMode || _page._media is null) return;
+                var nextStart = _sourceStart + _sourceDuration;
+                try
+                {
+                    if (nextStart >= _page._media.Duration - .05)
+                    {
+                        await SetModeAsync(enabled: false, play: false);
+                        _page.Timeline.Value = _page.Timeline.Maximum;
+                        _page.StatusText.Text = "Đã xem hết bản chỉnh.";
+                        return;
+                    }
+                    await LoadSegmentAsync(nextStart, play: true);
+                }
+                catch (OperationCanceledException) { }
+                catch (Exception error) { _page.StatusText.Text = "Không tiếp tục được preview: " + error.Message; }
+            });
+        }
+
+        private void PlayerMediaFailed(MediaPlayer sender, MediaPlayerFailedEventArgs args)
+        {
+            _page.DispatcherQueue.TryEnqueue(async () =>
+            {
+                try { await SetModeAsync(enabled: false, play: false); }
+                catch { }
+                _page.StatusText.Text = "Player preview lỗi: " + args.ErrorMessage;
+            });
+        }
+    }
+}

@@ -95,7 +95,7 @@ public sealed partial class EditorPage
         UpdateClock();
         RenderOverlays();
         UpdateCurrentCueVoiceUi();
-        if (_playerMode) await SeekProcessedPreviewAsync(target);
+        if (_playback.IsPreviewMode) await _playback.SeekAsync(target);
         else await UpdateFrameAsync();
     }
 
@@ -404,7 +404,7 @@ public sealed partial class EditorPage
     {
         var hasSource = _subtitleSource is not null && _subtitleSource.Cues.Count > 0;
         var selected = hasSource && _subtitleCueSelectedIndex >= 0 && _subtitleCueSelectedIndex < _subtitleSource!.Cues.Count;
-        var idle = !EditorBusy && !_playerMode;
+        var idle = !EditorBusy && !_playback.IsPreviewMode;
         SubtitleCueList.IsEnabled = hasSource && idle && !_subtitleManualDirty;
         SubtitleSourceEdit.IsEnabled = selected && idle;
         SubtitleVietnameseEdit.IsEnabled = selected && idle;

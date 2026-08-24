@@ -10,8 +10,6 @@ using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Microsoft.UI.Xaml.Shapes;
 using Windows.Foundation;
-using Windows.Media.Core;
-using Windows.Media.Playback;
 using Windows.Storage;
 using Windows.Storage.Streams;
 using Windows.System;
@@ -25,6 +23,7 @@ public sealed partial class EditorPage : Page
 
     private readonly BiliSubApplication _application;
     private readonly IFilePickerService _picker;
+    private readonly EditorPlaybackController _playback;
     private readonly EditorRegionDocument _document = new();
     private string? _path;
     private MediaPreviewInfo? _media;
@@ -39,12 +38,6 @@ public sealed partial class EditorPage : Page
     private string? _ttsJobId;
     private IReadOnlyList<EditorCueSpeechTiming> _cueSpeechTiming = [];
     private EditorVoiceTrack? _voiceTrack;
-    private MediaPlayer? _player;
-    private bool _playerMode;
-    private bool _previewRendering;
-    private string? _playerPreviewPath;
-    private double _playerSourceStart;
-    private double _playerSourceDuration;
     private bool _syncingTimeline;
     private bool _syncingInputs;
     private bool _syncingList;
@@ -58,18 +51,18 @@ public sealed partial class EditorPage : Page
     private bool _subtitleDrag;
     private EditorSubtitlePlacement? _subtitleDragOriginal;
     private CancellationTokenSource? _previewCancellation;
-    private CancellationTokenSource? _playbackPreviewCancellation;
     private CancellationTokenSource? _saveCancellation;
     private int _previewRevision;
     private double _lastOverlayWidth = -1;
     private double _lastOverlayHeight = -1;
     private double _lastTimelineWidth = -1;
-    private bool EditorBusy => _jobId is not null || _translationJobId is not null || _asrJobId is not null || _ttsJobId is not null || _previewRendering;
+    private bool EditorBusy => _jobId is not null || _translationJobId is not null || _asrJobId is not null || _ttsJobId is not null || _playback.IsRendering;
 
     public EditorPage(BiliSubApplication application, IFilePickerService picker)
     {
         _application = application;
         _picker = picker;
+        _playback = new EditorPlaybackController(this);
         InitializeComponent();
         Loaded += EditorPage_Loaded;
         LayoutUpdated += EditorPage_LayoutUpdated;
@@ -106,8 +99,8 @@ public sealed partial class EditorPage : Page
             throw new InvalidOperationException("Editor phải cho phép chọn SRT và chuẩn bị AI trước khi chọn video.");
         if (CreateAsrButton.IsEnabled)
             throw new InvalidOperationException("Editor không được cho chạy ASR khi chưa có video nguồn.");
-        if (!string.Equals(PlaybackButton.Content?.ToString(), "Xem bản chỉnh", StringComparison.Ordinal))
-            throw new InvalidOperationException("Editor preview phải giữ hành động xem bản chỉnh toàn video.");
+        if (!string.Equals(PlayerPlayPauseButton.Content?.ToString(), "▶", StringComparison.Ordinal))
+            throw new InvalidOperationException("Editor preview phải có đúng một nút Play/Pause do playback controller sở hữu.");
         if (PreviewPlayer.AreTransportControlsEnabled)
             throw new InvalidOperationException("Editor không được bật native MediaPlayer transport trên preview.");
         if (_imageModeButton is null || _imageInspectorPanel is null || _imageOverlayCanvas is null)
@@ -125,9 +118,6 @@ public sealed partial class EditorPage : Page
 
     private async void EditorPage_Unloaded(object sender, RoutedEventArgs e)
     {
-        _playbackPreviewCancellation?.Cancel();
-        _playbackPreviewCancellation?.Dispose();
-        _playbackPreviewCancellation = null;
         _previewCancellation?.Cancel();
         _previewCancellation?.Dispose();
         _previewCancellation = null;
@@ -135,13 +125,7 @@ public sealed partial class EditorPage : Page
         _saveCancellation?.Dispose();
         _saveCancellation = null;
         CleanupEditorParity();
-        _player?.Pause();
-        if (_player is not null) _player.Source = null;
-        _playerMode = false;
-        ApplyPreviewPresentation(false);
-        var previewPath = _playerPreviewPath;
-        _playerPreviewPath = null;
-        if (previewPath is not null) await _application.DeleteEditorPreviewSegmentAsync(previewPath);
+        await _playback.UnloadAsync();
         try { await SaveImageSidecarAsync(); } catch { }
         await SaveProjectNowAsync();
     }
@@ -233,7 +217,7 @@ public sealed partial class EditorPage : Page
             EndBox.Value = _media.Duration;
         }
         finally { _syncingInputs = false; }
-        await PreparePlayerAsync();
+        await _playback.PrepareAsync();
         if (_document.Selected is not null) LoadSelectedIntoInputs();
         else SetCoordinateBoxes(0, 0, 0, 0);
         RenderDocument();
@@ -265,10 +249,6 @@ public sealed partial class EditorPage : Page
 
     private async Task DisposePreviewForSourceChangeAsync()
     {
-        var playbackCancellation = _playbackPreviewCancellation;
-        _playbackPreviewCancellation = null;
-        playbackCancellation?.Cancel();
-
         var frameCancellation = _previewCancellation;
         _previewCancellation = null;
         if (frameCancellation is not null)
@@ -277,30 +257,7 @@ public sealed partial class EditorPage : Page
             frameCancellation.Dispose();
         }
         ++_previewRevision;
-
-        var player = _player;
-        _player = null;
-        if (player is not null)
-        {
-            player.PlaybackSession.PositionChanged -= PlayerPositionChanged;
-            player.MediaEnded -= PlayerMediaEnded;
-            player.MediaFailed -= PlayerMediaFailed;
-            player.Pause();
-            player.Source = null;
-            player.Dispose();
-        }
-
-        PreviewPlayer.IsFullWindow = false;
-        _playerMode = false;
-        _previewRendering = false;
-        _playerSourceStart = 0;
-        _playerSourceDuration = 0;
-        ApplyPreviewPresentation(false);
-
-        var previewPath = _playerPreviewPath;
-        _playerPreviewPath = null;
-        if (previewPath is not null)
-            await _application.DeleteEditorPreviewSegmentAsync(previewPath);
+        await _playback.DisposeForSourceChangeAsync();
     }
 
     private async void Refresh_Click(object sender, RoutedEventArgs e)
@@ -656,7 +613,7 @@ public sealed partial class EditorPage : Page
     {
         if (!IsLoaded || _syncingVoice) return;
         QueueProjectSave();
-        if (!_playerMode) QueuePreviewRefresh();
+        if (!_playback.IsPreviewMode) QueuePreviewRefresh();
         NotifyEditorCompositeChanged();
     }
 
@@ -806,12 +763,12 @@ public sealed partial class EditorPage : Page
         RenderOverlays();
         RenderTimelineRegions();
         UpdateCurrentCueVoiceUi();
-        if (_playerMode && !_syncingTimeline && _media is not null)
+        if (_playback.IsPreviewMode && !_syncingTimeline && _media is not null)
         {
-            _ = SeekProcessedPreviewAsync(Math.Clamp(e.NewValue, Timeline.Minimum, Timeline.Maximum));
+            _ = _playback.SeekAsync(Math.Clamp(e.NewValue, Timeline.Minimum, Timeline.Maximum));
             return;
         }
-        if (!_playerMode && !_syncingTimeline && _media is not null) QueuePreviewRefresh();
+        if (!_playback.IsPreviewMode && !_syncingTimeline && _media is not null) QueuePreviewRefresh();
     }
 
     private async Task UpdateFrameAsync()
@@ -836,7 +793,7 @@ public sealed partial class EditorPage : Page
 
     private async Task RefreshPreviewAsync(int revision, TimeSpan delay, CancellationToken cancellationToken)
     {
-        if (_path is null || _media is null || _playerMode) return;
+        if (_path is null || _media is null || _playback.IsPreviewMode) return;
         try
         {
             if (delay > TimeSpan.Zero) await Task.Delay(delay, cancellationToken);
@@ -870,24 +827,6 @@ public sealed partial class EditorPage : Page
     }
 
     private void UpdateClock() => ClockText.Text = $"{FormatClock(Timeline.Value)} / {FormatClock(_media?.Duration ?? 0)}";
-
-    private async void Playback_Click(object sender, RoutedEventArgs e)
-    {
-        try { await SetPlaybackModeAsync(!_playerMode, play: true); }
-        catch (OperationCanceledException) { StatusText.Text = "Đã dừng tạo bản xem trước."; }
-        catch (Exception error) { StatusText.Text = "Preview bản chỉnh: " + error.Message; }
-    }
-
-    private async void Fullscreen_Click(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            await SetPlaybackModeAsync(true, play: false);
-            PreviewPlayer.IsFullWindow = true;
-        }
-        catch (OperationCanceledException) { StatusText.Text = "Đã dừng tạo bản xem trước."; }
-        catch (Exception error) { StatusText.Text = "Toàn màn hình bản chỉnh: " + error.Message; }
-    }
 
     private void WholeToggle_Toggled(object sender, RoutedEventArgs e)
     {
@@ -1044,16 +983,6 @@ public sealed partial class EditorPage : Page
         }
     }
 
-    private void PreviewMute_Toggled(object sender, RoutedEventArgs e)
-    {
-        if (_player is not null) _player.IsMuted = PreviewMuteToggle.IsOn;
-    }
-
-    private void PreviewVolume_ValueChanged(object sender, Microsoft.UI.Xaml.Controls.Primitives.RangeBaseValueChangedEventArgs e)
-    {
-        if (_player is not null) _player.Volume = Math.Clamp(PreviewVolumeSlider.Value / 100, 0, 1);
-    }
-
     private void SourceAudioMode_SelectionChanged(object sender, SelectionChangedEventArgs e) => UpdateAudioSettingsFromUi();
 
     private void SourceAudioGain_ValueChanged(object sender, Microsoft.UI.Xaml.Controls.Primitives.RangeBaseValueChangedEventArgs e) => UpdateAudioSettingsFromUi();
@@ -1153,7 +1082,7 @@ public sealed partial class EditorPage : Page
 
     private void Overlay_PointerPressed(object sender, PointerRoutedEventArgs e)
     {
-        if (_media is null || EditorBusy || _playerMode) return;
+        if (_media is null || EditorBusy || _playback.IsPreviewMode) return;
         var point = e.GetCurrentPoint(Overlay).Position;
         if (!TryNormalize(point, out var normalized)) return;
         if (_inspectorMode == InspectorMode.Subtitle)
@@ -1370,7 +1299,7 @@ public sealed partial class EditorPage : Page
         var top = video.Y + placement.Y * video.Height;
         var width = Math.Max(1, placement.Width * video.Width);
         var height = Math.Max(1, placement.Height * video.Height);
-        var active = _inspectorMode == InspectorMode.Subtitle && !EditorBusy && !_playerMode;
+        var active = _inspectorMode == InspectorMode.Subtitle && !EditorBusy && !_playback.IsPreviewMode;
         var stroke = active ? ColorHelper.FromArgb(255, 255, 194, 72) : ColorHelper.FromArgb(210, 170, 170, 170);
         var rectangle = new Rectangle
         {
@@ -1727,206 +1656,6 @@ public sealed partial class EditorPage : Page
         _ => "Làm mờ",
     };
 
-    private Task PreparePlayerAsync()
-    {
-        if (_player is not null)
-        {
-            _player.PlaybackSession.PositionChanged -= PlayerPositionChanged;
-            _player.MediaEnded -= PlayerMediaEnded;
-            _player.MediaFailed -= PlayerMediaFailed;
-            _player.Source = null;
-            _player.Dispose();
-            _player = null;
-        }
-        if (_playerPreviewPath is { } stalePreview) _ = _application.DeleteEditorPreviewSegmentAsync(stalePreview);
-        _playerPreviewPath = null;
-        _playerMode = false;
-        _playerSourceStart = 0;
-        _playerSourceDuration = 0;
-        ApplyPreviewPresentation(false);
-        var player = new MediaPlayer
-        {
-            AutoPlay = false,
-            IsMuted = PreviewMuteToggle.IsOn,
-            Volume = Math.Clamp(PreviewVolumeSlider.Value / 100, 0, 1),
-        };
-        player.PlaybackSession.PositionChanged += PlayerPositionChanged;
-        player.MediaEnded += PlayerMediaEnded;
-        player.MediaFailed += PlayerMediaFailed;
-        _player = player;
-        PreviewPlayer.SetMediaPlayer(player);
-        return Task.CompletedTask;
-    }
-
-    private void ApplyPreviewPresentation(bool processed)
-    {
-        PreviewPlayer.Visibility = processed ? Visibility.Visible : Visibility.Collapsed;
-        PreviewImage.Visibility = processed ? Visibility.Collapsed : Visibility.Visible;
-        Overlay.Visibility = processed ? Visibility.Collapsed : Visibility.Visible;
-        PlaybackButton.Content = processed ? "Về khung chỉnh" : "Xem bản chỉnh";
-        if (!processed) RenderOverlays();
-        RenderImageOverlays();
-    }
-
-    private async Task SetPlaybackModeAsync(bool enabled, bool play)
-    {
-        if (enabled)
-        {
-            if (_playerMode)
-            {
-                if (play) _player?.Play();
-                return;
-            }
-            await LoadProcessedPreviewSegmentAsync(Timeline.Value, play);
-            return;
-        }
-
-        _playbackPreviewCancellation?.Cancel();
-        if (!_playerMode && !_previewRendering) return;
-        var sourcePosition = _playerMode
-            ? _playerSourceStart + Math.Clamp(_player?.PlaybackSession.Position.TotalSeconds ?? 0, 0, _playerSourceDuration)
-            : Timeline.Value;
-        _playerMode = false;
-        if (_player is not null)
-        {
-            _player.Pause();
-            _player.Source = null;
-        }
-        PreviewPlayer.IsFullWindow = false;
-        ApplyPreviewPresentation(false);
-        var previewPath = _playerPreviewPath;
-        _playerPreviewPath = null;
-        _playerSourceStart = 0;
-        _playerSourceDuration = 0;
-        _syncingTimeline = true;
-        try { Timeline.Value = Math.Clamp(sourcePosition, Timeline.Minimum, Timeline.Maximum); }
-        finally { _syncingTimeline = false; }
-        if (previewPath is not null) await _application.DeleteEditorPreviewSegmentAsync(previewPath);
-        await UpdateFrameAsync();
-        StatusText.Text = "Đã về khung chỉnh tại vị trí hiện tại.";
-        RefreshEditorActions();
-    }
-
-    private async Task LoadProcessedPreviewSegmentAsync(double requestedStart, bool play)
-    {
-        var player = _player ?? throw new InvalidOperationException("Chưa chọn video để xem bản chỉnh.");
-        if (_path is null || _media is null) throw new InvalidOperationException("Chưa chọn video để xem bản chỉnh.");
-        _previewCancellation?.Cancel();
-        _playbackPreviewCancellation?.Cancel();
-        _playbackPreviewCancellation?.Dispose();
-        var cancellation = new CancellationTokenSource();
-        _playbackPreviewCancellation = cancellation;
-        _previewRendering = true;
-        var previousPath = _playerPreviewPath;
-        EditorPreviewSegment? segment = null;
-        try
-        {
-            RefreshEditorActions();
-            StatusText.Text = "Đang chuẩn bị bản xem trước tại vị trí hiện tại...";
-            segment = await _application.CreateEditorPreviewSegmentAsync(
-                CurrentEditRequest(PreviewSubtitleBurn()), requestedStart, cancellation.Token);
-            cancellation.Token.ThrowIfCancellationRequested();
-            var file = await StorageFile.GetFileFromPathAsync(segment.Path);
-            cancellation.Token.ThrowIfCancellationRequested();
-            player.Pause();
-            player.Source = MediaSource.CreateFromStorageFile(file);
-            _playerPreviewPath = segment.Path;
-            _playerSourceStart = segment.SourceStart;
-            _playerSourceDuration = segment.Duration;
-            _playerMode = true;
-            ApplyPreviewPresentation(true);
-            _syncingTimeline = true;
-            try { Timeline.Value = Math.Clamp(segment.SourceStart, Timeline.Minimum, Timeline.Maximum); }
-            finally { _syncingTimeline = false; }
-            player.PlaybackSession.Position = TimeSpan.Zero;
-            if (play) player.Play();
-            StatusText.Text = $"Đang xem bản chỉnh từ {FormatClock(segment.SourceStart)}. Preview sẽ tiếp tục tự động đến hết video.";
-            segment = null;
-            if (previousPath is not null && !string.Equals(previousPath, _playerPreviewPath, StringComparison.OrdinalIgnoreCase))
-                await _application.DeleteEditorPreviewSegmentAsync(previousPath);
-        }
-        catch
-        {
-            if (previousPath is null)
-            {
-                player.Pause();
-                player.Source = null;
-                _playerPreviewPath = null;
-                _playerMode = false;
-                ApplyPreviewPresentation(false);
-            }
-            throw;
-        }
-        finally
-        {
-            if (ReferenceEquals(_playbackPreviewCancellation, cancellation))
-            {
-                _playbackPreviewCancellation = null;
-                _previewRendering = false;
-            }
-            cancellation.Dispose();
-            if (segment is not null) await _application.DeleteEditorPreviewSegmentAsync(segment.Path);
-            RefreshEditorActions();
-        }
-    }
-
-    private async Task SeekProcessedPreviewAsync(double sourcePosition)
-    {
-        if (!_playerMode || _media is null) return;
-        var resume = _player?.PlaybackSession.PlaybackState == MediaPlaybackState.Playing;
-        try { await LoadProcessedPreviewSegmentAsync(sourcePosition, resume); }
-        catch (OperationCanceledException) { }
-        catch (Exception error) { StatusText.Text = "Không seek được preview: " + error.Message; }
-    }
-
-    private void PlayerPositionChanged(MediaPlaybackSession sender, object args)
-    {
-        if (!_playerMode) return;
-        var seconds = _playerSourceStart + Math.Clamp(sender.Position.TotalSeconds, 0, _playerSourceDuration);
-        DispatcherQueue.TryEnqueue(() =>
-        {
-            if (!_playerMode || _media is null) return;
-            _syncingTimeline = true;
-            try { Timeline.Value = Math.Clamp(seconds, Timeline.Minimum, Timeline.Maximum); }
-            finally { _syncingTimeline = false; }
-            UpdateClock();
-            RenderOverlays();
-            RenderTimelineRegions();
-        });
-    }
-
-    private void PlayerMediaEnded(MediaPlayer sender, object args)
-    {
-        DispatcherQueue.TryEnqueue(async () =>
-        {
-            if (!_playerMode || _media is null) return;
-            var nextStart = _playerSourceStart + _playerSourceDuration;
-            try
-            {
-                if (nextStart >= _media.Duration - .05)
-                {
-                    await SetPlaybackModeAsync(enabled: false, play: false);
-                    Timeline.Value = Timeline.Maximum;
-                    StatusText.Text = "Đã xem hết bản chỉnh.";
-                    return;
-                }
-                await LoadProcessedPreviewSegmentAsync(nextStart, play: true);
-            }
-            catch (OperationCanceledException) { }
-            catch (Exception error) { StatusText.Text = "Không tiếp tục được preview: " + error.Message; }
-        });
-    }
-
-    private void PlayerMediaFailed(MediaPlayer sender, MediaPlayerFailedEventArgs args)
-    {
-        DispatcherQueue.TryEnqueue(async () =>
-        {
-            try { await SetPlaybackModeAsync(enabled: false, play: false); }
-            catch { }
-            StatusText.Text = "Player preview lỗi: " + args.ErrorMessage;
-        });
-    }
-
     private Rect VideoRect()
     {
         if (_media is null || Overlay.ActualWidth <= 0 || Overlay.ActualHeight <= 0)
@@ -2000,8 +1729,8 @@ public sealed partial class EditorPage : Page
     {
         var idle = !EditorBusy;
         var hasMedia = _media is not null;
-        var editable = idle && hasMedia && !_playerMode;
-        OpenVideoButton.IsEnabled = idle && !_playerMode;
+        var editable = idle && hasMedia && !_playback.IsPreviewMode;
+        OpenVideoButton.IsEnabled = idle && !_playback.IsPreviewMode;
         Overlay.IsHitTestVisible = editable &&
             (_inspectorMode == InspectorMode.Blur || _inspectorMode == InspectorMode.Subtitle && _subtitleSource is not null);
         AddRegionButton.IsEnabled = editable && _draftRegion is not null;
@@ -2018,21 +1747,21 @@ public sealed partial class EditorPage : Page
         CancelButton.IsEnabled = _jobId is not null;
         Timeline.IsEnabled = idle && hasMedia;
         RefreshFrameButton.IsEnabled = editable;
-        PlaybackButton.IsEnabled = idle && hasMedia && _player is not null;
-        FullscreenButton.IsEnabled = idle && hasMedia && _player is not null;
+        PlayerPlayPauseButton.IsEnabled = idle && hasMedia && _playback.IsReady;
+        FullscreenButton.IsEnabled = idle && hasMedia && _playback.IsReady;
         RegionXBox.IsEnabled = RegionYBox.IsEnabled = RegionWidthBox.IsEnabled = RegionHeightBox.IsEnabled = editable;
         EffectBox.IsEnabled = StrengthBox.IsEnabled = WholeToggle.IsEnabled = editable;
         StartBox.IsEnabled = EndBox.IsEnabled = editable && !WholeToggle.IsOn;
         FileNameBox.IsEnabled = editable;
-        ImportSrtButton.IsEnabled = idle && !_playerMode;
+        ImportSrtButton.IsEnabled = idle && !_playback.IsPreviewMode;
         CreateAsrButton.IsEnabled = editable;
-        PrepareAiButton.IsEnabled = idle && !_playerMode;
+        PrepareAiButton.IsEnabled = idle && !_playback.IsPreviewMode;
         var aiReady = false;
         try { aiReady = _application.LocalTranslationStatus.RuntimeReady && _application.LocalTranslationStatus.ModelReady; }
         catch { }
         TranslateButton.IsEnabled = editable && _project is not null && _subtitleSource is not null && aiReady;
         CancelTranslationButton.IsEnabled = _translationJobId is not null;
-        OpenTranslatedSrtButton.IsEnabled = idle && !_playerMode && !_subtitleManualDirty && File.Exists(_project?.Subtitle?.OutputPath);
+        OpenTranslatedSrtButton.IsEnabled = idle && !_playback.IsPreviewMode && !_subtitleManualDirty && File.Exists(_project?.Subtitle?.OutputPath);
         SaveKaraokeAssButton.IsEnabled = editable && !_subtitleManualDirty && subtitleReady && KaraokeToggle.IsOn && _cueSpeechTiming.Count > 0;
         PreviewMuteToggle.IsEnabled = PreviewVolumeSlider.IsEnabled = idle && hasMedia;
         SourceAudioModeBox.IsEnabled = editable;
@@ -2040,7 +1769,7 @@ public sealed partial class EditorPage : Page
         GenerateTtsButton.IsEnabled = editable && !_subtitleManualDirty && subtitleReady && _project?.Speech is { Status: "complete" };
         CancelVoiceButton.IsEnabled = _asrJobId is not null || _ttsJobId is not null;
         CurrentCueVoiceBox.IsEnabled = editable && _subtitleSource is not null && _project?.Speech is { Status: "complete" };
-        KaraokeToggle.IsEnabled = idle && !_playerMode && _subtitleSource is not null;
+        KaraokeToggle.IsEnabled = idle && !_playback.IsPreviewMode && _subtitleSource is not null;
         RefreshImageControls();
         RefreshEditorParityControls();
         RefreshSubtitleCueEditorControls();

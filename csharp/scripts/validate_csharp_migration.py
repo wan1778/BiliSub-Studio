@@ -246,8 +246,10 @@ for marker in ("JobObjectLimitKillOnJobClose", "JobObjectLimitBreakawayOk"):
     require(marker in containment_source, f"Windows child-process containment missing {marker}")
 
 ocr = read(CSHARP / "src/BiliSubStudio.App/Pages/OcrPage.xaml") + read(CSHARP / "src/BiliSubStudio.App/Pages/OcrPage.xaml.cs")
-editor = read(CSHARP / "src/BiliSubStudio.App/Pages/EditorPage.xaml") + read(CSHARP / "src/BiliSubStudio.App/Pages/EditorPage.xaml.cs")
+editor_xaml = read(CSHARP / "src/BiliSubStudio.App/Pages/EditorPage.xaml")
+editor_main = read(CSHARP / "src/BiliSubStudio.App/Pages/EditorPage.xaml.cs")
 editor_partials = "\n".join(read(path) for path in (CSHARP / "src/BiliSubStudio.App/Pages").glob("EditorPage*.cs"))
+editor = editor_xaml + editor_partials
 for owner, source in (("OCR", ocr), ("Editor", editor)):
     for marker in ("MediaPlayerElement", "IsFullWindow", "MediaSource.CreateFromStorageFile", "PositionChanged"):
         require(marker in source, f"{owner} native playback/fullscreen contract missing {marker}")
@@ -257,10 +259,31 @@ for forbidden in (
     "SubtitleModeButton.Click +=", "BlurModeButton.Click +=", "AudioModeButton.Click +=", "ExportModeButton.Click +=",
     "OpenVideoButton.Click +=", "RenderButton.Click -=", "RenderButton.IsEnabledChanged +=",
     "OnNavigatedTo(", "OnApplyTemplate(", "Render_Click(sender, e)", "EditorParity_Loaded", "HookEditorLivePreviewEvents",
+    "PlayerPlayPauseButton.Click +=", "PlaybackButton", "Playback_Click",
 ):
     require(forbidden not in editor_partials, f"Editor cleanup regression reintroduced {forbidden}")
 require("EnsureEditorParityInitialized();" in editor_partials and "EnsureImageFeatureInitialized();" in editor_partials,
         "Editor must initialize parity and image tools from one lifecycle owner")
+playback_source = read(CSHARP / "src/BiliSubStudio.App/Pages/EditorPage.Playback.cs")
+require('Click="PlayerPlayPause_Click"' in editor_xaml
+        and "await _playback.ToggleAsync();" in playback_source
+        and "private sealed class EditorPlaybackController" in playback_source,
+        "PREVIEW-03 requires one XAML Play/Pause handler forwarding to one playback controller")
+for legacy_owner in (
+    "private MediaPlayer? _player;", "private bool _playerMode;", "private bool _previewRendering;",
+    "private string? _playerPreviewPath;", "private CancellationTokenSource? _playbackPreviewCancellation;",
+):
+    require(legacy_owner not in editor_main, f"PREVIEW-03 legacy page playback owner returned: {legacy_owner}")
+for owned_state in (
+    "private MediaPlayer? _player;", "private CancellationTokenSource? _renderCancellation;",
+    "internal bool IsPreviewMode { get; private set; }", "internal bool IsRendering { get; private set; }",
+    "private string? _previewPath;", "private void PlayerMediaEnded(", "private void PlayerMediaFailed(",
+):
+    require(owned_state in playback_source, f"PREVIEW-03 playback controller ownership missing: {owned_state}")
+require(editor_partials.count("private MediaPlayer? _player;") == 1
+        and editor_partials.count("private CancellationTokenSource? _renderCancellation;") == 1
+        and editor_partials.count("internal bool IsPreviewMode { get; private set; }") == 1,
+        "PREVIEW-03 playback state must have exactly one owner")
 require("SubtitleCueList" in editor and "SubtitleRetranslateCueButton" in editor and "SubtitleSaveSrtButton" in editor,
         "Editor static subtitle cue editor controls missing")
 require("ForceFresh = false" in read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalSubtitleTranslationService.cs")
@@ -284,9 +307,9 @@ require("SRT không hợp lệ:" in editor_partials and "AttachSubtitleToProject
         and "if (_project is not null) await SaveProjectNowAsync();" in editor_partials,
         "SUB-03/SUB-05 project attach or semantic invalid-SRT error contract missing")
 require("SeekEditorToSubtitleCueAsync" in editor_partials and "await SeekEditorToSubtitleCueAsync(cue.Start);" in editor_partials
-        and "if (_playerMode) await SeekProcessedPreviewAsync(target);" in editor_partials,
+        and "if (_playback.IsPreviewMode) await _playback.SeekAsync(target);" in editor_partials,
         "SUB-06 cue selection must seek the compact Player to cue start")
-require("if (_playerMode) await SetPlaybackModeAsync(false, false);" not in editor_partials,
+require("if (_playback.IsPreviewMode) await _playback.SetModeAsync(false, false);" not in editor_partials,
         "SUB-06 cue selection regressed to leaving processed Player mode before seek")
 require("RenderSubtitlePlacement" in editor_partials and "SubtitlePreviewText(cue)" in editor_partials
         and "PreviewSubtitleBurn()" in editor_partials,
@@ -344,9 +367,9 @@ require("_application.Media.ProbeAsync(candidatePath" in open_video and "_path =
 for marker in (
     "SubtitleModeButton", "BlurModeButton", "AudioModeButton", "ExportModeButton",
     "SubtitleInspectorPanel", "BlurInspectorPanel", "AudioInspectorPanel", "ExportInspectorPanel",
-    "RunLayoutSmokeAsync", "ImportSrtButton.IsEnabled = idle && !_playerMode;", "PrepareAiButton.IsEnabled = idle && !_playerMode;",
+    "RunLayoutSmokeAsync", "ImportSrtButton.IsEnabled = idle && !_playback.IsPreviewMode;", "PrepareAiButton.IsEnabled = idle && !_playback.IsPreviewMode;",
     "_inspectorMode == InspectorMode.Blur", "_inspectorMode == InspectorMode.Subtitle",
-    "Xem bản chỉnh", "CreateEditorPreviewSegmentAsync", "PlayerMediaEnded",
+    "EditorPlaybackController", "CreateEditorPreviewSegmentAsync", "PlayerMediaEnded",
 ):
     require(marker in editor, f"Editor icon-mode/action-state contract missing {marker}")
 require("ImportSrtButton.IsEnabled = idle && hasMedia" not in editor,

@@ -104,7 +104,7 @@ public sealed partial class EditorPage
 
     private async Task AddImageAsync()
     {
-        if (_media is null || _project is null || EditorBusy || _playerMode || _imageOverlays.Count >= MaxEditorImages) return;
+        if (_media is null || _project is null || EditorBusy || _playback.IsPreviewMode || _imageOverlays.Count >= MaxEditorImages) return;
         var path = await _picker.PickImageAsync();
         if (path is null) return;
         var extension = Path.GetExtension(path).ToLowerInvariant();
@@ -216,7 +216,7 @@ public sealed partial class EditorPage
 
     private void ImageOverlay_PointerPressed(object sender, PointerRoutedEventArgs e)
     {
-        if (_inspectorMode != InspectorMode.Image || _media is null || EditorBusy || _playerMode || _imageOverlayCanvas is null) return;
+        if (_inspectorMode != InspectorMode.Image || _media is null || EditorBusy || _playback.IsPreviewMode || _imageOverlayCanvas is null) return;
         var point = e.GetCurrentPoint(_imageOverlayCanvas).Position;
         var hit = HitTestImage(point);
         if (hit.Index < 0) return;
@@ -342,7 +342,7 @@ public sealed partial class EditorPage
             Canvas.SetTop(image, video.Y + state.Y * video.Height);
             _imageOverlayCanvas.Children.Add(image);
 
-            if (_inspectorMode == InspectorMode.Image && index == _selectedImageIndex && !EditorBusy && !_playerMode)
+            if (_inspectorMode == InspectorMode.Image && index == _selectedImageIndex && !EditorBusy && !_playback.IsPreviewMode)
                 RenderImageSelection(state, video);
         }
     }
@@ -633,7 +633,7 @@ public sealed partial class EditorPage
     private void RefreshImageControls()
     {
         if (!_imageFeatureInitialized) return;
-        var editable = _media is not null && !EditorBusy && !_playerMode;
+        var editable = _media is not null && !EditorBusy && !_playback.IsPreviewMode;
         var selected = _selectedImageIndex >= 0 && _selectedImageIndex < _imageOverlays.Count;
         if (_imageModeButton is not null) _imageModeButton.IsEnabled = !EditorBusy;
         if (_addImageButton is not null) _addImageButton.IsEnabled = editable && _imageOverlays.Count < MaxEditorImages;

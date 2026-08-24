@@ -1,7 +1,6 @@
 using BiliSubStudio.App.Services;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Windows.Media.Playback;
 
 namespace BiliSubStudio.App.Pages;
 
@@ -104,7 +103,7 @@ public sealed partial class EditorPage
 
     private void QueueEditorCompositeRefresh()
     {
-        if (_editorAutoCompositeToggle?.IsOn != true || !_playerMode || _previewRendering || _editorAutoCompositeRebuilding) return;
+        if (_editorAutoCompositeToggle?.IsOn != true || !_playback.IsPreviewMode || _playback.IsRendering || _editorAutoCompositeRebuilding) return;
         _editorAutoCompositeCancellation?.Cancel();
         _editorAutoCompositeCancellation?.Dispose();
         var cancellation = new CancellationTokenSource();
@@ -117,17 +116,17 @@ public sealed partial class EditorPage
         try
         {
             await Task.Delay(320, cancellation.Token);
-            if (cancellation.IsCancellationRequested || !_playerMode || _media is null) return;
-            var resumePlayback = _player?.PlaybackSession.PlaybackState == MediaPlaybackState.Playing;
+            if (cancellation.IsCancellationRequested || !_playback.IsPreviewMode || _media is null) return;
+            var resumePlayback = _playback.IsPlaying;
             var sourcePosition = Math.Clamp(Timeline.Value, Timeline.Minimum, Timeline.Maximum);
             _editorAutoCompositeRebuilding = true;
             StatusText.Text = "Đang cập nhật bản xem trước theo thay đổi mới...";
-            await SetPlaybackModeAsync(enabled: false, play: false);
+            await _playback.SetModeAsync(enabled: false, play: false);
             cancellation.Token.ThrowIfCancellationRequested();
             _syncingTimeline = true;
             try { Timeline.Value = sourcePosition; }
             finally { _syncingTimeline = false; }
-            await SetPlaybackModeAsync(enabled: true, play: resumePlayback);
+            await _playback.SetModeAsync(enabled: true, play: resumePlayback);
             cancellation.Token.ThrowIfCancellationRequested();
             StatusText.Text = "Bản xem trước đã cập nhật.";
         }
@@ -149,10 +148,10 @@ public sealed partial class EditorPage
     {
         if (!_editorParityInitialized) return;
         if (_editorOutputPathText is not null) _editorOutputPathText.Text = _application.Config.OutputDirectory;
-        var timeEnabled = _media is not null && !WholeToggle.IsOn && !EditorBusy && !_playerMode;
+        var timeEnabled = _media is not null && !WholeToggle.IsOn && !EditorBusy && !_playback.IsPreviewMode;
         if (_editorUseCurrentStartButton is not null) _editorUseCurrentStartButton.IsEnabled = timeEnabled;
         if (_editorUseCurrentEndButton is not null) _editorUseCurrentEndButton.IsEnabled = timeEnabled;
-        if (_editorChooseOutputButton is not null) _editorChooseOutputButton.IsEnabled = !EditorBusy && !_playerMode;
+        if (_editorChooseOutputButton is not null) _editorChooseOutputButton.IsEnabled = !EditorBusy && !_playback.IsPreviewMode;
         if (_editorOpenOutputButton is not null) _editorOpenOutputButton.IsEnabled = Directory.Exists(_application.Config.OutputDirectory);
         if (_editorAutoCompositeToggle is not null) _editorAutoCompositeToggle.IsEnabled = !EditorBusy;
     }
