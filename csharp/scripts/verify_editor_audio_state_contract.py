@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -9,6 +10,7 @@ PAGES = ROOT / "csharp/src/BiliSubStudio.App/Pages"
 PLAYBACK = PAGES / "EditorPage.Playback.cs"
 EDITOR_MAIN = PAGES / "EditorPage.xaml.cs"
 EDITOR_XAML = PAGES / "EditorPage.xaml"
+XAML_NS = "http://schemas.microsoft.com/winfx/2006/xaml"
 
 
 def fail(message: str) -> None:
@@ -23,6 +25,16 @@ def require(condition: bool, message: str) -> None:
 
 def read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
+
+
+def named_xaml_control(name: str) -> dict[str, str]:
+    root = ET.parse(EDITOR_XAML).getroot()
+    for element in root.iter():
+        if element.attrib.get(f"{{{XAML_NS}}}Name") != name:
+            continue
+        return {key.rsplit("}", 1)[-1]: value for key, value in element.attrib.items()}
+    fail(f"missing XAML control {name}")
+    raise AssertionError("unreachable")
 
 
 playback = read(PLAYBACK)
@@ -67,4 +79,43 @@ require("_audioSettings = EditorProjectStore.NormalizeAudio" in editor_main
         and "Audio = _audioSettings" in editor_main,
         "AUDIO-01 persisted source Keep/Duck/Mute policy must remain project-owned")
 
-print("PASS: AUDIO-01 single monitor audio state owner contract")
+# AUDIO-02 — Preview volume. The compact Player volume is monitor-only state:
+# 0..100 in the UI maps directly to 0..1 MediaPlayer.Volume, applies immediately,
+# survives player recreation through the AUDIO-01 owner, and never mutates render policy.
+preview_volume = named_xaml_control("PreviewVolumeSlider")
+require(preview_volume.get("Minimum") == "0"
+        and preview_volume.get("Maximum") == "100"
+        and preview_volume.get("Value") == "100",
+        "AUDIO-02 Preview volume must expose an exact 0..100 range with 100% default")
+require(preview_volume.get("ValueChanged") == "PreviewVolume_ValueChanged",
+        "AUDIO-02 Preview volume must keep exactly one reviewed ValueChanged handler")
+require(playback.count("private void PreviewVolume_ValueChanged(") == 1,
+        "AUDIO-02 Preview volume handler must have exactly one implementation")
+
+preview_volume_handler = playback.split("private void PreviewVolume_ValueChanged(", 1)[1].split(
+    "private sealed class EditorPlaybackController", 1)[0]
+require("_playback.SetVolume(e.NewValue / 100);" in preview_volume_handler,
+        "AUDIO-02 slider percent must map directly to the playback owner's 0..1 volume")
+for forbidden in (
+    "_audioSettings", "SourceAudioModeBox", "SourceAudioGainSlider", "QueueProjectSave",
+    "QueuePreviewRefresh", "NotifyEditorCompositeChanged", "SetMuted(",
+):
+    require(forbidden not in preview_volume_handler,
+            f"AUDIO-02 Preview volume handler must remain monitor-only; found {forbidden}")
+
+require("_monitorAudio.Volume = Math.Clamp(volume, 0, 1);" in volume_source,
+        "AUDIO-02 playback owner must clamp Preview volume to MediaPlayer's 0..1 domain")
+require("_player.Volume = _monitorAudio.Volume;" in volume_source,
+        "AUDIO-02 Preview volume must apply immediately to the current MediaPlayer")
+for forbidden in ("_monitorAudio.Muted", "_player.IsMuted", "_audioSettings"):
+    require(forbidden not in volume_source,
+            f"AUDIO-02 changing Preview volume must not alter mute/render state; found {forbidden}")
+
+require("Volume = _monitorAudio.Volume," in create_player,
+        "AUDIO-02 recreated MediaPlayer must retain the selected Preview volume")
+require(editor_main.count("_playback.SetVolume(") == 0,
+        "AUDIO-02 project/source-audio code must never write monitor Preview volume")
+require(playback.count("_playback.SetVolume(") == 1,
+        "AUDIO-02 Preview volume must have one UI-to-owner write path")
+
+print("PASS: AUDIO-01 single monitor owner + AUDIO-02 Preview volume contract")
