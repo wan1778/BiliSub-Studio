@@ -145,7 +145,9 @@ public sealed class EditorProjectStore
                     loaded = await JsonSerializer.DeserializeAsync<EditorProject>(stream, _json, cancellationToken)
                         ?? throw new InvalidDataException("Project Editor rỗng.");
                 }
-                if (loaded.Schema is not (1 or 2 or 3 or 4 or CurrentSchema) || !string.Equals(loaded.Id, id, StringComparison.Ordinal))
+                if (loaded.Schema is not (1 or 2 or 3 or 4 or CurrentSchema)
+                    || !string.Equals(loaded.Id, id, StringComparison.Ordinal)
+                    || loaded.Source is null)
                     throw new InvalidDataException("Project Editor không đúng phiên bản hoặc nguồn.");
                 if (SourceFingerprintChanged(loaded.Source, source))
                 {
@@ -173,9 +175,16 @@ public sealed class EditorProjectStore
             }
             catch (OperationCanceledException) { throw; }
             catch (SourceChangeArchiveException) { throw; }
-            catch
+            catch (ProjectCorruptArchiveException) { throw; }
+            catch (Exception error) when (IsProjectCorruption(error))
             {
-                Quarantine(projectPath);
+                // PROJECT-07: a corrupt primary project invalidates the sidecar that
+                // would otherwise be reattached to the fresh project with the same ID.
+                // Archive the sidecar first so a failed quarantine cannot produce a
+                // half-old/half-new project state.
+                ArchiveCorruptState(ImageSidecarPath(id));
+                ArchiveCorruptState(projectPath);
+                return CreateFreshProject(source, id);
             }
         }
 
@@ -523,14 +532,45 @@ public sealed class EditorProjectStore
         public SourceChangeArchiveException(string message, Exception innerException) : base(message, innerException) { }
     }
 
-    private static void Quarantine(string path)
+    private sealed class ProjectCorruptArchiveException : IOException
     {
+        public ProjectCorruptArchiveException(string message, Exception innerException) : base(message, innerException) { }
+    }
+
+    private static bool IsProjectCorruption(Exception error) =>
+        error is JsonException
+            or InvalidDataException
+            or ArgumentException
+            or FormatException
+            or OverflowException;
+
+    private static void ArchiveCorruptState(string path)
+    {
+        if (!File.Exists(path)) return;
+        var archive = path + ".corrupt-" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + "-" + Guid.NewGuid().ToString("N");
+        Exception? last = null;
         try
         {
-            var quarantine = path + ".corrupt-" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            File.Move(path, quarantine, overwrite: false);
+            File.Move(path, archive, overwrite: false);
+            return;
         }
-        catch { }
+        catch (Exception error)
+        {
+            last = error;
+        }
+        try
+        {
+            File.Copy(path, archive, overwrite: false);
+            File.Delete(path);
+            if (!File.Exists(path)) return;
+        }
+        catch (Exception error)
+        {
+            last = error;
+        }
+        throw new ProjectCorruptArchiveException(
+            "Không thể cách ly project Editor bị hỏng; dữ liệu hiện tại được giữ nguyên để tránh ghi đè ngoài ý muốn.",
+            last ?? new IOException("Không rõ lỗi cách ly project Editor bị hỏng."));
     }
 }
 
