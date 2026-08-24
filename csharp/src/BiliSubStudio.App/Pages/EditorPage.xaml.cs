@@ -53,7 +53,10 @@ public sealed partial class EditorPage : Page
     private bool _subtitleDrag;
     private EditorSubtitlePlacement? _subtitleDragOriginal;
     private CancellationTokenSource? _previewCancellation;
-    private CancellationTokenSource? _saveCancellation;
+    private Microsoft.UI.Dispatching.DispatcherQueueTimer? _projectSaveTimer;
+    private readonly SemaphoreSlim _projectSaveGate = new(1, 1);
+    private EditorProject? _pendingProjectSave;
+    private bool _projectSaveFlushInProgress;
     private int _previewRevision;
     private double _lastOverlayWidth = -1;
     private double _lastOverlayHeight = -1;
@@ -123,13 +126,18 @@ public sealed partial class EditorPage : Page
         _previewCancellation?.Cancel();
         _previewCancellation?.Dispose();
         _previewCancellation = null;
-        _saveCancellation?.Cancel();
-        _saveCancellation?.Dispose();
-        _saveCancellation = null;
-        CleanupEditorParity();
-        await _playback.UnloadAsync();
-        try { await SaveImageSidecarAsync(); } catch { }
-        await SaveProjectNowAsync();
+        StopProjectSaveTimer();
+        try
+        {
+            CleanupEditorParity();
+            await _playback.UnloadAsync();
+            try { await SaveImageSidecarAsync(); } catch { }
+            await SaveProjectNowAsync();
+        }
+        finally
+        {
+            CleanupProjectAutosave();
+        }
     }
 
     private async void OpenVideo_Click(object sender, RoutedEventArgs e)
@@ -239,15 +247,9 @@ public sealed partial class EditorPage : Page
     private async Task SaveCurrentSourceStateForSwitchAsync()
     {
         if (_project is null) return;
-        var pendingSave = _saveCancellation;
-        _saveCancellation = null;
-        if (pendingSave is not null)
-        {
-            pendingSave.Cancel();
-            pendingSave.Dispose();
-        }
+        var snapshot = ProjectSnapshot();
+        await FlushProjectSaveAsync(snapshot);
         await SaveImageSidecarAsync();
-        await _application.SaveEditorProjectAsync(ProjectSnapshot(), CancellationToken.None);
     }
 
     private async Task DisposePreviewForSourceChangeAsync()
@@ -1853,39 +1855,100 @@ public sealed partial class EditorPage : Page
     private void QueueProjectSave()
     {
         if (_project is null) return;
-        _saveCancellation?.Cancel();
-        _saveCancellation?.Dispose();
-        var cancellation = new CancellationTokenSource();
-        _saveCancellation = cancellation;
-        var snapshot = ProjectSnapshot();
-        _ = SaveProjectLaterAsync(snapshot, cancellation.Token);
+        _pendingProjectSave = ProjectSnapshot();
+        if (_projectSaveFlushInProgress) return;
+        RestartProjectSaveTimer();
     }
 
-    private async Task SaveProjectLaterAsync(EditorProject project, CancellationToken cancellationToken)
+    private Microsoft.UI.Dispatching.DispatcherQueueTimer EnsureProjectSaveTimer()
     {
+        if (_projectSaveTimer is not null) return _projectSaveTimer;
+        var timer = DispatcherQueue.CreateTimer();
+        timer.Interval = TimeSpan.FromMilliseconds(450);
+        timer.IsRepeating = false;
+        timer.Tick += ProjectSaveTimer_Tick;
+        _projectSaveTimer = timer;
+        return timer;
+    }
+
+    private void RestartProjectSaveTimer()
+    {
+        var timer = EnsureProjectSaveTimer();
+        timer.Stop();
+        timer.Start();
+    }
+
+    private void StopProjectSaveTimer()
+    {
+        _projectSaveTimer?.Stop();
+    }
+
+    private void CleanupProjectAutosave()
+    {
+        StopProjectSaveTimer();
+        _pendingProjectSave = null;
+        if (_projectSaveTimer is null) return;
+        _projectSaveTimer.Tick -= ProjectSaveTimer_Tick;
+        _projectSaveTimer = null;
+    }
+
+    private async void ProjectSaveTimer_Tick(Microsoft.UI.Dispatching.DispatcherQueueTimer sender, object args)
+    {
+        sender.Stop();
+        if (_projectSaveFlushInProgress) return;
+        var snapshot = _pendingProjectSave;
+        _pendingProjectSave = null;
+        if (snapshot is null) return;
         try
         {
-            await Task.Delay(450, cancellationToken);
-            await _application.SaveEditorProjectAsync(project, cancellationToken);
+            await PersistEditorProjectAsync(snapshot);
         }
-        catch (OperationCanceledException) { }
         catch (Exception error)
         {
-            DispatcherQueue.TryEnqueue(() => StatusText.Text = "Không tự lưu được project: " + error.Message);
+            StatusText.Text = "Không tự lưu được project: " + error.Message;
+        }
+        finally
+        {
+            if (!_projectSaveFlushInProgress
+                && _pendingProjectSave is not null
+                && ReferenceEquals(_projectSaveTimer, sender))
+                RestartProjectSaveTimer();
+        }
+    }
+
+    private async Task PersistEditorProjectAsync(EditorProject project)
+    {
+        await _projectSaveGate.WaitAsync();
+        try
+        {
+            await _application.SaveEditorProjectAsync(project, CancellationToken.None);
+        }
+        finally
+        {
+            _projectSaveGate.Release();
+        }
+    }
+
+    private async Task FlushProjectSaveAsync(EditorProject project)
+    {
+        _projectSaveFlushInProgress = true;
+        StopProjectSaveTimer();
+        _pendingProjectSave = null;
+        try
+        {
+            await PersistEditorProjectAsync(project);
+        }
+        finally
+        {
+            _projectSaveFlushInProgress = false;
+            if (_pendingProjectSave is not null) RestartProjectSaveTimer();
         }
     }
 
     private async Task SaveProjectNowAsync()
     {
         if (_project is null) return;
-        var pending = _saveCancellation;
-        _saveCancellation = null;
-        if (pending is not null)
-        {
-            pending.Cancel();
-            pending.Dispose();
-        }
-        try { await _application.SaveEditorProjectAsync(ProjectSnapshot(), CancellationToken.None); }
+        try { await FlushProjectSaveAsync(ProjectSnapshot()); }
         catch (Exception error) { StatusText.Text = "Không lưu được project: " + error.Message; }
     }
 

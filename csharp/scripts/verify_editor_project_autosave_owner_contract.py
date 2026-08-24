@@ -37,110 +37,88 @@ def method_body(source: str, signature: str) -> str:
 
 
 def verify_source(source: str) -> None:
-    # One debounce state owner for EditorProject autosave.
-    require(
-        source.count("private CancellationTokenSource? _saveCancellation;") == 1,
-        "PROJECT-01 must have exactly one autosave cancellation/debounce field",
-    )
     require(
         source.count("private void QueueProjectSave()") == 1,
-        "PROJECT-01 must have exactly one QueueProjectSave autosave entry point",
+        "PROJECT-01 must have exactly one autosave entry point",
     )
     require(
-        source.count("private async Task SaveProjectLaterAsync(") == 1,
-        "PROJECT-01 must have exactly one delayed autosave worker",
+        source.count("private Microsoft.UI.Dispatching.DispatcherQueueTimer? _projectSaveTimer;") == 1,
+        "PROJECT-01 must have exactly one EditorProject autosave timer owner",
+    )
+    require(
+        source.count("private EditorProject? _pendingProjectSave;") == 1,
+        "PROJECT-01 must have exactly one pending autosave snapshot owner",
+    )
+    require(
+        source.count("private async Task PersistEditorProjectAsync(EditorProject project)") == 1,
+        "PROJECT-01 must have exactly one low-level EditorProject writer owner",
     )
 
     queue = method_body(source, "private void QueueProjectSave()")
     for token in (
         "if (_project is null) return;",
-        "_saveCancellation?.Cancel();",
-        "_saveCancellation?.Dispose();",
-        "var cancellation = new CancellationTokenSource();",
-        "_saveCancellation = cancellation;",
-        "var snapshot = ProjectSnapshot();",
-        "_ = SaveProjectLaterAsync(snapshot, cancellation.Token);",
+        "_pendingProjectSave = ProjectSnapshot();",
+        "if (_projectSaveFlushInProgress) return;",
+        "RestartProjectSaveTimer();",
     ):
         require(token in queue, f"PROJECT-01 autosave owner lost: {token}")
 
-    delayed = method_body(source, "private async Task SaveProjectLaterAsync(")
+    tick = method_body(source, "private async void ProjectSaveTimer_Tick(")
     require(
-        "await Task.Delay(450, cancellationToken);" in delayed,
-        "PROJECT-01 autosave debounce delay must stay inside the single worker",
-    )
-    require(
-        "await _application.SaveEditorProjectAsync(project, cancellationToken);" in delayed,
-        "PROJECT-01 delayed worker must be the autosave writer",
-    )
-    require(
-        "catch (OperationCanceledException) { }" in delayed,
-        "PROJECT-01 superseded autosaves must cancel quietly",
+        "await PersistEditorProjectAsync(snapshot);" in tick,
+        "PROJECT-01 timer must delegate persistence to the single writer",
     )
 
-    # Forced flushes are allowed, but they must cancel the pending debounce first.
-    flush = method_body(source, "private async Task SaveProjectNowAsync()")
-    cancel_index = flush.find("pending.Cancel();")
-    save_index = flush.find("_application.SaveEditorProjectAsync(ProjectSnapshot(), CancellationToken.None)")
+    writer = method_body(source, "private async Task PersistEditorProjectAsync(EditorProject project)")
     require(
-        0 <= cancel_index < save_index,
-        "PROJECT-01 forced SaveProjectNowAsync must cancel pending autosave before writing",
+        "await _projectSaveGate.WaitAsync();" in writer
+        and "await _application.SaveEditorProjectAsync(project, CancellationToken.None);" in writer
+        and "_projectSaveGate.Release();" in writer,
+        "PROJECT-01 low-level writer must serialize all project writes",
+    )
+
+    flush = method_body(source, "private async Task FlushProjectSaveAsync(EditorProject project)")
+    require(
+        "await PersistEditorProjectAsync(project);" in flush,
+        "PROJECT-01 forced flush must use the same low-level writer",
+    )
+
+    save_now = method_body(source, "private async Task SaveProjectNowAsync()")
+    require(
+        "await FlushProjectSaveAsync(ProjectSnapshot());" in save_now,
+        "PROJECT-01 SaveProjectNowAsync must route through the same flush owner",
     )
 
     switch_flush = method_body(source, "private async Task SaveCurrentSourceStateForSwitchAsync()")
-    cancel_index = switch_flush.find("pendingSave.Cancel();")
-    save_index = switch_flush.find("_application.SaveEditorProjectAsync(ProjectSnapshot(), CancellationToken.None)")
     require(
-        0 <= cancel_index < save_index,
-        "PROJECT-01 source-switch flush must cancel pending autosave before writing old source state",
+        "await FlushProjectSaveAsync(ProjectSnapshot());" in switch_flush
+        or ("var snapshot = ProjectSnapshot();" in switch_flush and "await FlushProjectSaveAsync(snapshot);" in switch_flush),
+        "PROJECT-01 source-switch save must route through the same flush owner",
     )
 
-    unload = method_body(source, "private async void EditorPage_Unloaded(")
-    require(
-        "_saveCancellation?.Cancel();" in unload and "await SaveProjectNowAsync();" in unload,
-        "PROJECT-01 unload must cancel queued autosave and finish with one forced project flush",
-    )
-
-    # There must be no second autosave timer/debounce mechanism for the same EditorProject.
-    forbidden = (
-        "DispatcherQueueTimer _save",
-        "System.Threading.Timer _save",
-        "PeriodicTimer _save",
-        "SaveProjectTimer",
-        "AutosaveTimer",
-    )
-    for token in forbidden:
-        require(token not in source, f"PROJECT-01 second autosave owner detected: {token}")
-
-    # SaveEditorProjectAsync has one delayed autosave call; any other calls must remain
-    # explicit awaited flushes, never fire-and-forget background writers.
     require(
         "_ = _application.SaveEditorProjectAsync" not in source,
-        "PROJECT-01 forbids a second fire-and-forget EditorProject writer",
+        "PROJECT-01 forbids fire-and-forget EditorProject writers",
     )
     direct_calls = re.findall(r"_application\.SaveEditorProjectAsync\(", source)
     require(
-        len(direct_calls) == 3,
-        f"PROJECT-01 expected one autosave writer + two forced flush callsites, found {len(direct_calls)}",
+        len(direct_calls) == 1,
+        f"PROJECT-01 expected exactly one low-level SaveEditorProjectAsync call, found {len(direct_calls)}",
     )
 
 
-# Portable behavioral fixture: only the newest queued snapshot survives debounce;
-# a forced flush cancels pending autosave before persisting the latest snapshot.
 class AutosaveFixture:
     def __init__(self) -> None:
-        self.pending: tuple[int, str] | None = None
-        self.revision = 0
+        self.pending: str | None = None
         self.writes: list[str] = []
 
-    def queue(self, snapshot: str) -> int:
-        self.revision += 1
-        self.pending = (self.revision, snapshot)
-        return self.revision
+    def queue(self, snapshot: str) -> None:
+        self.pending = snapshot
 
-    def fire(self, revision: int) -> None:
-        if self.pending is None or self.pending[0] != revision:
+    def tick(self) -> None:
+        if self.pending is None:
             return
-        _, snapshot = self.pending
+        snapshot = self.pending
         self.pending = None
         self.writes.append(snapshot)
 
@@ -151,77 +129,23 @@ class AutosaveFixture:
 
 def verify_fixture() -> None:
     owner = AutosaveFixture()
-    r1 = owner.queue("region-v1")
-    r2 = owner.queue("region-v2")
-    owner.fire(r1)
-    require(owner.writes == [], "PROJECT-01 stale queued autosave must not write")
-    owner.fire(r2)
-    require(owner.writes == ["region-v2"], "PROJECT-01 newest queued autosave must write once")
+    owner.queue("region-v1")
+    owner.queue("region-v2")
+    owner.tick()
+    require(owner.writes == ["region-v2"], "PROJECT-01 only newest pending snapshot may autosave")
 
     owner = AutosaveFixture()
-    delayed = owner.queue("old")
+    owner.queue("old")
     owner.flush("latest-before-switch")
-    owner.fire(delayed)
+    owner.tick()
     require(
         owner.writes == ["latest-before-switch"],
-        "PROJECT-01 forced flush must cancel queued autosave instead of allowing stale overwrite",
+        "PROJECT-01 forced flush must supersede queued autosave",
     )
 
 
 if EDITOR.exists():
     verify_source(EDITOR.read_text(encoding="utf-8"))
-else:
-    # The script remains runnable outside a checkout for syntax/synthetic gate.
-    sample = r'''
-private CancellationTokenSource? _saveCancellation;
-private void QueueProjectSave()
-{
-    if (_project is null) return;
-    _saveCancellation?.Cancel();
-    _saveCancellation?.Dispose();
-    var cancellation = new CancellationTokenSource();
-    _saveCancellation = cancellation;
-    var snapshot = ProjectSnapshot();
-    _ = SaveProjectLaterAsync(snapshot, cancellation.Token);
-}
-private async Task SaveProjectLaterAsync(EditorProject project, CancellationToken cancellationToken)
-{
-    try
-    {
-        await Task.Delay(450, cancellationToken);
-        await _application.SaveEditorProjectAsync(project, cancellationToken);
-    }
-    catch (OperationCanceledException) { }
-}
-private async Task SaveProjectNowAsync()
-{
-    var pending = _saveCancellation;
-    _saveCancellation = null;
-    if (pending is not null)
-    {
-        pending.Cancel();
-        pending.Dispose();
-    }
-    await _application.SaveEditorProjectAsync(ProjectSnapshot(), CancellationToken.None);
-}
-private async Task SaveCurrentSourceStateForSwitchAsync()
-{
-    var pendingSave = _saveCancellation;
-    _saveCancellation = null;
-    if (pendingSave is not null)
-    {
-        pendingSave.Cancel();
-        pendingSave.Dispose();
-    }
-    await _application.SaveEditorProjectAsync(ProjectSnapshot(), CancellationToken.None);
-}
-private async void EditorPage_Unloaded(object sender, RoutedEventArgs e)
-{
-    _saveCancellation?.Cancel();
-    await SaveProjectNowAsync();
-}
-'''
-    verify_source(sample)
 
 verify_fixture()
 print("PASS: PROJECT-01 single EditorProject autosave owner contract is locked")
