@@ -2,21 +2,22 @@
 
 - Base/current upstream main: `origin/main@8eb2a8a2600b37d29bfd0deaae9eeb94b3cda635`
 - Current local branch: `main`
-- Local base before this task: `7836c5d42d86f9e331630c2908cf1c7f38cff4cc`
+- Local base before this task: `45642081cb616e9fabadc3576d4694e4ac069b58`
 - Pull request: none; local Preview/Blur task commits are not pushed or merged
 - Last completed before Blur phase: `PREVIEW-15 — Cleanup preview cache`
-- Task completed in this handoff: `BLUR-02 — Create a region with the mouse`
+- Task completed in this handoff: `BLUR-03 — Select an existing region`
 - Task result: `PASS`
 - Task currently running: none
-- Exact next task after this task passes: `BLUR-03 — Select an existing region`
+- Exact next task after this task passes: `BLUR-04 — Move a region`
 
 ## Recent task commits
 
 - `PREVIEW-15`: `16c7c8427646ef1f6c8988cbad368e38973ed346` — startup/dispose cleanup for active and crash preview artifacts.
 - `BLUR-01`: `7836c5d42d86f9e331630c2908cf1c7f38cff4cc` — one reviewed event route for every blur input.
-- `BLUR-02`: the commit containing this handoff; resolve its exact SHA with `git rev-parse HEAD` after checkout. The exact SHA is also reported in the task completion message because a commit cannot contain its own cryptographic ID.
+- `BLUR-02`: `45642081cb616e9fabadc3576d4694e4ac069b58` — source-pixel-valid mouse region creation.
+- `BLUR-03`: the commit containing this handoff; resolve its exact SHA with `git rev-parse HEAD` after checkout. The exact SHA is also reported in the task completion message because a commit cannot contain its own cryptographic ID.
 
-## Files changed by BLUR-02
+## Files changed by BLUR-03
 
 - `csharp/src/BiliSubStudio.Core/Editor/EditorRegionGeometry.cs`
 - `csharp/src/BiliSubStudio.App/Pages/EditorPage.xaml.cs`
@@ -27,35 +28,36 @@
 
 ## Root cause
 
-The Overlay already had one pointer-event route, but mouse-region creation calculated normalized geometry inline in `Overlay_PointerMoved` and committed the draft directly in `FinishDrag`. Unlike the Add button path, the mouse path did not call `ValidateRegion`. A drag could therefore enter the document even when its source-pixel rectangle was below FFmpeg's two-pixel minimum or its current start/end settings were invalid; the defect surfaced only later during Preview or Export.
+Region selection behavior existed, but it had no single state owner or functional contract. `RegionList_SelectionChanged`, Blur Overlay selection, empty-canvas deselection and Subtitle interaction called `_document.Select(...)` directly from separate branches. Overlay hit-testing was inline WinUI code and untested, including the required topmost rule for overlapping regions. Compile/startup gates therefore could not detect a selection regression before Move/Resize depended on it.
 
 ## Implementation
 
-- Added `EditorRegionGeometry.FromNormalizedDrag` as the single tested owner for converting a bounded normalized drag into a source-pixel-valid `EditRegion`.
-- Forward and reverse drags now produce the same normalized rectangle; non-finite coordinates, invalid source dimensions and rectangles below two source pixels are rejected before document mutation.
-- `Overlay_PointerMoved` delegates creation geometry to the Core owner while preserving the current blur effect, strength, whole-video and time-range settings.
-- `FinishDrag` delegates commit to `TryCommitCreatedRegion`, which calls `ValidateRegion` before `_document.Add` and reports validation failures without adding an invalid region.
-- Existing select, move and resize paths were not changed; Subtitle behavior was not reopened.
-- Added static regression coverage that pins the geometry owner and validation-before-add call path.
+- Added `EditorRegionGeometry.FindTopmostContaining` as the tested normalized hit-test owner. It walks in reverse draw order so the visually topmost overlapping region wins.
+- Invalid/out-of-source pointer coordinates and invalid region geometry do not produce a selection.
+- Added `SelectRegion(int index)` as the only Editor UI owner allowed to call `_document.Select`; it clears draft state and synchronizes the selected region into Details inputs.
+- Routed Region List selection, Blur Overlay hit selection, empty-canvas deselection and Subtitle-region deselection through that owner.
+- Removed redundant input/render refreshes from selection handlers while preserving existing pointer capture and drag setup for later BLUR-04/05 tasks.
+- Existing Move and Resize geometry was not changed; Subtitle feature logic was not reopened.
+- Added a static BLUR-03 contract requiring the one selection owner, reviewed ListView event route and tested Core hit-test call path.
 
 ## Tests and results
 
-- Fail-first `python csharp/scripts/validate_csharp_migration.py` — expected FAIL before implementation: `BLUR-02 mouse creation must use tested normalized geometry and validate before document commit`.
+- Fail-first `python csharp/scripts/validate_csharp_migration.py` — expected FAIL before implementation: `BLUR-03 region selection must have one state owner and tested topmost hit-testing`.
 - `python csharp/scripts/validate_csharp_migration.py` — PASS (`4.0.0-beta.42-csharp-p5`).
 - `python csharp/scripts/generate_csharp_code_map.py --check` — PASS; generated map is current.
-- Core contract runner with exact SDK `10.0.400` — PASS, 56/56.
+- Core contract runner with exact SDK `10.0.400` — PASS, 57/57.
 - Targeted Windows x64 Release solution build — PASS, 0 warnings and 0 errors.
 - Git diff whitespace check — PASS.
-- Full clean-checkout `csharp/scripts/verify.ps1` — PASS, including source identity, 56/56 contracts, Range regressions, PE32+ x64, embedded worker identity, self-contained publish and real WinUI startup/layout smoke.
+- Full clean-checkout `csharp/scripts/verify.ps1` — PASS, including source identity, 57/57 contracts, Range regressions, PE32+ x64, embedded worker identity, self-contained publish and real WinUI startup/layout smoke.
 - No CI workflow was dispatched; no installer/package/release was built or published.
 
 ## Verification level
 
-- Geometry functional contract PASS: forward/reverse drag normalization, source-bound clamping, preservation of blur settings, rejection of non-finite input and rejection below the two-pixel source minimum.
-- Document boundary contract PASS: mouse-created regions are validated before `_document.Add`.
+- Selection functional contract PASS: topmost overlap selection, lower-only selection, inclusive boundary, outside/NaN rejection, document selection and clean deselection.
+- State ownership PASS: all Editor UI calls to `_document.Select` route through one `SelectRegion` method.
 - Compile PASS: Windows x64 Release solution build, 0 warnings/errors.
 - Functional WinUI startup/layout PASS: the published executable initialized the real Editor XAML at the verification smoke sizes.
-- Real interactive mouse create/drag field test on a physical Windows desktop: not run; still required before release.
+- Real interactive region selection via Overlay and Region List on a physical Windows desktop: not run; still required before release.
 
 ## Constraints to preserve
 
@@ -64,8 +66,8 @@ The Overlay already had one pointer-event route, but mouse-region creation calcu
 - Translation, ASR and TTS remain local; Chinese → Vietnamese uses the project translation skill.
 - Keep the three-column Editor and contextual tool scope; do not turn it into a full NLE.
 - Keep one event/owner, one button/handler, no handler-calls-handler and the single `EditorPlaybackController` playback owner.
-- Mouse-region creation must keep source-pixel validation before document mutation; do not restore inline UI geometry or bypass `ValidateRegion`.
+- Region selection must route through `SelectRegion`; overlapping Overlay hits must keep reverse draw-order/topmost semantics.
 - Do not add Repair/Fix/Parity layers when the real owner can be corrected; remove dead/superseded logic.
-- One small task and targeted regression at a time; do not start BLUR-03 until BLUR-02 has final clean verification and its own commit.
+- One small task and targeted regression at a time; do not start BLUR-04 until BLUR-03 has final clean verification and its own commit.
 - Do not reopen already-passed Subtitle work without a demonstrated regression.
 - No version bump, release, push, PR merge or merge without explicit authorization and passing gates.

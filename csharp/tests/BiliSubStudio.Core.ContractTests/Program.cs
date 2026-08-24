@@ -54,6 +54,7 @@ internal static class Program
         ("Vietnamese TTS text normalization stays deterministic", VietnameseTtsNormalizerContractAsync),
         ("editor document preserves identity through undo redo", EditorDocumentContractAsync),
         ("editor mouse drag creates only pixel-valid regions in either direction", EditorMouseRegionGeometryContractAsync),
+        ("editor region selection picks the topmost hit and synchronizes document state", EditorRegionSelectionContractAsync),
         ("editor project persists, isolates source drift and quarantines corrupt state", EditorProjectContractAsync),
         ("editor SRT keeps exact blocks order and timecodes", EditorSubtitleDocumentContractAsync),
         ("editor manual cue state persists locks and preserves timeline", EditorSubtitleManualContract.RunAsync),
@@ -917,6 +918,31 @@ internal static class Program
             "sub-two-pixel mouse drag entered the document");
         True(EditorRegionGeometry.FromNormalizedDrag(settings, double.NaN, .1, .5, .5, 100, 100) is null,
             "non-finite mouse drag entered the document");
+        return Task.CompletedTask;
+    }
+
+    private static Task EditorRegionSelectionContractAsync()
+    {
+        EditRegion[] regions =
+        [
+            new(.1, .1, .5, .5, "blur", 18, true, 0, 10, "lower"),
+            new(.2, .2, .2, .2, "mosaic", 12, true, 0, 10, "upper"),
+        ];
+        Equal(1, EditorRegionGeometry.FindTopmostContaining(regions, .25, .25));
+        Equal(0, EditorRegionGeometry.FindTopmostContaining(regions, .15, .15));
+        Equal(1, EditorRegionGeometry.FindTopmostContaining(regions, .2, .2));
+        Equal(-1, EditorRegionGeometry.FindTopmostContaining(regions, .9, .9));
+        Equal(-1, EditorRegionGeometry.FindTopmostContaining(regions, double.NaN, .25));
+        Equal(-1, EditorRegionGeometry.FindTopmostContaining(regions, 1.1, .25));
+
+        var document = new EditorRegionDocument();
+        document.Reset(regions);
+        document.Select(EditorRegionGeometry.FindTopmostContaining(document.Regions, .25, .25));
+        Equal("upper", document.Selected?.Id);
+        Equal(2, document.Regions.Count);
+        document.Select(-1);
+        Equal(-1, document.SelectedIndex);
+        True(document.Selected is null, "clearing region selection left stale document state");
         return Task.CompletedTask;
     }
 

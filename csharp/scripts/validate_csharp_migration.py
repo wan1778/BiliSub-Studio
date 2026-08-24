@@ -424,6 +424,18 @@ require("EditorRegionGeometry.FromNormalizedDrag(" in blur_create_source
         and "public static EditRegion? FromNormalizedDrag(" in region_geometry_source
         and "editor mouse drag creates only pixel-valid regions in either direction" in contract_tests_source,
         "BLUR-02 mouse creation must use tested normalized geometry and validate before document commit")
+blur_list_select_source = editor_main.split("private void RegionList_SelectionChanged(", 1)[1].split("private void Undo_Click(", 1)[0]
+blur_pointer_select_source = editor_main.split("private void Overlay_PointerPressed(", 1)[1].split("private void Overlay_PointerMoved(", 1)[0]
+blur_hit_test_source = editor_main.split("private (int Index, DragKind Kind) HitTestRegion(", 1)[1].split("private DragKind HitTestSubtitle(", 1)[0]
+require('SelectionChanged="RegionList_SelectionChanged"' in editor
+        and "private void SelectRegion(int index)" in blur_list_select_source
+        and "SelectRegion(RegionList.SelectedIndex);" in blur_list_select_source
+        and "SelectRegion(hit.Index);" in blur_pointer_select_source
+        and len(re.findall(r"\b_document\.Select\s*\(", editor_partials)) == 1
+        and "EditorRegionGeometry.FindTopmostContaining(" in blur_hit_test_source
+        and "public static int FindTopmostContaining(" in region_geometry_source
+        and "editor region selection picks the topmost hit and synchronizes document state" in contract_tests_source,
+        "BLUR-03 region selection must have one state owner and tested topmost hit-testing")
 require("SubtitleCueList" in editor and "SubtitleRetranslateCueButton" in editor and "SubtitleSaveSrtButton" in editor,
         "Editor static subtitle cue editor controls missing")
 require("ForceFresh = false" in read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalSubtitleTranslationService.cs")

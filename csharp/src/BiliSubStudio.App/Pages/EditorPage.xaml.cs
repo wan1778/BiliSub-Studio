@@ -933,11 +933,15 @@ public sealed partial class EditorPage : Page
     private void RegionList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_syncingList) return;
-        _document.Select(RegionList.SelectedIndex);
+        SelectRegion(RegionList.SelectedIndex);
+        RenderDocument(renderInputs: false);
+    }
+
+    private void SelectRegion(int index)
+    {
+        _document.Select(index);
         _draftRegion = null;
         if (_document.Selected is not null) LoadSelectedIntoInputs();
-        RenderDocument();
-        RefreshEditorActions();
     }
 
     private void Undo_Click(object sender, RoutedEventArgs e)
@@ -1092,32 +1096,29 @@ public sealed partial class EditorPage : Page
             _subtitleDrag = true;
             _subtitleDragOriginal = _subtitlePlacement;
             _dragKind = subtitleHit;
-            _document.Select(-1);
-            _draftRegion = null;
+            SelectRegion(-1);
         }
         else if (_inspectorMode == InspectorMode.Blur)
         {
             var hit = HitTestRegion(point);
             if (hit.Index >= 0)
             {
-                _document.Select(hit.Index);
+                SelectRegion(hit.Index);
                 _dragKind = hit.Kind;
                 _dragOriginal = _document.Selected;
-                LoadSelectedIntoInputs();
             }
             else
             {
-                _document.Select(-1);
+                SelectRegion(-1);
                 _dragKind = DragKind.Create;
                 _dragOriginal = null;
-                _draftRegion = null;
             }
         }
         else return;
         _dragStartNormalized = normalized;
         _dragHistoryCaptured = false;
         Overlay.CapturePointer(e.Pointer);
-        RenderDocument();
+        RenderDocument(renderInputs: false);
         e.Handled = true;
     }
 
@@ -1476,14 +1477,11 @@ public sealed partial class EditorPage : Page
             var handle = HitSelectedHandles(point, selected, video);
             if (handle != DragKind.None) return (_document.SelectedIndex, handle);
         }
-        for (var index = _document.Regions.Count - 1; index >= 0; index--)
-        {
-            var region = _document.Regions[index];
-            var left = video.X + region.X * video.Width;
-            var top = video.Y + region.Y * video.Height;
-            if (point.X >= left && point.X <= left + region.Width * video.Width && point.Y >= top && point.Y <= top + region.Height * video.Height)
-                return (index, DragKind.Move);
-        }
+        var index = EditorRegionGeometry.FindTopmostContaining(
+            _document.Regions,
+            (point.X - video.X) / video.Width,
+            (point.Y - video.Y) / video.Height);
+        if (index >= 0) return (index, DragKind.Move);
         return (-1, DragKind.Create);
     }
 

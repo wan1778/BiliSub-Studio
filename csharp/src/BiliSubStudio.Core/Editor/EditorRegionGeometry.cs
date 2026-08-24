@@ -38,4 +38,31 @@ public static class EditorRegionGeometry
             Height = bottom - y,
         };
     }
+
+    public static int FindTopmostContaining(
+        IReadOnlyList<EditRegion> regions,
+        double normalizedX,
+        double normalizedY)
+    {
+        if (!double.IsFinite(normalizedX) || !double.IsFinite(normalizedY)
+            || normalizedX < 0 || normalizedX > 1
+            || normalizedY < 0 || normalizedY > 1)
+            return -1;
+
+        for (var index = regions.Count - 1; index >= 0; index--)
+        {
+            var region = regions[index];
+            var right = region.X + region.Width;
+            var bottom = region.Y + region.Height;
+            if (!double.IsFinite(region.X) || !double.IsFinite(region.Y)
+                || !double.IsFinite(right) || !double.IsFinite(bottom)
+                || region.Width <= 0 || region.Height <= 0)
+                continue;
+            if (normalizedX >= region.X && normalizedX <= right
+                && normalizedY >= region.Y && normalizedY <= bottom)
+                return index;
+        }
+
+        return -1;
+    }
 }
