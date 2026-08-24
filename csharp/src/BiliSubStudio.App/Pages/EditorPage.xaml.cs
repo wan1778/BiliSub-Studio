@@ -859,6 +859,24 @@ public sealed partial class EditorPage : Page
         NotifyEditorCompositeChanged();
     }
 
+    private void BlurStrength_ValueChanged(NumberBox sender, NumberBoxValueChangedEventArgs args)
+    {
+        if (!IsLoaded || _syncingInputs) return;
+        if (!EditorBlurStrength.TryFromInput(args.NewValue, out var strength))
+        {
+            RegionValidationText.Text = $"Cường độ làm mờ phải từ {EditorBlurStrength.Minimum} đến {EditorBlurStrength.Maximum}.";
+            RefreshEditorActions();
+            return;
+        }
+        if (sender.Value != strength)
+        {
+            _syncingInputs = true;
+            try { sender.Value = strength; }
+            finally { _syncingInputs = false; }
+        }
+        if (ApplyInputsToDocument()) NotifyEditorCompositeChanged();
+    }
+
     private void RegionCoordinates_ValueChanged(NumberBox sender, NumberBoxValueChangedEventArgs args)
     {
         if (!IsLoaded || _syncingInputs) return;
@@ -1626,7 +1644,14 @@ public sealed partial class EditorPage : Page
         var duration = _media?.Duration ?? 0;
         var start = WholeToggle.IsOn || double.IsNaN(StartBox.Value) ? 0 : StartBox.Value;
         var end = WholeToggle.IsOn || double.IsNaN(EndBox.Value) ? duration : EndBox.Value;
-        return new EditRegion(x, y, width, height, SelectedEffect(), (int)Math.Clamp(StrengthBox.Value, 2, 40), WholeToggle.IsOn, start, end, id);
+        return new EditRegion(x, y, width, height, SelectedEffect(), CurrentEffectStrength(), WholeToggle.IsOn, start, end, id);
+    }
+
+    private int CurrentEffectStrength()
+    {
+        if (EditorBlurStrength.TryFromInput(StrengthBox.Value, out var strength)) return strength;
+        return EditorBlurStrength.NormalizeStored(
+            _document.Selected?.Strength ?? _draftRegion?.Strength ?? EditorBlurStrength.Default);
     }
 
     private EditRegion? ReadRegionFromInputs(string id)

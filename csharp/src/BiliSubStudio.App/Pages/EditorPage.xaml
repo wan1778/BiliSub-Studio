@@ -179,7 +179,7 @@
                                     <ComboBox x:Name="EffectBox" Header="Hiệu ứng" SelectedIndex="0" SelectionChanged="EffectBox_SelectionChanged">
                                         <ComboBoxItem Tag="blur" Content="Làm mờ" /><ComboBoxItem Tag="mosaic" Content="Mosaic" /><ComboBoxItem Tag="cover" Content="Che đen" />
                                     </ComboBox>
-                                    <NumberBox Grid.Column="1" x:Name="StrengthBox" Header="Cường độ" Minimum="2" Maximum="40" Value="18" ValueChanged="EditInput_ValueChanged" />
+                                    <NumberBox Grid.Column="1" x:Name="StrengthBox" Header="Cường độ" Minimum="2" Maximum="40" SmallChange="1" SpinButtonPlacementMode="Inline" Value="18" ValueChanged="BlurStrength_ValueChanged" />
                                 </Grid>
                                 <ToggleSwitch x:Name="WholeToggle" Header="Áp dụng toàn video" IsOn="True" Toggled="WholeToggle_Toggled" />
                                 <Grid ColumnSpacing="5"><Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>

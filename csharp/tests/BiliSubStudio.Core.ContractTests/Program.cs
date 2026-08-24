@@ -58,6 +58,7 @@ internal static class Program
         ("editor region move clamps bounds and cancellation leaves no history", EditorRegionMoveContractAsync),
         ("editor region resize keeps all eight handles pixel-valid", EditorRegionResizeContractAsync),
         ("editor numeric X Y W H inputs require source-pixel-valid geometry", EditorRegionNumericInputsContractAsync),
+        ("editor blur strength validates input and shares Preview Export radius", EditorBlurStrengthContractAsync),
         ("editor project persists, isolates source drift and quarantines corrupt state", EditorProjectContractAsync),
         ("editor SRT keeps exact blocks order and timecodes", EditorSubtitleDocumentContractAsync),
         ("editor manual cue state persists locks and preserves timeline", EditorSubtitleManualContract.RunAsync),
@@ -1092,6 +1093,40 @@ internal static class Program
         return Task.CompletedTask;
     }
 
+    private static Task EditorBlurStrengthContractAsync()
+    {
+        True(EditorBlurStrength.TryFromInput(2, out var minimum) && minimum == 2,
+            "minimum blur strength was rejected");
+        True(EditorBlurStrength.TryFromInput(40, out var maximum) && maximum == 40,
+            "maximum blur strength was rejected");
+        True(EditorBlurStrength.TryFromInput(18.4, out var roundedDown) && roundedDown == 18,
+            "fractional blur strength did not normalize down");
+        True(EditorBlurStrength.TryFromInput(18.5, out var roundedUp) && roundedUp == 19,
+            "fractional blur strength did not normalize up");
+        True(!EditorBlurStrength.TryFromInput(double.NaN, out _), "NaN blur strength entered editor state");
+        True(!EditorBlurStrength.TryFromInput(double.PositiveInfinity, out _), "infinite blur strength entered editor state");
+        True(!EditorBlurStrength.TryFromInput(1, out _), "below-minimum blur strength entered editor state");
+        True(!EditorBlurStrength.TryFromInput(41, out _), "above-maximum blur strength entered editor state");
+        Equal(2, EditorBlurStrength.NormalizeStored(-10));
+        Equal(40, EditorBlurStrength.NormalizeStored(99));
+        Equal(27, EditorBlurStrength.EffectiveRadius(27, 400, 300));
+        Equal(9, EditorBlurStrength.EffectiveRadius(40, 30, 20));
+        Equal(0, EditorBlurStrength.EffectiveRadius(40, 2, 2));
+
+        var region = new EditRegion(.1, .2, .3, .25, "blur", 27, true, 0, 10, "blur-strength");
+        var graph = VideoEditorService.BuildFilter(
+            new VideoEditRequest("input.mp4", ".", "output.mp4", 1000, 500, 10, [region]));
+        True(graph.Contains("boxblur=luma_radius=27:luma_power=1:chroma_radius='min(27,floor((min(cw,ch)-1)/2))':chroma_power=1", StringComparison.Ordinal),
+            "Preview/Export filter lost the selected blur strength");
+
+        var tiny = region with { X = 0, Y = 0, Width = .02, Height = .02, Strength = 40 };
+        graph = VideoEditorService.BuildFilter(
+            new VideoEditRequest("input.mp4", ".", "output.mp4", 100, 100, 10, [tiny]));
+        True(graph.Contains("boxblur=luma_radius=0:luma_power=1:chroma_radius='min(0,floor((min(cw,ch)-1)/2))':chroma_power=1", StringComparison.Ordinal),
+            "small region blur radius exceeded FFmpeg's pixel bound");
+        return Task.CompletedTask;
+    }
+
     private static async Task EditorProjectContractAsync()
     {
         await WithTemporaryRootAsync(async root =>
@@ -1103,7 +1138,7 @@ internal static class Program
             var store = new EditorProjectStore(paths);
             var created = await store.LoadOrCreateAsync(video, 1920, 1080, 120, CancellationToken.None);
             Equal(0, created.Regions.Count);
-            var region = new EditRegion(.1, .2, .3, .25, "blur", 18, false, 1, 5, "stable-region");
+            var region = new EditRegion(.1, .2, .3, .25, "blur", 99, false, 1, 5, "stable-region");
             var srt = Path.Combine(root, "source.zh.srt");
             await File.WriteAllTextAsync(srt, "1\n00:00:01,000 --> 00:00:02,000\n你好\n");
             var subtitle = await EditorSubtitleDocument.LoadAsync(srt, CancellationToken.None);
@@ -1147,6 +1182,7 @@ internal static class Program
             Equal(1, reopened.Regions.Count);
             Equal("stable-region", reopened.Regions[0].Id);
             Equal(.1, reopened.Regions[0].X);
+            Equal(EditorBlurStrength.Maximum, reopened.Regions[0].Strength);
             Equal("Xin chào", reopened.Subtitle!.Cues[0].VietnameseText);
             Equal(.72, reopened.Subtitle.Placement.Y);
             Equal("duck", reopened.Audio!.SourceMode);

@@ -547,9 +547,9 @@ public sealed class VideoEditorService
             }
             else if (effect is "" or "blur")
             {
-                var strength = Math.Clamp(region.Strength, 2, 40);
+                var strength = EditorBlurStrength.EffectiveRadius(region.Strength, width, height);
                 parts.Add($"[{current}]split=2[base{index}][fx{index}]");
-                parts.Add($"[fx{index}]crop={width}:{height}:{x}:{y},boxblur=luma_radius={strength}:luma_power=1[rendered{index}]");
+                parts.Add($"[fx{index}]crop={width}:{height}:{x}:{y},boxblur=luma_radius={strength}:luma_power=1:chroma_radius='min({strength},floor((min(cw,ch)-1)/2))':chroma_power=1[rendered{index}]");
                 parts.Add($"[base{index}][rendered{index}]overlay={x}:{y}{enable}[{output}]");
             }
             else throw new ArgumentException($"Hiệu ứng {region.Effect} không hỗ trợ.");

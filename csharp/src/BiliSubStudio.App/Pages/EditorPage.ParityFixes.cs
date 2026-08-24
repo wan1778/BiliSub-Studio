@@ -22,8 +22,6 @@ public sealed partial class EditorPage
     {
         if (_editorParityInitialized) return;
         _editorParityInitialized = true;
-        StrengthBox.Maximum = 40;
-        if (StrengthBox.Value > 40) StrengthBox.Value = 40;
         RefreshEditorParityControls();
     }
 

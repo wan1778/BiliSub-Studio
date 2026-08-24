@@ -291,7 +291,9 @@ public sealed class EditorProjectStore
             {
                 Id = identity,
                 Effect = effect,
-                Strength = Math.Clamp(region.Strength, 2, 40),
+                Strength = effect == "blur"
+                    ? EditorBlurStrength.NormalizeStored(region.Strength)
+                    : Math.Clamp(region.Strength, 2, 40),
             });
         }
         return normalized;
