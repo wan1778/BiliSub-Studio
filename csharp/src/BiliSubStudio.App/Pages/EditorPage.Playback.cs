@@ -156,11 +156,16 @@ public sealed partial class EditorPage
         internal async Task SeekAsync(double sourcePosition)
         {
             if (!IsPreviewMode || _page._media is null) return;
-            var resume = IsPlaying;
-            try { await LoadSegmentAsync(sourcePosition, resume); }
+            try
+            {
+                if (IsPlaying) await LoadSegmentAsync(sourcePosition, play: true);
+                else await SeekPausedAsync(sourcePosition);
+            }
             catch (OperationCanceledException) { }
             catch (Exception error) { _page.StatusText.Text = "Không seek được preview: " + error.Message; }
         }
+
+        private Task SeekPausedAsync(double sourcePosition) => LoadSegmentAsync(sourcePosition, play: false);
 
         internal Task DisposeForSourceChangeAsync() => ResetAsync();
 
@@ -206,6 +211,8 @@ public sealed partial class EditorPage
                 cancellation.Token.ThrowIfCancellationRequested();
                 var file = await StorageFile.GetFileFromPathAsync(segment.Path);
                 cancellation.Token.ThrowIfCancellationRequested();
+                var segmentPosition = PositionInSegment(segment, requestedStart);
+                var sourcePosition = segment.SourceStart + segmentPosition;
                 player.Pause();
                 player.Source = MediaSource.CreateFromStorageFile(file);
                 _previewPath = segment.Path;
@@ -214,12 +221,12 @@ public sealed partial class EditorPage
                 IsPreviewMode = true;
                 ApplyPresentation(processed: true);
                 _page._syncingTimeline = true;
-                try { _page.Timeline.Value = Math.Clamp(segment.SourceStart, _page.Timeline.Minimum, _page.Timeline.Maximum); }
+                try { _page.Timeline.Value = Math.Clamp(sourcePosition, _page.Timeline.Minimum, _page.Timeline.Maximum); }
                 finally { _page._syncingTimeline = false; }
-                player.PlaybackSession.Position = TimeSpan.Zero;
+                player.PlaybackSession.Position = TimeSpan.FromSeconds(segmentPosition);
                 if (play) player.Play();
                 _page.StatusText.Text =
-                    $"Đang xem bản chỉnh từ {FormatClock(segment.SourceStart)}. Preview sẽ tiếp tục tự động đến hết video.";
+                    $"Đang xem bản chỉnh từ {FormatClock(sourcePosition)}. Preview sẽ tiếp tục tự động đến hết video.";
                 segment = null;
                 if (previousPath is not null && !string.Equals(previousPath, _previewPath, StringComparison.OrdinalIgnoreCase))
                     await _page._application.DeleteEditorPreviewSegmentAsync(previousPath);
@@ -249,6 +256,12 @@ public sealed partial class EditorPage
                 _page.RefreshEditorActions();
                 _page.SyncShellPlayerControls();
             }
+        }
+
+        private static double PositionInSegment(EditorPreviewSegment segment, double requestedStart)
+        {
+            var lastFrame = Math.Max(0, segment.Duration - .05);
+            return Math.Clamp(requestedStart - segment.SourceStart, 0, lastFrame);
         }
 
         private void ApplyPresentation(bool processed)

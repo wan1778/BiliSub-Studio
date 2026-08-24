@@ -576,6 +576,11 @@ internal static class Program
         var initialWindow = ((double Start, double Duration))windowMethod.Invoke(null, [request.Duration, 0d])!;
         Equal(0d, initialWindow.Start);
         True(initialWindow.Duration > 0, "initial processed-preview window must be playable");
+        const double nearEndTarget = 299;
+        var nearEndWindow = ((double Start, double Duration))windowMethod.Invoke(null, [request.Duration, nearEndTarget])!;
+        True(nearEndWindow.Start < nearEndTarget, "near-end preview should expose the shifted cache-window case");
+        True(nearEndTarget >= nearEndWindow.Start && nearEndTarget < nearEndWindow.Start + nearEndWindow.Duration,
+            "near-end seek target must remain addressable inside the selected preview window");
         const double previewStart = 100;
         const double previewDuration = 9.5;
         var sliced = (VideoEditRequest)sliceMethod.Invoke(null, [request, previewStart, previewDuration, 1280, 720])!;

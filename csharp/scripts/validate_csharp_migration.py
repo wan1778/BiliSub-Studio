@@ -299,6 +299,14 @@ require("else ResumeFromCurrentFrame();" in toggle_playback
         and "private void ResumeFromCurrentFrame() => _player?.Play();" in playback_source
         and playback_source.count("ResumeFromCurrentFrame();") == 2,
         "PREVIEW-06 Resume must reuse the paused MediaPlayer source/position without rendering a segment")
+seek_playback = playback_source.split("internal async Task SeekAsync(double sourcePosition)", 1)[1].split("internal Task DisposeForSourceChangeAsync()", 1)[0]
+require("else await SeekPausedAsync(sourcePosition);" in seek_playback
+        and "private Task SeekPausedAsync(double sourcePosition) => LoadSegmentAsync(sourcePosition, play: false);" in playback_source
+        and "var segmentPosition = PositionInSegment(segment, requestedStart);" in playback_source
+        and "player.PlaybackSession.Position = TimeSpan.FromSeconds(segmentPosition);" in playback_source
+        and "var lastFrame = Math.Max(0, segment.Duration - .05);" in playback_source
+        and "return Math.Clamp(requestedStart - segment.SourceStart, 0, lastFrame);" in playback_source,
+        "PREVIEW-07 paused Seek must show the requested source frame inside the cache segment and remain paused")
 require("SubtitleCueList" in editor and "SubtitleRetranslateCueButton" in editor and "SubtitleSaveSrtButton" in editor,
         "Editor static subtitle cue editor controls missing")
 require("ForceFresh = false" in read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalSubtitleTranslationService.cs")
