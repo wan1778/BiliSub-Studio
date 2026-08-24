@@ -24,17 +24,18 @@ public sealed partial class EditorPage
     }
 
     private void PreviewMute_Toggled(object sender, RoutedEventArgs e) =>
-        _playback.SetMuted(PreviewMuteToggle.IsOn);
+        _playback.SetMuted(sender is ToggleSwitch toggle && toggle.IsOn);
 
     private void PreviewVolume_ValueChanged(
         object sender,
         Microsoft.UI.Xaml.Controls.Primitives.RangeBaseValueChangedEventArgs e) =>
-        _playback.SetVolume(PreviewVolumeSlider.Value / 100);
+        _playback.SetVolume(e.NewValue / 100);
 
     private sealed class EditorPlaybackController
     {
         private readonly EditorPage _page;
         private readonly EditorPreviewRequestCoordinator _previewRequests = new();
+        private (bool Muted, double Volume) _monitorAudio = (false, 1d);
         private MediaPlayer? _player;
         private string? _previewPath;
         private double _sourceStart;
@@ -183,12 +184,14 @@ public sealed partial class EditorPage
 
         internal void SetMuted(bool muted)
         {
-            if (_player is not null) _player.IsMuted = muted;
+            _monitorAudio.Muted = muted;
+            if (_player is not null) _player.IsMuted = _monitorAudio.Muted;
         }
 
         internal void SetVolume(double volume)
         {
-            if (_player is not null) _player.Volume = Math.Clamp(volume, 0, 1);
+            _monitorAudio.Volume = Math.Clamp(volume, 0, 1);
+            if (_player is not null) _player.Volume = _monitorAudio.Volume;
         }
 
         internal async Task SetModeAsync(bool enabled, bool play)
@@ -483,8 +486,8 @@ public sealed partial class EditorPage
             var player = new MediaPlayer
             {
                 AutoPlay = false,
-                IsMuted = _page.PreviewMuteToggle.IsOn,
-                Volume = Math.Clamp(_page.PreviewVolumeSlider.Value / 100, 0, 1),
+                IsMuted = _monitorAudio.Muted,
+                Volume = _monitorAudio.Volume,
             };
             player.PlaybackSession.PositionChanged += PlayerPositionChanged;
             player.MediaEnded += PlayerMediaEnded;
