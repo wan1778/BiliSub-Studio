@@ -688,9 +688,9 @@ public sealed partial class EditorPage
                     _jobId = null;
                     if (snapshot.Result is VideoEditResult result)
                     {
-                        var output = ValidateFinalEditorOutput(outputTarget, result.OutputPath);
+                        var directOutput = ValidateFinalEditorOutput(outputTarget, result.OutputPath);
                         Progress.Value = 100;
-                        StatusText.Text = "Đã xuất: " + output;
+                        StatusText.Text = "Đã xuất: " + directOutput;
                         break;
                     }
                     if (snapshot.Message.Contains("hủy", StringComparison.OrdinalIgnoreCase))
