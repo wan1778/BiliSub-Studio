@@ -193,11 +193,13 @@ public sealed partial class EditorPage
             .Where(c => _manualCueStates.TryGetValue(c.Id, out var state) && state.Locked)
             .ToDictionary(c => c.Id, c => c, StringComparer.Ordinal);
         var outputName = Path.GetFileNameWithoutExtension(_subtitleSource.Path) + ".vi.srt";
-        var projectId = TranslationProjectId(_project.Id, "all", SourceTextHash(_subtitleSource.Cues));
+        var modelMode = SelectedTranslationModelMode();
+        var modeScope = modelMode == EditorTranslationModelMode.Fast ? "fast" : "quality";
+        var projectId = TranslationProjectId(_project.Id, "all" + modeScope, SourceTextHash(_subtitleSource.Cues));
         _translationJobId = _application.StartEditorTranslation(new EditorTranslationRequest(
-            projectId, _subtitleSource, _application.Config.OutputDirectory, outputName));
+            projectId, _subtitleSource, _application.Config.OutputDirectory, outputName, ModelMode: modelMode));
         TranslationProgress.Value = 0;
-        TranslationStatusText.Text = "Đang Vietsub bằng AI local + skill; câu khóa sẽ không bị ghi đè.";
+        TranslationStatusText.Text = $"Đang Vietsub bằng {(modelMode == EditorTranslationModelMode.Fast ? "4B Nhanh / nháp" : "8B Chất lượng")} + skill; câu khóa sẽ không bị ghi đè.";
         RefreshEditorActions();
         try
         {
@@ -276,9 +278,11 @@ public sealed partial class EditorPage
         var temp = Path.Combine(_application.Paths.Temp, "Editor", "CueTranslation");
         Directory.CreateDirectory(temp);
         var single = _subtitleSource with { Cues = [cue] };
-        var projectId = TranslationProjectId(_project.Id, "cue", SourceTextHash([cue]));
+        var modelMode = SelectedTranslationModelMode();
+        var modeScope = modelMode == EditorTranslationModelMode.Fast ? "fast" : "quality";
+        var projectId = TranslationProjectId(_project.Id, "cue" + modeScope, SourceTextHash([cue]));
         _translationJobId = _application.StartEditorTranslation(new EditorTranslationRequest(
-            projectId, single, temp, $"cue-{cue.Number}.srt", ForceFresh: true));
+            projectId, single, temp, $"cue-{cue.Number}.srt", ForceFresh: true, ModelMode: modelMode));
         SubtitleCueEditorStatus.Text = $"Đang dịch mới câu {cue.Number}; checkpoint cũ đã bị loại.";
         RefreshEditorActions();
         RefreshSubtitleCueEditorControls();

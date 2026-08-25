@@ -84,6 +84,7 @@ public sealed class BiliSubApplication : IAsyncDisposable
     public AppConfig Config => _configStore.Snapshot;
     public OcrStatus OcrStatus => _ocr.Status;
     public LocalTranslationStatus LocalTranslationStatus => _translation.Status;
+    public LocalTranslationStatus LocalTranslationStatusFor(EditorTranslationModelMode mode) => _translation.StatusFor(mode);
     public LocalAsrStatus LocalAsrStatus => _asr.Status;
     public LocalTtsStatus LocalTtsStatus => _tts.Status;
     public PreparedUpdate? PendingUpdate { get; private set; }
@@ -463,14 +464,14 @@ public sealed class BiliSubApplication : IAsyncDisposable
     public Task<EditorSubtitleSource> LoadEditorSubtitleAsync(string path, CancellationToken cancellationToken) =>
         EditorSubtitleDocument.LoadAsync(path, cancellationToken);
 
-    public string StartLocalTranslationPreparation()
+    public string StartLocalTranslationPreparation(EditorTranslationModelMode mode = EditorTranslationModelMode.Quality)
     {
         if (Jobs.HasActiveJobs) throw new InvalidOperationException("Hãy hoàn tất hoặc hủy tác vụ Media/OCR/Editor đang chạy trước khi chuẩn bị AI dịch.");
         var job = Jobs.Create("translation-prepare", cleanupAwareCancel: true);
         _ = RunJobAsync(job, async () =>
         {
-            await _translation.PrepareAsync(job);
-            job.Finish(null, "AI local và skill dịch đã sẵn sàng.", _translation.Status);
+            await _translation.PrepareAsync(job, mode);
+            job.Finish(null, "AI local và skill dịch đã sẵn sàng.", _translation.StatusFor(mode));
         });
         return job.Id;
     }

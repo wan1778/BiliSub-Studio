@@ -484,12 +484,27 @@ public sealed partial class EditorPage : Page
         };
     }
 
+    private EditorTranslationModelMode SelectedTranslationModelMode() =>
+        TranslationFastModeToggle.IsOn ? EditorTranslationModelMode.Fast : EditorTranslationModelMode.Quality;
+
+    private void TranslationFastMode_Toggled(object sender, RoutedEventArgs e)
+    {
+        if (!IsLoaded) return;
+        var mode = SelectedTranslationModelMode();
+        var status = _application.LocalTranslationStatusFor(mode);
+        TranslationStatusText.Text = status.ModelReady
+            ? $"Đã chọn {status.ModelName}; model này đã sẵn sàng."
+            : $"Đã chọn {status.ModelName}; bấm Chuẩn bị AI để tải/xác minh model này.";
+        RefreshEditorActions();
+    }
+
     private async void PrepareAi_Click(object sender, RoutedEventArgs e)
     {
         if (_translationJobId is not null) return;
         try
         {
-            _translationJobId = _application.StartLocalTranslationPreparation();
+            var mode = SelectedTranslationModelMode();
+            _translationJobId = _application.StartLocalTranslationPreparation(mode);
             RefreshEditorActions();
             await PollTranslationJobAsync(preparing: true);
         }
@@ -2021,8 +2036,13 @@ public sealed partial class EditorPage : Page
         ImportSrtButton.IsEnabled = idle && !_playback.IsPreviewMode;
         CreateAsrButton.IsEnabled = editable;
         PrepareAiButton.IsEnabled = idle && !_playback.IsPreviewMode;
+        TranslationFastModeToggle.IsEnabled = idle && !_playback.IsPreviewMode;
         var aiReady = false;
-        try { aiReady = _application.LocalTranslationStatus.RuntimeReady && _application.LocalTranslationStatus.ModelReady; }
+        try
+        {
+            var selectedTranslationStatus = _application.LocalTranslationStatusFor(SelectedTranslationModelMode());
+            aiReady = selectedTranslationStatus.RuntimeReady && selectedTranslationStatus.ModelReady;
+        }
         catch { }
         TranslateButton.IsEnabled = editable && _project is not null && _subtitleSource is not null && aiReady;
         CancelTranslationButton.IsEnabled = _translationJobId is not null;
