@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO.Compression;
 using System.Net;
+using System.Net.Sockets;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
@@ -55,7 +56,6 @@ public sealed class LocalSubtitleTranslationService : IDisposable
 
     private readonly AppPaths _paths;
     private readonly HttpClient _http;
-    private readonly ProcessRunner _processes;
     private readonly HardwareService _hardware;
     private readonly string _skillPath;
     private TranslationSkillBundle? _skill;
@@ -73,7 +73,6 @@ public sealed class LocalSubtitleTranslationService : IDisposable
             PooledConnectionIdleTimeout = TimeSpan.FromMinutes(2),
             AutomaticDecompression = DecompressionMethods.None,
         }) { Timeout = Timeout.InfiniteTimeSpan };
-        _processes = processes;
         _hardware = hardware;
         _skillPath = Path.GetFullPath(skillPath);
     }
@@ -82,7 +81,7 @@ public sealed class LocalSubtitleTranslationService : IDisposable
     private string RuntimeDirectory => Path.Combine(Root, "llama-" + RuntimeVersion + "-vulkan");
     private string RuntimeArchive => Path.Combine(Root, "llama-" + RuntimeVersion + "-vulkan.zip");
     private string RuntimeStamp => Path.Combine(RuntimeDirectory, ".verified");
-    private string LlamaCli => Path.Combine(RuntimeDirectory, "llama-cli.exe");
+    private string LlamaServer => Path.Combine(RuntimeDirectory, "llama-server.exe");
     private string ModelDirectory => Path.Combine(Root, "Models");
     private string ModelPath => Path.Combine(ModelDirectory, "Qwen3-8B-Q4_K_M.gguf");
     private string ModelStamp => ModelPath + ".verified";
@@ -93,7 +92,7 @@ public sealed class LocalSubtitleTranslationService : IDisposable
     {
         get
         {
-            var runtime = _runtimeReady ??= ValidPe(LlamaCli) && RuntimeStampMatches();
+            var runtime = _runtimeReady ??= ValidPe(LlamaServer) && RuntimeStampMatches();
             var model = _modelReady ??= ValidSizedFile(ModelPath, ModelBytes) && ModelStampMatches();
             return new LocalTranslationStatus(runtime, model, ModelName, ModelBytes, Skill.Info.Name, Skill.Info.Sha256);
         }
@@ -155,67 +154,85 @@ public sealed class LocalSubtitleTranslationService : IDisposable
         checkpoint = checkpoint with { Translations = recovered };
         var restored = checkpoint.Translations.Count;
         var bible = checkpoint.Bible;
-        if (checkpoint.AnalysisPagesCompleted < analysisPages)
+        var needsInference = checkpoint.AnalysisPagesCompleted < analysisPages
+            || source.Any(x => !checkpoint.Translations.ContainsKey(x.Id));
+        TranslationServerSession? runtime = null;
+        try
         {
-            for (var page = checkpoint.AnalysisPagesCompleted; page < analysisPages; page++)
+            if (needsInference)
+            {
+                runtime = await StartTranslationServerWithFallbackAsync(layers, job, job.CancellationToken);
+                job.Log($"Qwen runtime giữ model trong RAM/VRAM cho toàn bộ lượt Vietsub · {ModelName}.");
+            }
+
+            if (checkpoint.AnalysisPagesCompleted < analysisPages)
+            {
+                for (var page = checkpoint.AnalysisPagesCompleted; page < analysisPages; page++)
+                {
+                    job.CancellationToken.ThrowIfCancellationRequested();
+                    var pageCues = analysisBatches[page];
+                    var prompt = BuildBiblePrompt(pageCues, bible, page + 1, analysisPages);
+                    string nextBible;
+                    try { nextBible = ValidateBible(await RunJsonAsync(runtime!, prompt, BibleSchema, 2048, job.CancellationToken)); }
+                    catch (InvalidDataException first)
+                    {
+                        job.Warn($"Lượt đọc SRT {page + 1} trả sai JSON/nội dung; đang thử lại với prompt chặt hơn: {first.Message}");
+                        nextBible = ValidateBible(await RunJsonAsync(runtime!, prompt + "\nLần trước sai JSON/hồ sơ. Chỉ trả đúng một JSON object theo schema.", BibleSchema, 2048, job.CancellationToken));
+                    }
+                    catch (Exception first) when (first is not OperationCanceledException)
+                    {
+                        job.Warn($"Lượt đọc SRT {page + 1} gặp lỗi runtime; thử lại bằng CPU an toàn: {first.Message}");
+                        await RestartTranslationServerAsync(runtime!, LowerGpuLayers(layers), job.CancellationToken);
+                        nextBible = ValidateBible(await RunJsonAsync(runtime!, prompt + "\nLần trước runtime không hoàn tất. Chỉ trả đúng một JSON object theo schema.", BibleSchema, 2048, job.CancellationToken));
+                    }
+                    bible = nextBible;
+                    checkpoint = checkpoint with { Bible = bible, AnalysisPagesCompleted = page + 1 };
+                    await SaveCheckpointAsync(checkpointPath, checkpoint, job.CancellationToken);
+                    job.Set("translation-analysis", 2 + (page + 1d) / analysisPages * 10,
+                        $"Đã đọc/ngữ cảnh hóa SRT {page + 1}/{analysisPages} · đang khóa tên và thuật ngữ.");
+                }
+            }
+
+            var pending = source.Where(x => !checkpoint.Translations.ContainsKey(x.Id)).ToArray();
+            var translationBatches = CreateBatches(pending, TranslationBatchSize, 20_000);
+            for (var batchIndex = 0; batchIndex < translationBatches.Count; batchIndex++)
             {
                 job.CancellationToken.ThrowIfCancellationRequested();
-                var pageCues = analysisBatches[page];
-                var prompt = BuildBiblePrompt(pageCues, bible, page + 1, analysisPages);
-                string nextBible;
-                try { nextBible = ValidateBible(await RunJsonAsync(prompt, BibleSchema, 2048, layers, job.CancellationToken)); }
+                var batch = translationBatches[batchIndex];
+                var firstIndex = IndexOf(source, batch[0].Id);
+                var context = source.Skip(Math.Max(0, firstIndex - 4)).Take(batch.Length + 8).ToArray();
+                var prompt = BuildTranslationPrompt(batch, context, bible);
+                IReadOnlyDictionary<string, string> translations;
+                try
+                {
+                    var root = await RunJsonAsync(runtime!, prompt, TranslationSchema, 4096, job.CancellationToken);
+                    translations = ValidateBatch(root, batch);
+                }
                 catch (InvalidDataException first)
                 {
-                    job.Warn($"Lượt đọc SRT {page + 1} trả sai JSON/nội dung; đang thử lại với prompt chặt hơn: {first.Message}");
-                    nextBible = ValidateBible(await RunJsonAsync(prompt + "\nLần trước sai JSON/hồ sơ. Chỉ trả đúng một JSON object theo schema.", BibleSchema, 2048, layers, job.CancellationToken));
+                    job.Warn($"Batch bắt đầu cue {batch[0].Number} sai JSON/ID/nội dung; đang thử lại chặt hơn: {first.Message}");
+                    var retry = await RunJsonAsync(runtime!, prompt + "\nLần trước sai JSON/schema/ID hoặc còn chữ Hán. Dịch lại đúng toàn bộ TARGET và chỉ trả đúng một JSON object.",
+                        TranslationSchema, 4096, job.CancellationToken);
+                    translations = ValidateBatch(retry, batch);
                 }
                 catch (Exception first) when (first is not OperationCanceledException)
                 {
-                    job.Warn($"Lượt đọc SRT {page + 1} gặp lỗi runtime; thử lại bằng CPU an toàn: {first.Message}");
-                    nextBible = ValidateBible(await RunJsonAsync(prompt + "\nLần trước runtime không hoàn tất. Chỉ trả đúng một JSON object theo schema.", BibleSchema, 2048, LowerGpuLayers(layers), job.CancellationToken));
+                    job.Warn($"Batch bắt đầu cue {batch[0].Number} gặp lỗi runtime; thử lại bằng CPU an toàn: {first.Message}");
+                    await RestartTranslationServerAsync(runtime!, LowerGpuLayers(layers), job.CancellationToken);
+                    var retry = await RunJsonAsync(runtime!, prompt + "\nLần trước runtime không hoàn tất. Dịch lại đúng toàn bộ TARGET và chỉ trả đúng một JSON object.",
+                        TranslationSchema, 4096, job.CancellationToken);
+                    translations = ValidateBatch(retry, batch);
                 }
-                bible = nextBible;
-                checkpoint = checkpoint with { Bible = bible, AnalysisPagesCompleted = page + 1 };
+                foreach (var pair in translations) checkpoint.Translations[pair.Key] = pair.Value;
                 await SaveCheckpointAsync(checkpointPath, checkpoint, job.CancellationToken);
-                job.Set("translation-analysis", 2 + (page + 1d) / analysisPages * 10,
-                    $"Đã đọc/ngữ cảnh hóa SRT {page + 1}/{analysisPages} · đang khóa tên và thuật ngữ.");
+                var completed = checkpoint.Translations.Count;
+                var percent = 12 + completed / (double)source.Count * 84;
+                job.Set("translation", percent, $"Đang Vietsub bằng AI local · {completed}/{source.Count} câu · checkpoint đã lưu.");
             }
         }
-
-        var pending = source.Where(x => !checkpoint.Translations.ContainsKey(x.Id)).ToArray();
-        var translationBatches = CreateBatches(pending, TranslationBatchSize, 20_000);
-        for (var batchIndex = 0; batchIndex < translationBatches.Count; batchIndex++)
+        finally
         {
-            job.CancellationToken.ThrowIfCancellationRequested();
-            var batch = translationBatches[batchIndex];
-            var firstIndex = IndexOf(source, batch[0].Id);
-            var context = source.Skip(Math.Max(0, firstIndex - 4)).Take(batch.Length + 8).ToArray();
-            var prompt = BuildTranslationPrompt(batch, context, bible);
-            IReadOnlyDictionary<string, string> translations;
-            try
-            {
-                var root = await RunJsonAsync(prompt, TranslationSchema, 4096, layers, job.CancellationToken);
-                translations = ValidateBatch(root, batch);
-            }
-            catch (InvalidDataException first)
-            {
-                job.Warn($"Batch bắt đầu cue {batch[0].Number} sai JSON/ID/nội dung; đang thử lại chặt hơn: {first.Message}");
-                var retry = await RunJsonAsync(prompt + "\nLần trước sai JSON/schema/ID hoặc còn chữ Hán. Dịch lại đúng toàn bộ TARGET và chỉ trả đúng một JSON object.",
-                    TranslationSchema, 4096, layers, job.CancellationToken);
-                translations = ValidateBatch(retry, batch);
-            }
-            catch (Exception first) when (first is not OperationCanceledException)
-            {
-                job.Warn($"Batch bắt đầu cue {batch[0].Number} gặp lỗi runtime; thử lại bằng CPU an toàn: {first.Message}");
-                var retry = await RunJsonAsync(prompt + "\nLần trước runtime không hoàn tất. Dịch lại đúng toàn bộ TARGET và chỉ trả đúng một JSON object.",
-                    TranslationSchema, 4096, LowerGpuLayers(layers), job.CancellationToken);
-                translations = ValidateBatch(retry, batch);
-            }
-            foreach (var pair in translations) checkpoint.Translations[pair.Key] = pair.Value;
-            await SaveCheckpointAsync(checkpointPath, checkpoint, job.CancellationToken);
-            var completed = checkpoint.Translations.Count;
-            var percent = 12 + completed / (double)source.Count * 84;
-            job.Set("translating", percent, $"Đang Vietsub bằng AI local · {completed}/{source.Count} câu · checkpoint đã lưu.");
+            if (runtime is not null) await runtime.DisposeAsync();
         }
 
         var translated = source.Select(cue => cue with
@@ -273,40 +290,155 @@ public sealed class LocalSubtitleTranslationService : IDisposable
         return bible;
     }
 
-    private async Task<JsonElement> RunJsonAsync(string prompt, string schema, int maxTokens, int gpuLayers, CancellationToken cancellationToken)
+    private async Task<TranslationServerSession> StartTranslationServerWithFallbackAsync(
+        int gpuLayers,
+        AppJob job,
+        CancellationToken cancellationToken)
     {
-        Directory.CreateDirectory(_paths.Temp);
-        var token = Guid.NewGuid().ToString("N");
-        var promptFile = Path.Combine(_paths.Temp, "translation-prompt-" + token + ".txt");
-        var responseFile = Path.Combine(_paths.Temp, "translation-response-" + token + ".txt");
+        var session = new TranslationServerSession();
+        try
+        {
+            await RestartTranslationServerAsync(session, gpuLayers, cancellationToken);
+            return session;
+        }
+        catch (OperationCanceledException)
+        {
+            await session.DisposeAsync();
+            throw;
+        }
+        catch (Exception first)
+        {
+            job.Warn("Qwen GPU/Vulkan không khởi động được persistent runtime; chuyển sang CPU an toàn: " + first.Message);
+            try
+            {
+                await RestartTranslationServerAsync(session, 0, cancellationToken);
+                return session;
+            }
+            catch
+            {
+                await session.DisposeAsync();
+                throw;
+            }
+        }
+    }
 
+    private async Task RestartTranslationServerAsync(
+        TranslationServerSession session,
+        int gpuLayers,
+        CancellationToken cancellationToken)
+    {
+        await session.StopCurrentAsync();
+        var port = ReserveLoopbackPort();
+        var endpoint = new Uri($"http://127.0.0.1:{port}/", UriKind.Absolute);
+        var start = new ProcessStartInfo(LlamaServer)
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            WindowStyle = ProcessWindowStyle.Hidden,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8,
+        };
+        var args = new List<string>
+        {
+            "-m", ModelPath, "--host", "127.0.0.1", "--port", port.ToString(),
+            "-ngl", gpuLayers < 0 ? "auto" : gpuLayers.ToString(), "--fit", "on", "-c", "24576", "-np", "1",
+            "--jinja", "--no-warmup", "--no-context-shift", "--cache-prompt",
+            "--chat-template-kwargs", ThinkingTemplateKwargs, "--reasoning", ReasoningMode, "--reasoning-format", "none",
+        };
+        foreach (var argument in args) start.ArgumentList.Add(argument);
+
+        var process = new Process { StartInfo = start };
+        IDisposable? ownership = null;
+        try
+        {
+            if (!process.Start()) throw new InvalidOperationException("Không khởi động được llama-server.exe.");
+            ownership = session.Processes.Track(process);
+            var stdout = process.StandardOutput.ReadToEndAsync(CancellationToken.None);
+            var stderr = process.StandardError.ReadToEndAsync(CancellationToken.None);
+            session.Attach(process, ownership, stdout, stderr, endpoint, gpuLayers, cancellationToken);
+            ownership = null;
+            await WaitForTranslationServerReadyAsync(session, cancellationToken);
+        }
+        catch
+        {
+            ownership?.Dispose();
+            if (!ReferenceEquals(session.Process, process))
+            {
+                KillProcess(process);
+                process.Dispose();
+            }
+            await session.StopCurrentAsync();
+            throw;
+        }
+    }
+
+    private async Task WaitForTranslationServerReadyAsync(
+        TranslationServerSession session,
+        CancellationToken cancellationToken)
+    {
+        var deadline = Stopwatch.StartNew();
+        while (deadline.Elapsed < TimeSpan.FromSeconds(90))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (session.Process is null || session.Process.HasExited)
+            {
+                var reason = await session.ReadErrorTailAsync();
+                throw new InvalidOperationException("llama-server dừng khi đang nạp Qwen: " + reason);
+            }
+
+            try
+            {
+                using var response = await _http.GetAsync(new Uri(session.Endpoint, "health"), cancellationToken);
+                if (response.StatusCode == HttpStatusCode.OK) return;
+                if (response.StatusCode != HttpStatusCode.ServiceUnavailable)
+                {
+                    var detail = await response.Content.ReadAsStringAsync(cancellationToken);
+                    throw new InvalidOperationException($"llama-server health HTTP {(int)response.StatusCode}: {TrimRuntimeDetail(detail)}");
+                }
+            }
+            catch (HttpRequestException) when (session.Process is not null && !session.Process.HasExited)
+            {
+                // Socket can reject connections briefly before the loopback listener is ready.
+            }
+            await Task.Delay(100, cancellationToken);
+        }
+        throw new TimeoutException("llama-server không sẵn sàng sau khi Nạp model.");
+    }
+
+    private async Task<JsonElement> RunJsonAsync(
+        TranslationServerSession session,
+        string prompt,
+        string schema,
+        int maxTokens,
+        CancellationToken cancellationToken)
+    {
         async Task<JsonElement> RunAttemptAsync(string attemptPrompt, bool enforceSchema)
         {
-            await File.WriteAllTextAsync(promptFile, attemptPrompt, new UTF8Encoding(false), cancellationToken);
-            TryDelete(responseFile);
-            var args = new List<string>
+            var templated = await ApplyTranslationTemplateAsync(session, attemptPrompt, cancellationToken);
+            var payload = new Dictionary<string, object?>
             {
-                "-m", ModelPath, "-f", promptFile, "--jinja", "--single-turn", "--no-display-prompt", "--simple-io", "--no-warmup",
-                "--no-context-shift", "-ngl", gpuLayers < 0 ? "auto" : gpuLayers.ToString(), "--fit", "on", "-c", "24576", "-n", maxTokens.ToString(),
-                "--chat-template-kwargs", ThinkingTemplateKwargs, "--reasoning", ReasoningMode, "--reasoning-format", "none",
-                "--temp", "0.4", "--top-k", "20", "--top-p", "0.8", "--min-p", "0", "--presence-penalty", "1.0",
-                "--output", responseFile,
+                ["prompt"] = templated,
+                ["n_predict"] = maxTokens,
+                ["temperature"] = 0.4,
+                ["top_k"] = 20,
+                ["top_p"] = 0.8,
+                ["min_p"] = 0.0,
+                ["presence_penalty"] = 1.0,
+                ["cache_prompt"] = true,
             };
             if (enforceSchema)
             {
-                args.Add("--json-schema");
-                args.Add(schema);
+                using var schemaDocument = JsonDocument.Parse(schema);
+                payload["json_schema"] = schemaDocument.RootElement.Clone();
             }
-            var result = await _processes.RunAsync(LlamaCli, args, cancellationToken);
-            if (result.ExitCode != 0)
-            {
-                var reason = result.StandardError.Trim();
-                if (reason.Length > 800) reason = reason[^800..];
-                throw new InvalidOperationException("AI local không hoàn tất: " + reason);
-            }
-            var output = File.Exists(responseFile) ? await File.ReadAllTextAsync(responseFile, cancellationToken) : string.Empty;
-            if (string.IsNullOrWhiteSpace(output)) output = result.StandardOutput;
-            return ExtractJson(output);
+
+            var body = await PostTranslationJsonAsync(session, "completion", payload, cancellationToken);
+            using var document = JsonDocument.Parse(body);
+            if (!document.RootElement.TryGetProperty("content", out var contentValue) || contentValue.ValueKind != JsonValueKind.String)
+                throw new InvalidDataException("AI local không trả content từ persistent runtime.");
+            return ExtractJson(contentValue.GetString() ?? string.Empty);
         }
 
         try
@@ -317,17 +449,149 @@ public sealed class LocalSubtitleTranslationService : IDisposable
             }
             catch (InvalidDataException)
             {
-                // Qwen3 + llama.cpp can return an empty generation when a JSON grammar is combined with
-                // legacy prompt-token thinking suppression. Thinking is disabled via the chat template above;
-                // this second pass deliberately removes the grammar while downstream validators still
-                // require the exact root shape, cue IDs/count and fully translated Vietnamese text.
+                // Keep the reviewed Qwen fallback: if schema-constrained generation is empty or malformed,
+                // retry on the same loaded model without grammar while downstream validators still own shape/IDs/text.
                 return await RunAttemptAsync(prompt + "\nCHỈ TRẢ đúng một JSON object hợp lệ, không markdown, không giải thích hay tiền tố/hậu tố.", enforceSchema: false);
             }
         }
-        finally
+        catch (JsonException error)
         {
-            TryDelete(promptFile);
-            TryDelete(responseFile);
+            throw new InvalidDataException("Persistent Qwen runtime trả JSON giao thức không hợp lệ.", error);
+        }
+    }
+
+    private async Task<string> ApplyTranslationTemplateAsync(
+        TranslationServerSession session,
+        string prompt,
+        CancellationToken cancellationToken)
+    {
+        var payload = new
+        {
+            messages = new[] { new { role = "user", content = prompt } },
+            add_generation_prompt = true,
+        };
+        var body = await PostTranslationJsonAsync(session, "apply-template", payload, cancellationToken);
+        using var document = JsonDocument.Parse(body);
+        if (!document.RootElement.TryGetProperty("prompt", out var promptValue) || promptValue.ValueKind != JsonValueKind.String)
+            throw new InvalidDataException("llama-server không trả prompt từ chat template.");
+        var templated = promptValue.GetString();
+        if (string.IsNullOrWhiteSpace(templated)) throw new InvalidDataException("llama-server trả chat template rỗng.");
+        return templated;
+    }
+
+    private async Task<string> PostTranslationJsonAsync(
+        TranslationServerSession session,
+        string route,
+        object payload,
+        CancellationToken cancellationToken)
+    {
+        var json = JsonSerializer.Serialize(payload);
+        using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(session.Endpoint, route))
+        {
+            Content = new StringContent(json, Encoding.UTF8, "application/json"),
+        };
+        using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseContentRead, cancellationToken);
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (!response.IsSuccessStatusCode)
+            throw new InvalidOperationException($"llama-server {route} HTTP {(int)response.StatusCode}: {TrimRuntimeDetail(body)}");
+        return body;
+    }
+
+    private static int ReserveLoopbackPort()
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        try { return ((IPEndPoint)listener.LocalEndpoint).Port; }
+        finally { listener.Stop(); }
+    }
+
+    private static string TrimRuntimeDetail(string value)
+    {
+        var detail = value.Trim();
+        if (detail.Length > 800) detail = detail[^800..];
+        return string.IsNullOrWhiteSpace(detail) ? "không có chi tiết" : detail;
+    }
+
+    private static void KillProcess(Process process)
+    {
+        try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
+    }
+
+    private sealed class TranslationServerSession : IAsyncDisposable
+    {
+        private IDisposable? _ownership;
+        private CancellationTokenRegistration _registration;
+        private bool _hasRegistration;
+        private Task<string>? _stdoutTask;
+        private Task<string>? _stderrTask;
+
+        public OwnedProcessGroup Processes { get; } = new();
+        public Process? Process { get; private set; }
+        public Uri Endpoint { get; private set; } = new("http://127.0.0.1/");
+        public int GpuLayers { get; private set; }
+
+        public void Attach(
+            Process process,
+            IDisposable ownership,
+            Task<string> stdoutTask,
+            Task<string> stderrTask,
+            Uri endpoint,
+            int gpuLayers,
+            CancellationToken cancellationToken)
+        {
+            Process = process;
+            _ownership = ownership;
+            _stdoutTask = stdoutTask;
+            _stderrTask = stderrTask;
+            Endpoint = endpoint;
+            GpuLayers = gpuLayers;
+            _registration = cancellationToken.Register(() => KillProcess(process));
+            _hasRegistration = true;
+        }
+
+        public async Task<string> ReadErrorTailAsync()
+        {
+            if (_stderrTask is null) return "không có stderr";
+            if (Process is not null && !Process.HasExited) return "runtime vẫn đang chạy";
+            try { return TrimRuntimeDetail(await _stderrTask.WaitAsync(TimeSpan.FromSeconds(1))); }
+            catch { return "không đọc được stderr"; }
+        }
+
+        public async Task StopCurrentAsync()
+        {
+            if (_hasRegistration)
+            {
+                _registration.Dispose();
+                _hasRegistration = false;
+            }
+
+            var process = Process;
+            if (process is not null)
+            {
+                KillProcess(process);
+                try { await process.WaitForExitAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5)); } catch { }
+            }
+            if (_stdoutTask is not null)
+            {
+                try { _ = await _stdoutTask.WaitAsync(TimeSpan.FromSeconds(1)); } catch { }
+            }
+            if (_stderrTask is not null)
+            {
+                try { _ = await _stderrTask.WaitAsync(TimeSpan.FromSeconds(1)); } catch { }
+            }
+
+            _ownership?.Dispose();
+            _ownership = null;
+            Process?.Dispose();
+            Process = null;
+            _stdoutTask = null;
+            _stderrTask = null;
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            await StopCurrentAsync();
+            try { await Processes.StopAsync(); } catch { }
         }
     }
 
@@ -490,7 +754,7 @@ public sealed class LocalSubtitleTranslationService : IDisposable
                 Directory.CreateDirectory(Path.GetDirectoryName(target)!);
                 entry.ExtractToFile(target, overwrite: false);
             }
-            if (!ValidPe(Path.Combine(temporary, "llama-cli.exe"))) throw new InvalidDataException("Runtime AI thiếu llama-cli.exe x64 hợp lệ.");
+            if (!ValidPe(Path.Combine(temporary, "llama-server.exe"))) throw new InvalidDataException("Runtime AI thiếu llama-server.exe x64 hợp lệ.");
             WriteStamp(Path.Combine(temporary, ".verified"), RuntimeArchiveSha256 + "|" + DirectoryFingerprint(temporary));
             if (Directory.Exists(RuntimeDirectory)) Directory.Delete(RuntimeDirectory, recursive: true);
             Directory.Move(temporary, RuntimeDirectory);

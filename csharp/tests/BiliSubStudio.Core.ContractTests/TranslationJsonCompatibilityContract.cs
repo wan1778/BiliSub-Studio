@@ -33,7 +33,12 @@ internal static class TranslationJsonCompatibilityContract
         {
             "\"--chat-template-kwargs\", ThinkingTemplateKwargs",
             "\"--reasoning\", ReasoningMode",
-            "\"--output\", responseFile",
+            "private string LlamaServer => Path.Combine(RuntimeDirectory, \"llama-server.exe\")",
+            "PostTranslationJsonAsync(session, \"apply-template\"",
+            "PostTranslationJsonAsync(session, \"completion\"",
+            "payload[\"json_schema\"] = schemaDocument.RootElement.Clone()",
+            "[\"cache_prompt\"] = true",
+            "TryGetProperty(\"content\", out var contentValue)",
             "enforceSchema: false",
         })
         {
@@ -42,5 +47,7 @@ internal static class TranslationJsonCompatibilityContract
         }
         if (source.Contains("/no_think", StringComparison.Ordinal))
             throw new InvalidOperationException("legacy /no_think token must not be combined with Qwen3 JSON generation");
+        if (source.Contains("\"--output\", responseFile", StringComparison.Ordinal) || source.Contains("llama-cli.exe", StringComparison.Ordinal))
+            throw new InvalidOperationException("SPEED-02 must not regress to per-request llama-cli JSON output files");
     }
 }
