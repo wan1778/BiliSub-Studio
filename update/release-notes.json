@@ -1,9 +1,9 @@
 {
-  "version": "4.0.0-beta.43-csharp-p5",
+  "version": "4.0.0-beta.44-csharp-p5",
   "notes": [
-    "Tab Chỉnh video được nâng cấp theo hướng All-in-One: preview bản chỉnh, phụ đề, blur, âm thanh, voice và ảnh/logo dùng chung pipeline trước khi xuất.",
-    "Bổ sung ảnh/logo PNG, JPG và JPEG với chọn, kéo, resize, opacity, preset góc, lưu project và ghép vào video xuất.",
-    "Tăng độ an toàn khi mở lại project: phát hiện video/SRT thay đổi ngoài ứng dụng, project hỏng, ảnh hoặc voice cache bị mất và tránh dùng state/output cũ sai nguồn.",
-    "Dọn ownership của event, timer, CancellationTokenSource, async void, catch rỗng và đồng bộ lại code map trước đợt test này."
+    "Tăng tốc Vietsub local: Qwen được giữ trong RAM/VRAM suốt một job, tận dụng GPU offload và prompt cache ổn định thay vì nạp lại model cho từng lượt.",
+    "Adaptive batch Vietsub theo VRAM và độ trễ, tự chọn 8/24/48 câu và giảm batch khi phản hồi chậm; bổ sung chế độ Fast Qwen3-4B bên cạnh Quality Qwen3-8B.",
+    "Tăng độ bền cho SRT dài: Bible JSON lỗi giữ hồ sơ cũ; lỗi runtime chuyển sang CPU, clean-restart có kiểm soát và giữ checkpoint để có thể tiếp tục thay vì làm chết toàn bộ job.",
+    "Bổ sung tiến độ Vietsub realtime với số câu đã dịch, batch hiện tại, tốc độ câu/phút, câu vừa dịch và cảnh báo retry/fallback."
   ]
 }
