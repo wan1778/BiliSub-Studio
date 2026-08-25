@@ -15,6 +15,7 @@ public sealed partial class EditorPage
     private EditorSubtitleManualStore? _subtitleManualStore;
     private bool _subtitleCueSyncing;
     private int _subtitleCueSelectedIndex = -1;
+    private int _translationLiveLatestCueIndex = -1;
     private bool _subtitleManualDirty;
 
     private EditorSubtitleManualStore SubtitleManualStore => _subtitleManualStore ??= new EditorSubtitleManualStore(_application.Paths);
@@ -27,6 +28,7 @@ public sealed partial class EditorPage
             _manualCueStates.Clear();
             _originalCueSource.Clear();
             _subtitleCueSelectedIndex = -1;
+            _translationLiveLatestCueIndex = -1;
             if (_subtitleSource is null)
             {
                 RenderSubtitleCueList();
@@ -199,28 +201,30 @@ public sealed partial class EditorPage
         var modeScope = modelMode == EditorTranslationModelMode.Fast ? "fast" : string.Empty;
         var projectId = TranslationProjectId(_project.Id, "all" + modeScope, SourceTextHash(_subtitleSource.Cues));
         var checkpointPath = Path.Combine(_application.Paths.Data, "Projects", "Translation", projectId + ".json");
+        _translationLiveLatestCueIndex = -1;
 
-        async Task<int> TryApplyLiveTranslationCheckpointAsync()
+        async Task<(int Count, int LatestIndex)> TryApplyLiveTranslationCheckpointAsync()
         {
-            if (!IsLoaded || _subtitleSource is null || !CurrentSubtitleFingerprintMatches() || !File.Exists(checkpointPath)) return 0;
+            if (!IsLoaded || _subtitleSource is null || !CurrentSubtitleFingerprintMatches() || !File.Exists(checkpointPath)) return (0, -1);
             try
             {
                 await using var stream = new FileStream(
                     checkpointPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 64 * 1024,
                     FileOptions.Asynchronous | FileOptions.SequentialScan);
                 using var document = await JsonDocument.ParseAsync(stream);
-                if (!IsLoaded) return 0;
+                if (!IsLoaded) return (0, -1);
                 if (!document.RootElement.TryGetProperty("translations", out var translations)
                     || translations.ValueKind != JsonValueKind.Object)
-                    return 0;
+                    return (0, -1);
 
                 await _editorTabLifecycleGate.WaitAsync();
                 try
                 {
-                    if (!IsLoaded || _subtitleSource is null) return 0;
+                    if (!IsLoaded || _subtitleSource is null) return (0, -1);
                     var cues = _subtitleSource.Cues.ToArray();
                     var changed = false;
                     var liveCount = 0;
+                    var latestLiveIndex = -1;
                     for (var index = 0; index < cues.Length; index++)
                     {
                         var cue = cues[index];
@@ -238,20 +242,24 @@ public sealed partial class EditorPage
                         var vietnamese = value.GetString() ?? string.Empty;
                         if (string.IsNullOrWhiteSpace(vietnamese)) continue;
                         liveCount++;
+                        latestLiveIndex = index;
                         if (string.Equals(cue.VietnameseText, vietnamese, StringComparison.Ordinal)) continue;
                         cues[index] = cue with { VietnameseText = vietnamese };
                         changed = true;
                     }
 
-                    if (!changed) return liveCount;
+                    if (!changed) return (liveCount, latestLiveIndex);
                     _subtitleSource = _subtitleSource with { Cues = cues };
+                    _translationLiveLatestCueIndex = latestLiveIndex;
                     RenderSubtitleCueList();
+                    if (latestLiveIndex >= 0 && latestLiveIndex < SubtitleCueList.Items.Count)
+                        SubtitleCueList.ScrollIntoView(SubtitleCueList.Items[latestLiveIndex]);
                     LoadSelectedSubtitleCue();
                     UpdateSubtitleSummary();
                     RenderOverlays();
                     QueuePreviewRefresh();
                     RefreshSubtitleCueEditorControls();
-                    return liveCount;
+                    return (liveCount, latestLiveIndex);
                 }
                 finally
                 {
@@ -260,7 +268,7 @@ public sealed partial class EditorPage
             }
             catch (Exception error) when (error is IOException or JsonException or UnauthorizedAccessException)
             {
-                return 0;
+                return (0, -1);
             }
         }
 
@@ -285,18 +293,26 @@ public sealed partial class EditorPage
                 if (IsLoaded && !snapshot.Done && Math.Abs(snapshot.Progress - lastLiveProbeProgress) > 0.001)
                 {
                     lastLiveProbeProgress = snapshot.Progress;
-                    var liveCount = await TryApplyLiveTranslationCheckpointAsync();
-                    if (IsLoaded && liveCount > lastLiveCount)
+                    var live = await TryApplyLiveTranslationCheckpointAsync();
+                    if (IsLoaded && live.Count > lastLiveCount)
                     {
-                        lastLiveCount = liveCount;
-                        SubtitleCueEditorStatus.Text = $"Vietsub realtime · đã cập nhật {liveCount:N0} câu vừa có trong checkpoint; có thể chọn câu để xem ngay.";
+                        lastLiveCount = live.Count;
+                        var latestNumber = live.LatestIndex >= 0 && _subtitleSource is not null && live.LatestIndex < _subtitleSource.Cues.Count
+                            ? _subtitleSource.Cues[live.LatestIndex].Number
+                            : live.Count;
+                        var totalCueCount = _subtitleSource?.Cues.Count ?? 0;
+                        SubtitleCueEditorStatus.Text = $"Vietsub realtime · AI đã dịch xong tới câu {latestNumber:N0}/{totalCueCount:N0} · {live.Count:N0} câu đã có lời Việt. Danh sách tự cuộn theo batch mới nhất.";
                     }
                 }
                 if (!snapshot.Done) { await Task.Delay(350); continue; }
                 if (string.Equals(snapshot.Status, "cancelled", StringComparison.OrdinalIgnoreCase))
                 {
                     if (IsLoaded)
+                    {
+                        _translationLiveLatestCueIndex = -1;
+                        RenderSubtitleCueList();
                         TranslationStatusText.Text = "Đã hủy Vietsub an toàn. Chỉ checkpoint của các batch hoàn tất được giữ để có thể tiếp tục sau; output cũ vẫn bị khóa.";
+                    }
                     return;
                 }
                 if (snapshot.Result is not EditorTranslationResult result)
@@ -341,6 +357,7 @@ public sealed partial class EditorPage
                     _subtitleManualDirty = false;
                     if (IsLoaded)
                     {
+                        _translationLiveLatestCueIndex = -1;
                         TranslationProgress.Value = 100;
                         TranslationStatusText.Text = $"Vietsub hoàn tất · {merged.Length} câu · câu khóa được giữ nguyên.";
                         RenderSubtitleCueList();
@@ -490,11 +507,16 @@ public sealed partial class EditorPage
         {
             SubtitleCueList.Items.Clear();
             if (_subtitleSource is null) return;
-            foreach (var cue in _subtitleSource.Cues)
+            for (var index = 0; index < _subtitleSource.Cues.Count; index++)
             {
+                var cue = _subtitleSource.Cues[index];
                 var locked = _manualCueStates.TryGetValue(cue.Id, out var state) && state.Locked ? " 🔒" : string.Empty;
-                var translated = string.IsNullOrWhiteSpace(cue.VietnameseText) ? "chưa dịch" : "VI";
-                SubtitleCueList.Items.Add($"{cue.Number} · {translated}{locked} · {TrimPreview(cue.SourceText)}");
+                var hasVietnamese = !string.IsNullOrWhiteSpace(cue.VietnameseText);
+                var status = hasVietnamese
+                    ? index == _translationLiveLatestCueIndex ? "mới dịch" : "đã dịch"
+                    : "chưa dịch";
+                var preview = hasVietnamese ? cue.VietnameseText : cue.SourceText;
+                SubtitleCueList.Items.Add($"{cue.Number} · {status}{locked} · {TrimPreview(preview)}");
             }
             SubtitleCueList.SelectedIndex = _subtitleCueSelectedIndex;
         }
