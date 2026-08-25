@@ -129,6 +129,7 @@ Invoke-Checked python @("csharp/scripts/verify_editor_voice_preview_export_contr
 Invoke-Checked python @("csharp/scripts/verify_editor_voice_reopen_contract.py")
 Invoke-Checked python @("csharp/scripts/generate_csharp_code_map.py", "--check")
 Invoke-Checked python @("csharp/scripts/verify_global_log_ui_contract.py")
+Invoke-Checked python @("csharp/scripts/verify_logging_contract.py")
 Invoke-Checked python @("csharp/scripts/verify_ocr_worker_contract.py")
 Invoke-Checked python @("csharp/scripts/verify_ocr_scanner_contract.py")
 Invoke-Checked dotnet @("restore", "csharp/BiliSubStudio.sln", "-p:Platform=x64", "-p:NuGetAudit=false")

@@ -1,5 +1,5 @@
 using System.Net.Http.Json;
-using System.Text.RegularExpressions;
+using BiliSubStudio.Core.Diagnostics;
 
 namespace BiliSubStudio.Core.Maintenance;
 
@@ -13,7 +13,7 @@ public sealed record BugReport(
     IReadOnlyDictionary<string, string>? Logs = null,
     string Runtime = "native-winui3-windows-x64");
 
-public sealed partial class BugReportService(HttpClient http)
+public sealed class BugReportService(HttpClient http)
 {
     private const string Endpoint = "https://script.google.com/macros/s/AKfycbwQzULsUQZrsXw7BjuM8eMYUwKUQBAKYd1ALKGoy_JT_2JB_aBplW3MVK83InSrkWLDrw/exec";
 
@@ -25,22 +25,13 @@ public sealed partial class BugReportService(HttpClient http)
             version,
             now,
             page.Trim(),
-            Truncate(Sanitize(note), 4_000),
-            Logs: logs?.ToDictionary(x => x.Key, x => Truncate(Sanitize(x.Value), 30_000), StringComparer.Ordinal));
+            Truncate(LogRedactor.Redact(note), 4_000),
+            Logs: logs?.ToDictionary(x => x.Key, x => Truncate(LogRedactor.Redact(x.Value), 30_000), StringComparer.Ordinal));
         using var response = await http.PostAsJsonAsync(Endpoint, report, cancellationToken);
         if (!response.IsSuccessStatusCode) throw new HttpRequestException($"Gửi báo lỗi HTTP {(int)response.StatusCode}.");
     }
 
-    public static string Sanitize(string? text)
-    {
-        var value = text ?? string.Empty;
-        value = SecretKeyValue().Replace(value, "$1=[ĐÃ ẨN]");
-        value = UserPath().Replace(value, @"C:\Users\[ĐÃ ẨN]");
-        return QuerySecret().Replace(value, "$1[ĐÃ ẨN]");
-    }
+    public static string Sanitize(string? text) => LogRedactor.Redact(text);
 
     private static string Truncate(string value, int length) => value.Length <= length ? value : value[^length..];
-    [GeneratedRegex(@"(?i)(SESSDATA|bili_jct|buvid\d*|DedeUserID|authorization|token|cookie)\s*[:=]\s*([^\s;&]+)")] private static partial Regex SecretKeyValue();
-    [GeneratedRegex(@"(?i)C:\\Users\\[^\\\s]+") ] private static partial Regex UserPath();
-    [GeneratedRegex(@"(?i)([?&](?:token|auth|cookie|sessdata)=)[^&#\s]+") ] private static partial Regex QuerySecret();
 }

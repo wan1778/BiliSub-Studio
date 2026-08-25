@@ -221,7 +221,9 @@ public sealed class AppJob : IDisposable
         if (error is null)
             _applicationLog?.Info(Kind, finalMessage, Id);
         else
-            _applicationLog?.Error(Kind, finalMessage, Id);
+            // Capture the full exception (type, stack trace, inner exceptions), not just the
+            // short user-facing message — this is what makes a submitted bug report reproducible.
+            _applicationLog?.Error(Kind, finalMessage, error, Id);
     }
 
     public JobSnapshot Snapshot(int after = 0)
