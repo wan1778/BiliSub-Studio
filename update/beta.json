@@ -1,12 +1,12 @@
 {
-  "version": "4.0.0-beta.46-csharp-p5",
+  "version": "4.0.0-beta.47-csharp-p5",
   "channel_ready": true,
-  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.32/BiliSubStudio_4.0.32_Windows-x64-portable.zip",
-  "sha256": "9e3292be8defa0b61f9ea8bd111b1630b87d0af0cd00863460172931851126ea",
-  "size": 94776571,
+  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.33/BiliSubStudio_4.0.33_Windows-x64-portable.zip",
+  "sha256": "707ebc5496f5451e494e999615ade70d11f89cb85d7ec3144933126266102960",
+  "size": 94777005,
   "payload_kind": "winui3-portable-zip",
   "notes": [
-    "Tách thanh điều khiển Preview khỏi khung hình: Play, thời lượng, seek, âm lượng và toàn màn hình nay nằm thành hàng riêng bên dưới Preview.",
-    "Sửa lỗi ứng dụng có thể thoát khi rời tab Chỉnh video lúc Preview đang phát: hủy preview an toàn, bỏ callback muộn và tháo MediaPlayer khỏi control trước khi dispose."
+    "Sửa tiến độ Vietsub AI local để phản ánh toàn bộ 6 bước của job thay vì đứng 0% trong lúc phân tích SRT/tạo bible: nạp model 0–2%, phân tích+bible 2–12%, dịch câu 12–97%, kiểm tra 97–99%, ghi SRT 99–100%.",
+    "Chỉ giữ tiến độ Vietsub realtime ở Nhật ký toàn ứng dụng để tránh hiển thị trùng; panel Subtitle ẩn thanh/status chi tiết khi AI đang chạy và hiện lại trạng thái cuối hoặc lỗi sau khi job kết thúc."
   ]
 }
