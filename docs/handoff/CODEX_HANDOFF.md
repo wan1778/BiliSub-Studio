@@ -2,6 +2,7 @@
 
 - Current main/base SHA: `717ad3ffa9e39fb17a80107a0c4a1c2485e9e640`
 - Current branch: `editor-transport-layout` (created from `origin/main`)
+- Current task source commit: `0caf02e0d8dd98f43e441cc6c1e879877bb47109`
 - PR: none; do not create, merge, release, or bump version without explicit authorization
 - Last completed task: upstream `PROJECT-10` / release `4.0.31` on `main`; this branch has no completed task yet
 - Task in progress: `EDITOR-PREVIEW-UI-AND-UNLOAD — separate transport and prevent preview teardown crash`
