@@ -633,15 +633,18 @@ public sealed class LocalSubtitleTranslationService : IDisposable
 
     private string BuildTranslationPrompt(IReadOnlyList<EditorSubtitleCue> target, IReadOnlyList<EditorSubtitleCue> context, string bible)
     {
-        var skill = Skill.BuildInstructions(context.Select(x => x.SourceText), 34_000);
+        var coreSkill = Skill.BuildCoreInstructions();
+        var relevantSkill = Skill.BuildReferenceInstructions(context.Select(x => x.SourceText), 34_000, coreSkill.Length);
         var contextJson = JsonSerializer.Serialize(context.Select(x => new { id = x.Id, text = x.SourceText }));
         var targetJson = JsonSerializer.Serialize(target.Select(x => new { id = x.Id, text = x.SourceText }));
         return $$"""
             Dịch phụ đề phim Trung Quốc sang tiếng Việt tự nhiên, có cảm xúc, đúng lore tiên hiệp/cổ trang.
-            {{skill}}
+            {{coreSkill}}
 
             HỒ SƠ PHIM ĐÃ KHÓA:
             {{bible}}
+
+            {{relevantSkill}}
 
             NGỮ CẢNH LÂN CẬN (chỉ để hiểu, không trả các cue ngoài TARGET):
             {{contextJson}}

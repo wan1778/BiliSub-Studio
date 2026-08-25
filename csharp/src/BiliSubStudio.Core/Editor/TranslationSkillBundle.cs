@@ -70,21 +70,33 @@ public sealed partial class TranslationSkillBundle
         return new TranslationSkillBundle(new TranslationSkillInfo("Dịch Trung Tu Tiên", sha, archive.Entries.Count, expanded), content["SKILL.md"], references);
     }
 
-    public string BuildInstructions(IEnumerable<string> sourceTexts, int maxCharacters = 56_000)
+    public string BuildCoreInstructions()
+    {
+        var selected = new StringBuilder();
+        selected.AppendLine("QUY TẮC SKILL BẮT BUỘC (nguyên bản):").AppendLine(_core.Trim());
+        return selected.ToString();
+    }
+
+    public string BuildReferenceInstructions(IEnumerable<string> sourceTexts, int maxCharacters, int initialCharacters = 0)
     {
         var source = string.Join('\n', sourceTexts);
         var selected = new StringBuilder(Math.Min(maxCharacters, 64_000));
-        selected.AppendLine("QUY TẮC SKILL BẮT BUỘC (nguyên bản):").AppendLine(_core.Trim());
         foreach (var pair in _references)
         {
             foreach (var section in pair.Value)
             {
                 if (!Relevant(section, source)) continue;
-                if (selected.Length + section.Length + 80 > maxCharacters) break;
+                if (initialCharacters + selected.Length + section.Length + 80 > maxCharacters) break;
                 selected.AppendLine().Append("TỪ ").Append(pair.Key).AppendLine(":").AppendLine(section.Trim());
             }
         }
         return selected.ToString();
+    }
+
+    public string BuildInstructions(IEnumerable<string> sourceTexts, int maxCharacters = 56_000)
+    {
+        var core = BuildCoreInstructions();
+        return core + BuildReferenceInstructions(sourceTexts, maxCharacters, core.Length);
     }
 
     private static string DetectRoot(ZipArchive archive)
