@@ -584,7 +584,7 @@ require('x:Name="UndoButton"' in editor_xaml
         and "if (replacement == _regions[SelectedIndex]) return false;" in region_document_source
         and "editor Undo restores ordered region selection and bounded history" in contract_tests_source,
         "BLUR-12 Undo must have one guarded owner that restores exact document selection inputs persistence and Preview state")
-redo_click_source = editor_main.split("private void Redo_Click(", 1)[1].split("private bool TryRedoDocument()", 1)[0] if "private bool TryRedoDocument()" in editor_main else ""
+redo_click_source = editor_main.split("private void Redo_Click(", 1)[1].split("private bool TryRedoDocument()", 1)[0] if "private void TryRedoDocument()" in editor_main else ""
 redo_owner_source = editor_main.split("private bool TryRedoDocument()", 1)[1].split("private void SubtitlePreset_Click(", 1)[0] if "private bool TryRedoDocument()" in editor_main else ""
 require('x:Name="RedoButton"' in editor_xaml
         and 'Click="Redo_Click"' in editor_xaml
@@ -675,7 +675,8 @@ require("BuildFilterCore(sliced, subtitleAss, \"previewbase\", requireEdit: fals
         and "var graph = BuildFilter(new VideoEditRequest(input, \".\", \"preview.mp4\", sourceWidth, sourceHeight, duration, active));" in video_editor_source
         and video_editor_source.count("RegionPixels(region, request.SourceWidth, request.SourceHeight)") == 1
         and "_page.CurrentEditRequest(_page.PreviewSubtitleBurn())" in editor_partials
-        and "_application.StartEditor(CurrentEditRequest(subtitle))" in editor_partials
+        and editor_partials.count("var request = CurrentEditRequest(subtitle) with") == 2
+        and editor_partials.count("_jobId = _application.StartEditor(request);") == 2
         and "Regions = _document.Regions.ToArray()," in editor_main
         and "editor Preview and Export preserve exact normalized region geometry within one pixel" in contract_tests_source,
         "BLUR-17 Preview frame playback and Export must share one tested normalized region geometry owner")
