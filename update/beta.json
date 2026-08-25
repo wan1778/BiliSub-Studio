@@ -1,12 +1,12 @@
 {
-  "version": "4.0.0-beta.49-csharp-p5",
+  "version": "4.0.0-beta.50-csharp-p5",
   "channel_ready": true,
-  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.35/BiliSubStudio_4.0.35_Windows-x64-portable.zip",
-  "sha256": "528ba4ceeb1f8a78680bb2520afff36de4566d328eccc68a372c4f9f26dbb4f0",
-  "size": 94777424,
+  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.36/BiliSubStudio_4.0.36_Windows-x64-portable.zip",
+  "sha256": "53d9fba18d891c78018a6f9943bd4da791c6fea0f15c643c461482844e527d8a",
+  "size": 94777499,
   "payload_kind": "winui3-portable-zip",
   "notes": [
-    "Vietsub AI local nay dịch trực tiếp từng câu SRT Trung và lưu kết quả ngay sau mỗi câu, giúp danh sách phụ đề hiển thị lời Việt liên tục thay vì chờ cả nhóm câu hoàn tất.",
-    "Rút gọn dữ liệu hướng dẫn gửi vào AI cho từng câu: chỉ giữ ngữ cảnh lân cận và phần skill liên quan, giảm độ dài xử lý mà vẫn giữ quy tắc dịch Trung → Việt đã duyệt."
+    "Vietsub AI local nay luôn được khóa theo ngữ cảnh phim tu tiên/tiên hiệp/cổ trang Trung Quốc để giữ đúng Hán-Việt, vai vế, xưng hô và thuật ngữ.",
+    "Skill mỗi câu vẫn giới hạn ngắn: chỉ ưu tiên các phần có thuật ngữ Trung thực sự xuất hiện trong vài câu lân cận, tránh tốn token cho mục không liên quan."
   ]
 }
