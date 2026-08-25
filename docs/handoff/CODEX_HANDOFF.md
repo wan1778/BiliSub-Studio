@@ -3,6 +3,7 @@
 - Current main/base SHA: `717ad3ffa9e39fb17a80107a0c4a1c2485e9e640`
 - Current branch: `editor-transport-layout` (created from `origin/main`)
 - Current task source commit: `0caf02e0d8dd98f43e441cc6c1e879877bb47109`
+- Current gate-fix commit: `435dc399275abeff4af0ee18ebf6b585e0aaebb9`
 - PR: none; do not create, merge, release, or bump version without explicit authorization
 - Last completed task: upstream `PROJECT-10` / release `4.0.31` on `main`; this branch has no completed task yet
 - Task in progress: `EDITOR-PREVIEW-UI-AND-UNLOAD — separate transport and prevent preview teardown crash`
@@ -64,6 +65,9 @@ the presentation after the page has unloaded. The player remained attached to
   `origin/main` XAML event-count baseline (`expected 52, found 53`); the layout
   move did not add or remove an event binding, so this is an upstream stale test
   baseline and must be reconciled separately rather than hidden in this task.
+- `validate_csharp_migration.py` now excludes generated `bin/obj` XML. This
+  prevents a self-contained publish directory from invalidating the source-only
+  verification gate.
 - `dotnet build csharp/src/BiliSubStudio.App/BiliSubStudio.App.csproj --no-restore -v:minimal`: BLOCKED — this machine currently exposes `C:\Program Files\dotnet\dotnet.exe`, but no installed SDK. The repository pins SDK `10.0.400`.
 
 No Windows/WinUI compile, startup, or real-machine layout test has been run for
