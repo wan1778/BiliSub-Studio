@@ -50,6 +50,29 @@ public sealed partial class EditorPage
                     if (IsLoaded) StatusText.Text = "Không khôi phục được preview khi mở lại tab: " + error.Message;
                 }
             }
+
+            if (_subtitleSource is not null)
+            {
+                RenderSubtitleCueList();
+                LoadSelectedSubtitleCue();
+                UpdateSubtitleSummary();
+                RenderOverlays();
+                if (_translationJobId is not null)
+                {
+                    var snapshot = _application.Jobs.GetSnapshot(_translationJobId);
+                    TranslationProgress.Value = snapshot.Progress;
+                    TranslationStatusText.Text = snapshot.Message;
+                }
+                else if (_subtitleSource.Cues.Count > 0
+                    && _subtitleSource.Cues.All(cue => !string.IsNullOrWhiteSpace(cue.VietnameseText))
+                    && !string.IsNullOrWhiteSpace(_project?.Subtitle?.OutputPath))
+                {
+                    TranslationProgress.Value = 100;
+                    TranslationStatusText.Text = $"Vietsub hoàn tất · {_subtitleSource.Cues.Count:N0} câu.";
+                }
+                RefreshSubtitleCueEditorControls();
+            }
+
             RefreshEditorActions();
             RefreshImageControls();
             RefreshEditorParityControls();

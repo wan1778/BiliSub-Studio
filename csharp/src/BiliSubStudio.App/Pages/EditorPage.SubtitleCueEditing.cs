@@ -190,6 +190,7 @@ public sealed partial class EditorPage
     {
         if (_translationJobId is not null || _project is null || _subtitleSource is null) return;
         await SaveCurrentSubtitleCueAsync();
+        var translationProjectSnapshot = ProjectSnapshot();
         var locked = _subtitleSource.Cues
             .Where(c => _manualCueStates.TryGetValue(c.Id, out var state) && state.Locked)
             .ToDictionary(c => c.Id, c => c, StringComparer.Ordinal);
@@ -201,51 +202,61 @@ public sealed partial class EditorPage
 
         async Task<int> TryApplyLiveTranslationCheckpointAsync()
         {
-            if (_subtitleSource is null || !CurrentSubtitleFingerprintMatches() || !File.Exists(checkpointPath)) return 0;
+            if (!IsLoaded || _subtitleSource is null || !CurrentSubtitleFingerprintMatches() || !File.Exists(checkpointPath)) return 0;
             try
             {
                 await using var stream = new FileStream(
                     checkpointPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 64 * 1024,
                     FileOptions.Asynchronous | FileOptions.SequentialScan);
                 using var document = await JsonDocument.ParseAsync(stream);
+                if (!IsLoaded) return 0;
                 if (!document.RootElement.TryGetProperty("translations", out var translations)
                     || translations.ValueKind != JsonValueKind.Object)
                     return 0;
 
-                var cues = _subtitleSource.Cues.ToArray();
-                var changed = false;
-                var liveCount = 0;
-                for (var index = 0; index < cues.Length; index++)
+                await _editorTabLifecycleGate.WaitAsync();
+                try
                 {
-                    var cue = cues[index];
-                    if (locked.TryGetValue(cue.Id, out var keep))
+                    if (!IsLoaded || _subtitleSource is null) return 0;
+                    var cues = _subtitleSource.Cues.ToArray();
+                    var changed = false;
+                    var liveCount = 0;
+                    for (var index = 0; index < cues.Length; index++)
                     {
-                        if (!string.Equals(cue.SourceText, keep.SourceText, StringComparison.Ordinal)
-                            || !string.Equals(cue.VietnameseText, keep.VietnameseText, StringComparison.Ordinal))
+                        var cue = cues[index];
+                        if (locked.TryGetValue(cue.Id, out var keep))
                         {
-                            cues[index] = cue with { SourceText = keep.SourceText, VietnameseText = keep.VietnameseText };
-                            changed = true;
+                            if (!string.Equals(cue.SourceText, keep.SourceText, StringComparison.Ordinal)
+                                || !string.Equals(cue.VietnameseText, keep.VietnameseText, StringComparison.Ordinal))
+                            {
+                                cues[index] = cue with { SourceText = keep.SourceText, VietnameseText = keep.VietnameseText };
+                                changed = true;
+                            }
+                            continue;
                         }
-                        continue;
+                        if (!translations.TryGetProperty(cue.Id, out var value) || value.ValueKind != JsonValueKind.String) continue;
+                        var vietnamese = value.GetString() ?? string.Empty;
+                        if (string.IsNullOrWhiteSpace(vietnamese)) continue;
+                        liveCount++;
+                        if (string.Equals(cue.VietnameseText, vietnamese, StringComparison.Ordinal)) continue;
+                        cues[index] = cue with { VietnameseText = vietnamese };
+                        changed = true;
                     }
-                    if (!translations.TryGetProperty(cue.Id, out var value) || value.ValueKind != JsonValueKind.String) continue;
-                    var vietnamese = value.GetString() ?? string.Empty;
-                    if (string.IsNullOrWhiteSpace(vietnamese)) continue;
-                    liveCount++;
-                    if (string.Equals(cue.VietnameseText, vietnamese, StringComparison.Ordinal)) continue;
-                    cues[index] = cue with { VietnameseText = vietnamese };
-                    changed = true;
-                }
 
-                if (!changed) return liveCount;
-                _subtitleSource = _subtitleSource with { Cues = cues };
-                RenderSubtitleCueList();
-                LoadSelectedSubtitleCue();
-                UpdateSubtitleSummary();
-                RenderOverlays();
-                QueuePreviewRefresh();
-                RefreshSubtitleCueEditorControls();
-                return liveCount;
+                    if (!changed) return liveCount;
+                    _subtitleSource = _subtitleSource with { Cues = cues };
+                    RenderSubtitleCueList();
+                    LoadSelectedSubtitleCue();
+                    UpdateSubtitleSummary();
+                    RenderOverlays();
+                    QueuePreviewRefresh();
+                    RefreshSubtitleCueEditorControls();
+                    return liveCount;
+                }
+                finally
+                {
+                    _editorTabLifecycleGate.Release();
+                }
             }
             catch (Exception error) when (error is IOException or JsonException or UnauthorizedAccessException)
             {
@@ -266,13 +277,16 @@ public sealed partial class EditorPage
             while (_translationJobId is not null)
             {
                 var snapshot = _application.Jobs.GetSnapshot(_translationJobId);
-                TranslationProgress.Value = snapshot.Progress;
-                TranslationStatusText.Text = snapshot.Message;
-                if (!snapshot.Done && Math.Abs(snapshot.Progress - lastLiveProbeProgress) > 0.001)
+                if (IsLoaded)
+                {
+                    TranslationProgress.Value = snapshot.Progress;
+                    TranslationStatusText.Text = snapshot.Message;
+                }
+                if (IsLoaded && !snapshot.Done && Math.Abs(snapshot.Progress - lastLiveProbeProgress) > 0.001)
                 {
                     lastLiveProbeProgress = snapshot.Progress;
                     var liveCount = await TryApplyLiveTranslationCheckpointAsync();
-                    if (liveCount > lastLiveCount)
+                    if (IsLoaded && liveCount > lastLiveCount)
                     {
                         lastLiveCount = liveCount;
                         SubtitleCueEditorStatus.Text = $"Vietsub realtime · đã cập nhật {liveCount:N0} câu vừa có trong checkpoint; có thể chọn câu để xem ngay.";
@@ -281,45 +295,76 @@ public sealed partial class EditorPage
                 if (!snapshot.Done) { await Task.Delay(350); continue; }
                 if (string.Equals(snapshot.Status, "cancelled", StringComparison.OrdinalIgnoreCase))
                 {
-                    TranslationStatusText.Text = "Đã hủy Vietsub an toàn. Chỉ checkpoint của các batch hoàn tất được giữ để có thể tiếp tục sau; output cũ vẫn bị khóa.";
+                    if (IsLoaded)
+                        TranslationStatusText.Text = "Đã hủy Vietsub an toàn. Chỉ checkpoint của các batch hoàn tất được giữ để có thể tiếp tục sau; output cũ vẫn bị khóa.";
                     return;
                 }
                 if (snapshot.Result is not EditorTranslationResult result)
                     throw new InvalidOperationException(snapshot.Error ?? snapshot.Message);
-                EnsureCurrentSubtitleFingerprint();
-                var merged = result.Cues.Select(c => locked.TryGetValue(c.Id, out var keep)
-                    ? c with { SourceText = keep.SourceText, VietnameseText = keep.VietnameseText }
-                    : c).ToArray();
-                _subtitleSource = _subtitleSource with { Cues = merged };
-                foreach (var cue in merged.ToArray())
+
+                await _editorTabLifecycleGate.WaitAsync();
+                try
                 {
-                    if (!_manualCueStates.TryGetValue(cue.Id, out var state)) continue;
-                    if (state.Locked) _manualCueStates[cue.Id] = state with { VietnameseOverride = cue.VietnameseText };
-                    else if (state.SourceOverride is null) _manualCueStates.Remove(cue.Id);
-                    else _manualCueStates[cue.Id] = state with { VietnameseOverride = null };
+                    EnsureCurrentSubtitleFingerprint();
+                    var merged = result.Cues.Select(c => locked.TryGetValue(c.Id, out var keep)
+                        ? c with { SourceText = keep.SourceText, VietnameseText = keep.VietnameseText }
+                        : c).ToArray();
+                    _subtitleSource = _subtitleSource with { Cues = merged };
+                    foreach (var cue in merged.ToArray())
+                    {
+                        if (!_manualCueStates.TryGetValue(cue.Id, out var state)) continue;
+                        if (state.Locked) _manualCueStates[cue.Id] = state with { VietnameseOverride = cue.VietnameseText };
+                        else if (state.SourceOverride is null) _manualCueStates.Remove(cue.Id);
+                        else _manualCueStates[cue.Id] = state with { VietnameseOverride = null };
+                    }
+                    await RewriteVietnameseSrtAsync(result.OutputPath, merged);
+                    _voiceTrack = null;
+                    var subtitleSnapshot = translationProjectSnapshot.Subtitle;
+                    _project = translationProjectSnapshot with
+                    {
+                        Tts = null,
+                        Subtitle = new EditorSubtitleProject(
+                            _subtitleSource.Path,
+                            _subtitleSource.Size,
+                            _subtitleSource.LastWriteUtcTicks,
+                            _subtitleSource.Sha256,
+                            merged,
+                            _subtitlePlacement,
+                            subtitleSnapshot?.SkillName ?? "Dịch Trung Tu Tiên",
+                            result.SkillSha256,
+                            result.OutputPath,
+                            subtitleSnapshot?.Karaoke ?? false),
+                        UpdatedUtc = DateTimeOffset.UtcNow,
+                    };
+                    await SubtitleManualStore.SaveAsync(_subtitleSource.Sha256, _manualCueStates, CancellationToken.None);
+                    await PersistEditorProjectAsync(_project);
+                    _subtitleManualDirty = false;
+                    if (IsLoaded)
+                    {
+                        TranslationProgress.Value = 100;
+                        TranslationStatusText.Text = $"Vietsub hoàn tất · {merged.Length} câu · câu khóa được giữ nguyên.";
+                        RenderSubtitleCueList();
+                        LoadSelectedSubtitleCue();
+                        UpdateSubtitleSummary();
+                        RenderOverlays();
+                        QueuePreviewRefresh();
+                    }
                 }
-                await RewriteVietnameseSrtAsync(result.OutputPath, merged);
-                _voiceTrack = null;
-                _project = _project with { Tts = null };
-                AttachSubtitleToProject(result.OutputPath);
-                await SubtitleManualStore.SaveAsync(_subtitleSource.Sha256, _manualCueStates, CancellationToken.None);
-                await SaveProjectNowAsync();
-                _subtitleManualDirty = false;
-                TranslationProgress.Value = 100;
-                TranslationStatusText.Text = $"Vietsub hoàn tất · {merged.Length} câu · câu khóa được giữ nguyên.";
-                RenderSubtitleCueList();
-                LoadSelectedSubtitleCue();
-                UpdateSubtitleSummary();
-                RenderOverlays();
-                QueuePreviewRefresh();
+                finally
+                {
+                    _editorTabLifecycleGate.Release();
+                }
                 break;
             }
         }
         finally
         {
             _translationJobId = null;
-            RefreshEditorActions();
-            RefreshSubtitleCueEditorControls();
+            if (IsLoaded)
+            {
+                RefreshEditorActions();
+                RefreshSubtitleCueEditorControls();
+            }
         }
     }
 

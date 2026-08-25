@@ -6,6 +6,8 @@ namespace BiliSubStudio.App;
 
 public partial class App : Microsoft.UI.Xaml.Application
 {
+    private const int OperationAbortedHResult = unchecked((int)0x80004004);
+
     public App()
     {
         StartupDiagnostics.Initialize();
@@ -58,6 +60,11 @@ public partial class App : Microsoft.UI.Xaml.Application
     private void OnUnhandledException(object sender, Microsoft.UI.Xaml.UnhandledExceptionEventArgs args)
     {
         args.Handled = true;
+        if (MainWindow is not null && args.Exception.HResult == OperationAbortedHResult)
+        {
+            StartupDiagnostics.WriteException("winui-operation-aborted", args.Exception);
+            return;
+        }
         StartupDiagnostics.ShowFatalError("winui-unhandled", args.Exception);
         Exit();
     }
