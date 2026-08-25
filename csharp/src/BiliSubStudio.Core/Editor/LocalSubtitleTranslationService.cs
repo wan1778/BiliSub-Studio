@@ -62,7 +62,8 @@ public sealed class LocalSubtitleTranslationService : IDisposable
     internal const string ThinkingTemplateKwargs = "{\"enable_thinking\":false}";
     internal const string ReasoningMode = "off";
     internal const int RuntimeAutoGpuLayers = -1;
-    internal const string TranslationPolicyKey = "source-first-v2";
+    internal const string TranslationPolicyKey = "direct-cue-v1";
+    private const int DirectTranslationBatchSize = 1;
     private const int TranslationBatchSmall = 8;
     private const int TranslationBatchMedium = 24;
     private const int TranslationBatchLarge = 48;
@@ -169,7 +170,7 @@ public sealed class LocalSubtitleTranslationService : IDisposable
         var checkpoint = await LoadCheckpointAsync(checkpointPath, request.Source.Sha256, model, job.CancellationToken);
         var layers = RuntimeAutoGpuLayers;
         var analysisBatches = CreateBatches(source, AnalysisBatchSize, 45_000);
-        var analysisPages = analysisBatches.Count;
+        const int analysisPages = 0;
         if (checkpoint.AnalysisPagesCompleted < 0 || checkpoint.AnalysisPagesCompleted > analysisPages || checkpoint.Bible.Length > 24_000)
             checkpoint = TranslationCheckpoint.New(request.Source.Sha256, Skill.Info.Sha256, model.Key);
         var recovered = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -179,16 +180,12 @@ public sealed class LocalSubtitleTranslationService : IDisposable
             try { ValidateTranslationText(cue, value); recovered[cue.Id] = value; }
             catch (InvalidDataException) { }
         }
-        checkpoint = checkpoint with { Translations = recovered };
+        checkpoint = checkpoint with { Bible = string.Empty, AnalysisPagesCompleted = 0, Translations = recovered };
         var restored = checkpoint.Translations.Count;
         var bible = checkpoint.Bible;
-        var adaptiveResources = _hardware.ResourceSnapshot();
-        var translationBatchSize = RecommendedTranslationBatchSize(adaptiveResources);
-        if (request.ModelMode == EditorTranslationModelMode.Quality)
-            translationBatchSize = Math.Min(translationBatchSize, TranslationBatchMedium);
+        var translationBatchSize = DirectTranslationBatchSize;
         var latencyBaselineMsPerCue = 0d;
-        var needsInference = checkpoint.AnalysisPagesCompleted < analysisPages
-            || source.Any(x => !checkpoint.Translations.ContainsKey(x.Id));
+        var needsInference = source.Any(x => !checkpoint.Translations.ContainsKey(x.Id));
 
         var liveEvents = new Queue<string>();
         void PushLive(string value)
@@ -221,12 +218,12 @@ public sealed class LocalSubtitleTranslationService : IDisposable
         {
             if (needsInference)
             {
-                SetLive("translation-loading", checkpoint.AnalysisPagesCompleted < analysisPages ? 1 : TranslationOverallProgress(restored, source.Count),
-                    $"Bước 1/6 · Nạp model {model.Name} vào runtime...");
+                SetLive("translation-loading", TranslationOverallProgress(restored, source.Count),
+                    $"Bước 1/4 · Nạp model {model.Name} vào runtime...");
                 runtime = await StartTranslationServerWithFallbackAsync(model, layers, job, job.CancellationToken);
                 job.Log($"Qwen runtime giữ model trong RAM/VRAM cho toàn bộ lượt Vietsub · {model.Name}.");
-                SetLive("translation-loading", checkpoint.AnalysisPagesCompleted < analysisPages ? 2 : TranslationOverallProgress(restored, source.Count),
-                    $"Bước 1/6 · Nạp model xong · {model.Name}.", "Model đã sẵn sàng; bắt đầu xử lý SRT.");
+                SetLive("translation-loading", TranslationOverallProgress(restored, source.Count),
+                    $"Bước 1/4 · Nạp model xong · {model.Name}.", "Model đã sẵn sàng; bắt đầu dịch từng câu.");
             }
 
             if (checkpoint.AnalysisPagesCompleted < analysisPages)
@@ -338,12 +335,9 @@ public sealed class LocalSubtitleTranslationService : IDisposable
             var translationClock = Stopwatch.StartNew();
             if (pending.Length > 0)
             {
-                var qualityModeNote = request.ModelMode == EditorTranslationModelMode.Quality
-                    ? " · Quality giới hạn tối đa 24 câu/batch để ưu tiên độ chính xác"
-                    : string.Empty;
-                job.Log($"Adaptive Vietsub chọn batch {translationBatchSize} câu theo VRAM khả dụng{qualityModeNote}.");
-                SetLive("translation-batch", TranslationOverallProgress(checkpoint.Translations.Count, source.Count),
-                    $"Bước 4/6 · Dịch batch · chuẩn bị {pending.Length:N0} câu còn lại.");
+                job.Log("Vietsub trực tiếp dùng 1 cue/lượt; checkpoint được lưu sau từng câu.");
+                SetLive("translation-cue", TranslationOverallProgress(checkpoint.Translations.Count, source.Count),
+                    $"Bước 2/4 · Dịch trực tiếp · chuẩn bị {pending.Length:N0} câu còn lại.");
             }
             while (pendingOffset < pending.Length)
             {
@@ -354,44 +348,44 @@ public sealed class LocalSubtitleTranslationService : IDisposable
                 var completedBefore = checkpoint.Translations.Count;
                 var sentencePercentBefore = completedBefore / (double)source.Count * 100;
                 var overallBefore = TranslationOverallProgress(completedBefore, source.Count);
-                SetLive("translation-batch", overallBefore,
-                    $"Bước 4/6 · Dịch batch · Batch {batchNumber}/{batchTotal}." + Environment.NewLine +
+                SetLive("translation-cue", overallBefore,
+                    $"Bước 2/4 · Dịch trực tiếp · câu {batchNumber}/{batchTotal}." + Environment.NewLine +
                     $"Đã dịch {completedBefore:N0} / {source.Count:N0} câu · {sentencePercentBefore:0.#}%.");
 
                 var batch = CreateAdaptiveTranslationBatch(pending, pendingOffset, translationBatchSize, 20_000);
                 var firstIndex = IndexOf(source, batch[0].Id);
-                var context = source.Skip(Math.Max(0, firstIndex - 4)).Take(batch.Length + 8).ToArray();
+                var context = source.Skip(Math.Max(0, firstIndex - 2)).Take(batch.Length + 4).ToArray();
                 var prompt = BuildTranslationPrompt(batch, context, bible);
                 var batchWatch = Stopwatch.StartNew();
                 IReadOnlyDictionary<string, string> translations;
                 try
                 {
-                    var root = await RunJsonAsync(runtime!, prompt, TranslationSchema, 4096, job.CancellationToken, job);
+                    var root = await RunJsonAsync(runtime!, prompt, TranslationSchema, 1024, job.CancellationToken, job);
                     translations = ValidateBatch(root, batch);
                 }
                 catch (InvalidDataException first)
                 {
-                    var warning = $"JSON sai → retry Batch {batchNumber}/{batchTotal}: {TrimLiveText(first.Message, 90)}";
-                    job.Warn($"Batch bắt đầu cue {batch[0].Number} sai JSON/ID/nội dung; đang thử lại chặt hơn: {first.Message}");
+                    var warning = $"JSON sai → retry câu {batch[0].Number}: {TrimLiveText(first.Message, 90)}";
+                    job.Warn($"Cue {batch[0].Number} sai JSON/ID/nội dung; đang thử lại chặt hơn: {first.Message}");
                     SetLive("translation-retry", overallBefore,
-                        $"Bước 4/6 · Dịch batch · Batch {batchNumber}/{batchTotal}.", warning);
-                    var retry = await RunJsonAsync(runtime!, prompt + "\nLần trước sai JSON/schema/ID hoặc còn chữ Hán. Dịch lại đúng toàn bộ TARGET và chỉ trả đúng một JSON object.",
-                        TranslationSchema, 4096, job.CancellationToken, job);
+                        $"Bước 2/4 · Dịch trực tiếp · câu {batchNumber}/{batchTotal}.", warning);
+                    var retry = await RunJsonAsync(runtime!, prompt + "\nLần trước sai JSON/schema/ID hoặc còn chữ Hán. Dịch lại TARGET và chỉ trả đúng một JSON object.",
+                        TranslationSchema, 1024, job.CancellationToken, job);
                     translations = ValidateBatch(retry, batch);
                 }
                 catch (Exception first) when (first is not OperationCanceledException)
                 {
-                    var warning = $"GPU/runtime lỗi → chuyển CPU · Batch {batchNumber}/{batchTotal}: {TrimLiveText(first.Message, 80)}";
-                    job.Warn($"Batch bắt đầu cue {batch[0].Number} gặp lỗi runtime; thử lại bằng CPU an toàn: {first.Message}");
+                    var warning = $"GPU/runtime lỗi → chuyển CPU · câu {batch[0].Number}: {TrimLiveText(first.Message, 80)}";
+                    job.Warn($"Cue {batch[0].Number} gặp lỗi runtime; thử lại bằng CPU an toàn: {first.Message}");
                     SetLive("translation-fallback", overallBefore,
-                        $"Bước 4/6 · Dịch batch · Batch {batchNumber}/{batchTotal}.", warning);
+                        $"Bước 2/4 · Dịch trực tiếp · câu {batchNumber}/{batchTotal}.", warning);
                     await RestartTranslationServerAsync(runtime!, model, LowerGpuLayers(layers), job.CancellationToken);
-                    var retry = await RunJsonAsync(runtime!, prompt + "\nLần trước runtime không hoàn tất. Dịch lại đúng toàn bộ TARGET và chỉ trả đúng một JSON object.",
-                        TranslationSchema, 4096, job.CancellationToken, job);
+                    var retry = await RunJsonAsync(runtime!, prompt + "\nLần trước runtime không hoàn tất. Dịch lại TARGET và chỉ trả đúng một JSON object.",
+                        TranslationSchema, 1024, job.CancellationToken, job);
                     translations = ValidateBatch(retry, batch);
                 }
                 batchWatch.Stop();
-                if (batch.Length == translationBatchSize)
+                if (translationBatchSize > 1 && batch.Length == translationBatchSize)
                 {
                     if (translationBatchSize > TranslationBatchSmall
                         && IsTranslationLatencySpike(batchWatch.Elapsed, batch.Length, latencyBaselineMsPerCue))
@@ -427,8 +421,8 @@ public sealed class LocalSubtitleTranslationService : IDisposable
 
                 var nextRemainingBatches = CountAdaptiveTranslationBatches(pending, pendingOffset, translationBatchSize, 20_000);
                 var currentBatchTotal = completedBatches + nextRemainingBatches;
-                SetLive("translation-batch", overallProgress,
-                    $"Bước 4/6 · Dịch batch · Batch {completedBatches}/{currentBatchTotal}." + Environment.NewLine +
+                SetLive("translation-cue", overallProgress,
+                    $"Bước 2/4 · Dịch trực tiếp · câu {completedBatches}/{currentBatchTotal}." + Environment.NewLine +
                     $"Đã dịch {completed:N0} / {source.Count:N0} câu · {sentencePercent:0.#}%{speedText}.",
                     $"Vừa xong · {pairLine}");
             }
@@ -439,7 +433,7 @@ public sealed class LocalSubtitleTranslationService : IDisposable
         }
 
         SetLive("translation-validating", 97,
-            $"Bước 5/6 · Kiểm tra {source.Count:N0} câu · số block, thứ tự và timecode...");
+            $"Bước 3/4 · Kiểm tra {source.Count:N0} câu · số block, thứ tự và timecode...");
         var translated = source.Select(cue => cue with
         {
             VietnameseText = checkpoint.Translations.TryGetValue(cue.Id, out var value) ? value : string.Empty,
@@ -450,7 +444,7 @@ public sealed class LocalSubtitleTranslationService : IDisposable
         var safeName = FileNamePolicy.Sanitize(request.OutputFileName, Path.GetFileNameWithoutExtension(request.Source.Path) + ".vi.srt");
         if (!safeName.EndsWith(".srt", StringComparison.OrdinalIgnoreCase)) safeName += ".srt";
         var output = FileNamePolicy.UniquePath(Path.Combine(outputDirectory, safeName), request.Source.Path);
-        SetLive("translation-writing", 99, $"Bước 6/6 · Ghi SRT Việt · {Path.GetFileName(output)}...");
+        SetLive("translation-writing", 99, $"Bước 4/4 · Ghi SRT Việt · {Path.GetFileName(output)}...");
         await WriteAtomicAsync(output, EditorSubtitleDocument.RenderVietnamese(translated), job.CancellationToken);
         job.Log($"Đã ghi SRT Việt: {output}");
         return new EditorTranslationResult(translated, output, restored, model.Name, Skill.Info.Sha256);
@@ -579,7 +573,7 @@ public sealed class LocalSubtitleTranslationService : IDisposable
         catch (Exception first)
         {
             job.Warn("Qwen GPU/Vulkan không khởi động được persistent runtime; chuyển sang CPU an toàn: " + first.Message);
-            job.Set("translation-fallback", -1, "Bước 1/6 · GPU lỗi → chuyển CPU để nạp model an toàn...");
+            job.Set("translation-fallback", -1, "Bước 1/4 · GPU lỗi → chuyển CPU để nạp model an toàn...");
             try
             {
                 await RestartTranslationServerAsync(session, model, 0, cancellationToken);
@@ -919,49 +913,19 @@ public sealed class LocalSubtitleTranslationService : IDisposable
 
     private string BuildTranslationPrompt(IReadOnlyList<EditorSubtitleCue> target, IReadOnlyList<EditorSubtitleCue> context, string bible)
     {
-        var coreSkill = Skill.BuildCoreInstructions();
-        var relevantSkill = Skill.BuildReferenceInstructions(context.Select(x => x.SourceText), 34_000, coreSkill.Length);
+        var relevantSkill = Skill.BuildReferenceInstructions(context.Select(x => x.SourceText), 2_000);
+        var compactBible = bible.Trim();
+        if (compactBible.Length > 1_600) compactBible = compactBible[..1_600];
         var contextJson = JsonSerializer.Serialize(context.Select(x => new { id = x.Id, text = x.SourceText }));
         var targetJson = JsonSerializer.Serialize(target.Select(x => new { id = x.Id, text = x.SourceText }));
         return $$"""
-            Bạn là biên dịch viên phụ đề Trung → Việt chuyên phim tiên hiệp/cổ trang.
-            Mục tiêu số 1 là ĐÚNG NGHĨA và ĐÚNG QUAN HỆ; sau đó mới tối ưu câu Việt tự nhiên, có cảm xúc và dễ đọc/lồng tiếng.
-            {{coreSkill}}
-
-            THỨ TỰ ƯU TIÊN KHI CÓ MÂU THUẪN:
-            1. TARGET + NGỮ CẢNH LÂN CẬN là nguồn sự thật về nội dung câu.
-            2. HỒ SƠ PHIM là bộ nhớ nhất quán về tên, thuật ngữ, vai vế và xưng hô; không được ép hồ sơ lên nguyên văn nếu trái nghĩa.
-            3. Skill quy định thuật ngữ/phong cách; không được dùng skill để tự thêm tình tiết không có trong nguồn.
-
-            HỒ SƠ PHIM:
-            {{(string.IsNullOrWhiteSpace(bible) ? "Chưa có dữ kiện khóa." : bible)}}
-
+            Dịch phụ đề Trung → Việt. Chỉ dịch TARGET và chỉ trả JSON.
+            Quy tắc: đúng nghĩa; giữ phủ định/câu hỏi/chủ thể; tên Hán-Việt và xưng hô theo ngữ cảnh; không bịa; câu Việt tự nhiên, gọn; không chữ Hán, markdown hay giải thích.
+            {{(string.IsNullOrWhiteSpace(compactBible) ? string.Empty : "HỒ SƠ: " + compactBible)}}
             {{relevantSkill}}
-
-            NGỮ CẢNH LÂN CẬN (đọc để hiểu câu trước/sau, người nói/người nghe và câu bị chia qua nhiều cue; KHÔNG trả cue ngoài TARGET):
-            {{contextJson}}
-
-            TARGET PHẢI DỊCH:
-            {{targetJson}}
-
-            QUY TẮC DỊCH BẮT BUỘC CHO TỪNG CUE:
-            - Dịch theo ý nghĩa của cả câu, không bê trật tự từ tiếng Trung sang tiếng Việt.
-            - Giữ đúng phủ định/khẳng định, câu hỏi/mệnh lệnh, mức độ chắc chắn, số lượng, tên riêng, chủ thể và đối tượng.
-            - Xưng hô phải dựa vào bằng chứng trong context/hồ sơ; nếu chưa đủ bằng chứng thì giữ cách diễn đạt trung tính, không tự bịa giới tính hay quan hệ.
-            - Nếu một câu bị chia qua nhiều cue, phải đọc liền mạch nhưng vẫn giữ đúng nội dung ở từng id; không lặp ý sang cue kế bên và không chuyển lời giữa các id.
-            - Tên Hán-Việt, tông môn, cảnh giới, pháp bảo và tước hiệu đã xác nhận phải dùng nhất quán.
-            - Nếu nguyên văn cố ý mơ hồ, giữ mơ hồ; không giải thích thêm, không "làm rõ" bằng suy đoán.
-            - Câu Việt phải tự nhiên như người dịch thật: gọn, đúng sắc thái, không văn dịch máy, không thêm từ đệm/meme khi nguồn không có.
-
-            TỰ KIỂM TRA THẦM TRƯỚC KHI TRẢ JSON: nghĩa chính có đổi không; phủ định/câu hỏi có bị đảo không; tên/xưng hô có nhất quán không; có thêm/bớt ý không; có còn chữ Hán không.
-
-            Ví dụ phong cách ngắn:
-            师尊，弟子知错了。 → Sư tôn, đệ tử biết sai rồi.
-            你以为本座不敢杀你？ → Ngươi tưởng bản tọa không dám giết ngươi sao?
-
-            Luật máy bắt buộc: trả đúng một phần tử cho từng id TARGET, giữ nguyên id và thứ tự; không thêm/bớt/gộp cue;
-            chỉ trả tiếng Việt hoàn chỉnh trong text; không timecode, không giải thích, không markdown, không [CẦN XÁC NHẬN].
-            Trả đúng JSON theo schema.
+            CONTEXT: {{contextJson}}
+            TARGET: {{targetJson}}
+            Giữ nguyên id; đúng một text tiếng Việt cho mỗi id TARGET.
             """;
     }
 
