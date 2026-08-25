@@ -83,6 +83,13 @@ def read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def source_files(pattern: str) -> list[Path]:
+    return [
+        path for path in CSHARP.rglob(pattern)
+        if not {"bin", "obj"}.intersection(path.relative_to(CSHARP).parts)
+    ]
+
+
 for required in REQUIRED:
     require(required.is_file(), f"missing {required.relative_to(ROOT)}")
 
@@ -95,7 +102,7 @@ info_node = props_root.find(".//InformationalVersion")
 version = (info_node.text or "").strip() if info_node is not None else ""
 require(bool(VERSION_RE.fullmatch(version)), f"unexpected C# public-beta InformationalVersion: {version!r}")
 
-for xml_file in list(CSHARP.rglob("*.xaml")) + list(CSHARP.rglob("*.csproj")) + [
+for xml_file in source_files("*.xaml") + source_files("*.csproj") + [
     CSHARP / "Directory.Build.props",
     CSHARP / "Directory.Packages.props",
 ]:
@@ -108,7 +115,7 @@ event_attributes = {
     "Click", "Checked", "Toggled", "SelectionChanged", "TextChanged", "ValueChanged",
     "PointerPressed", "PointerMoved", "PointerReleased", "Loaded", "Unloaded", "SizeChanged",
 }
-for xaml_file in CSHARP.rglob("*.xaml"):
+for xaml_file in source_files("*.xaml"):
     root = ET.parse(xaml_file).getroot()
     code_file = Path(str(xaml_file) + ".cs")
     partials = sorted(xaml_file.parent.glob(xaml_file.stem + "*.cs"))
