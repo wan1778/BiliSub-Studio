@@ -73,12 +73,6 @@ public sealed partial class EditorPage : Page
         Unloaded += EditorPage_Unloaded;
     }
 
-    private void InspectorMode_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is FrameworkElement { Tag: string tag } && Enum.TryParse<InspectorMode>(tag, ignoreCase: true, out var mode))
-            SetInspectorMode(mode);
-    }
-
     private void SetInspectorMode(InspectorMode mode)
     {
         _inspectorMode = mode;
@@ -315,12 +309,6 @@ public sealed partial class EditorPage : Page
     {
         if (_subtitleSource is not null && !CurrentSubtitleFingerprintMatches())
             throw new InvalidDataException("SRT nguồn đã thay đổi ngoài ứng dụng; hãy chọn lại file SRT để reset Vietsub/voice trước khi tiếp tục.");
-    }
-
-    private async void Refresh_Click(object sender, RoutedEventArgs e)
-    {
-        try { await UpdateFrameAsync(); }
-        catch (Exception error) { StatusText.Text = error.Message; }
     }
 
     private async Task RestoreSubtitleAsync(EditorSubtitleProject? saved)
@@ -841,7 +829,6 @@ public sealed partial class EditorPage : Page
     {
         UpdateClock();
         RenderOverlays();
-        RenderTimelineRegions();
         UpdateCurrentCueVoiceUi();
         if (_playback.IsPreviewMode && !_syncingTimeline && _media is not null)
         {
@@ -1489,7 +1476,6 @@ public sealed partial class EditorPage : Page
     {
         RenderRegionList();
         RenderOverlays();
-        RenderTimelineRegions();
         if (renderInputs && _document.Selected is not null) LoadSelectedIntoInputs();
         RefreshEditorActions();
     }
@@ -1664,10 +1650,6 @@ public sealed partial class EditorPage : Page
             Overlay.Children.Add(handle);
         }
     }
-
-    // CLEAN-03: the old large region timeline canvas was never attached to the visual tree.
-    // Keep the helper as a no-op until the separate dead-method sweep removes retired callers.
-    private void RenderTimelineRegions() { }
 
     private (int Index, DragKind Kind) HitTestRegion(Point point)
     {

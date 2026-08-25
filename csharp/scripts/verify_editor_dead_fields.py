@@ -34,13 +34,6 @@ for field in FORBIDDEN_DEAD_FIELDS:
         f"CLEAN-03 dead compatibility field/reference returned: {field}",
     )
 
-# CLEAN-03 is intentionally field-only. The retired helper remains a no-op so a
-# separate dead-method sweep can remove it and its callers without mixing scopes.
-require(
-    re.search(r"private\s+void\s+RenderTimelineRegions\s*\(\s*\)\s*\{\s*\}", code) is not None,
-    "CLEAN-03 retired timeline helper must remain an explicit no-op until dead-method cleanup",
-)
-
 # Active state owners that can look 'old' must not be swept merely because they are
 # nullable or assigned from XAML. These tokens lock the field-vs-live-owner boundary.
 for live_owner in (

@@ -156,21 +156,6 @@ public sealed partial class EditorPage
         RefreshEditorActions();
     }
 
-    private async void RemoveImage_Click(object sender, RoutedEventArgs e)
-    {
-        if (_selectedImageIndex < 0 || _selectedImageIndex >= _imageOverlays.Count || EditorBusy) return;
-        var removed = _imageOverlays[_selectedImageIndex];
-        _imageOverlays.RemoveAt(_selectedImageIndex);
-        _imageBitmaps.Remove(removed.Path);
-        _selectedImageIndex = Math.Min(_selectedImageIndex, _imageOverlays.Count - 1);
-        await SaveImageSidecarAsync();
-        RenderImageList();
-        LoadSelectedImageIntoInputs();
-        RenderImageOverlays();
-        if (_imageStatusText is not null) _imageStatusText.Text = _imageOverlays.Count == 0 ? "Đã xóa hết ảnh/logo." : "Đã xóa ảnh/logo đang chọn.";
-        RefreshImageControls();
-    }
-
     private void ImageList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_imageList is null) return;
@@ -178,23 +163,6 @@ public sealed partial class EditorPage
         LoadSelectedImageIntoInputs();
         RenderImageOverlays();
         RefreshImageControls();
-    }
-
-    private async void ImageTopRight_Click(object sender, RoutedEventArgs e) => await MoveSelectedImageToCornerAsync(right: true);
-    private async void ImageTopLeft_Click(object sender, RoutedEventArgs e) => await MoveSelectedImageToCornerAsync(right: false);
-
-    private async Task MoveSelectedImageToCornerAsync(bool right)
-    {
-        if (!TryGetSelectedImage(out var image) || EditorBusy) return;
-        image = image with
-        {
-            X = right ? Math.Max(0, 1 - image.Width - .025) : .025,
-            Y = .025,
-        };
-        _imageOverlays[_selectedImageIndex] = image;
-        await SaveImageSidecarAsync();
-        LoadSelectedImageIntoInputs();
-        RenderImageOverlays();
     }
 
     private async void ImageGeometry_ValueChanged(NumberBox sender, NumberBoxValueChangedEventArgs args)
