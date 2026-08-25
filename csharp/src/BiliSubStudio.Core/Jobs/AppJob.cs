@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using BiliSubStudio.Core.Diagnostics;
 
 namespace BiliSubStudio.Core.Jobs;
@@ -167,7 +168,46 @@ public sealed class AppJob : IDisposable
             _status = status;
             if (progress >= 0)
             {
-                _progress = Math.Clamp(progress, 0, 100);
+                var normalizedProgress = progress;
+                if (string.Equals(Kind, "translation", StringComparison.Ordinal)
+                    && status.StartsWith("translation", StringComparison.Ordinal))
+                {
+                    if (message.Contains("Bước 1/6", StringComparison.Ordinal))
+                    {
+                        normalizedProgress = progress > 2
+                            ? 12d + Math.Clamp(progress, 0, 100) * 0.85d
+                            : message.Contains("Nạp model xong", StringComparison.OrdinalIgnoreCase) ? 2d : 1d;
+                    }
+                    else if (message.Contains("Bước 2/6", StringComparison.Ordinal)
+                        || message.Contains("Bước 3/6", StringComparison.Ordinal))
+                    {
+                        var part = Regex.Match(message, @"phần\s+(\d+)\s*/\s*(\d+)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+                        if (part.Success
+                            && int.TryParse(part.Groups[1].Value, out var currentPart)
+                            && int.TryParse(part.Groups[2].Value, out var totalParts)
+                            && totalParts > 0)
+                        {
+                            normalizedProgress = 2d + Math.Clamp(currentPart, 0, totalParts) / (double)totalParts * 10d;
+                        }
+                        else
+                        {
+                            normalizedProgress = Math.Clamp(progress, 2d, 12d);
+                        }
+                    }
+                    else if (message.Contains("Bước 4/6", StringComparison.Ordinal))
+                    {
+                        normalizedProgress = 12d + Math.Clamp(progress, 0, 100) * 0.85d;
+                    }
+                    else if (message.Contains("Bước 5/6", StringComparison.Ordinal))
+                    {
+                        normalizedProgress = 98d;
+                    }
+                    else if (message.Contains("Bước 6/6", StringComparison.Ordinal))
+                    {
+                        normalizedProgress = 99.5d;
+                    }
+                }
+                _progress = Math.Clamp(normalizedProgress, 0, 100);
             }
             _message = message;
         }

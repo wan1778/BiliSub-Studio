@@ -19,6 +19,7 @@ settings_xaml = read("csharp/src/BiliSubStudio.App/Pages/SettingsPage.xaml")
 settings_code = read("csharp/src/BiliSubStudio.App/Pages/SettingsPage.xaml.cs")
 media_xaml = read("csharp/src/BiliSubStudio.App/Pages/VideoPage.xaml")
 media_code = read("csharp/src/BiliSubStudio.App/Pages/VideoPage.xaml.cs")
+parity_code = read("csharp/src/BiliSubStudio.App/Pages/EditorPage.ParityFixes.cs")
 log_code = read("csharp/src/BiliSubStudio.Core/Diagnostics/ApplicationLog.cs")
 job_code = read("csharp/src/BiliSubStudio.Core/Jobs/AppJob.cs")
 manager_code = read("csharp/src/BiliSubStudio.Core/Jobs/JobManager.cs")
@@ -83,6 +84,22 @@ for marker in (
     require(marker in main_code, f"shared log/layout behavior missing {marker}")
 
 for marker in (
+    'string.Equals(Kind, "translation", StringComparison.Ordinal)',
+    'message.Contains("Bước 1/6", StringComparison.Ordinal)',
+    'Regex.Match(message, @"phần\\s+(\\d+)\\s*/\\s*(\\d+)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)',
+    'normalizedProgress = 2d + Math.Clamp(currentPart, 0, totalParts) / (double)totalParts * 10d',
+    'normalizedProgress = 12d + Math.Clamp(progress, 0, 100) * 0.85d',
+    'normalizedProgress = 98d',
+    'normalizedProgress = 99.5d',
+):
+    require(marker in job_code, f"Vietsub full-job progress mapping missing {marker}")
+
+require('TranslationProgress.Visibility = Visibility.Collapsed' in parity_code,
+        "Subtitle panel must not duplicate the shared Vietsub progress bar")
+require('TranslationStatusText.Visibility = _translationJobId is null ? Visibility.Visible : Visibility.Collapsed' in parity_code,
+        "Subtitle panel must hide duplicate live Vietsub detail while the shared log owns progress")
+
+for marker in (
     'Path.Combine(Path.GetFullPath(dataDirectory), "Logs")',
     'Path.Combine(directory, "application.log")',
     'MaxMemoryEntries = 2_000',
@@ -145,4 +162,4 @@ require('if (track.Ai) return chinese ? 2 : 3;' in subtitle_policy,
 require('["application"] = string.Join' in support_code and '_log.Snapshot().TakeLast(500)' in support_code,
         "Bug reports must include the sanitized shared application log")
 
-print("PASS: four-item shell / shared log Vietsub progress / embedded settings / shared log error-state / compact media / subtitle-priority contracts")
+print("PASS: four-item shell / shared log Vietsub full-job progress / no duplicate local progress / embedded settings / shared log error-state / compact media / subtitle-priority contracts")
