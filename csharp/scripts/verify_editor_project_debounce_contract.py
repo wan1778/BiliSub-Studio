@@ -65,6 +65,10 @@ def verify_source(source: str) -> None:
         "timer.Tick += ProjectSaveTimer_Tick;",
     ):
         require(token in ensure, f"PROJECT-02 timer setup lost: {token}")
+    require(source.count("timer.Tick += ProjectSaveTimer_Tick;") == 1,
+            "PROJECT-02/CLEAN-02 project timer Tick must bind once for the persistent EditorPage")
+    require("_projectSaveTimer.Tick -= ProjectSaveTimer_Tick;" not in source,
+            "PROJECT-02/CLEAN-02 project timer must not detach/rebind across tab lifecycle")
 
     queue = method_body(source, "private void QueueProjectSave()")
     require(
@@ -126,14 +130,17 @@ def verify_source(source: str) -> None:
         "StopProjectSaveTimer();" in unload
         and "await SaveProjectNowAsync();" in unload
         and "CleanupProjectAutosave();" in unload,
-        "PROJECT-02 unload must stop timer, flush once, then detach timer",
+        "PROJECT-02 unload must stop timer, flush once, then clear pending autosave state",
     )
 
     cleanup = method_body(source, "private void CleanupProjectAutosave()")
     require(
-        "_projectSaveTimer.Tick -= ProjectSaveTimer_Tick;" in cleanup
-        and "_projectSaveTimer = null;" in cleanup,
-        "PROJECT-02 timer handler must be detached on unload",
+        "StopProjectSaveTimer();" in cleanup and "_pendingProjectSave = null;" in cleanup,
+        "PROJECT-02 unload cleanup must stop debounce and clear pending snapshot",
+    )
+    require(
+        "Tick -=" not in cleanup and "_projectSaveTimer = null;" not in cleanup,
+        "PROJECT-02/CLEAN-02 persistent autosave timer must retain its one Tick binding across tab reopen",
     )
 
 
@@ -141,6 +148,8 @@ class DebounceFixture:
     def __init__(self) -> None:
         self.pending: str | None = None
         self.timer_restarts = 0
+        self.timer_bindings = 1
+        self.timer_running = False
         self.flush = False
         self.writes: list[str] = []
 
@@ -148,8 +157,10 @@ class DebounceFixture:
         self.pending = snapshot
         if not self.flush:
             self.timer_restarts += 1
+            self.timer_running = True
 
     def tick(self) -> None:
+        self.timer_running = False
         if self.flush or self.pending is None:
             return
         snapshot = self.pending
@@ -158,6 +169,7 @@ class DebounceFixture:
 
     def forced_flush(self, snapshot: str, arriving_during_flush: str | None = None) -> None:
         self.flush = True
+        self.timer_running = False
         self.pending = None
         self.writes.append(snapshot)
         if arriving_during_flush is not None:
@@ -165,6 +177,11 @@ class DebounceFixture:
         self.flush = False
         if self.pending is not None:
             self.timer_restarts += 1
+            self.timer_running = True
+
+    def unload(self) -> None:
+        self.timer_running = False
+        self.pending = None
 
 
 def verify_fixture() -> None:
@@ -186,9 +203,19 @@ def verify_fixture() -> None:
         "PROJECT-02 edit arriving during forced flush must persist after flush, never before it",
     )
 
+    owner = DebounceFixture()
+    owner.queue("before-unload")
+    owner.unload()
+    owner.queue("after-reopen")
+    owner.tick()
+    require(owner.timer_bindings == 1,
+            "PROJECT-02/CLEAN-02 tab reopen must reuse one timer handler binding")
+    require(owner.writes == ["after-reopen"],
+            "PROJECT-02/CLEAN-02 stopped retained timer must resume normal debounce after reopen")
+
 
 if EDITOR.exists():
     verify_source(EDITOR.read_text(encoding="utf-8"))
 
 verify_fixture()
-print("PASS: PROJECT-02 clean single-timer debounce and serialized writer contract is locked")
+print("PASS: PROJECT-02 clean single-timer debounce, retained Tick owner and serialized writer contract are locked")

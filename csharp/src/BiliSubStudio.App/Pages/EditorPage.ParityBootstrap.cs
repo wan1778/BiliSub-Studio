@@ -146,12 +146,14 @@ public sealed partial class EditorPage
 
     private void EnsureEditorExportProgressTimer()
     {
-        if (_editorExportProgressTimer is not null) return;
-        var timer = DispatcherQueue.CreateTimer();
-        timer.Interval = TimeSpan.FromMilliseconds(150);
-        timer.Tick += EditorExportProgressTimer_Tick;
-        timer.Start();
-        _editorExportProgressTimer = timer;
+        if (_editorExportProgressTimer is null)
+        {
+            var timer = DispatcherQueue.CreateTimer();
+            timer.Interval = TimeSpan.FromMilliseconds(150);
+            timer.Tick += EditorExportProgressTimer_Tick;
+            _editorExportProgressTimer = timer;
+        }
+        _editorExportProgressTimer.Start();
     }
 
     private void EditorExportProgressTimer_Tick(DispatcherQueueTimer sender, object args)
@@ -187,12 +189,7 @@ public sealed partial class EditorPage
     private void CleanupEditorProgress()
     {
         StopVoiceArtifactMonitor();
-        if (_editorExportProgressTimer is not null)
-        {
-            _editorExportProgressTimer.Stop();
-            _editorExportProgressTimer.Tick -= EditorExportProgressTimer_Tick;
-            _editorExportProgressTimer = null;
-        }
+        _editorExportProgressTimer?.Stop();
         _observedImageProgressJobId = null;
         _imageStageProgressFloor = 0;
         _imageStageDisplayProgress = 0;

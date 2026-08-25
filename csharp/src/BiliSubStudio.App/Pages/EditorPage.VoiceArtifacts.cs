@@ -16,9 +16,9 @@ public sealed partial class EditorPage
             var timer = DispatcherQueue.CreateTimer();
             timer.Interval = TimeSpan.FromSeconds(1);
             timer.Tick += VoiceArtifactMonitor_Tick;
-            timer.Start();
             _voiceArtifactMonitorTimer = timer;
         }
+        _voiceArtifactMonitorTimer.Start();
 
         if (_voiceArtifactWatcher is null)
         {
@@ -47,12 +47,7 @@ public sealed partial class EditorPage
 
     private void StopVoiceArtifactMonitor()
     {
-        if (_voiceArtifactMonitorTimer is not null)
-        {
-            _voiceArtifactMonitorTimer.Stop();
-            _voiceArtifactMonitorTimer.Tick -= VoiceArtifactMonitor_Tick;
-            _voiceArtifactMonitorTimer = null;
-        }
+        _voiceArtifactMonitorTimer?.Stop();
         if (_voiceArtifactWatcher is not null)
         {
             _voiceArtifactWatcher.EnableRaisingEvents = false;

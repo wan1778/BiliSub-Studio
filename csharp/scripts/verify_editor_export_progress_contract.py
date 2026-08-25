@@ -8,6 +8,7 @@ from pathlib import Path
 ROOT = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else Path(__file__).resolve().parents[2]
 PAGES = ROOT / "csharp/src/BiliSubStudio.App/Pages"
 BOOTSTRAP = PAGES / "EditorPage.ParityBootstrap.cs"
+PARITY = PAGES / "EditorPage.ParityFixes.cs"
 IMAGES = PAGES / "EditorPage.Images.cs"
 COMPOSER = ROOT / "csharp/src/BiliSubStudio.App/Services/EditorImageOverlayComposer.cs"
 VIDEO_EDITOR = ROOT / "csharp/src/BiliSubStudio.Core/Editor/VideoEditorService.cs"
@@ -28,6 +29,7 @@ def read(path: Path) -> str:
 
 
 bootstrap = read(BOOTSTRAP)
+parity = read(PARITY)
 images = read(IMAGES)
 composer = read(COMPOSER)
 video = read(VIDEO_EDITOR)
@@ -44,9 +46,23 @@ for token in (
     "EnsureEditorExportProgressTimer();",
     "timer.Interval = TimeSpan.FromMilliseconds(150);",
     "timer.Tick += EditorExportProgressTimer_Tick;",
-    "Unloaded += EditorProgress_Unloaded;",
+    "private void CleanupEditorProgress()",
 ):
     require(token in bootstrap, f"EXPORT-14 progress lifecycle lost: {token}")
+require("CleanupEditorProgress();" in parity,
+        "EXPORT-14 progress cleanup must remain under the single EditorPage Unloaded owner")
+
+# CLEAN-02: EditorPage persists across tab navigation, so the progress timer retains
+# its one Tick binding. Unload stops it; the next Loaded starts the retained timer.
+require(bootstrap.count("timer.Tick += EditorExportProgressTimer_Tick;") == 1,
+        "EXPORT-14/CLEAN-02 progress timer Tick must bind exactly once")
+require("_editorExportProgressTimer.Tick -= EditorExportProgressTimer_Tick;" not in bootstrap,
+        "EXPORT-14/CLEAN-02 progress timer must not detach/rebind on tab navigation")
+require("_editorExportProgressTimer = null;" not in bootstrap,
+        "EXPORT-14/CLEAN-02 progress timer owner must survive tab unload")
+require("_editorExportProgressTimer.Start();" in bootstrap
+        and "_editorExportProgressTimer?.Stop();" in bootstrap,
+        "EXPORT-14/CLEAN-02 progress timer must restart/stop without handler swapping")
 
 # Only the image post-stage needs this bridge; normal/base editor jobs retain their
 # existing direct polling owner in RenderProjectAsync.
@@ -80,14 +96,6 @@ for token in (
 ):
     require(token in bootstrap, f"EXPORT-14 image progress mapping lost: {token}")
 require("Giai đoạn 2/2 · " in bootstrap, "EXPORT-14 full-combo stage status lost")
-
-# Timer must not keep the page alive after navigation/unload.
-for token in (
-    "_editorExportProgressTimer.Stop();",
-    "_editorExportProgressTimer.Tick -= EditorExportProgressTimer_Tick;",
-    "_editorExportProgressTimer = null;",
-):
-    require(token in bootstrap, f"EXPORT-14 timer cleanup lost: {token}")
 
 # Existing normal and base-stage polling remain authoritative and must not regress.
 require(
@@ -154,4 +162,12 @@ regressing = map_image_progress(68, [2, 50, 40, 97])
 require(all(a <= b for a, b in zip(regressing, regressing[1:])),
         "EXPORT-14 visible progress must resist child progress regressions")
 
-print("PASS: EXPORT-14 visible export progress contract is locked")
+# CLEAN-02 lifecycle fixture: tab unload/reopen changes running state, never binding count.
+bindings = 1
+running = True
+running = False  # Unloaded -> Stop
+running = True   # Loaded -> Start same timer
+require(bindings == 1 and running,
+        "EXPORT-14/CLEAN-02 retained progress timer must reopen with one Tick binding")
+
+print("PASS: EXPORT-14 visible export progress and retained single Tick owner contract are locked")

@@ -62,6 +62,23 @@ LEGACY_NON_OWNERS = (
     "ImageTopLeft_Click",
     "ImageTopRight_Click",
 )
+PERSISTENT_TIMER_ADDS = (
+    "timer.Tick += ProjectSaveTimer_Tick;",
+    "timer.Tick += EditorExportProgressTimer_Tick;",
+    "timer.Tick += VoiceArtifactMonitor_Tick;",
+)
+FORBIDDEN_PERSISTENT_TIMER_REMOVES = (
+    "_projectSaveTimer.Tick -= ProjectSaveTimer_Tick;",
+    "_editorExportProgressTimer.Tick -= EditorExportProgressTimer_Tick;",
+    "_voiceArtifactMonitorTimer.Tick -= VoiceArtifactMonitor_Tick;",
+)
+EXPECTED_EVENT_REMOVALS = Counter({
+    ("_voiceArtifactWatcher", "Deleted", "VoiceArtifactWatcher_Deleted"): 1,
+    ("_voiceArtifactWatcher", "Renamed", "VoiceArtifactWatcher_Renamed"): 1,
+    ("_player.PlaybackSession", "PositionChanged", "PlayerPositionChanged"): 1,
+    ("_player", "MediaEnded", "PlayerMediaEnded"): 1,
+    ("_player", "MediaFailed", "PlayerMediaFailed"): 1,
+})
 
 
 def fail(message: str) -> None:
@@ -80,9 +97,9 @@ def read(path: Path) -> str:
 
 def method_body(source: str, signature: str) -> str:
     start = source.find(signature)
-    require(start >= 0, f"CLEAN-01 missing method: {signature}")
+    require(start >= 0, f"CLEAN-01/02 missing method: {signature}")
     brace = source.find("{", start)
-    require(brace >= 0, f"CLEAN-01 method has no body: {signature}")
+    require(brace >= 0, f"CLEAN-01/02 method has no body: {signature}")
     depth = 0
     for index in range(brace, len(source)):
         if source[index] == "{":
@@ -91,7 +108,7 @@ def method_body(source: str, signature: str) -> str:
             depth -= 1
             if depth == 0:
                 return source[brace:index + 1]
-    fail(f"CLEAN-01 unterminated method: {signature}")
+    fail(f"CLEAN-01/02 unterminated method: {signature}")
     return ""
 
 
@@ -116,6 +133,7 @@ bootstrap = code_by_file["EditorPage.ParityBootstrap.cs"]
 parity = code_by_file["EditorPage.ParityFixes.cs"]
 main = code_by_file["EditorPage.xaml.cs"]
 playback = code_by_file["EditorPage.Playback.cs"]
+voice_artifacts = code_by_file["EditorPage.VoiceArtifacts.cs"]
 
 # Declarative XAML owner map.
 require(len(bindings) == EXPECTED_XAML_BINDINGS,
@@ -172,8 +190,6 @@ require("CleanupEditorProgress();" in cleanup_parity,
         "CLEAN-01 progress cleanup must be a subordinate lifecycle call, not an event owner")
 require("StopVoiceArtifactMonitor();" in cleanup_progress,
         "CLEAN-01 progress cleanup must stop the voice artifact event owners")
-require("_editorExportProgressTimer.Tick -= EditorExportProgressTimer_Tick;" in cleanup_progress,
-        "CLEAN-01 progress cleanup must detach its timer owner")
 
 # Startup smoke SizeChanged is conditional but must still have one named auditable owner.
 require("WorkspaceGrid.SizeChanged += (_, _)" not in bootstrap,
@@ -181,32 +197,60 @@ require("WorkspaceGrid.SizeChanged += (_, _)" not in bootstrap,
 require("WorkspaceGrid.SizeChanged += ValidateUiShellLayoutForSmoke;" in bootstrap,
         "CLEAN-01 startup smoke SizeChanged must use the named layout-smoke owner")
 
-# Non-UI infrastructure event sources have symmetric subscribe/unsubscribe owners.
+# CLEAN-02: page-owned DispatcherQueueTimers live as long as the persistent EditorPage.
+# Bind Tick once, then only Stop/Start across tab unload/reload; do not churn -= / +=.
+for marker in PERSISTENT_TIMER_ADDS:
+    require(code.count(marker) == 1,
+            f"CLEAN-02 persistent timer must bind its Tick handler exactly once: {marker}")
+for marker in FORBIDDEN_PERSISTENT_TIMER_REMOVES:
+    require(marker not in code,
+            f"CLEAN-02 persistent page timer must not detach/rebind on tab lifecycle: {marker}")
+require("_editorExportProgressTimer.Start();" in bootstrap
+        and "_editorExportProgressTimer?.Stop();" in cleanup_progress,
+        "CLEAN-02 export progress timer must restart/stop without handler swapping")
+require("_voiceArtifactMonitorTimer.Start();" in voice_artifacts
+        and "_voiceArtifactMonitorTimer?.Stop();" in voice_artifacts,
+        "CLEAN-02 voice fallback timer must restart/stop without handler swapping")
+
+# The only remaining -= operators are tied to resources that are actually disposed/recreated:
+# FileSystemWatcher and MediaPlayer. Any additional runtime handler removal is a CLEAN-02 regression.
+event_removals = Counter(re.findall(
+    r"\b([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*\.\s*([A-Za-z_]\w*)\s*-=\s*([A-Za-z_]\w*)",
+    code,
+))
+require(event_removals == EXPECTED_EVENT_REMOVALS,
+        "CLEAN-02 runtime -= inventory drift: "
+        f"expected={sorted(EXPECTED_EVENT_REMOVALS.elements())}, "
+        f"found={sorted(event_removals.elements())}")
+
+# Watcher subscriptions are removed because the FileSystemWatcher itself is disposed on unload.
 for add, remove in (
-    ("timer.Tick += ProjectSaveTimer_Tick;", "_projectSaveTimer.Tick -= ProjectSaveTimer_Tick;"),
-    ("timer.Tick += EditorExportProgressTimer_Tick;", "_editorExportProgressTimer.Tick -= EditorExportProgressTimer_Tick;"),
-    ("timer.Tick += VoiceArtifactMonitor_Tick;", "_voiceArtifactMonitorTimer.Tick -= VoiceArtifactMonitor_Tick;"),
     ("watcher.Deleted += VoiceArtifactWatcher_Deleted;", "_voiceArtifactWatcher.Deleted -= VoiceArtifactWatcher_Deleted;"),
     ("watcher.Renamed += VoiceArtifactWatcher_Renamed;", "_voiceArtifactWatcher.Renamed -= VoiceArtifactWatcher_Renamed;"),
 ):
-    require(code.count(add) == 1, f"CLEAN-01 infrastructure subscribe owner drift: {add}")
-    require(code.count(remove) == 1, f"CLEAN-01 infrastructure unsubscribe owner drift: {remove}")
+    require(code.count(add) == 1, f"CLEAN-02 watcher subscribe owner drift: {add}")
+    require(code.count(remove) == 1, f"CLEAN-02 watcher teardown owner drift: {remove}")
+require("_voiceArtifactWatcher.Dispose();" in voice_artifacts and "_voiceArtifactWatcher = null;" in voice_artifacts,
+        "CLEAN-02 watcher -= is allowed only because watcher is disposed/recreated")
 
+# MediaPlayer subscriptions are removed because the MediaPlayer itself is disposed/recreated.
 for marker in (
     "player.PlaybackSession.PositionChanged += PlayerPositionChanged;",
     "player.MediaEnded += PlayerMediaEnded;",
     "player.MediaFailed += PlayerMediaFailed;",
 ):
-    require(playback.count(marker) == 1, f"CLEAN-01 MediaPlayer owner must subscribe exactly once: {marker}")
+    require(playback.count(marker) == 1, f"CLEAN-02 MediaPlayer owner must subscribe exactly once per player instance: {marker}")
 for marker in (
-    "player.PlaybackSession.PositionChanged -= PlayerPositionChanged;",
-    "player.MediaEnded -= PlayerMediaEnded;",
-    "player.MediaFailed -= PlayerMediaFailed;",
+    "_player.PlaybackSession.PositionChanged -= PlayerPositionChanged;",
+    "_player.MediaEnded -= PlayerMediaEnded;",
+    "_player.MediaFailed -= PlayerMediaFailed;",
 ):
-    require(playback.count(marker) == 1, f"CLEAN-01 MediaPlayer owner must unsubscribe exactly once: {marker}")
+    require(playback.count(marker) == 1, f"CLEAN-02 MediaPlayer owner must unsubscribe before disposal: {marker}")
+require("_player.Dispose();" in playback and "_player = null;" in playback,
+        "CLEAN-02 MediaPlayer -= is allowed only because player is disposed/recreated")
 require(playback.count("RegisterPropertyChangedCallback(") == 1
         and playback.count("UnregisterPropertyChangedCallback(") == 1,
-        "CLEAN-01 fullscreen property callback must have one register/unregister owner")
+        "CLEAN-02 fullscreen property callback must have one register/unregister owner")
 
 # Every active handler must have one implementation and must not call another event handler directly.
 all_handlers = {handler for _, _, handler in bindings}
@@ -228,11 +272,10 @@ all_handlers.update((
 for handler in sorted(all_handlers):
     implementations_or_calls = len(re.findall(rf"\b{re.escape(handler)}\s*\(", code))
     require(implementations_or_calls == 1,
-            f"CLEAN-01 event handler must have one implementation and no handler-to-handler calls: "
+            f"CLEAN-01/02 event handler must have one implementation and no handler-to-handler calls: "
             f"{handler} ({implementations_or_calls})")
 
-# These old methods are not Event Map owners. CLEAN-01 prevents either XAML or runtime
-# bindings from silently handing authority back to them; source dead-code removal is separate.
+# These old methods are not Event Map owners. Cleanup keeps them from silently regaining authority.
 bound_handlers = {handler for _, _, handler in bindings}
 bound_handlers.update(handler for _, _, handler in RUNTIME_UI_BINDINGS + CONDITIONAL_RUNTIME_UI_BINDINGS)
 bound_handlers.update(handler for _, handler in LIFECYCLE_BINDINGS)
@@ -248,14 +291,17 @@ user_clicks = EXPECTED_XAML_CLICKS + runtime_clicks
 require(user_clicks == EXPECTED_USER_CLICK_BINDINGS,
         f"CLEAN-01 user Click inventory drift: expected {EXPECTED_USER_CLICK_BINDINGS}, found {user_clicks}")
 
-# Negative fixture: a second Unloaded owner is exactly the condition this gate rejects.
+# Negative fixtures prove both cleanup gates reject the regressions they are meant to stop.
 fixture = "Unloaded += EditorPage_Unloaded;\nUnloaded += Other_Unloaded;\n"
 require(len(re.findall(r"(?<!\.)\bUnloaded\s*\+=", fixture)) == 2,
         "CLEAN-01 verifier fixture failed to represent duplicate lifecycle ownership")
+swap_fixture = "timer.Tick += Handler;\ntimer.Tick -= Handler;\ntimer.Tick += Handler;\n"
+require("timer.Tick -= Handler;" in swap_fixture and swap_fixture.count("timer.Tick += Handler;") == 2,
+        "CLEAN-02 verifier fixture failed to represent unnecessary runtime handler swapping")
 
 print(
-    "PASS: CLEAN-01 Editor Event Map · "
+    "PASS: CLEAN-01/02 Editor Event Map · "
     f"{len(bindings)} XAML bindings · {len(RUNTIME_UI_BINDINGS) + len(CONDITIONAL_RUNTIME_UI_BINDINGS) + len(TOOL_BUTTONS)} runtime UI bindings · "
     f"{EXPECTED_USER_CLICK_BINDINGS} user Click bindings · one Loaded/LayoutUpdated/Unloaded owner each · "
-    "symmetric timer/watcher/player event owners"
+    "persistent page timers bind once · only watcher/player resources detach before dispose"
 )

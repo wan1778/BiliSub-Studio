@@ -1965,9 +1965,6 @@ public sealed partial class EditorPage : Page
     {
         StopProjectSaveTimer();
         _pendingProjectSave = null;
-        if (_projectSaveTimer is null) return;
-        _projectSaveTimer.Tick -= ProjectSaveTimer_Tick;
-        _projectSaveTimer = null;
     }
 
     private async void ProjectSaveTimer_Tick(Microsoft.UI.Dispatching.DispatcherQueueTimer sender, object args)
