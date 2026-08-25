@@ -119,7 +119,7 @@ require("_voiceTrack);" in current_request,
 preview_load = playback.split("private async Task LoadSegmentCoreAsync(", 1)[1].split(
     "private async Task ActivateSegmentAsync", 1
 )[0]
-require("_page.CurrentEditRequest(_page.CompletedSubtitleBurn())" in preview_load,
+require("_page.CurrentEditRequest(_page.PreviewSubtitleBurn())" in preview_load,
         "VOICE-15 processed Preview must consume the restored shared request")
 
 # Small validity fixture mirroring reopen policy. "speech_ok" is deliberately

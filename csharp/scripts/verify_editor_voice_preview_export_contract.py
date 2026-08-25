@@ -31,43 +31,45 @@ playback = read(PLAYBACK)
 images = read(IMAGES)
 video_editor = read(VIDEO_EDITOR)
 
-# VOICE-14 — Processed Preview must represent the same exportable Editor state
-# as final Export for subtitle/blur/source-audio/Vietnamese-voice semantics.
-# Preview is allowed to slice time, reset timestamps, downscale and use a faster
-# encoder, but it may not substitute draft/source captions or a different mix.
+# VOICE-14 — Processed Preview and final Export share blur/source-audio/
+# Vietnamese-voice render ownership. Preview intentionally allows draft/source
+# fallback captions so edits are visible before translation is complete; Export
+# remains stricter and may burn only completed Vietnamese subtitles.
 
 completed_subtitle = editor.split("private EditorSubtitleBurn? CompletedSubtitleBurn()", 1)[1].split(
     "private EditorSubtitleBurn? PreviewSubtitleBurn()", 1
 )[0]
 require("_subtitleSource.Cues.All(x => !string.IsNullOrWhiteSpace(x.VietnameseText))" in completed_subtitle,
-        "VOICE-14 exportable subtitle owner must require complete Vietnamese text")
+        "VOICE-14 export subtitle owner must require complete Vietnamese text")
 require("new EditorSubtitleBurn(_subtitleSource.Cues, _subtitlePlacement, _cueSpeechTiming, KaraokeToggle.IsOn)" in completed_subtitle,
-        "VOICE-14 exportable subtitle owner must carry the same placement/timing/karaoke state")
+        "VOICE-14 export subtitle owner must carry the same placement/timing/karaoke state")
 
 preview_subtitle = editor.split("private EditorSubtitleBurn? PreviewSubtitleBurn()", 1)[1].split(
     "private VideoEditRequest CurrentEditRequest(", 1
 )[0]
-require("cue.SourceText" in preview_subtitle,
-        "VOICE-14 draft/static preview helper must remain distinguishable from exportable subtitle state")
+require("cue.SourceText" in preview_subtitle
+        and "string.IsNullOrWhiteSpace(cue.VietnameseText) ? cue.SourceText : cue.VietnameseText" in preview_subtitle,
+        "VOICE-14 processed Preview must preserve draft/source fallback captions")
 
-# Processed playback and prefetch must never use the draft/source-fallback helper.
-require("PreviewSubtitleBurn()" not in playback,
-        "VOICE-14 processed Preview must not burn draft/source fallback captions")
-require(playback.count("_page.CurrentEditRequest(_page.CompletedSubtitleBurn())") == 2,
-        "VOICE-14 playback and prefetch must both originate from the exportable subtitle owner")
+# Processed playback and prefetch intentionally use the Preview subtitle helper,
+# while CurrentEditRequest still owns the shared blur/audio/voice state.
+require(playback.count("_page.CurrentEditRequest(_page.PreviewSubtitleBurn())") == 2,
+        "VOICE-14 playback and prefetch must both originate from the shared Preview request")
+require("_page.CurrentEditRequest(_page.CompletedSubtitleBurn())" not in playback,
+        "VOICE-14 processed Preview must not regress to completed-only subtitle gating")
 
 load_segment = playback.split("private async Task LoadSegmentCoreAsync(", 1)[1].split(
     "private async Task ActivateSegmentAsync(", 1
 )[0]
 require("CreateEditorPreviewSegmentAsync(" in load_segment
-        and "_page.CurrentEditRequest(_page.CompletedSubtitleBurn())" in load_segment,
-        "VOICE-14 current processed segment must use the shared exportable request")
+        and "_page.CurrentEditRequest(_page.PreviewSubtitleBurn())" in load_segment,
+        "VOICE-14 current processed segment must use the shared Preview request")
 
 prefetch_owner = playback.split("private void StartNextSegmentPrefetch()", 1)[1].split(
     "private async Task PrefetchNextSegmentAsync", 1
 )[0]
-require("var request = _page.CurrentEditRequest(_page.CompletedSubtitleBurn());" in prefetch_owner,
-        "VOICE-14 next processed segment must snapshot the same exportable request")
+require("var request = _page.CurrentEditRequest(_page.PreviewSubtitleBurn());" in prefetch_owner,
+        "VOICE-14 next processed segment must snapshot the same Preview request")
 
 current_request = editor.split("private VideoEditRequest CurrentEditRequest(", 1)[1].split(
     "private async void Render_Click", 1
@@ -82,17 +84,18 @@ for token in (
 require("_monitorAudio" not in current_request,
         "VOICE-14 Player monitor volume/mute must not enter Preview/Export render state")
 
-# Export uses the exact same completed-subtitle owner before creating either the
-# direct render request or the base request used before the image/logo post-stage.
+# Export remains completed-Vietsub only, but PROJECT-10 locks the output target by
+# cloning CurrentEditRequest into a captured request before StartEditor. Both the
+# direct export and image-base stage must preserve that shared request ownership.
 render_project = images.split("private async Task RenderProjectAsync()", 1)[1].split(
     "private void RefreshImageControls()", 1
 )[0]
 require("var subtitle = CompletedSubtitleBurn();" in render_project,
-        "VOICE-14 Export must use the same exportable subtitle owner as processed Preview")
-require("_application.StartEditor(CurrentEditRequest(subtitle))" in render_project,
-        "VOICE-14 direct Export must originate from CurrentEditRequest")
-require("var request = CurrentEditRequest(subtitle) with" in render_project,
-        "VOICE-14 base Export before image/logo must preserve the same CurrentEditRequest")
+        "VOICE-14 Export must retain the completed-Vietnamese subtitle owner")
+require(render_project.count("var request = CurrentEditRequest(subtitle) with") == 2,
+        "VOICE-14 both Export paths must originate from CurrentEditRequest before locking the output target")
+require(render_project.count("_jobId = _application.StartEditor(request);") == 2,
+        "VOICE-14 both Export paths must render the locked CurrentEditRequest snapshot")
 
 # Full Export and sliced Preview share the same visual filter owner and ASS builder.
 export_run = video_editor.split("public async Task<VideoEditResult> RunAsync(", 1)[1].split(
@@ -162,23 +165,33 @@ activate = playback.split("private async Task ActivateSegmentAsync(", 1)[1].spli
 require("MediaSource.CreateFromStorageFile(file)" in activate,
         "VOICE-14 Player must play the rendered processed segment, not raw source media")
 
-# Encoding/performance differences are allowed; semantic state is not.
+# Encoding/performance differences are allowed; semantic audio/voice/effect state is not.
 require('"-preset", "medium", "-crf", "18"' in export_run,
         "VOICE-14 fixture expects final Export quality settings to remain independent")
 require('"-preset", "ultrafast", "-crf", "23"' in preview_args,
         "VOICE-14 fixture expects Preview to retain its faster encoder")
 
-# Tiny policy fixture for the bug fixed by VOICE-14: incomplete Vietsub is not an
-# exportable caption. Processed Preview and Export must therefore both omit it.
+# Tiny policy fixture: incomplete Vietsub is visible in Preview via source fallback,
+# but it is intentionally not exportable until every Vietnamese cue is complete.
 def completed_subtitle(vietnamese: list[str]) -> bool:
     return bool(vietnamese) and all(value.strip() for value in vietnamese)
 
 
+def preview_caption(source: str, vietnamese: str) -> str:
+    return vietnamese if vietnamese.strip() else source
+
+
 require(completed_subtitle(["Xin chào", "Đạo hữu"]) is True,
-        "VOICE-14 fixture: complete Vietsub must be visible in both Preview and Export")
+        "VOICE-14 fixture: complete Vietsub must remain exportable")
+require(preview_caption("你好", "Xin chào") == "Xin chào",
+        "VOICE-14 fixture: completed cue must preview Vietnamese text")
 require(completed_subtitle(["Xin chào", ""]) is False,
-        "VOICE-14 fixture: incomplete Vietsub must be omitted by both processed Preview and Export")
+        "VOICE-14 fixture: incomplete Vietsub must remain blocked from Export")
+require(preview_caption("道友", "") == "道友",
+        "VOICE-14 fixture: untranslated cue must remain visible in Preview through source fallback")
 require(completed_subtitle(["  "]) is False,
         "VOICE-14 fixture: whitespace-only Vietsub is not exportable")
+require(preview_caption("原文", "  ") == "原文",
+        "VOICE-14 fixture: whitespace-only draft must fall back to source text in Preview")
 
-print("PASS: VOICE-14 processed Preview matches Export voice/subtitle/audio semantics")
+print("PASS: VOICE-14 Preview/Export share render state with intentional draft-caption policy")
