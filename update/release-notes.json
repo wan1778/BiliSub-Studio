@@ -1,7 +1,7 @@
 {
-  "version": "4.0.0-beta.46-csharp-p5",
+  "version": "4.0.0-beta.47-csharp-p5",
   "notes": [
-    "Tách thanh điều khiển Preview khỏi khung hình: Play, thời lượng, seek, âm lượng và toàn màn hình nay nằm thành hàng riêng bên dưới Preview.",
-    "Sửa lỗi ứng dụng có thể thoát khi rời tab Chỉnh video lúc Preview đang phát: hủy preview an toàn, bỏ callback muộn và tháo MediaPlayer khỏi control trước khi dispose."
+    "Sửa tiến độ Vietsub AI local để phản ánh toàn bộ 6 bước của job thay vì đứng 0% trong lúc phân tích SRT/tạo bible: nạp model 0–2%, phân tích+bible 2–12%, dịch câu 12–97%, kiểm tra 97–99%, ghi SRT 99–100%.",
+    "Chỉ giữ tiến độ Vietsub realtime ở Nhật ký toàn ứng dụng để tránh hiển thị trùng; panel Subtitle ẩn thanh/status chi tiết khi AI đang chạy và hiện lại trạng thái cuối hoặc lỗi sau khi job kết thúc."
   ]
 }
