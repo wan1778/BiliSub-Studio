@@ -203,17 +203,38 @@ public sealed class LocalSubtitleTranslationService : IDisposable
                     var pageCues = analysisBatches[page];
                     var prompt = BuildBiblePrompt(pageCues, bible, page + 1, analysisPages);
                     string nextBible;
-                    try { nextBible = ValidateBible(await RunJsonAsync(runtime!, prompt, BibleSchema, 2048, job.CancellationToken)); }
+                    try
+                    {
+                        nextBible = ValidateBible(await RunJsonAsync(runtime!, prompt, BibleSchema, 2048, job.CancellationToken));
+                        if (string.IsNullOrWhiteSpace(nextBible))
+                        {
+                            job.Warn($"Lượt đọc SRT {page + 1} không trả bible; giữ hồ sơ trước đó và tiếp tục Vietsub.");
+                            nextBible = bible;
+                        }
+                    }
                     catch (InvalidDataException first)
                     {
-                        job.Warn($"Lượt đọc SRT {page + 1} trả sai JSON/nội dung; đang thử lại với prompt chặt hơn: {first.Message}");
-                        nextBible = ValidateBible(await RunJsonAsync(runtime!, prompt + "\nLần trước sai JSON/hồ sơ. Chỉ trả đúng một JSON object theo schema.", BibleSchema, 2048, job.CancellationToken));
+                        job.Warn($"Lượt đọc SRT {page + 1} trả JSON/hồ sơ không hợp lệ; giữ hồ sơ trước đó và tiếp tục Vietsub: {first.Message}");
+                        nextBible = bible;
                     }
                     catch (Exception first) when (first is not OperationCanceledException)
                     {
                         job.Warn($"Lượt đọc SRT {page + 1} gặp lỗi runtime; thử lại bằng CPU an toàn: {first.Message}");
                         await RestartTranslationServerAsync(runtime!, model, LowerGpuLayers(layers), job.CancellationToken);
-                        nextBible = ValidateBible(await RunJsonAsync(runtime!, prompt + "\nLần trước runtime không hoàn tất. Chỉ trả đúng một JSON object theo schema.", BibleSchema, 2048, job.CancellationToken));
+                        try
+                        {
+                            nextBible = ValidateBible(await RunJsonAsync(runtime!, prompt + "\nRuntime vừa được chuyển sang CPU. Chỉ trả đúng JSON object theo schema và luôn có key bible.", BibleSchema, 2048, job.CancellationToken));
+                            if (string.IsNullOrWhiteSpace(nextBible))
+                            {
+                                job.Warn($"Lượt đọc SRT {page + 1} sau CPU fallback vẫn thiếu bible; giữ hồ sơ trước đó và tiếp tục Vietsub.");
+                                nextBible = bible;
+                            }
+                        }
+                        catch (InvalidDataException retryError)
+                        {
+                            job.Warn($"Lượt đọc SRT {page + 1} sau CPU fallback vẫn trả JSON/hồ sơ không hợp lệ; giữ hồ sơ trước đó và tiếp tục Vietsub: {retryError.Message}");
+                            nextBible = bible;
+                        }
                     }
                     bible = nextBible;
                     checkpoint = checkpoint with { Bible = bible, AnalysisPagesCompleted = page + 1 };
@@ -366,10 +387,12 @@ public sealed class LocalSubtitleTranslationService : IDisposable
 
     private static string ValidateBible(JsonElement root)
     {
-        if (!root.TryGetProperty("bible", out var value) || value.ValueKind != JsonValueKind.String)
-            throw new InvalidDataException("Model không trả hồ sơ bible.");
+        if (!root.TryGetProperty("bible", out var value)) return string.Empty;
+        if (value.ValueKind == JsonValueKind.Array && value.GetArrayLength() == 0) return string.Empty;
+        if (value.ValueKind != JsonValueKind.String)
+            throw new InvalidDataException("Model trả bible sai kiểu dữ liệu.");
         var bible = value.GetString()?.Trim() ?? string.Empty;
-        if (bible.Length is 0 or > 24_000) throw new InvalidDataException("Model không tạo được hồ sơ thuật ngữ/nhân vật hợp lệ.");
+        if (bible.Length > 24_000) throw new InvalidDataException("Model tạo hồ sơ thuật ngữ/nhân vật vượt giới hạn an toàn.");
         return bible;
     }
 
@@ -682,16 +705,17 @@ public sealed class LocalSubtitleTranslationService : IDisposable
 
     internal static JsonElement ExtractJson(string output)
     {
-        var end = output.LastIndexOf('}');
-        if (end < 0) throw new InvalidDataException("AI local không trả JSON.");
-        for (var start = output.LastIndexOf('{', end); start >= 0; start = start == 0 ? -1 : output.LastIndexOf('{', start - 1))
+        for (var end = output.LastIndexOf('}'); end >= 0; end = end == 0 ? -1 : output.LastIndexOf('}', end - 1))
         {
-            try
+            for (var start = output.LastIndexOf('{', end); start >= 0; start = start == 0 ? -1 : output.LastIndexOf('{', start - 1))
             {
-                using var document = JsonDocument.Parse(output[start..(end + 1)], new JsonDocumentOptions { MaxDepth = 16 });
-                return document.RootElement.Clone();
+                try
+                {
+                    using var document = JsonDocument.Parse(output[start..(end + 1)], new JsonDocumentOptions { MaxDepth = 16 });
+                    return document.RootElement.Clone();
+                }
+                catch (JsonException) { }
             }
-            catch (JsonException) { }
         }
         throw new InvalidDataException("AI local không trả JSON hợp lệ.");
     }
@@ -712,7 +736,12 @@ public sealed class LocalSubtitleTranslationService : IDisposable
 
             Chưa dịch từng câu. Hãy cập nhật một hồ sơ gọn nhưng đầy đủ bằng tiếng Việt gồm: tên Hán-Việt đã khóa,
             giới tính/vai vế/quan hệ, cách xưng hô, tông môn-địa danh, cảnh giới, công pháp/pháp bảo và điểm mơ hồ cần giữ nhất quán.
-            Không bịa dữ kiện. Trả đúng JSON theo schema, trường bible là hồ sơ tích lũy đã hợp nhất.
+            Không bịa dữ kiện.
+
+            BẮT BUỘC: chỉ trả một JSON object hợp lệ và luôn có key "bible"; tuyệt đối không bỏ key này.
+            Ví dụ hợp lệ: {"bible":"Trương Tam: nam, đệ tử Thanh Vân Tông; xưng hô với Lý trưởng lão là sư thúc."}
+            Nếu phần này không có dữ kiện mới, vẫn trả {"bible":""}. Không markdown, không giải thích, không tiền tố/hậu tố.
+            Lượt này chỉ xây hồ sơ; không trả lines/translations vì phụ đề được dịch ở batch riêng sau đó.
             """;
     }
 
