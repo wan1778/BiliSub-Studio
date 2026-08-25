@@ -6,48 +6,53 @@ SKILL = ROOT / "csharp/src/BiliSubStudio.Core/Editor/TranslationSkillBundle.cs"
 service = SERVICE.read_text(encoding="utf-8")
 skill = SKILL.read_text(encoding="utf-8")
 
-required_service = [
-    '["cache_prompt"] = true',
-    'var coreSkill = Skill.BuildCoreInstructions();',
-    'var relevantSkill = Skill.BuildReferenceInstructions(context.Select(x => x.SourceText), 34_000, coreSkill.Length);',
-    '{{coreSkill}}', '{{bible}}', '{{relevantSkill}}', '{{contextJson}}', '{{targetJson}}',
-]
-for marker in required_service:
-    if marker not in service:
-        raise SystemExit(f"FAIL: SPEED-03 service marker missing: {marker}")
-if 'var skill = Skill.BuildInstructions(context.Select(x => x.SourceText), 34_000);' in service:
-    raise SystemExit("FAIL: SPEED-03 translation batches still place context-varying skill before the cacheable bible")
-
 start = service.index('private string BuildTranslationPrompt')
 end = service.index('private static void ValidateTranslationText', start)
 prompt = service[start:end]
-order = [
-    prompt.index('{{coreSkill}}'), prompt.index('HỒ SƠ PHIM ĐÃ KHÓA:'), prompt.index('{{bible}}'),
-    prompt.index('{{relevantSkill}}'), prompt.index('NGỮ CẢNH LÂN CẬN'), prompt.index('{{contextJson}}'),
-    prompt.index('TARGET PHẢI DỊCH:'), prompt.index('{{targetJson}}'),
+translate_start = service.index('public async Task<EditorTranslationResult> TranslateAsync')
+translate_end = service.index('internal static int RecommendedGpuLayers', translate_start)
+translate = service[translate_start:translate_end]
+
+required_service = [
+    '["cache_prompt"] = true',
+    'var relevantSkill = Skill.BuildReferenceInstructions(context.Select(x => x.SourceText), 2_000);',
+    'if (compactBible.Length > 1_600) compactBible = compactBible[..1_600];',
+    '{{relevantSkill}}', '{{contextJson}}', '{{targetJson}}',
+    'Dịch phụ đề Trung → Việt. Chỉ dịch TARGET và chỉ trả JSON.',
+    'source.Skip(Math.Max(0, firstIndex - 2)).Take(batch.Length + 4).ToArray()',
+    'TranslationSchema, 1024, job.CancellationToken, job',
 ]
-if order != sorted(order):
-    raise SystemExit("FAIL: SPEED-03 stable core+bible prefix is not ahead of batch-varying references/context/target")
+for marker in required_service:
+    if marker not in service:
+        raise SystemExit(f"FAIL: LIVE-SRT-02 compact prompt marker missing: {marker}")
+
+for forbidden in (
+    'var coreSkill = Skill.BuildCoreInstructions();',
+    '34_000',
+    'QUY TẮC DỊCH BẮT BUỘC CHO TỪNG CUE:',
+    'TỰ KIỂM TRA THẦM TRƯỚC KHI TRẢ JSON:',
+    'Ví dụ phong cách ngắn:',
+):
+    if forbidden in prompt:
+        raise SystemExit(f"FAIL: LIVE-SRT-02 translation prompt is still verbose: {forbidden}")
+
+if 'const int analysisPages = 0;' not in translate:
+    raise SystemExit('FAIL: LIVE-SRT-02 whole-SRT bible analysis still runs before direct translation')
+if 'checkpoint = checkpoint with { Bible = string.Empty, AnalysisPagesCompleted = 0, Translations = recovered };' not in translate:
+    raise SystemExit('FAIL: LIVE-SRT-02 direct runtime must not carry a large pre-analysis bible into every cue prompt')
 
 required_skill = [
     'public string BuildCoreInstructions()',
     'public string BuildReferenceInstructions(IEnumerable<string> sourceTexts, int maxCharacters, int initialCharacters = 0)',
     'if (initialCharacters + selected.Length + section.Length + 80 > maxCharacters) break;',
-    'var core = BuildCoreInstructions();',
-    'return core + BuildReferenceInstructions(sourceTexts, maxCharacters, core.Length);',
 ]
 for marker in required_skill:
     if marker not in skill:
-        raise SystemExit(f"FAIL: SPEED-03 skill decomposition marker missing: {marker}")
+        raise SystemExit(f"FAIL: LIVE-SRT-02 reviewed skill reader marker missing: {marker}")
 
-core = "CORE-SKILL\n"
-bible = "FILM-BIBLE: Van Tieu Tong / Lam Phong\n"
-def compose(refs: str, context: str, target: str) -> str:
-    return "TRANSLATE\n" + core + "FILM-BIBLE\n" + bible + refs + context + target
-p1 = compose("REF-A\n", "CTX-A\n", "TARGET-A\n")
-p2 = compose("REF-B\n", "CTX-B\n", "TARGET-B\n")
-expected_prefix = "TRANSLATE\n" + core + "FILM-BIBLE\n" + bible
-if not (p1.startswith(expected_prefix) and p2.startswith(expected_prefix)):
-    raise SystemExit("FAIL: SPEED-03 synthetic stable-prefix invariant failed")
+# The runtime prompt still consults the reviewed skill bundle, but only the cue-relevant
+# reference slice is attached. The full SKILL.md/full-film bible are no longer repeated.
+if 'Skill.BuildReferenceInstructions(context.Select(x => x.SourceText), 2_000)' not in prompt:
+    raise SystemExit('FAIL: LIVE-SRT-02 compact prompt stopped consulting the reviewed translation skill')
 
-print("PASS: SPEED-03 keeps core skill + finalized film bible as the shared KV-cache prefix while preserving batch-relevant references")
+print("PASS: LIVE-SRT-02 keeps per-cue translation prompts compact while retaining a bounded relevant slice of the reviewed skill")

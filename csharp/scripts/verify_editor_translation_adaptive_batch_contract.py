@@ -18,89 +18,48 @@ def require(condition: bool, message: str) -> None:
         fail(message)
 
 
-require(SERVICE.is_file(), f"SPEED-04 missing {SERVICE.relative_to(ROOT)}")
+require(SERVICE.is_file(), f"LIVE-SRT-01 missing {SERVICE.relative_to(ROOT)}")
 source = SERVICE.read_text(encoding="utf-8")
+start = source.index("public async Task<EditorTranslationResult> TranslateAsync")
+end = source.index("internal static int RecommendedGpuLayers", start)
+translate = source[start:end]
 
 for token in (
-    "private const int TranslationBatchSmall = 8;",
-    "private const int TranslationBatchMedium = 24;",
-    "private const int TranslationBatchLarge = 48;",
-    "private const double TranslationLatencySpikeFactor = 1.6;",
-    "private static readonly TimeSpan TranslationLatencySpikeFloor = TimeSpan.FromSeconds(12);",
-    "var adaptiveResources = _hardware.ResourceSnapshot();",
-    "var translationBatchSize = RecommendedTranslationBatchSize(adaptiveResources);",
-    "var latencyBaselineMsPerCue = 0d;",
+    'internal const string TranslationPolicyKey = "direct-cue-v1";',
+    "private const int DirectTranslationBatchSize = 1;",
+    "const int analysisPages = 0;",
+    "checkpoint = checkpoint with { Bible = string.Empty, AnalysisPagesCompleted = 0, Translations = recovered };",
+    "var translationBatchSize = DirectTranslationBatchSize;",
+    "var needsInference = source.Any(x => !checkpoint.Translations.ContainsKey(x.Id));",
     "CreateAdaptiveTranslationBatch(pending, pendingOffset, translationBatchSize, 20_000)",
-    "var batchWatch = Stopwatch.StartNew();",
-    "IsTranslationLatencySpike(batchWatch.Elapsed, batch.Length, latencyBaselineMsPerCue)",
-    "translationBatchSize = LowerTranslationBatchSize(translationBatchSize);",
-    "UpdateTranslationLatencyBaseline(latencyBaselineMsPerCue, batchWatch.Elapsed, batch.Length)",
+    "source.Skip(Math.Max(0, firstIndex - 2)).Take(batch.Length + 4).ToArray()",
+    "TranslationSchema, 1024, job.CancellationToken, job",
+    "foreach (var pair in translations) checkpoint.Translations[pair.Key] = pair.Value;",
+    "await SaveCheckpointAsync(checkpointPath, checkpoint, job.CancellationToken);",
     "pendingOffset += batch.Length;",
-    "giảm batch lượt sau còn {translationBatchSize} câu",
+    'SetLive("translation-cue", overallProgress,',
+    "Vietsub trực tiếp dùng 1 cue/lượt; checkpoint được lưu sau từng câu.",
 ):
-    require(token in source, f"SPEED-04 adaptive batch contract missing: {token}")
+    require(token in source, f"LIVE-SRT-01 direct cue contract missing: {token}")
 
-require("private const int TranslationBatchSize = 48;" not in source,
-        "SPEED-04 still owns one fixed translation batch size")
-require("CreateBatches(pending, TranslationBatchSize, 20_000)" not in source,
-        "SPEED-04 translation loop still precomputes fixed-size batches")
-require("private const int AnalysisBatchSize = 420;" in source,
-        "SPEED-04 must not alter the analysis batch owner")
-require('["cache_prompt"] = true' in source,
-        "SPEED-04 regressed SPEED-03 prompt caching")
+require("var adaptiveResources = _hardware.ResourceSnapshot();" not in translate,
+        "LIVE-SRT-01 runtime still selects multi-cue batches from VRAM")
+require("RecommendedTranslationBatchSize(adaptiveResources)" not in translate,
+        "LIVE-SRT-01 runtime still uses adaptive 8/24/48 batching")
+require("checkpoint.AnalysisPagesCompleted < analysisPages\n            || source.Any" not in translate,
+        "LIVE-SRT-01 still blocks first translated cue on whole-SRT analysis")
+require("if (translationBatchSize > 1 && batch.Length == translationBatchSize)" in translate,
+        "LIVE-SRT-01 legacy latency backoff must stay disabled for one-cue runtime")
+
+save_pos = translate.index("await SaveCheckpointAsync(checkpointPath, checkpoint, job.CancellationToken);")
+offset_pos = translate.index("pendingOffset += batch.Length;", save_pos)
+live_pos = translate.index('SetLive("translation-cue", overallProgress,', offset_pos)
+require(save_pos < offset_pos < live_pos,
+        "LIVE-SRT-01 must persist each translated cue before publishing the progress change that wakes the Editor checkpoint reader")
+
+# Keep the already-reviewed runtime/cache ownership intact; this task changes translation granularity only.
+require('["cache_prompt"] = true' in source, "LIVE-SRT-01 regressed persistent prompt caching")
 require('RuntimeAutoGpuLayers = -1' in source and '"--cache-prompt"' in source,
-        "SPEED-04 regressed SPEED-01/02 runtime ownership")
+        "LIVE-SRT-01 regressed persistent llama-server ownership")
 
-# Synthetic policy mirrors the reviewed C# thresholds. When live NVML free-VRAM
-# telemetry exists, current free VRAM constrains the tier; otherwise known total
-# VRAM is used. CPU/no-GPU stays conservative.
-GIB = 1024 ** 3
-
-def tier(total_gib: float, free_gib: float | None) -> int:
-    total = int(total_gib * GIB)
-    usable = min(total, int(free_gib * GIB)) if free_gib is not None and free_gib > 0 else total
-    if usable < 6 * GIB:
-        return 8
-    if usable <= 12 * GIB:
-        return 24
-    return 48
-
-require(tier(0, None) == 8, "SPEED-04 CPU/no-GPU tier must be 8")
-require(tier(5.9, None) == 8, "SPEED-04 <6 GB tier must be 8")
-require(tier(6, None) == 24, "SPEED-04 6 GB tier must be 24")
-require(tier(12, None) == 24, "SPEED-04 12 GB tier must remain 24")
-require(tier(12.1, None) == 48, "SPEED-04 >12 GB tier must be 48")
-require(tier(16, 5) == 8, "SPEED-04 live free VRAM must safely downgrade a busy 16 GB GPU")
-require(tier(16, 9) == 24, "SPEED-04 live free VRAM must select the 24-cue middle tier")
-require(tier(16, 14) == 48, "SPEED-04 live free VRAM must permit 48 cues with headroom")
-
-
-def lower(current: int) -> int:
-    if current > 24:
-        return 24
-    if current > 8:
-        return 8
-    return 8
-
-require(lower(48) == 24 and lower(24) == 8 and lower(8) == 8,
-        "SPEED-04 latency backoff tiers drifted")
-
-
-def spike(seconds: float, cues: int, baseline_ms_per_cue: float) -> bool:
-    if cues <= 0 or baseline_ms_per_cue <= 0 or seconds < 12:
-        return False
-    return seconds * 1000 / cues >= baseline_ms_per_cue * 1.6
-
-require(not spike(48, 48, 1000), "SPEED-04 stable response falsely triggered backoff")
-require(spike(80, 48, 1000), "SPEED-04 sudden latency increase did not trigger backoff")
-require(not spike(10, 8, 500), "SPEED-04 short transient must stay below the absolute latency floor")
-
-
-def ewma(baseline: float, seconds: float, cues: int) -> float:
-    current = seconds * 1000 / cues
-    return current if baseline <= 0 else baseline * 0.75 + current * 0.25
-
-require(abs(ewma(0, 48, 48) - 1000) < 0.001, "SPEED-04 first latency baseline is wrong")
-require(abs(ewma(1000, 60, 48) - 1062.5) < 0.001, "SPEED-04 latency EWMA drifted")
-
-print("PASS: SPEED-04 selects 8/24/48 by safe VRAM thresholds and backs off one tier on sudden latency growth")
+print("PASS: LIVE-SRT-01 translates exactly one cue per inference, checkpoints it before progress publication, and skips blocking whole-SRT analysis")
