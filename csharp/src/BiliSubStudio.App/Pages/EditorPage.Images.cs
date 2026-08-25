@@ -218,10 +218,10 @@ public sealed partial class EditorPage
         RenderImageOverlays();
     }
 
-    private void ImageOverlay_PointerReleased(object sender, PointerRoutedEventArgs e) => FinishImageDrag(e, commit: true);
-    private void ImageOverlay_PointerCanceled(object sender, PointerRoutedEventArgs e) => FinishImageDrag(e, commit: false);
+    private async void ImageOverlay_PointerReleased(object sender, PointerRoutedEventArgs e) => await FinishImageDragAsync(e, commit: true);
+    private async void ImageOverlay_PointerCanceled(object sender, PointerRoutedEventArgs e) => await FinishImageDragAsync(e, commit: false);
 
-    private async void FinishImageDrag(PointerRoutedEventArgs e, bool commit)
+    private async Task FinishImageDragAsync(PointerRoutedEventArgs e, bool commit)
     {
         if (_imageDragStart is null || _imageOverlayCanvas is null) return;
         if (!commit && _imageDragOriginal is not null && _selectedImageIndex >= 0 && _selectedImageIndex < _imageOverlays.Count)
