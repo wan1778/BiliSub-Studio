@@ -6,7 +6,7 @@
     AutomationProperties.Name="Chỉnh video"
     IsTabStop="True"
     KeyDown="Page_KeyDown">
-    <Grid x:Name="PageRoot" Padding="12,10,12,12" RowSpacing="10">
+    <Grid Padding="12,10,12,12" RowSpacing="10">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
@@ -79,7 +79,7 @@
                 </Grid>
             </Border>
 
-            <Grid x:Name="PreviewPane" Grid.Column="1">
+            <Grid Grid.Column="1">
                 <Border x:Name="PreviewSurface" Background="Black" BorderBrush="{ThemeResource StrongBorderBrush}" BorderThickness="1" CornerRadius="12">
                     <Grid AutomationProperties.Name="Player Editor">
                         <MediaPlayerElement x:Name="PreviewPlayer" AreTransportControlsEnabled="False" AutoPlay="False" Stretch="Uniform" Visibility="Collapsed" AutomationProperties.Name="Video preview" />
@@ -117,7 +117,7 @@
                     <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
                     <StackPanel Spacing="7">
                         <TextBlock FontSize="15" FontWeight="SemiBold" Text="Details" />
-                        <Grid x:Name="ToolSelectorGrid" ColumnSpacing="5" RowSpacing="5">
+                        <Grid ColumnSpacing="5" RowSpacing="5">
                             <Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
                             <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
                             <ToggleButton x:Name="SubtitleModeButton" Grid.Row="0" Grid.Column="0" Height="32" Tag="Subtitle" Content="Subtitle" IsChecked="True" />
@@ -129,8 +129,8 @@
                         </Grid>
                     </StackPanel>
 
-                    <ScrollViewer x:Name="InspectorScroll" Grid.Row="1" Margin="0,10,0,0" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
-                        <Grid x:Name="DetailsPanelHost">
+                    <ScrollViewer Grid.Row="1" Margin="0,10,0,0" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+                        <Grid>
                             <StackPanel x:Name="SubtitleInspectorPanel" Spacing="10">
                                 <TextBlock FontSize="14" FontWeight="SemiBold" Text="Subtitle / Vietsub" />
                                 <TextBlock Style="{StaticResource MutedTextStyle}" Text="SRT Trung → Việt bằng AI local + skill. Timecode và thứ tự block được giữ nguyên." TextWrapping="Wrap" />
