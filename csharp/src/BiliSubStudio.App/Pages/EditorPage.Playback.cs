@@ -319,7 +319,7 @@ public sealed partial class EditorPage
                 if (announcePreparation)
                     _page.StatusText.Text = "Đang chuẩn bị bản xem trước tại vị trí hiện tại...";
                 segment = await _page._application.CreateEditorPreviewSegmentAsync(
-                    _page.CurrentEditRequest(_page.CompletedSubtitleBurn()), requestedStart, cancellationToken);
+                    _page.CurrentEditRequest(_page.PreviewSubtitleBurn()), requestedStart, cancellationToken);
                 cancellationToken.ThrowIfCancellationRequested();
                 await ActivateSegmentAsync(
                     player, segment, requestedStart, play, announcePlayback, previousPath, cancellationToken);
@@ -392,7 +392,7 @@ public sealed partial class EditorPage
                 }
 
                 var revision = _playbackRevision;
-                var request = _page.CurrentEditRequest(_page.CompletedSubtitleBurn());
+                var request = _page.CurrentEditRequest(_page.PreviewSubtitleBurn());
                 _prefetchedStart = nextStart;
                 _prefetchTask = PrefetchNextSegmentAsync(request, nextStart.Value, revision);
             }
