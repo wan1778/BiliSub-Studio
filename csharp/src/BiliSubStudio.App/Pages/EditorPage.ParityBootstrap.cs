@@ -132,13 +132,12 @@ public sealed partial class EditorPage
         EditorChooseOutputButton.Click += EditorChooseOutput_Click;
         EditorOpenOutputButton.Click += EditorOpenOutput_Click;
         FileNameBox.LostFocus += EditorFileName_LostFocus;
-        Unloaded += EditorProgress_Unloaded;
 
         // UI-11: MainWindow startup smoke resizes to 800x600, 1000x700 and 1500x900.
         // Validate the real shell at those layouts without affecting normal user resize.
         var layoutSmoke = Environment.GetCommandLineArgs()
             .Any(arg => arg.StartsWith("--startup-smoke-test=", StringComparison.OrdinalIgnoreCase));
-        if (layoutSmoke) WorkspaceGrid.SizeChanged += (_, _) => ValidateUiShellLayoutForSmoke();
+        if (layoutSmoke) WorkspaceGrid.SizeChanged += ValidateUiShellLayoutForSmoke;
 
         SelectShellTool("Subtitle");
         RefreshImageControls();
@@ -185,7 +184,7 @@ public sealed partial class EditorPage
             : snapshot.Message;
     }
 
-    private void EditorProgress_Unloaded(object sender, RoutedEventArgs e)
+    private void CleanupEditorProgress()
     {
         StopVoiceArtifactMonitor();
         if (_editorExportProgressTimer is not null)
@@ -249,7 +248,7 @@ public sealed partial class EditorPage
         PreviewMuteToggle.OnContent = "🔇";
     }
 
-    void ValidateUiShellLayoutForSmoke()
+    void ValidateUiShellLayoutForSmoke(object sender, SizeChangedEventArgs e)
     {
         if (WorkspaceGrid.ActualWidth < 500 || WorkspaceGrid.ActualHeight < 250) return;
         if (WorkspaceGrid.ColumnDefinitions.Count != 3)
