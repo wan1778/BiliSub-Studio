@@ -23,6 +23,7 @@ EXPECTED_XAML_CLICKS = 25
 EXPECTED_USER_CLICK_BINDINGS = 37
 
 RUNTIME_UI_BINDINGS = [
+    ("Overlay", "SizeChanged", "Overlay_SizeChanged"),
     ("ImageSourceList", "SelectionChanged", "ImageList_SelectionChanged"),
     ("ImageOverlayCanvas", "PointerPressed", "ImageOverlay_PointerPressed"),
     ("ImageOverlayCanvas", "PointerMoved", "ImageOverlay_PointerMoved"),
@@ -52,7 +53,6 @@ TOOL_BUTTONS = (
 )
 LIFECYCLE_BINDINGS = [
     ("Loaded", "EditorPage_Loaded"),
-    ("LayoutUpdated", "EditorPage_LayoutUpdated"),
     ("Unloaded", "EditorPage_Unloaded"),
 ]
 LEGACY_NON_OWNERS = (
@@ -97,9 +97,9 @@ def read(path: Path) -> str:
 
 def method_body(source: str, signature: str) -> str:
     start = source.find(signature)
-    require(start >= 0, f"CLEAN-01/02 missing method: {signature}")
+    require(start >= 0, f"CLEAN-01/02/07 missing method: {signature}")
     brace = source.find("{", start)
-    require(brace >= 0, f"CLEAN-01/02 method has no body: {signature}")
+    require(brace >= 0, f"CLEAN-01/02/07 method has no body: {signature}")
     depth = 0
     for index in range(brace, len(source)):
         if source[index] == "{":
@@ -108,7 +108,7 @@ def method_body(source: str, signature: str) -> str:
             depth -= 1
             if depth == 0:
                 return source[brace:index + 1]
-    fail(f"CLEAN-01/02 unterminated method: {signature}")
+    fail(f"CLEAN-01/02/07 unterminated method: {signature}")
     return ""
 
 
@@ -140,6 +140,8 @@ require(len(bindings) == EXPECTED_XAML_BINDINGS,
         f"CLEAN-01 XAML event map drift: expected {EXPECTED_XAML_BINDINGS}, found {len(bindings)}")
 require(sum(1 for _, event, _ in bindings if event == "Click") == EXPECTED_XAML_CLICKS,
         f"CLEAN-01 XAML Click map drift: expected {EXPECTED_XAML_CLICKS}")
+require(not any(event == "LayoutUpdated" for _, event, _ in bindings),
+        "CLEAN-07 XAML must not bind LayoutUpdated as a polling owner")
 xaml_keys = [(source, event) for source, event, _ in bindings]
 duplicates = [key for key, count in Counter(xaml_keys).items() if count > 1]
 require(not duplicates, f"CLEAN-01 duplicate XAML source/event owner(s): {duplicates}")
@@ -154,28 +156,31 @@ direct_runtime = re.findall(
 expected_direct_runtime = set(RUNTIME_UI_BINDINGS + CONDITIONAL_RUNTIME_UI_BINDINGS)
 expected_direct_runtime.add(("toolButton", "Click", "ShellTool_Click"))
 require(set(direct_runtime) == expected_direct_runtime,
-        "CLEAN-01 direct runtime UI event inventory drift: "
+        "CLEAN-01/07 direct runtime UI event inventory drift: "
         f"missing={sorted(expected_direct_runtime - set(direct_runtime))}, "
         f"extra={sorted(set(direct_runtime) - expected_direct_runtime)}")
 
 for source, event, handler in RUNTIME_UI_BINDINGS + CONDITIONAL_RUNTIME_UI_BINDINGS:
     marker = f"{source}.{event} += {handler};"
-    require(code.count(marker) == 1, f"CLEAN-01 runtime UI owner must appear exactly once: {marker}")
+    require(code.count(marker) == 1, f"CLEAN-01/07 runtime UI owner must appear exactly once: {marker}")
     require((source, event) not in xaml_key_set,
-            f"CLEAN-01 runtime UI owner duplicates XAML: {source}.{event}")
+            f"CLEAN-01/07 runtime UI owner duplicates XAML: {source}.{event}")
 require(bootstrap.count("toolButton.Click += ShellTool_Click;") == 1,
         "CLEAN-01 tool selector must keep one shared Click subscription statement")
 for button in TOOL_BUTTONS:
     require(button in bootstrap, f"CLEAN-01 missing tool in shared ShellTool_Click owner map: {button}")
 
-# Page lifecycle has one owner per event. No secondary Unloaded subscriber is allowed.
+# Page lifecycle has one owner per real lifecycle event. CLEAN-07 removes the old
+# page-wide LayoutUpdated polling owner; Overlay.SizeChanged owns overlay redraw instead.
 for event, handler in LIFECYCLE_BINDINGS:
     marker = f"{event} += {handler};"
     require(main.count(marker) == 1, f"CLEAN-01 lifecycle owner must appear exactly once: {marker}")
 require(len(re.findall(r"(?<!\.)\bLoaded\s*\+=", code)) == 1,
         "CLEAN-01 Page.Loaded must have exactly one owner")
-require(len(re.findall(r"(?<!\.)\bLayoutUpdated\s*\+=", code)) == 1,
-        "CLEAN-01 Page.LayoutUpdated must have exactly one owner")
+require(len(re.findall(r"(?<!\.)\bLayoutUpdated\s*\+=", code)) == 0,
+        "CLEAN-07 Page.LayoutUpdated polling owner must not return")
+require("EditorPage_LayoutUpdated" not in code,
+        "CLEAN-07 legacy LayoutUpdated handler must not remain as a dormant owner")
 require(len(re.findall(r"(?<!\.)\bUnloaded\s*\+=", code)) == 1,
         "CLEAN-01 Page.Unloaded must have exactly one owner")
 require("Unloaded += EditorProgress_Unloaded;" not in code,
@@ -272,7 +277,7 @@ all_handlers.update((
 for handler in sorted(all_handlers):
     implementations_or_calls = len(re.findall(rf"\b{re.escape(handler)}\s*\(", code))
     require(implementations_or_calls == 1,
-            f"CLEAN-01/02 event handler must have one implementation and no handler-to-handler calls: "
+            f"CLEAN-01/02/07 event handler must have one implementation and no handler-to-handler calls: "
             f"{handler} ({implementations_or_calls})")
 
 # These old methods are not Event Map owners. Cleanup keeps them from silently regaining authority.
@@ -291,17 +296,20 @@ user_clicks = EXPECTED_XAML_CLICKS + runtime_clicks
 require(user_clicks == EXPECTED_USER_CLICK_BINDINGS,
         f"CLEAN-01 user Click inventory drift: expected {EXPECTED_USER_CLICK_BINDINGS}, found {user_clicks}")
 
-# Negative fixtures prove both cleanup gates reject the regressions they are meant to stop.
+# Negative fixtures prove cleanup gates reject the regressions they are meant to stop.
 fixture = "Unloaded += EditorPage_Unloaded;\nUnloaded += Other_Unloaded;\n"
 require(len(re.findall(r"(?<!\.)\bUnloaded\s*\+=", fixture)) == 2,
         "CLEAN-01 verifier fixture failed to represent duplicate lifecycle ownership")
 swap_fixture = "timer.Tick += Handler;\ntimer.Tick -= Handler;\ntimer.Tick += Handler;\n"
 require("timer.Tick -= Handler;" in swap_fixture and swap_fixture.count("timer.Tick += Handler;") == 2,
         "CLEAN-02 verifier fixture failed to represent unnecessary runtime handler swapping")
+layout_fixture = "LayoutUpdated += EditorPage_LayoutUpdated;\nvar width = Overlay.ActualWidth;\n"
+require("LayoutUpdated +=" in layout_fixture and "Overlay.ActualWidth" in layout_fixture,
+        "CLEAN-07 verifier fixture failed to represent page-wide layout polling")
 
 print(
-    "PASS: CLEAN-01/02 Editor Event Map · "
+    "PASS: CLEAN-01/02/07 Editor Event Map · "
     f"{len(bindings)} XAML bindings · {len(RUNTIME_UI_BINDINGS) + len(CONDITIONAL_RUNTIME_UI_BINDINGS) + len(TOOL_BUTTONS)} runtime UI bindings · "
-    f"{EXPECTED_USER_CLICK_BINDINGS} user Click bindings · one Loaded/LayoutUpdated/Unloaded owner each · "
+    f"{EXPECTED_USER_CLICK_BINDINGS} user Click bindings · one Loaded/Unloaded owner each · no LayoutUpdated polling · "
     "persistent page timers bind once · only watcher/player resources detach before dispose"
 )

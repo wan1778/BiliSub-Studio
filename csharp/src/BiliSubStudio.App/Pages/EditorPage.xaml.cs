@@ -58,8 +58,6 @@ public sealed partial class EditorPage : Page
     private EditorProject? _pendingProjectSave;
     private bool _projectSaveFlushInProgress;
     private int _previewRevision;
-    private double _lastOverlayWidth = -1;
-    private double _lastOverlayHeight = -1;
     private bool EditorBusy => _jobId is not null || _translationJobId is not null || _asrJobId is not null || _ttsJobId is not null || _playback.IsRendering;
 
     public EditorPage(BiliSubApplication application, IFilePickerService picker)
@@ -69,7 +67,7 @@ public sealed partial class EditorPage : Page
         _playback = new EditorPlaybackController(this);
         InitializeComponent();
         Loaded += EditorPage_Loaded;
-        LayoutUpdated += EditorPage_LayoutUpdated;
+        Overlay.SizeChanged += Overlay_SizeChanged;
         Unloaded += EditorPage_Unloaded;
     }
 
@@ -1430,17 +1428,7 @@ public sealed partial class EditorPage : Page
         }
     }
 
-    private void EditorPage_LayoutUpdated(object? sender, object e)
-    {
-        var overlayChanged = Math.Abs(Overlay.ActualWidth - _lastOverlayWidth) >= .5
-            || Math.Abs(Overlay.ActualHeight - _lastOverlayHeight) >= .5;
-        if (overlayChanged)
-        {
-            _lastOverlayWidth = Overlay.ActualWidth;
-            _lastOverlayHeight = Overlay.ActualHeight;
-            RenderOverlays();
-        }
-    }
+    private void Overlay_SizeChanged(object sender, SizeChangedEventArgs e) => RenderOverlays();
 
     private void Page_KeyDown(object sender, KeyRoutedEventArgs e)
     {
