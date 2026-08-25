@@ -59,9 +59,9 @@ require("_audioSettings," in current_request and "_voiceTrack);" in current_requ
 load_segment = playback.split("private async Task LoadSegmentCoreAsync(", 1)[1].split(
     "private async Task ActivateSegmentAsync(", 1
 )[0]
-require("_page.CurrentEditRequest(_page.CompletedSubtitleBurn())" in load_segment
+require("_page.CurrentEditRequest(_page.PreviewSubtitleBurn())" in load_segment
         and "CreateEditorPreviewSegmentAsync" in load_segment,
-        "VOICE-12 processed playback must render from the current exportable shared request")
+        "VOICE-12 processed playback must render from the current shared Preview request")
 require("ActivateSegmentAsync(" in load_segment,
         "VOICE-12 processed playback must activate the rendered segment in the player")
 
