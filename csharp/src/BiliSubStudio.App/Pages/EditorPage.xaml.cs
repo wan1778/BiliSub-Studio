@@ -60,7 +60,6 @@ public sealed partial class EditorPage : Page
     private int _previewRevision;
     private double _lastOverlayWidth = -1;
     private double _lastOverlayHeight = -1;
-    private double _lastTimelineWidth = -1;
     private bool EditorBusy => _jobId is not null || _translationJobId is not null || _asrJobId is not null || _ttsJobId is not null || _playback.IsRendering;
 
     public EditorPage(BiliSubApplication application, IFilePickerService picker)
@@ -1454,11 +1453,6 @@ public sealed partial class EditorPage : Page
             _lastOverlayHeight = Overlay.ActualHeight;
             RenderOverlays();
         }
-        if (Math.Abs(RegionTimelineCanvas.ActualWidth - _lastTimelineWidth) >= .5)
-        {
-            _lastTimelineWidth = RegionTimelineCanvas.ActualWidth;
-            RenderTimelineRegions();
-        }
     }
 
     private void Page_KeyDown(object sender, KeyRoutedEventArgs e)
@@ -1671,30 +1665,9 @@ public sealed partial class EditorPage : Page
         }
     }
 
-    private void RenderTimelineRegions()
-    {
-        RegionTimelineCanvas.Children.Clear();
-        if (_media is null || _media.Duration <= 0 || RegionTimelineCanvas.ActualWidth <= 0) return;
-        for (var index = 0; index < _document.Regions.Count; index++)
-        {
-            var region = _document.Regions[index];
-            var start = region.WholeVideo ? 0 : Math.Clamp(region.Start, 0, _media.Duration);
-            var end = region.WholeVideo ? _media.Duration : Math.Clamp(region.End, start, _media.Duration);
-            var bar = new Rectangle
-            {
-                Height = 3,
-                Width = Math.Max(2, (end - start) / _media.Duration * RegionTimelineCanvas.ActualWidth),
-                RadiusX = 1.5,
-                RadiusY = 1.5,
-                Fill = new SolidColorBrush(index == _document.SelectedIndex
-                    ? ColorHelper.FromArgb(230, 49, 142, 242)
-                    : ColorHelper.FromArgb(170, 70, 200, 220)),
-            };
-            Canvas.SetLeft(bar, start / _media.Duration * RegionTimelineCanvas.ActualWidth);
-            Canvas.SetTop(bar, 2 + index % 3 * 4);
-            RegionTimelineCanvas.Children.Add(bar);
-        }
-    }
+    // CLEAN-03: the old large region timeline canvas was never attached to the visual tree.
+    // Keep the helper as a no-op until the separate dead-method sweep removes retired callers.
+    private void RenderTimelineRegions() { }
 
     private (int Index, DragKind Kind) HitTestRegion(Point point)
     {
@@ -2067,7 +2040,6 @@ public sealed partial class EditorPage : Page
             && !string.IsNullOrWhiteSpace(FileNameBox.Text);
         CancelButton.IsEnabled = _jobId is not null;
         Timeline.IsEnabled = idle && hasMedia;
-        RefreshFrameButton.IsEnabled = editable;
         PlayerPlayPauseButton.IsEnabled = idle && hasMedia && _playback.IsReady;
         FullscreenButton.IsEnabled = idle && hasMedia && _playback.IsReady;
         RegionXBox.IsEnabled = RegionYBox.IsEnabled = RegionWidthBox.IsEnabled = RegionHeightBox.IsEnabled = editable;

@@ -13,10 +13,6 @@ public sealed partial class EditorPage
     private double _imageStageDisplayProgress;
     private readonly SemaphoreSlim _editorTabLifecycleGate = new(1, 1);
 
-    // Compatibility objects only. They are never attached to the visual tree.
-    private readonly Button RefreshFrameButton = new();
-    private readonly Canvas RegionTimelineCanvas = new();
-
     private async void EditorPage_Loaded(object sender, RoutedEventArgs e)
     {
         await _editorTabLifecycleGate.WaitAsync();
