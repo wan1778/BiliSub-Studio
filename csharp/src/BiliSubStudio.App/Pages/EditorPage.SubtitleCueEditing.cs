@@ -192,10 +192,41 @@ public sealed partial class EditorPage
     {
         if (_translationJobId is not null || _project is null || _subtitleSource is null) return;
         await SaveCurrentSubtitleCueAsync();
-        var translationProjectSnapshot = ProjectSnapshot();
         var locked = _subtitleSource.Cues
             .Where(c => _manualCueStates.TryGetValue(c.Id, out var state) && state.Locked)
             .ToDictionary(c => c.Id, c => c, StringComparer.Ordinal);
+        var restartFromScratch = _subtitleSource.Cues.Count > 0
+            && _subtitleSource.Cues.All(c => !string.IsNullOrWhiteSpace(c.VietnameseText));
+        if (restartFromScratch)
+        {
+            var resetCues = _subtitleSource.Cues
+                .Select(c => locked.TryGetValue(c.Id, out var keep)
+                    ? c with { SourceText = keep.SourceText, VietnameseText = keep.VietnameseText }
+                    : c with { VietnameseText = string.Empty })
+                .ToArray();
+            _subtitleSource = _subtitleSource with { Cues = resetCues };
+            foreach (var cueId in _manualCueStates.Keys.ToArray())
+            {
+                var state = _manualCueStates[cueId];
+                if (state.Locked) continue;
+                if (state.SourceOverride is null) _manualCueStates.Remove(cueId);
+                else _manualCueStates[cueId] = state with { VietnameseOverride = null };
+            }
+            _subtitleManualDirty = false;
+            _translationLiveLatestCueIndex = -1;
+            MarkTranslatedOutputStale();
+            await SubtitleManualStore.SaveAsync(_subtitleSource.Sha256, _manualCueStates, CancellationToken.None);
+            await SaveProjectNowAsync();
+            RenderSubtitleCueList();
+            LoadSelectedSubtitleCue();
+            UpdateSubtitleSummary();
+            RenderOverlays();
+            QueuePreviewRefresh();
+            TranslationProgress.Value = 0;
+            TranslationStatusText.Text = "Đã bỏ bản Vietsub AI cũ; chuẩn bị dịch lại từ câu 1. Các câu đã khóa vẫn được giữ.";
+            SubtitleCueEditorStatus.Text = "Đã reset bản dịch AI cũ. Vietsub mới sẽ hiện lại từng câu từ đầu.";
+        }
+        var translationProjectSnapshot = ProjectSnapshot();
         var outputName = Path.GetFileNameWithoutExtension(_subtitleSource.Path) + ".vi.srt";
         var modelMode = SelectedTranslationModelMode();
         var modeScope = modelMode == EditorTranslationModelMode.Fast ? "fast" : string.Empty;
@@ -273,9 +304,11 @@ public sealed partial class EditorPage
         }
 
         _translationJobId = _application.StartEditorTranslation(new EditorTranslationRequest(
-            projectId, _subtitleSource, _application.Config.OutputDirectory, outputName, ModelMode: modelMode));
+            projectId, _subtitleSource, _application.Config.OutputDirectory, outputName, ForceFresh: restartFromScratch, ModelMode: modelMode));
         TranslationProgress.Value = 0;
-        TranslationStatusText.Text = $"Đang Vietsub bằng {(modelMode == EditorTranslationModelMode.Fast ? "4B Nhanh / nháp" : "8B Chất lượng")} + skill; câu khóa sẽ không bị ghi đè.";
+        TranslationStatusText.Text = restartFromScratch
+            ? $"Đang dịch lại từ đầu bằng {(modelMode == EditorTranslationModelMode.Fast ? "4B Nhanh / nháp" : "8B Chất lượng")} + skill; checkpoint cũ bị loại, câu khóa được giữ."
+            : $"Đang Vietsub bằng {(modelMode == EditorTranslationModelMode.Fast ? "4B Nhanh / nháp" : "8B Chất lượng")} + skill; câu khóa sẽ không bị ghi đè.";
         RefreshEditorActions();
         RefreshSubtitleCueEditorControls();
         var lastLiveProbeProgress = -1d;
@@ -360,7 +393,7 @@ public sealed partial class EditorPage
                     {
                         _translationLiveLatestCueIndex = -1;
                         TranslationProgress.Value = 100;
-                        TranslationStatusText.Text = $"Vietsub hoàn tất · {merged.Length} câu · câu khóa được giữ nguyên.";
+                        TranslationStatusText.Text = $"Vietsub hoàn tất · {merged.Length} câu · câu khóa được giữ nguyên. Bấm Dịch lại từ đầu nếu muốn bỏ bản AI này và chạy lại.";
                         RenderSubtitleCueList();
                         LoadSelectedSubtitleCue();
                         UpdateSubtitleSummary();
@@ -551,6 +584,8 @@ public sealed partial class EditorPage
         var selected = hasSource && _subtitleCueSelectedIndex >= 0 && _subtitleCueSelectedIndex < _subtitleSource!.Cues.Count;
         var idle = !EditorBusy && !_playback.IsPreviewMode;
         var canBrowse = hasSource && !_subtitleManualDirty && (idle || _translationJobId is not null);
+        var translationComplete = hasSource && _subtitleSource!.Cues.All(c => !string.IsNullOrWhiteSpace(c.VietnameseText));
+        TranslateButton.Content = translationComplete ? "Dịch lại từ đầu" : "Vietsub";
         SubtitleCueList.IsEnabled = canBrowse;
         SubtitleSourceEdit.IsEnabled = selected && idle;
         SubtitleVietnameseEdit.IsEnabled = selected && idle;
