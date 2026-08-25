@@ -152,7 +152,7 @@ require('BiliSubStudio_v$version-source-$sourceTag.zip' in package_script,
 for marker in (
     "$version = ([string]$identity.informational_version).Trim()", "Assert-Pe32PlusX64",
     "BiliSubStudio_Setup_v${version}_${sourceTag}_x64", "INSTALLER_GATE_STATUS.json",
-    'requires_admin = $false', "root_launcher_smoke = $rootLauncherSmoke",
+    'requires_admin = $false', "root_launcher_smoke = $rootLauncherSmoke,
     "installer_install_smoke = $installerInstallSmoke", "BiliSub Studio Custom Location\\BiliSub Studio",
 ):
     require(marker in installer_script, f"one-file installer gate missing {marker}")
@@ -584,7 +584,7 @@ require('x:Name="UndoButton"' in editor_xaml
         and "if (replacement == _regions[SelectedIndex]) return false;" in region_document_source
         and "editor Undo restores ordered region selection and bounded history" in contract_tests_source,
         "BLUR-12 Undo must have one guarded owner that restores exact document selection inputs persistence and Preview state")
-redo_click_source = editor_main.split("private void Redo_Click(", 1)[1].split("private bool TryRedoDocument()", 1)[0] if "private void TryRedoDocument()" in editor_main else ""
+redo_click_source = editor_main.split("private void Redo_Click(", 1)[1].split("private bool TryRedoDocument()", 1)[0] if "private bool TryRedoDocument()" in editor_main else ""
 redo_owner_source = editor_main.split("private bool TryRedoDocument()", 1)[1].split("private void SubtitlePreset_Click(", 1)[0] if "private bool TryRedoDocument()" in editor_main else ""
 require('x:Name="RedoButton"' in editor_xaml
         and 'Click="Redo_Click"' in editor_xaml
