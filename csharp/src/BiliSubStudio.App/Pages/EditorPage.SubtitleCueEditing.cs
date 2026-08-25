@@ -299,9 +299,9 @@ public sealed partial class EditorPage
                         lastLiveCount = live.Count;
                         var latestNumber = live.LatestIndex >= 0 && _subtitleSource is not null && live.LatestIndex < _subtitleSource.Cues.Count
                             ? _subtitleSource.Cues[live.LatestIndex].Number
-                            : live.Count;
+                            : live.Count.ToString("N0");
                         var totalCueCount = _subtitleSource?.Cues.Count ?? 0;
-                        SubtitleCueEditorStatus.Text = $"Vietsub realtime · AI đã dịch xong tới câu {latestNumber:N0}/{totalCueCount:N0} · {live.Count:N0} câu đã có lời Việt. Danh sách tự cuộn theo batch mới nhất.";
+                        SubtitleCueEditorStatus.Text = $"Vietsub realtime · AI đã dịch xong tới câu {latestNumber}/{totalCueCount:N0} · {live.Count:N0} câu đã có lời Việt. Danh sách tự cuộn theo batch mới nhất.";
                     }
                 }
                 if (!snapshot.Done) { await Task.Delay(350); continue; }
@@ -325,7 +325,8 @@ public sealed partial class EditorPage
                     var merged = result.Cues.Select(c => locked.TryGetValue(c.Id, out var keep)
                         ? c with { SourceText = keep.SourceText, VietnameseText = keep.VietnameseText }
                         : c).ToArray();
-                    _subtitleSource = _subtitleSource with { Cues = merged };
+                    var currentSubtitle = _subtitleSource ?? throw new InvalidOperationException("SRT nguồn không còn khả dụng khi hoàn tất Vietsub.");
+                    _subtitleSource = currentSubtitle with { Cues = merged };
                     foreach (var cue in merged.ToArray())
                     {
                         if (!_manualCueStates.TryGetValue(cue.Id, out var state)) continue;
