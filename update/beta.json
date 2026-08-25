@@ -1,14 +1,14 @@
 {
-  "version": "4.0.0-beta.42-csharp-p5",
+  "version": "4.0.0-beta.43-csharp-p5",
   "channel_ready": true,
-  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.28/BiliSubStudio_4.0.28_Windows-x64-portable.zip",
-  "sha256": "8df8b6e2ac3f136773dbe6250b747609b4618fd1cf6799ce959fd736214103aa",
-  "size": 94699699,
+  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.29/BiliSubStudio_4.0.29_Windows-x64-portable.zip",
+  "sha256": "6a646086b0f3d3da3a0215ed21e2dfa7b219ce566033da5034cdb156d76696e6",
+  "size": 94752857,
   "payload_kind": "winui3-portable-zip",
   "notes": [
-    "Khung Cập nhật chỉ hiển thị phiên bản public ngắn gọn 4.0.x, không còn chuỗi beta/build SHA nội bộ.",
-    "Thanh trạng thái dưới cùng hiển thị phiên bản hiện tại thay cho C# / .NET / WinUI.",
-    "Ghi chú phát hành được khóa theo đúng build; CI từ chối publish nếu release notes không khớp phiên bản để không lặp thông báo cũ.",
-    "Cập nhật vẫn chỉ nhận gói chính thức từ GitHub Releases và xác minh kích thước/SHA-256 trước khi áp dụng."
+    "Tab Chỉnh video được nâng cấp theo hướng All-in-One: preview bản chỉnh, phụ đề, blur, âm thanh, voice và ảnh/logo dùng chung pipeline trước khi xuất.",
+    "Bổ sung ảnh/logo PNG, JPG và JPEG với chọn, kéo, resize, opacity, preset góc, lưu project và ghép vào video xuất.",
+    "Tăng độ an toàn khi mở lại project: phát hiện video/SRT thay đổi ngoài ứng dụng, project hỏng, ảnh hoặc voice cache bị mất và tránh dùng state/output cũ sai nguồn.",
+    "Dọn ownership của event, timer, CancellationTokenSource, async void, catch rỗng và đồng bộ lại code map trước đợt test này."
   ]
 }
