@@ -47,6 +47,7 @@ public sealed class LocalSubtitleTranslationService : IDisposable
     internal const string ModelSha256 = "d98cdcbd03e17ce47681435b5150e34c1417f50b5c0019dd560e4882c5745785";
     internal const string ThinkingTemplateKwargs = "{\"enable_thinking\":false}";
     internal const string ReasoningMode = "off";
+    internal const int RuntimeAutoGpuLayers = -1;
     private const int TranslationBatchSize = 48;
     private const int AnalysisBatchSize = 420;
     private const string TranslationSchema = "{\"type\":\"object\",\"properties\":{\"translations\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"text\":{\"type\":\"string\"}},\"required\":[\"id\",\"text\"],\"additionalProperties\":false}}},\"required\":[\"translations\"],\"additionalProperties\":false}";
@@ -139,7 +140,7 @@ public sealed class LocalSubtitleTranslationService : IDisposable
         var checkpointPath = Path.Combine(CheckpointDirectory, request.ProjectId + ".json");
         if (request.ForceFresh) TryDelete(checkpointPath);
         var checkpoint = await LoadCheckpointAsync(checkpointPath, request.Source.Sha256, job.CancellationToken);
-        var layers = RecommendedGpuLayers(_hardware.ResourceSnapshot());
+        var layers = RuntimeAutoGpuLayers;
         var analysisBatches = CreateBatches(source, AnalysisBatchSize, 45_000);
         var analysisPages = analysisBatches.Count;
         if (checkpoint.AnalysisPagesCompleted < 0 || checkpoint.AnalysisPagesCompleted > analysisPages || checkpoint.Bible.Length > 24_000)
@@ -170,7 +171,7 @@ public sealed class LocalSubtitleTranslationService : IDisposable
                 }
                 catch (Exception first) when (first is not OperationCanceledException)
                 {
-                    job.Warn($"Lượt đọc SRT {page + 1} gặp lỗi runtime; thử lại với mức GPU thấp hơn: {first.Message}");
+                    job.Warn($"Lượt đọc SRT {page + 1} gặp lỗi runtime; thử lại bằng CPU an toàn: {first.Message}");
                     nextBible = ValidateBible(await RunJsonAsync(prompt + "\nLần trước runtime không hoàn tất. Chỉ trả đúng một JSON object theo schema.", BibleSchema, 2048, LowerGpuLayers(layers), job.CancellationToken));
                 }
                 bible = nextBible;
@@ -205,7 +206,7 @@ public sealed class LocalSubtitleTranslationService : IDisposable
             }
             catch (Exception first) when (first is not OperationCanceledException)
             {
-                job.Warn($"Batch bắt đầu cue {batch[0].Number} gặp lỗi runtime; thử lại với mức GPU thấp hơn: {first.Message}");
+                job.Warn($"Batch bắt đầu cue {batch[0].Number} gặp lỗi runtime; thử lại bằng CPU an toàn: {first.Message}");
                 var retry = await RunJsonAsync(prompt + "\nLần trước runtime không hoàn tất. Dịch lại đúng toàn bộ TARGET và chỉ trả đúng một JSON object.",
                     TranslationSchema, 4096, LowerGpuLayers(layers), job.CancellationToken);
                 translations = ValidateBatch(retry, batch);
@@ -286,7 +287,7 @@ public sealed class LocalSubtitleTranslationService : IDisposable
             var args = new List<string>
             {
                 "-m", ModelPath, "-f", promptFile, "--jinja", "--single-turn", "--no-display-prompt", "--simple-io", "--no-warmup",
-                "--no-context-shift", "-ngl", gpuLayers.ToString(), "-c", "24576", "-n", maxTokens.ToString(),
+                "--no-context-shift", "-ngl", gpuLayers < 0 ? "auto" : gpuLayers.ToString(), "--fit", "on", "-c", "24576", "-n", maxTokens.ToString(),
                 "--chat-template-kwargs", ThinkingTemplateKwargs, "--reasoning", ReasoningMode, "--reasoning-format", "none",
                 "--temp", "0.4", "--top-k", "20", "--top-p", "0.8", "--min-p", "0", "--presence-penalty", "1.0",
                 "--output", responseFile,
