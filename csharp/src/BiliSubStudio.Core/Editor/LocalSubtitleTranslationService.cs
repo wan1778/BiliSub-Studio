@@ -62,6 +62,7 @@ public sealed class LocalSubtitleTranslationService : IDisposable
     internal const string ThinkingTemplateKwargs = "{\"enable_thinking\":false}";
     internal const string ReasoningMode = "off";
     internal const int RuntimeAutoGpuLayers = -1;
+    internal const string TranslationPolicyKey = "source-first-v2";
     private const int TranslationBatchSmall = 8;
     private const int TranslationBatchMedium = 24;
     private const int TranslationBatchLarge = 48;
@@ -183,6 +184,8 @@ public sealed class LocalSubtitleTranslationService : IDisposable
         var bible = checkpoint.Bible;
         var adaptiveResources = _hardware.ResourceSnapshot();
         var translationBatchSize = RecommendedTranslationBatchSize(adaptiveResources);
+        if (request.ModelMode == EditorTranslationModelMode.Quality)
+            translationBatchSize = Math.Min(translationBatchSize, TranslationBatchMedium);
         var latencyBaselineMsPerCue = 0d;
         var needsInference = checkpoint.AnalysisPagesCompleted < analysisPages
             || source.Any(x => !checkpoint.Translations.ContainsKey(x.Id));
@@ -335,7 +338,10 @@ public sealed class LocalSubtitleTranslationService : IDisposable
             var translationClock = Stopwatch.StartNew();
             if (pending.Length > 0)
             {
-                job.Log($"Adaptive Vietsub chọn batch {translationBatchSize} câu theo VRAM khả dụng trước khi nạp Qwen.");
+                var qualityModeNote = request.ModelMode == EditorTranslationModelMode.Quality
+                    ? " · Quality giới hạn tối đa 24 câu/batch để ưu tiên độ chính xác"
+                    : string.Empty;
+                job.Log($"Adaptive Vietsub chọn batch {translationBatchSize} câu theo VRAM khả dụng{qualityModeNote}.");
                 SetLive("translation-batch", TranslationOverallProgress(checkpoint.Translations.Count, source.Count),
                     $"Bước 4/6 · Dịch batch · chuẩn bị {pending.Length:N0} câu còn lại.");
             }
@@ -688,11 +694,11 @@ public sealed class LocalSubtitleTranslationService : IDisposable
             {
                 ["prompt"] = templated,
                 ["n_predict"] = maxTokens,
-                ["temperature"] = 0.4,
+                ["temperature"] = 0.2,
                 ["top_k"] = 20,
-                ["top_p"] = 0.8,
+                ["top_p"] = 0.9,
                 ["min_p"] = 0.0,
-                ["presence_penalty"] = 1.0,
+                ["presence_penalty"] = 0.0,
                 ["cache_prompt"] = true,
             };
             if (enforceSchema)
@@ -897,7 +903,12 @@ public sealed class LocalSubtitleTranslationService : IDisposable
 
             Chưa dịch từng câu. Hãy cập nhật một hồ sơ gọn nhưng đầy đủ bằng tiếng Việt gồm: tên Hán-Việt đã khóa,
             giới tính/vai vế/quan hệ, cách xưng hô, tông môn-địa danh, cảnh giới, công pháp/pháp bảo và điểm mơ hồ cần giữ nhất quán.
-            Không bịa dữ kiện.
+
+            NGUYÊN TẮC NGUỒN SỰ THẬT:
+            - NGUYÊN VĂN PHẦN NÀY là bằng chứng chính; hồ sơ cũ chỉ là bộ nhớ hỗ trợ.
+            - Nếu hồ sơ cũ mâu thuẫn với bằng chứng rõ trong nguyên văn, ưu tiên nguyên văn và sửa hồ sơ.
+            - Không suy giới tính, vai vế, quan hệ, cảnh giới hay thân phận chỉ từ tên/tước hiệu khi chưa đủ bằng chứng.
+            - Không biến suy đoán thành dữ kiện đã khóa; không bịa dữ kiện để lấp chỗ trống.
 
             BẮT BUỘC: chỉ trả một JSON object hợp lệ và luôn có key "bible"; tuyệt đối không bỏ key này.
             Ví dụ hợp lệ: {"bible":"Trương Tam: nam, đệ tử Thanh Vân Tông; xưng hô với Lý trưởng lão là sư thúc."}
@@ -913,19 +924,40 @@ public sealed class LocalSubtitleTranslationService : IDisposable
         var contextJson = JsonSerializer.Serialize(context.Select(x => new { id = x.Id, text = x.SourceText }));
         var targetJson = JsonSerializer.Serialize(target.Select(x => new { id = x.Id, text = x.SourceText }));
         return $$"""
-            Dịch phụ đề phim Trung Quốc sang tiếng Việt tự nhiên, có cảm xúc, đúng lore tiên hiệp/cổ trang.
+            Bạn là biên dịch viên phụ đề Trung → Việt chuyên phim tiên hiệp/cổ trang.
+            Mục tiêu số 1 là ĐÚNG NGHĨA và ĐÚNG QUAN HỆ; sau đó mới tối ưu câu Việt tự nhiên, có cảm xúc và dễ đọc/lồng tiếng.
             {{coreSkill}}
 
-            HỒ SƠ PHIM ĐÃ KHÓA:
-            {{bible}}
+            THỨ TỰ ƯU TIÊN KHI CÓ MÂU THUẪN:
+            1. TARGET + NGỮ CẢNH LÂN CẬN là nguồn sự thật về nội dung câu.
+            2. HỒ SƠ PHIM là bộ nhớ nhất quán về tên, thuật ngữ, vai vế và xưng hô; không được ép hồ sơ lên nguyên văn nếu trái nghĩa.
+            3. Skill quy định thuật ngữ/phong cách; không được dùng skill để tự thêm tình tiết không có trong nguồn.
+
+            HỒ SƠ PHIM:
+            {{(string.IsNullOrWhiteSpace(bible) ? "Chưa có dữ kiện khóa." : bible)}}
 
             {{relevantSkill}}
 
-            NGỮ CẢNH LÂN CẬN (chỉ để hiểu, không trả các cue ngoài TARGET):
+            NGỮ CẢNH LÂN CẬN (đọc để hiểu câu trước/sau, người nói/người nghe và câu bị chia qua nhiều cue; KHÔNG trả cue ngoài TARGET):
             {{contextJson}}
 
             TARGET PHẢI DỊCH:
             {{targetJson}}
+
+            QUY TẮC DỊCH BẮT BUỘC CHO TỪNG CUE:
+            - Dịch theo ý nghĩa của cả câu, không bê trật tự từ tiếng Trung sang tiếng Việt.
+            - Giữ đúng phủ định/khẳng định, câu hỏi/mệnh lệnh, mức độ chắc chắn, số lượng, tên riêng, chủ thể và đối tượng.
+            - Xưng hô phải dựa vào bằng chứng trong context/hồ sơ; nếu chưa đủ bằng chứng thì giữ cách diễn đạt trung tính, không tự bịa giới tính hay quan hệ.
+            - Nếu một câu bị chia qua nhiều cue, phải đọc liền mạch nhưng vẫn giữ đúng nội dung ở từng id; không lặp ý sang cue kế bên và không chuyển lời giữa các id.
+            - Tên Hán-Việt, tông môn, cảnh giới, pháp bảo và tước hiệu đã xác nhận phải dùng nhất quán.
+            - Nếu nguyên văn cố ý mơ hồ, giữ mơ hồ; không giải thích thêm, không "làm rõ" bằng suy đoán.
+            - Câu Việt phải tự nhiên như người dịch thật: gọn, đúng sắc thái, không văn dịch máy, không thêm từ đệm/meme khi nguồn không có.
+
+            TỰ KIỂM TRA THẦM TRƯỚC KHI TRẢ JSON: nghĩa chính có đổi không; phủ định/câu hỏi có bị đảo không; tên/xưng hô có nhất quán không; có thêm/bớt ý không; có còn chữ Hán không.
+
+            Ví dụ phong cách ngắn:
+            师尊，弟子知错了。 → Sư tôn, đệ tử biết sai rồi.
+            你以为本座不敢杀你？ → Ngươi tưởng bản tọa không dám giết ngươi sao?
 
             Luật máy bắt buộc: trả đúng một phần tử cho từng id TARGET, giữ nguyên id và thứ tự; không thêm/bớt/gộp cue;
             chỉ trả tiếng Việt hoàn chỉnh trong text; không timecode, không giải thích, không markdown, không [CẦN XÁC NHẬN].
@@ -1047,7 +1079,11 @@ public sealed class LocalSubtitleTranslationService : IDisposable
             if (!File.Exists(path) || new FileInfo(path).Length > 64L * 1024 * 1024) return TranslationCheckpoint.New(sourceSha, Skill.Info.Sha256, model.Key);
             await using var stream = File.OpenRead(path);
             var loaded = await JsonSerializer.DeserializeAsync<TranslationCheckpoint>(stream, _json, cancellationToken);
-            if (loaded is null || loaded.Schema != 1 || loaded.SourceSha256 != sourceSha || loaded.SkillSha256 != Skill.Info.Sha256)
+            if (loaded is null
+                || loaded.Schema != 2
+                || loaded.SourceSha256 != sourceSha
+                || loaded.SkillSha256 != Skill.Info.Sha256
+                || !string.Equals(loaded.PolicyKey, TranslationPolicyKey, StringComparison.Ordinal))
                 return TranslationCheckpoint.New(sourceSha, Skill.Info.Sha256, model.Key);
             var checkpointModelKey = loaded.ModelKey;
             if (string.IsNullOrWhiteSpace(checkpointModelKey))
@@ -1061,6 +1097,7 @@ public sealed class LocalSubtitleTranslationService : IDisposable
             return loaded with
             {
                 ModelKey = checkpointModelKey,
+                PolicyKey = TranslationPolicyKey,
                 Translations = new Dictionary<string, string>(loaded.Translations, StringComparer.Ordinal),
             };
         }
@@ -1223,8 +1260,9 @@ public sealed class LocalSubtitleTranslationService : IDisposable
         string Sha256,
         string FileName);
 
-    private sealed record TranslationCheckpoint(int Schema, string SourceSha256, string SkillSha256, string? ModelKey, string Bible, int AnalysisPagesCompleted, Dictionary<string, string> Translations)
+    private sealed record TranslationCheckpoint(int Schema, string SourceSha256, string SkillSha256, string? ModelKey, string? PolicyKey, string Bible, int AnalysisPagesCompleted, Dictionary<string, string> Translations)
     {
-        public static TranslationCheckpoint New(string sourceSha, string skillSha, string modelKey) => new(1, sourceSha, skillSha, modelKey, string.Empty, 0, new Dictionary<string, string>(StringComparer.Ordinal));
+        public static TranslationCheckpoint New(string sourceSha, string skillSha, string modelKey) =>
+            new(2, sourceSha, skillSha, modelKey, TranslationPolicyKey, string.Empty, 0, new Dictionary<string, string>(StringComparer.Ordinal));
     }
 }
