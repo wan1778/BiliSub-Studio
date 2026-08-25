@@ -262,7 +262,12 @@ for forbidden in (
     "PlayerPlayPauseButton.Click +=", "PlaybackButton", "Playback_Click",
 ):
     require(forbidden not in editor_partials, f"Editor cleanup regression reintroduced {forbidden}")
-require("EnsureEditorParityInitialized();" in editor_partials and "EnsureImageFeatureInitialized();" in editor_partials,
+require(editor_partials.count("private bool _editorCoreInitialized;") == 1
+        and editor_partials.count("if (!_editorCoreInitialized)") == 1
+        and editor_partials.count("BindStaticUiShell();") == 1
+        and editor_partials.count("_editorCoreInitialized = true;") == 1
+        and "EnsureEditorParityInitialized" not in editor_partials
+        and "EnsureImageFeatureInitialized" not in editor_partials,
         "Editor must initialize parity and image tools from one lifecycle owner")
 playback_source = read(CSHARP / "src/BiliSubStudio.App/Pages/EditorPage.Playback.cs")
 require('Click="PlayerPlayPause_Click"' in editor_xaml
@@ -415,12 +420,13 @@ for handler in {binding[1] for binding in blur_input_bindings.values()}:
     require(len(re.findall(rf"\b{re.escape(handler)}\s*\(", editor_partials)) == 1,
             f"BLUR-01 handler {handler} must have exactly one implementation and no handler-to-handler call")
 blur_create_source = editor_main.split("private void Overlay_PointerMoved(", 1)[1].split("private void Overlay_PointerReleased(", 1)[0]
-blur_finish_source = editor_main.split("private void FinishDrag(", 1)[1].split("private void EditorPage_LayoutUpdated(", 1)[0]
+blur_finish_source = editor_main.split("private void FinishDrag(", 1)[1].split("private bool TryCommitCreatedRegion(", 1)[0]
 region_geometry_source = read(CSHARP / "src/BiliSubStudio.Core/Editor/EditorRegionGeometry.cs") if (CSHARP / "src/BiliSubStudio.Core/Editor/EditorRegionGeometry.cs").is_file() else ""
 require("EditorRegionGeometry.FromNormalizedDrag(" in blur_create_source
-        and "private bool TryCommitCreatedRegion(EditRegion created)" in blur_finish_source
-        and "ValidateRegion(created);" in blur_finish_source
-        and "_document.Add(created);" in blur_finish_source
+        and "TryCommitCreatedRegion(created);" in blur_finish_source
+        and "private bool TryCommitCreatedRegion(EditRegion created)" in editor_main
+        and "ValidateRegion(created);" in editor_main
+        and "_document.Add(created);" in editor_main
         and "public static EditRegion? FromNormalizedDrag(" in region_geometry_source
         and "editor mouse drag creates only pixel-valid regions in either direction" in contract_tests_source,
         "BLUR-02 mouse creation must use tested normalized geometry and validate before document commit")
@@ -734,7 +740,7 @@ require("MarkTranslatedOutputStale();" in editor_partials and "OutputPath = stri
 require("RestoreSubtitleAsync(_project.Subtitle)" in editor_partials and "SubtitleManualStore.LoadAsync" in editor_partials
         and "EditorSubtitleManualStore.Apply" in editor_partials,
         "SUB-18 project reopen must restore translation/edit/lock state")
-require("Loaded += EditorPage_Loaded;" in editor and "private void EditorPage_Loaded" in editor_partials,
+require("Loaded += EditorPage_Loaded;" in editor and "private async void EditorPage_Loaded" in editor_partials,
         "Editor must use the actual Loaded event as its single feature initialization lifecycle")
 
 picker_source = read(CSHARP / "src/BiliSubStudio.App/Services/FilePickerService.cs")
