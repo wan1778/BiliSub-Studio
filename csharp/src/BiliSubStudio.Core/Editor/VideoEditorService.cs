@@ -36,6 +36,7 @@ public sealed class VideoEditorService
     internal const long RenderSafetyReserveBytes = 512L * 1024 * 1024;
     internal const int RenderPreflightSourceMultiplier = 2;
     internal const int RenderDiskCheckIntervalMilliseconds = 3000;
+    internal const double PreviewSegmentDurationSeconds = 12;
     private readonly ToolManager _tools;
     private readonly ProcessRunner _processes;
     private readonly string _previewDirectory;
@@ -762,10 +763,9 @@ public sealed class VideoEditorService
 
     private static (double Start, double Duration) PreviewWindow(double sourceDuration, double requestedStart)
     {
-        const double targetDuration = 12;
         var start = Math.Clamp(double.IsFinite(requestedStart) ? requestedStart : 0, 0, sourceDuration);
-        if (sourceDuration - start < Math.Min(2, sourceDuration)) start = Math.Max(0, sourceDuration - targetDuration);
-        var duration = Math.Min(targetDuration, sourceDuration - start);
+        if (sourceDuration - start < Math.Min(2, sourceDuration)) start = Math.Max(0, sourceDuration - PreviewSegmentDurationSeconds);
+        var duration = Math.Min(PreviewSegmentDurationSeconds, sourceDuration - start);
         if (duration <= 0) throw new InvalidDataException("Không còn đoạn video để tạo preview.");
         return (start, duration);
     }
