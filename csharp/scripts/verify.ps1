@@ -189,7 +189,13 @@ if ($publishedPri.Count -eq 0) {
 
 # A successful compile is not proof that WinUI resources can initialize. Launch the
 # exact published executable and require its Loaded path to write a sentinel.
-$smokeSentinel = Join-Path $env:RUNNER_TEMP "bilisub-winui-startup-smoke.txt"
+$smokeTempRoot = if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
+    [System.IO.Path]::GetTempPath()
+}
+else {
+    $env:RUNNER_TEMP
+}
+$smokeSentinel = Join-Path $smokeTempRoot "bilisub-winui-startup-smoke.txt"
 if (Test-Path $smokeSentinel) { Remove-Item $smokeSentinel -Force }
 $startupLog = Join-Path $env:LOCALAPPDATA "BiliSub Studio\Logs\startup.log"
 if (Test-Path $startupLog) { Remove-Item $startupLog -Force }
