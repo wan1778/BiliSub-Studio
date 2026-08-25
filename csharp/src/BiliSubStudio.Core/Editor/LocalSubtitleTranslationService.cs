@@ -49,7 +49,12 @@ public sealed class LocalSubtitleTranslationService : IDisposable
     internal const string ThinkingTemplateKwargs = "{\"enable_thinking\":false}";
     internal const string ReasoningMode = "off";
     internal const int RuntimeAutoGpuLayers = -1;
-    private const int TranslationBatchSize = 48;
+    private const int TranslationBatchSmall = 8;
+    private const int TranslationBatchMedium = 24;
+    private const int TranslationBatchLarge = 48;
+    private const double TranslationLatencySpikeFactor = 1.6;
+    private const double TranslationLatencyEwmaAlpha = 0.25;
+    private static readonly TimeSpan TranslationLatencySpikeFloor = TimeSpan.FromSeconds(12);
     private const int AnalysisBatchSize = 420;
     private const string TranslationSchema = "{\"type\":\"object\",\"properties\":{\"translations\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"text\":{\"type\":\"string\"}},\"required\":[\"id\",\"text\"],\"additionalProperties\":false}}},\"required\":[\"translations\"],\"additionalProperties\":false}";
     private const string BibleSchema = "{\"type\":\"object\",\"properties\":{\"bible\":{\"type\":\"string\"}},\"required\":[\"bible\"],\"additionalProperties\":false}";
@@ -154,6 +159,9 @@ public sealed class LocalSubtitleTranslationService : IDisposable
         checkpoint = checkpoint with { Translations = recovered };
         var restored = checkpoint.Translations.Count;
         var bible = checkpoint.Bible;
+        var adaptiveResources = _hardware.ResourceSnapshot();
+        var translationBatchSize = RecommendedTranslationBatchSize(adaptiveResources);
+        var latencyBaselineMsPerCue = 0d;
         var needsInference = checkpoint.AnalysisPagesCompleted < analysisPages
             || source.Any(x => !checkpoint.Translations.ContainsKey(x.Id));
         TranslationServerSession? runtime = null;
@@ -194,14 +202,17 @@ public sealed class LocalSubtitleTranslationService : IDisposable
             }
 
             var pending = source.Where(x => !checkpoint.Translations.ContainsKey(x.Id)).ToArray();
-            var translationBatches = CreateBatches(pending, TranslationBatchSize, 20_000);
-            for (var batchIndex = 0; batchIndex < translationBatches.Count; batchIndex++)
+            var pendingOffset = 0;
+            if (pending.Length > 0)
+                job.Log($"Adaptive Vietsub chọn batch {translationBatchSize} câu theo VRAM khả dụng trước khi nạp Qwen.");
+            while (pendingOffset < pending.Length)
             {
                 job.CancellationToken.ThrowIfCancellationRequested();
-                var batch = translationBatches[batchIndex];
+                var batch = CreateAdaptiveTranslationBatch(pending, pendingOffset, translationBatchSize, 20_000);
                 var firstIndex = IndexOf(source, batch[0].Id);
                 var context = source.Skip(Math.Max(0, firstIndex - 4)).Take(batch.Length + 8).ToArray();
                 var prompt = BuildTranslationPrompt(batch, context, bible);
+                var batchWatch = Stopwatch.StartNew();
                 IReadOnlyDictionary<string, string> translations;
                 try
                 {
@@ -223,8 +234,25 @@ public sealed class LocalSubtitleTranslationService : IDisposable
                         TranslationSchema, 4096, job.CancellationToken);
                     translations = ValidateBatch(retry, batch);
                 }
+                batchWatch.Stop();
+                if (batch.Length == translationBatchSize)
+                {
+                    if (translationBatchSize > TranslationBatchSmall
+                        && IsTranslationLatencySpike(batchWatch.Elapsed, batch.Length, latencyBaselineMsPerCue))
+                    {
+                        var previousBatchSize = translationBatchSize;
+                        translationBatchSize = LowerTranslationBatchSize(translationBatchSize);
+                        latencyBaselineMsPerCue = 0d;
+                        job.Warn($"Adaptive Vietsub: batch {previousBatchSize} mất {batchWatch.Elapsed.TotalSeconds:0.0}s, phản hồi tăng đột biến; giảm batch lượt sau còn {translationBatchSize} câu.");
+                    }
+                    else
+                    {
+                        latencyBaselineMsPerCue = UpdateTranslationLatencyBaseline(latencyBaselineMsPerCue, batchWatch.Elapsed, batch.Length);
+                    }
+                }
                 foreach (var pair in translations) checkpoint.Translations[pair.Key] = pair.Value;
                 await SaveCheckpointAsync(checkpointPath, checkpoint, job.CancellationToken);
+                pendingOffset += batch.Length;
                 var completed = checkpoint.Translations.Count;
                 var percent = 12 + completed / (double)source.Count * 84;
                 job.Set("translation", percent, $"Đang Vietsub bằng AI local · {completed}/{source.Count} câu · checkpoint đã lưu.");
@@ -261,6 +289,39 @@ public sealed class LocalSubtitleTranslationService : IDisposable
     }
 
     private static int LowerGpuLayers(int current) => current switch { >= 99 => 24, >= 24 => 12, _ => 0 };
+
+    internal static int RecommendedTranslationBatchSize(HardwareResourceSnapshot resources)
+    {
+        const long gib = 1024L * 1024 * 1024;
+        var tierVram = resources.VramTelemetryAvailable && resources.AvailableVramBytes > 0
+            ? Math.Min(resources.TotalVramBytes, resources.AvailableVramBytes)
+            : resources.TotalVramBytes;
+        if (tierVram < 6 * gib) return TranslationBatchSmall;
+        if (tierVram <= 12 * gib) return TranslationBatchMedium;
+        return TranslationBatchLarge;
+    }
+
+    internal static int LowerTranslationBatchSize(int current) => current switch
+    {
+        > TranslationBatchMedium => TranslationBatchMedium,
+        > TranslationBatchSmall => TranslationBatchSmall,
+        _ => TranslationBatchSmall,
+    };
+
+    internal static bool IsTranslationLatencySpike(TimeSpan elapsed, int cueCount, double baselineMsPerCue)
+    {
+        if (cueCount <= 0 || baselineMsPerCue <= 0 || elapsed < TranslationLatencySpikeFloor) return false;
+        var currentMsPerCue = elapsed.TotalMilliseconds / cueCount;
+        return currentMsPerCue >= baselineMsPerCue * TranslationLatencySpikeFactor;
+    }
+
+    internal static double UpdateTranslationLatencyBaseline(double baselineMsPerCue, TimeSpan elapsed, int cueCount)
+    {
+        if (cueCount <= 0) return baselineMsPerCue;
+        var currentMsPerCue = elapsed.TotalMilliseconds / cueCount;
+        if (baselineMsPerCue <= 0) return currentMsPerCue;
+        return baselineMsPerCue * (1 - TranslationLatencyEwmaAlpha) + currentMsPerCue * TranslationLatencyEwmaAlpha;
+    }
 
     internal static IReadOnlyDictionary<string, string> ValidateBatch(JsonElement root, IReadOnlyList<EditorSubtitleCue> expected)
     {
@@ -833,6 +894,26 @@ public sealed class LocalSubtitleTranslationService : IDisposable
         }
         if (current.Count > 0) result.Add(current.ToArray());
         return result;
+    }
+
+    private static EditorSubtitleCue[] CreateAdaptiveTranslationBatch(
+        IReadOnlyList<EditorSubtitleCue> cues,
+        int startIndex,
+        int maxItems,
+        int maxCharacters)
+    {
+        if (startIndex < 0 || startIndex >= cues.Count) throw new ArgumentOutOfRangeException(nameof(startIndex));
+        var current = new List<EditorSubtitleCue>(maxItems);
+        var characters = 0;
+        for (var index = startIndex; index < cues.Count; index++)
+        {
+            var cue = cues[index];
+            var size = cue.SourceText.Length + 64;
+            if (current.Count > 0 && (current.Count >= maxItems || characters + size > maxCharacters)) break;
+            current.Add(cue);
+            characters += size;
+        }
+        return current.ToArray();
     }
 
     private static void ValidateProjectId(string value)
