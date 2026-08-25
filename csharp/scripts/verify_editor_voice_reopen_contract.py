@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[2]
 EDITOR = ROOT / "csharp/src/BiliSubStudio.App/Pages/EditorPage.xaml.cs"
 PLAYBACK = ROOT / "csharp/src/BiliSubStudio.App/Pages/EditorPage.Playback.cs"
 PROJECT_STORE = ROOT / "csharp/src/BiliSubStudio.Core/Editor/EditorProjectStore.cs"
+SUBTITLE_FINGERPRINT = ROOT / "csharp/src/BiliSubStudio.Core/Editor/EditorSubtitleSourceFingerprint.cs"
 
 
 def fail(message: str) -> None:
@@ -27,6 +28,7 @@ def read(path: Path) -> str:
 editor = read(EDITOR)
 playback = read(PLAYBACK)
 project_store = read(PROJECT_STORE)
+subtitle_fingerprint = read(SUBTITLE_FINGERPRINT)
 
 # VOICE-15 — reopening a project may restore only a previously completed local
 # Vietnamese voice whose owning subtitle, Whisper analysis, TTS result manifest,
@@ -59,9 +61,16 @@ require("Tts = subtitle is null ? null : NormalizeTts(loaded.Tts)," in load,
 subtitle = project_store.split("private static EditorSubtitleProject? NormalizeSubtitle(", 1)[1].split(
     "public static EditorAudioSettings NormalizeAudio", 1
 )[0]
-require("info.Length != subtitle.SourceSize" in subtitle
-        and "!FileShaMatches(path, subtitle.SourceSha256)" in subtitle,
-        "VOICE-15 subtitle reopen validity must include current source bytes/SHA")
+require("EditorSubtitleDocument.SourceFingerprintMatchesCurrent(" in subtitle
+        and "path, subtitle.SourceSize, subtitle.SourceLastWriteUtcTicks, subtitle.SourceSha256" in subtitle,
+        "VOICE-15 subtitle reopen must delegate to the canonical SRT fingerprint owner")
+require("before.Length != expectedSize" in subtitle_fingerprint
+        and "before.LastWriteTimeUtc.Ticks != expectedLastWriteUtcTicks" in subtitle_fingerprint
+        and "SHA256.HashData(stream)" in subtitle_fingerprint
+        and "after.Length == expectedSize" in subtitle_fingerprint
+        and "after.LastWriteTimeUtc.Ticks == expectedLastWriteUtcTicks" in subtitle_fingerprint
+        and "string.Equals(sha256, expectedSha256, StringComparison.OrdinalIgnoreCase)" in subtitle_fingerprint,
+        "VOICE-15 canonical SRT fingerprint must validate size/timestamp/SHA before restore")
 
 speech = project_store.split("private static EditorSpeechProject? NormalizeSpeech(", 1)[1].split(
     "private static EditorTtsProject? NormalizeTts", 1
