@@ -23,6 +23,8 @@ public sealed partial class MainWindow : Window
     private readonly Dictionary<string, UIElement> _pages;
     private readonly TaskCompletionSource<bool> _initialization = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly string _buildTag;
+    private readonly Microsoft.UI.Dispatching.DispatcherQueueTimer _jobProgressTimer;
+    private readonly Action _refreshGlobalTranslationProgress;
     private bool _initialized;
     private bool _safeToClose;
     private bool _closing;
@@ -60,6 +62,29 @@ public sealed partial class MainWindow : Window
 
         _application = new BiliSubApplication(paths);
         _application.Jobs.AttachLog(_globalLog);
+        _refreshGlobalTranslationProgress = () =>
+        {
+            var snapshot = _application.Jobs.ActiveSnapshots()
+                .FirstOrDefault(x => x.Kind is "translation" or "translation-prepare");
+            if (snapshot is null)
+            {
+                GlobalJobProgressPanel.Visibility = Visibility.Collapsed;
+                GlobalJobProgressBar.Value = 0;
+                GlobalJobProgressPercent.Text = "0%";
+                GlobalJobProgressText.Text = string.Empty;
+                return;
+            }
+
+            GlobalJobProgressPanel.Visibility = Visibility.Visible;
+            GlobalJobProgressTitle.Text = snapshot.Kind == "translation-prepare" ? "Chuẩn bị AI Vietsub" : "Vietsub AI local";
+            GlobalJobProgressBar.Value = Math.Clamp(snapshot.Progress, 0, 100);
+            GlobalJobProgressPercent.Text = $"{Math.Clamp(snapshot.Progress, 0, 100):0.#}%";
+            GlobalJobProgressText.Text = snapshot.Message;
+        };
+        _jobProgressTimer = DispatcherQueue.CreateTimer();
+        _jobProgressTimer.Interval = TimeSpan.FromMilliseconds(350);
+        _jobProgressTimer.Tick += (_, _) => _refreshGlobalTranslationProgress();
+        _jobProgressTimer.Start();
         var folderPicker = new FolderPickerService(() => this);
         var filePicker = new FilePickerService(() => this);
         var hardwarePage = new HardwarePage(_application, _globalLog);
@@ -86,6 +111,7 @@ public sealed partial class MainWindow : Window
         Navigation.SelectedItem = Navigation.MenuItems[0];
         ContentFrame.Content = _pages["video"];
         UpdateErrorBadge();
+        _refreshGlobalTranslationProgress();
     }
 
     public ObservableCollection<GlobalLogItem> GlobalLogEntries { get; } = [];
@@ -248,7 +274,11 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private void ShowGlobalLog(bool show) => GlobalLogPanel.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+    private void ShowGlobalLog(bool show)
+    {
+        GlobalLogPanel.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+        if (show) _refreshGlobalTranslationProgress();
+    }
 
     private void ResizeInitialWindow()
     {
@@ -293,6 +323,7 @@ public sealed partial class MainWindow : Window
 
     private async void OnClosed(object sender, WindowEventArgs args)
     {
+        _jobProgressTimer.Stop();
         _globalLog.EntryAdded -= OnGlobalLogEntry;
         await _application.DisposeAsync();
     }

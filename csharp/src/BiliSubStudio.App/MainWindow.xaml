@@ -33,13 +33,14 @@
         <Border
             x:Name="GlobalLogPanel"
             Grid.Row="1"
-            Height="224"
+            Height="276"
             Visibility="Collapsed"
             Background="{ThemeResource TopbarBrush}"
             BorderBrush="{ThemeResource StrongBorderBrush}"
             BorderThickness="0,1,0,1">
             <Grid Padding="16,12" RowSpacing="9">
                 <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="*" />
                 </Grid.RowDefinitions>
@@ -70,9 +71,37 @@
                     </StackPanel>
                 </Grid>
 
+                <Border
+                    x:Name="GlobalJobProgressPanel"
+                    Grid.Row="1"
+                    Visibility="Collapsed"
+                    Padding="10,8"
+                    Background="{ThemeResource RaisedSurfaceBrush}"
+                    BorderBrush="{ThemeResource BorderBrush}"
+                    BorderThickness="1"
+                    CornerRadius="9">
+                    <Grid RowSpacing="5">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <Grid ColumnSpacing="10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock x:Name="GlobalJobProgressTitle" FontSize="11" FontWeight="SemiBold" Text="Vietsub AI local" />
+                            <TextBlock x:Name="GlobalJobProgressPercent" Grid.Column="1" FontSize="11" FontWeight="SemiBold" Text="0%" />
+                        </Grid>
+                        <ProgressBar x:Name="GlobalJobProgressBar" Grid.Row="1" Minimum="0" Maximum="100" Value="0" />
+                        <TextBlock x:Name="GlobalJobProgressText" Grid.Row="2" FontSize="10" Foreground="{ThemeResource MutedTextBrush}" TextWrapping="Wrap" MaxLines="3" />
+                    </Grid>
+                </Border>
+
                 <ListView
                     x:Name="GlobalLogList"
-                    Grid.Row="1"
+                    Grid.Row="2"
                     ItemsSource="{x:Bind GlobalLogEntries, Mode=OneWay}"
                     SelectionMode="None"
                     IsItemClickEnabled="False"

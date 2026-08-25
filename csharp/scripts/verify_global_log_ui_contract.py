@@ -50,6 +50,11 @@ for marker in (
     'Click="ClearLogView_Click"',
     'x:Name="LogHealthyCountBorder"',
     'x:Name="LogErrorCountBorder"',
+    'x:Name="GlobalJobProgressPanel"',
+    'x:Name="GlobalJobProgressTitle"',
+    'x:Name="GlobalJobProgressPercent"',
+    'x:Name="GlobalJobProgressBar"',
+    'x:Name="GlobalJobProgressText"',
 ):
     require(marker in main_xaml, f"shared log shell missing {marker}")
 require('x:Name="LogHealthyCountBorder"' in main_xaml and 'Text="0 lỗi"' in main_xaml,
@@ -66,6 +71,14 @@ for marker in (
     'private void UpdateErrorBadge()',
     'LogHealthyCountBorder.Visibility = hasErrors ? Visibility.Collapsed : Visibility.Visible',
     'LogErrorCountBorder.Visibility = hasErrors ? Visibility.Visible : Visibility.Collapsed',
+    '_refreshGlobalTranslationProgress = () =>',
+    '_jobProgressTimer = DispatcherQueue.CreateTimer()',
+    '_jobProgressTimer.Interval = TimeSpan.FromMilliseconds(350)',
+    '_application.Jobs.ActiveSnapshots()',
+    'x.Kind is "translation" or "translation-prepare"',
+    'GlobalJobProgressBar.Value = Math.Clamp(snapshot.Progress, 0, 100)',
+    'GlobalJobProgressText.Text = snapshot.Message',
+    'if (show) _refreshGlobalTranslationProgress()',
 ):
     require(marker in main_code, f"shared log/layout behavior missing {marker}")
 
@@ -93,6 +106,8 @@ require('ApplicationLog? applicationLog = null' in job_code, "AppJob must accept
 require('public void Warn(string message)' in job_code, "AppJob warning level is missing")
 require('public void Error(string message)' in job_code, "AppJob error level is missing")
 require('public void AttachLog(ApplicationLog applicationLog)' in manager_code, "JobManager cannot attach the shell log")
+require('public IReadOnlyList<JobSnapshot> ActiveSnapshots()' in manager_code,
+        "shared shell progress requires active job snapshots")
 
 for section, label in (
     ("general", "Chung"),
@@ -130,4 +145,4 @@ require('if (track.Ai) return chinese ? 2 : 3;' in subtitle_policy,
 require('["application"] = string.Join' in support_code and '_log.Snapshot().TakeLast(500)' in support_code,
         "Bug reports must include the sanitized shared application log")
 
-print("PASS: four-item shell / embedded settings / shared log error-state / compact media / subtitle-priority contracts")
+print("PASS: four-item shell / shared log Vietsub progress / embedded settings / shared log error-state / compact media / subtitle-priority contracts")
