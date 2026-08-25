@@ -96,6 +96,46 @@ public sealed partial class EditorPage
         _editorAutoCompositeToggle = EditorAutoCompositeToggle;
         EditorOutputPathText.Text = _application.Config.OutputDirectory;
 
+        // PLAYER-UI-02: polish the compact transport without changing playback ownership or handlers.
+        PlayerControlBar.Height = 56;
+        PlayerControlBar.Padding = new Thickness(10, 7, 10, 7);
+        PlayerControlBar.CornerRadius = new CornerRadius(12);
+        if (PlayerControlBar.Child is Grid transportGrid && transportGrid.ColumnDefinitions.Count >= 6)
+        {
+            transportGrid.ColumnSpacing = 10;
+            transportGrid.ColumnDefinitions[0].Width = new GridLength(38);
+            transportGrid.ColumnDefinitions[1].Width = new GridLength(112);
+            transportGrid.ColumnDefinitions[2].Width = new GridLength(1, GridUnitType.Star);
+            transportGrid.ColumnDefinitions[3].Width = new GridLength(72);
+            transportGrid.ColumnDefinitions[4].Width = new GridLength(104);
+            transportGrid.ColumnDefinitions[5].Width = new GridLength(38);
+        }
+        PlayerPlayPauseButton.Width = 38;
+        PlayerPlayPauseButton.Height = 38;
+        PlayerPlayPauseButton.Padding = new Thickness(0);
+        PlayerPlayPauseButton.FontSize = 15;
+        PlayerPlayPauseButton.CornerRadius = new CornerRadius(19);
+        PlayerPlayPauseButton.HorizontalContentAlignment = HorizontalAlignment.Center;
+        PlayerPlayPauseButton.VerticalContentAlignment = VerticalAlignment.Center;
+        ClockText.Width = 112;
+        ClockText.HorizontalAlignment = HorizontalAlignment.Center;
+        ClockText.TextAlignment = TextAlignment.Center;
+        ClockText.FontFamily = new Microsoft.UI.Xaml.Media.FontFamily("Cascadia Mono");
+        ClockText.FontSize = 11;
+        Timeline.MinWidth = 120;
+        Timeline.Margin = new Thickness(2, 0, 2, 0);
+        PreviewMuteToggle.MinWidth = 68;
+        PreviewMuteToggle.HorizontalAlignment = HorizontalAlignment.Center;
+        PreviewMuteToggle.VerticalAlignment = VerticalAlignment.Center;
+        PreviewVolumeSlider.MinWidth = 96;
+        FullscreenButton.Width = 38;
+        FullscreenButton.Height = 38;
+        FullscreenButton.Padding = new Thickness(0);
+        FullscreenButton.FontSize = 15;
+        FullscreenButton.CornerRadius = new CornerRadius(9);
+        FullscreenButton.HorizontalContentAlignment = HorizontalAlignment.Center;
+        FullscreenButton.VerticalContentAlignment = VerticalAlignment.Center;
+
         _imageModeButton = ImageModeButton;
         _imageInspectorPanel = ImageInspectorPanel;
         _imageOverlayCanvas = ImageOverlayCanvas;
