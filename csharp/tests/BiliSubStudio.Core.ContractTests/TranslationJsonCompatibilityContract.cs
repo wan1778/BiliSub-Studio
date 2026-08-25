@@ -83,5 +83,36 @@ internal static class TranslationJsonCompatibilityContract
             throw new InvalidOperationException("legacy /no_think token must not be combined with Qwen3 JSON generation");
         if (source.Contains("\"--output\", responseFile", StringComparison.Ordinal) || source.Contains("llama-cli.exe", StringComparison.Ordinal))
             throw new InvalidOperationException("SPEED-02 must not regress to per-request llama-cli JSON output files");
+
+        var editorPath = Path.Combine(Directory.GetCurrentDirectory(), "csharp", "src", "BiliSubStudio.App", "Pages", "EditorPage.SubtitleCueEditing.cs");
+        if (!File.Exists(editorPath)) return;
+        var editor = File.ReadAllText(editorPath);
+        foreach (var marker in new[]
+        {
+            "using System.Text.Json;",
+            "var checkpointPath = Path.Combine(_application.Paths.Data, \"Projects\", \"Translation\", projectId + \".json\");",
+            "async Task<int> TryApplyLiveTranslationCheckpointAsync()",
+            "TryGetProperty(\"translations\", out var translations)",
+            "Math.Abs(snapshot.Progress - lastLiveProbeProgress) > 0.001",
+            "var liveCount = await TryApplyLiveTranslationCheckpointAsync();",
+            "Vietsub realtime · đã cập nhật",
+            "RenderSubtitleCueList();",
+            "LoadSelectedSubtitleCue();",
+            "UpdateSubtitleSummary();",
+            "QueuePreviewRefresh();",
+            "var canBrowse = hasSource && !_subtitleManualDirty && (idle || _translationJobId is not null);",
+            "SubtitleCueList.IsEnabled = canBrowse;",
+        })
+        {
+            if (!editor.Contains(marker, StringComparison.Ordinal))
+                throw new InvalidOperationException("live translation cue UI path missing: " + marker);
+        }
+        if (editor.Contains("SubtitleCueList.IsEnabled = hasSource && idle && !_subtitleManualDirty;", StringComparison.Ordinal))
+            throw new InvalidOperationException("live Vietsub must keep the cue list browseable while translation is running");
+        var snapshotIndex = editor.IndexOf("var snapshot = _application.Jobs.GetSnapshot(_translationJobId);", StringComparison.Ordinal);
+        var liveApplyIndex = editor.IndexOf("var liveCount = await TryApplyLiveTranslationCheckpointAsync();", snapshotIndex, StringComparison.Ordinal);
+        var doneGateIndex = editor.IndexOf("if (!snapshot.Done) { await Task.Delay(350); continue; }", snapshotIndex, StringComparison.Ordinal);
+        if (snapshotIndex < 0 || liveApplyIndex <= snapshotIndex || doneGateIndex <= liveApplyIndex)
+            throw new InvalidOperationException("live cue checkpoint must be applied before the full-job done gate");
     }
 }

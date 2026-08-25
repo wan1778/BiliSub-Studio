@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using BiliSubStudio.Core.Editor;
 using BiliSubStudio.Core.IO;
 using Microsoft.UI.Xaml;
@@ -196,11 +197,70 @@ public sealed partial class EditorPage
         var modelMode = SelectedTranslationModelMode();
         var modeScope = modelMode == EditorTranslationModelMode.Fast ? "fast" : string.Empty;
         var projectId = TranslationProjectId(_project.Id, "all" + modeScope, SourceTextHash(_subtitleSource.Cues));
+        var checkpointPath = Path.Combine(_application.Paths.Data, "Projects", "Translation", projectId + ".json");
+
+        async Task<int> TryApplyLiveTranslationCheckpointAsync()
+        {
+            if (_subtitleSource is null || !CurrentSubtitleFingerprintMatches() || !File.Exists(checkpointPath)) return 0;
+            try
+            {
+                await using var stream = new FileStream(
+                    checkpointPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 64 * 1024,
+                    FileOptions.Asynchronous | FileOptions.SequentialScan);
+                using var document = await JsonDocument.ParseAsync(stream);
+                if (!document.RootElement.TryGetProperty("translations", out var translations)
+                    || translations.ValueKind != JsonValueKind.Object)
+                    return 0;
+
+                var cues = _subtitleSource.Cues.ToArray();
+                var changed = false;
+                var liveCount = 0;
+                for (var index = 0; index < cues.Length; index++)
+                {
+                    var cue = cues[index];
+                    if (locked.TryGetValue(cue.Id, out var keep))
+                    {
+                        if (!string.Equals(cue.SourceText, keep.SourceText, StringComparison.Ordinal)
+                            || !string.Equals(cue.VietnameseText, keep.VietnameseText, StringComparison.Ordinal))
+                        {
+                            cues[index] = cue with { SourceText = keep.SourceText, VietnameseText = keep.VietnameseText };
+                            changed = true;
+                        }
+                        continue;
+                    }
+                    if (!translations.TryGetProperty(cue.Id, out var value) || value.ValueKind != JsonValueKind.String) continue;
+                    var vietnamese = value.GetString() ?? string.Empty;
+                    if (string.IsNullOrWhiteSpace(vietnamese)) continue;
+                    liveCount++;
+                    if (string.Equals(cue.VietnameseText, vietnamese, StringComparison.Ordinal)) continue;
+                    cues[index] = cue with { VietnameseText = vietnamese };
+                    changed = true;
+                }
+
+                if (!changed) return liveCount;
+                _subtitleSource = _subtitleSource with { Cues = cues };
+                RenderSubtitleCueList();
+                LoadSelectedSubtitleCue();
+                UpdateSubtitleSummary();
+                RenderOverlays();
+                QueuePreviewRefresh();
+                RefreshSubtitleCueEditorControls();
+                return liveCount;
+            }
+            catch (Exception error) when (error is IOException or JsonException or UnauthorizedAccessException)
+            {
+                return 0;
+            }
+        }
+
         _translationJobId = _application.StartEditorTranslation(new EditorTranslationRequest(
             projectId, _subtitleSource, _application.Config.OutputDirectory, outputName, ModelMode: modelMode));
         TranslationProgress.Value = 0;
         TranslationStatusText.Text = $"Đang Vietsub bằng {(modelMode == EditorTranslationModelMode.Fast ? "4B Nhanh / nháp" : "8B Chất lượng")} + skill; câu khóa sẽ không bị ghi đè.";
         RefreshEditorActions();
+        RefreshSubtitleCueEditorControls();
+        var lastLiveProbeProgress = -1d;
+        var lastLiveCount = 0;
         try
         {
             while (_translationJobId is not null)
@@ -208,6 +268,16 @@ public sealed partial class EditorPage
                 var snapshot = _application.Jobs.GetSnapshot(_translationJobId);
                 TranslationProgress.Value = snapshot.Progress;
                 TranslationStatusText.Text = snapshot.Message;
+                if (!snapshot.Done && Math.Abs(snapshot.Progress - lastLiveProbeProgress) > 0.001)
+                {
+                    lastLiveProbeProgress = snapshot.Progress;
+                    var liveCount = await TryApplyLiveTranslationCheckpointAsync();
+                    if (liveCount > lastLiveCount)
+                    {
+                        lastLiveCount = liveCount;
+                        SubtitleCueEditorStatus.Text = $"Vietsub realtime · đã cập nhật {liveCount:N0} câu vừa có trong checkpoint; có thể chọn câu để xem ngay.";
+                    }
+                }
                 if (!snapshot.Done) { await Task.Delay(350); continue; }
                 if (string.Equals(snapshot.Status, "cancelled", StringComparison.OrdinalIgnoreCase))
                 {
@@ -412,7 +482,8 @@ public sealed partial class EditorPage
         var hasSource = _subtitleSource is not null && _subtitleSource.Cues.Count > 0;
         var selected = hasSource && _subtitleCueSelectedIndex >= 0 && _subtitleCueSelectedIndex < _subtitleSource!.Cues.Count;
         var idle = !EditorBusy && !_playback.IsPreviewMode;
-        SubtitleCueList.IsEnabled = hasSource && idle && !_subtitleManualDirty;
+        var canBrowse = hasSource && !_subtitleManualDirty && (idle || _translationJobId is not null);
+        SubtitleCueList.IsEnabled = canBrowse;
         SubtitleSourceEdit.IsEnabled = selected && idle;
         SubtitleVietnameseEdit.IsEnabled = selected && idle;
         SubtitleLockToggle.IsEnabled = selected && idle;
