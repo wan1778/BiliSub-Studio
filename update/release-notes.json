@@ -1,7 +1,7 @@
 {
-  "version": "4.0.0-beta.50-csharp-p5",
+  "version": "4.0.0-beta.51-csharp-p5",
   "notes": [
-    "Vietsub AI local nay luôn được khóa theo ngữ cảnh phim tu tiên/tiên hiệp/cổ trang Trung Quốc để giữ đúng Hán-Việt, vai vế, xưng hô và thuật ngữ.",
-    "Skill mỗi câu vẫn giới hạn ngắn: chỉ ưu tiên các phần có thuật ngữ Trung thực sự xuất hiện trong vài câu lân cận, tránh tốn token cho mục không liên quan."
+    "Khi SRT đã Vietsub xong, nút Vietsub đổi thành Dịch lại từ đầu để có thể bỏ bản AI cũ và chạy lại toàn bộ.",
+    "Dịch lại từ đầu xóa checkpoint/kết quả AI cũ của file hiện tại, giữ các câu đã khóa thủ công và hiển thị lại bản dịch mới từng câu từ câu 1."
   ]
 }
