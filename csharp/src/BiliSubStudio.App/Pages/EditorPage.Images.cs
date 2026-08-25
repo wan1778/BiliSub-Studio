@@ -536,7 +536,7 @@ public sealed partial class EditorPage
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         if (_imageOverlays.Count == 0)
         {
-            try { File.Delete(path); } catch { }
+            File.Delete(path);
             return;
         }
         var temporary = path + ".tmp-" + Guid.NewGuid().ToString("N");
