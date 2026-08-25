@@ -1,0 +1,55 @@
+name: SPEED-05 Windows candidate
+
+on:
+  push:
+    branches: [speed05-staging]
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    if: ${{ github.event.head_commit.message != 'staging SPEED-05 candidate [skip ci]' }}
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.400'
+      - name: Apply exact SPEED-05 patch
+        shell: pwsh
+        run: python internal/speed05_patch.py
+      - name: SPEED regression gates
+        shell: pwsh
+        run: |
+          python csharp/scripts/verify_editor_translation_gpu_runtime_contract.py
+          python csharp/scripts/verify_editor_translation_persistent_server_contract.py
+          python csharp/scripts/verify_editor_translation_prompt_cache_contract.py
+          python csharp/scripts/verify_editor_translation_adaptive_batch_contract.py
+          python csharp/scripts/verify_editor_translation_fast_model_contract.py
+          python csharp/scripts/verify_translation_skill_contract.py
+          python csharp/scripts/generate_csharp_code_map.py
+          git diff --check
+      - name: Restore Windows solution
+        shell: pwsh
+        run: dotnet restore csharp/BiliSubStudio.sln
+      - name: Compile Windows x64 solution
+        shell: pwsh
+        run: dotnet build csharp/BiliSubStudio.sln -c Release -p:Platform=x64 --no-restore
+      - name: Core contract tests
+        shell: pwsh
+        run: dotnet run --project csharp/tests/BiliSubStudio.Core.ContractTests/BiliSubStudio.Core.ContractTests.csproj -c Release --no-restore
+      - name: Commit validated staging candidate
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add csharp/src/BiliSubStudio.Core/Editor/LocalSubtitleTranslationService.cs csharp/src/BiliSubStudio.Core/Application/BiliSubApplication.cs csharp/src/BiliSubStudio.App/Pages/EditorPage.xaml csharp/src/BiliSubStudio.App/Pages/EditorPage.xaml.cs csharp/src/BiliSubStudio.App/Pages/EditorPage.SubtitleCueEditing.cs csharp/scripts/verify_editor_translation_persistent_server_contract.py csharp/scripts/verify_editor_translation_fast_model_contract.py docs/migration/CSHARP_CODE_MAP.generated.md
+          git diff --cached --check
+          git commit -m "staging SPEED-05 candidate [skip ci]"
+          git push origin HEAD:speed05-staging
