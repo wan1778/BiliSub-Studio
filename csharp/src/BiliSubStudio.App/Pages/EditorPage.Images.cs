@@ -652,19 +652,28 @@ public sealed partial class EditorPage
 
     private async Task RenderProjectAsync()
     {
-        try { await EnsureImageProjectLoadedAsync(); }
-        catch (Exception error)
-        {
-            StatusText.Text = error.Message;
-            return;
-        }
+        if (EditorBusy) return;
         if (_path is null || _media is null || _project is null)
         {
             StatusText.Text = "Chưa chọn video để xuất.";
             return;
         }
-        if (EditorBusy) return;
-        try { EnsureCurrentSourceFingerprint(); }
+
+        EditorOutputTarget outputTarget;
+        var exportProjectId = _project.Id;
+        var exportSourcePath = _path;
+        try
+        {
+            EnsureCurrentSourceFingerprint();
+            outputTarget = CaptureEditorOutputTarget();
+        }
+        catch (Exception error)
+        {
+            StatusText.Text = error.Message;
+            return;
+        }
+
+        try { await EnsureImageProjectLoadedAsync(); }
         catch (Exception error)
         {
             StatusText.Text = error.Message;
@@ -674,6 +683,12 @@ public sealed partial class EditorPage
         catch (Exception error)
         {
             StatusText.Text = "Không thể cập nhật project sau khi ảnh/logo bị mất: " + error.Message;
+            return;
+        }
+        try { EnsureEditorExportSourceIdentity(exportProjectId, exportSourcePath); }
+        catch (Exception error)
+        {
+            StatusText.Text = error.Message;
             return;
         }
 
@@ -692,10 +707,16 @@ public sealed partial class EditorPage
         {
             await SaveProjectNowAsync();
             await SaveImageSidecarAsync();
+            EnsureEditorExportSourceIdentity(exportProjectId, exportSourcePath);
 
             if (!hasImages)
             {
-                _jobId = _application.StartEditor(CurrentEditRequest(subtitle));
+                var request = CurrentEditRequest(subtitle) with
+                {
+                    OutputDirectory = outputTarget.Directory,
+                    FileName = outputTarget.FileName,
+                };
+                _jobId = _application.StartEditor(request);
                 RefreshEditorActions();
                 while (_jobId is not null)
                 {
@@ -710,8 +731,9 @@ public sealed partial class EditorPage
                     _jobId = null;
                     if (snapshot.Result is VideoEditResult result)
                     {
+                        var output = ValidateFinalEditorOutput(outputTarget, result.OutputPath);
                         Progress.Value = 100;
-                        StatusText.Text = "Đã xuất: " + result.OutputPath;
+                        StatusText.Text = "Đã xuất: " + output;
                         break;
                     }
                     if (snapshot.Message.Contains("hủy", StringComparison.OrdinalIgnoreCase))
@@ -765,8 +787,9 @@ public sealed partial class EditorPage
             var specs = _imageOverlays.Select(image => new EditorImageOverlaySpec(
                 image.Path, image.X, image.Y, image.Width, image.Height, image.Opacity)).ToArray();
             var output = await composer.RenderAsync(
-                imageJob, composerInput, _application.Config.OutputDirectory, FileNameBox.Text,
+                imageJob, composerInput, outputTarget.Directory, outputTarget.FileName,
                 _media.Width, _media.Height, _media.Duration, specs, copyAudio: hasBaseEdit);
+            output = ValidateFinalEditorOutput(outputTarget, output);
             imageJob.Finish(null, "Đã xuất: " + output, new VideoEditResult(output));
             Progress.Value = 100;
             StatusText.Text = $"Đã xuất video với {_imageOverlays.Count} ảnh/logo: {output}";

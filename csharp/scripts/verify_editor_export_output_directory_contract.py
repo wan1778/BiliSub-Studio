@@ -17,6 +17,7 @@ BOOTSTRAP = PAGES / "EditorPage.ParityBootstrap.cs"
 PARITY = PAGES / "EditorPage.ParityFixes.cs"
 EDITOR = PAGES / "EditorPage.xaml.cs"
 IMAGES = PAGES / "EditorPage.Images.cs"
+OUTPUT_TARGET = PAGES / "EditorPage.OutputTarget.cs"
 FOLDER_PICKER = SERVICES / "FolderPickerService.cs"
 SETTINGS = CORE_APP / "SettingsApplicationService.cs"
 APPLICATION = CORE_APP / "BiliSubApplication.cs"
@@ -61,6 +62,7 @@ bootstrap = read(BOOTSTRAP)
 parity = read(PARITY)
 editor = read(EDITOR)
 images = read(IMAGES)
+output_target = read(OUTPUT_TARGET)
 folder_picker = read(FOLDER_PICKER)
 settings = read(SETTINGS)
 application = read(APPLICATION)
@@ -139,20 +141,36 @@ require("_editorOutputPathText.Text = _application.Config.OutputDirectory" in re
 require("Directory.Exists(_application.Config.OutputDirectory)" in refresh,
         "EXPORT-03 Open-folder availability must follow the configured output directory")
 
-# Both final-render paths must use the configured directory, never a stale UI copy.
-current_request = extract_method(editor, "private VideoEditRequest CurrentEditRequest(")
-require(current_request, "EXPORT-03 CurrentEditRequest is missing")
-require("_application.Config.OutputDirectory," in current_request,
-        "EXPORT-03 normal/base Editor render request must use Config.OutputDirectory")
+# PROJECT-10: Config is authoritative at click time, then one immutable target
+# snapshot must feed every final stage so an in-flight export cannot jump folders.
+capture = extract_method(output_target, "private EditorOutputTarget CaptureEditorOutputTarget()")
+require(capture, "EXPORT-03/PROJECT-10 output target capture owner is missing")
+require("_application.Config.OutputDirectory" in capture,
+        "EXPORT-03 output target must originate from the authoritative Config snapshot")
+require("FileNameBox.Text" in capture,
+        "EXPORT-03 output target must capture the current filename with the directory")
+
 render_project = extract_method(images, "private async Task RenderProjectAsync()")
 require(render_project, "EXPORT-03 RenderProjectAsync is missing")
-require("composerInput, _application.Config.OutputDirectory, FileNameBox.Text" in render_project,
-        "EXPORT-03 image/logo final composer must use Config.OutputDirectory")
+require("outputTarget = CaptureEditorOutputTarget();" in render_project,
+        "EXPORT-03 final render must capture one output target")
+require("OutputDirectory = outputTarget.Directory" in render_project
+        and "FileName = outputTarget.FileName" in render_project,
+        "EXPORT-03 direct/base final request must use the captured target")
+require("composerInput, outputTarget.Directory, outputTarget.FileName" in render_project,
+        "EXPORT-03 image/logo final composer must use the same captured target")
 require("OutputDirectory = temporaryDirectory" in render_project,
         "EXPORT-03 image base intermediate must stay in temp rather than polluting final output directory")
 
+# CurrentEditRequest may still expose Config as its default for Preview and callers,
+# but final RenderProjectAsync must override it with the locked click-time target.
+current_request = extract_method(editor, "private VideoEditRequest CurrentEditRequest(")
+require(current_request, "EXPORT-03 CurrentEditRequest is missing")
+require("_application.Config.OutputDirectory," in current_request,
+        "EXPORT-03 shared request default must continue to derive from Config")
+
 # Tiny behavioral fixture: cancel preserves current directory; a chosen writable folder
-# persists and becomes the directory consumed by both final render branches.
+# persists. Once Render is clicked, later config changes do not retarget that run.
 def choose_output(current: str, picked: str | None) -> str:
     if picked is None or not picked.strip():
         return current
@@ -178,12 +196,16 @@ with tempfile.TemporaryDirectory() as td:
     reopened = json.loads(Path(config_path).read_text(encoding="utf-8"))["OutputDirectory"]
     require(reopened == selected,
             "EXPORT-03 fixture: selected output directory did not survive config reopen")
-    require(reopened == selected and current == selected,
-            "EXPORT-03 fixture: direct and image final-render paths diverged from selected directory")
 
-# Negative fixtures prove this gate detects common regressions.
+    click_target = reopened
+    changed_after_click = os.path.join(td, "later-setting")
+    os.makedirs(changed_after_click, exist_ok=True)
+    require(click_target == selected and click_target != changed_after_click,
+            "EXPORT-03 fixture: in-flight render was retargeted after click")
+
+# Negative fixture proves the gate detects loss of Settings persistence.
 require("SetOutputDirectoryAsync(path" not in choose.replace(
     "await _application.Settings.SetOutputDirectoryAsync(path, CancellationToken.None);", "", 1),
     "EXPORT-03 fixture sanity failure")
 
-print("PASS: EXPORT-03 output directory selection, persistence and render ownership are locked")
+print("PASS: EXPORT-03 output directory selection, persistence and immutable in-flight render target are locked")
