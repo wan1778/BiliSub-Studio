@@ -45,6 +45,40 @@ internal static class TranslationJsonCompatibilityContract
             if (!source.Contains(marker, StringComparison.Ordinal))
                 throw new InvalidOperationException("Qwen3 JSON compatibility path missing: " + marker);
         }
+        const string bibleFallbackMarker = "var warning = $\"GPU/runtime lỗi → chuyển CPU:";
+        const string bibleRecoveryCatch = "catch (Exception retryRuntimeError) when (retryRuntimeError is not OperationCanceledException)";
+        const string bibleCheckpointAdvance = "checkpoint = checkpoint with { Bible = bible, AnalysisPagesCompleted = page + 1 };";
+        var bibleFallbackStart = source.IndexOf(bibleFallbackMarker, StringComparison.Ordinal);
+        var bibleRecoveryStart = source.IndexOf(bibleRecoveryCatch, StringComparison.Ordinal);
+        var bibleCheckpointAdvanceIndex = bibleRecoveryStart < 0
+            ? -1
+            : source.IndexOf(bibleCheckpointAdvance, bibleRecoveryStart, StringComparison.Ordinal);
+        if (bibleFallbackStart < 0 || bibleRecoveryStart <= bibleFallbackStart || bibleCheckpointAdvanceIndex <= bibleRecoveryStart)
+            throw new InvalidOperationException("Bible runtime fallback/recovery ordering is not locked");
+
+        var cpuFallbackBlock = source[bibleFallbackStart..bibleRecoveryStart];
+        if (!cpuFallbackBlock.Contains("await RestartTranslationServerAsync(runtime!, model, 0, job.CancellationToken);", StringComparison.Ordinal))
+            throw new InvalidOperationException("Bible runtime fallback must explicitly restart on CPU");
+        if (!cpuFallbackBlock.Contains("catch (OperationCanceledException)", StringComparison.Ordinal))
+            throw new InvalidOperationException("Bible CPU fallback must preserve user cancellation");
+
+        var bibleRecoveryBlock = source[bibleRecoveryStart..bibleCheckpointAdvanceIndex];
+        foreach (var marker in new[]
+        {
+            "CPU fallback vẫn lỗi runtime → khởi động lại sạch",
+            "await RestartTranslationServerAsync(runtime!, model, 0, job.CancellationToken);",
+            "catch (OperationCanceledException)",
+            "AI local không thể khôi phục sau lỗi runtime khi tạo bible",
+            "Runtime CPU đã khôi phục → giữ bible cũ",
+            "nextBible = bible;",
+        })
+        {
+            if (!bibleRecoveryBlock.Contains(marker, StringComparison.Ordinal))
+                throw new InvalidOperationException("Bible runtime recovery path missing: " + marker);
+        }
+        if (bibleRecoveryBlock.Contains("RunJsonAsync(", StringComparison.Ordinal))
+            throw new InvalidOperationException("Bible runtime recovery must health-restart only; do not add a third model inference");
+
         if (source.Contains("/no_think", StringComparison.Ordinal))
             throw new InvalidOperationException("legacy /no_think token must not be combined with Qwen3 JSON generation");
         if (source.Contains("\"--output\", responseFile", StringComparison.Ordinal) || source.Contains("llama-cli.exe", StringComparison.Ordinal))

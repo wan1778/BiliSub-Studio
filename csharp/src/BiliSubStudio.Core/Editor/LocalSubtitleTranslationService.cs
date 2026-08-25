@@ -264,25 +264,60 @@ public sealed class LocalSubtitleTranslationService : IDisposable
                         job.Warn($"Lượt đọc SRT {page + 1} gặp lỗi runtime; thử lại bằng CPU an toàn: {first.Message}");
                         SetLive("translation-fallback", analysisProgress,
                             $"Bước 3/6 · Tạo bible · phần {page + 1}/{analysisPages}.", warning);
-                        await RestartTranslationServerAsync(runtime!, model, LowerGpuLayers(layers), job.CancellationToken);
                         try
                         {
-                            nextBible = ValidateBible(await RunJsonAsync(runtime!, prompt + "\nRuntime vừa được chuyển sang CPU. Chỉ trả đúng JSON object theo schema và luôn có key bible.", BibleSchema, 2048, job.CancellationToken, job));
-                            if (string.IsNullOrWhiteSpace(nextBible))
+                            await RestartTranslationServerAsync(runtime!, model, 0, job.CancellationToken);
+                            try
                             {
-                                const string cpuWarning = "CPU fallback vẫn thiếu bible → giữ hồ sơ trước đó.";
-                                job.Warn($"Lượt đọc SRT {page + 1} sau CPU fallback vẫn thiếu bible; giữ hồ sơ trước đó và tiếp tục Vietsub.");
+                                nextBible = ValidateBible(await RunJsonAsync(runtime!, prompt + "\nRuntime vừa được chuyển sang CPU. Chỉ trả đúng JSON object theo schema và luôn có key bible.", BibleSchema, 2048, job.CancellationToken, job));
+                                if (string.IsNullOrWhiteSpace(nextBible))
+                                {
+                                    const string cpuWarning = "CPU fallback vẫn thiếu bible → giữ hồ sơ trước đó.";
+                                    job.Warn($"Lượt đọc SRT {page + 1} sau CPU fallback vẫn thiếu bible; giữ hồ sơ trước đó và tiếp tục Vietsub.");
+                                    SetLive("translation-bible-warning", analysisProgress,
+                                        $"Bước 3/6 · Tạo bible · phần {page + 1}/{analysisPages}.", cpuWarning);
+                                    nextBible = bible;
+                                }
+                            }
+                            catch (InvalidDataException retryError)
+                            {
+                                var retryWarning = $"CPU fallback vẫn sai JSON → giữ bible cũ: {TrimLiveText(retryError.Message, 90)}";
+                                job.Warn($"Lượt đọc SRT {page + 1} sau CPU fallback vẫn trả JSON/hồ sơ không hợp lệ; giữ hồ sơ trước đó và tiếp tục Vietsub: {retryError.Message}");
                                 SetLive("translation-bible-warning", analysisProgress,
-                                    $"Bước 3/6 · Tạo bible · phần {page + 1}/{analysisPages}.", cpuWarning);
+                                    $"Bước 3/6 · Tạo bible · phần {page + 1}/{analysisPages}.", retryWarning);
                                 nextBible = bible;
                             }
                         }
-                        catch (InvalidDataException retryError)
+                        catch (OperationCanceledException)
                         {
-                            var retryWarning = $"CPU fallback vẫn sai JSON → giữ bible cũ: {TrimLiveText(retryError.Message, 90)}";
-                            job.Warn($"Lượt đọc SRT {page + 1} sau CPU fallback vẫn trả JSON/hồ sơ không hợp lệ; giữ hồ sơ trước đó và tiếp tục Vietsub: {retryError.Message}");
+                            throw;
+                        }
+                        catch (Exception retryRuntimeError) when (retryRuntimeError is not OperationCanceledException)
+                        {
+                            var retryRuntimeWarning = $"CPU fallback vẫn lỗi runtime → khởi động lại sạch: {TrimLiveText(retryRuntimeError.Message, 90)}";
+                            job.Warn($"Lượt đọc SRT {page + 1} sau CPU fallback vẫn lỗi runtime; khởi động lại runtime CPU sạch trước khi tiếp tục: {retryRuntimeError.Message}");
+                            SetLive("translation-fallback", analysisProgress,
+                                $"Bước 3/6 · Tạo bible · phần {page + 1}/{analysisPages}.", retryRuntimeWarning);
+                            try
+                            {
+                                await RestartTranslationServerAsync(runtime!, model, 0, job.CancellationToken);
+                            }
+                            catch (OperationCanceledException)
+                            {
+                                throw;
+                            }
+                            catch (Exception recoveryError)
+                            {
+                                job.Warn($"Không thể khôi phục runtime CPU sau lỗi bible phần {page + 1}/{analysisPages}: {recoveryError.Message}");
+                                throw new InvalidOperationException(
+                                    $"AI local không thể khôi phục sau lỗi runtime khi tạo bible phần {page + 1}/{analysisPages}. Checkpoint chưa đánh dấu phần này hoàn tất; hãy chạy lại để tiếp tục.",
+                                    new AggregateException(retryRuntimeError, recoveryError));
+                            }
+
+                            var recoveredWarning = $"Runtime CPU đã khôi phục → giữ bible cũ và bỏ qua phần {page + 1}/{analysisPages}.";
+                            job.Warn($"Đã khôi phục runtime CPU sau lỗi bible phần {page + 1}/{analysisPages}; giữ hồ sơ trước đó và tiếp tục Vietsub.");
                             SetLive("translation-bible-warning", analysisProgress,
-                                $"Bước 3/6 · Tạo bible · phần {page + 1}/{analysisPages}.", retryWarning);
+                                $"Bước 3/6 · Tạo bible · phần {page + 1}/{analysisPages}.", recoveredWarning);
                             nextBible = bible;
                         }
                     }
