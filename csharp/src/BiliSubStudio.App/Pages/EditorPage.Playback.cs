@@ -508,7 +508,6 @@ public sealed partial class EditorPage
                 finally { _page._syncingTimeline = false; }
                 _page.UpdateClock();
                 _page.RenderOverlays();
-                _page.RenderTimelineRegions();
             });
         }
 
