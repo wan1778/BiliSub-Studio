@@ -91,11 +91,14 @@ internal static class TranslationJsonCompatibilityContract
         {
             "using System.Text.Json;",
             "var checkpointPath = Path.Combine(_application.Paths.Data, \"Projects\", \"Translation\", projectId + \".json\");",
-            "async Task<int> TryApplyLiveTranslationCheckpointAsync()",
+            "async Task<(int Count, int LatestIndex)> TryApplyLiveTranslationCheckpointAsync()",
             "TryGetProperty(\"translations\", out var translations)",
             "Math.Abs(snapshot.Progress - lastLiveProbeProgress) > 0.001",
-            "var liveCount = await TryApplyLiveTranslationCheckpointAsync();",
-            "Vietsub realtime · đã cập nhật",
+            "var live = await TryApplyLiveTranslationCheckpointAsync();",
+            "Vietsub realtime · AI đã dịch xong tới câu",
+            "_translationLiveLatestCueIndex = latestLiveIndex;",
+            "SubtitleCueList.ScrollIntoView(SubtitleCueList.Items[latestLiveIndex]);",
+            "var preview = hasVietnamese ? cue.VietnameseText : cue.SourceText;",
             "RenderSubtitleCueList();",
             "LoadSelectedSubtitleCue();",
             "UpdateSubtitleSummary();",
@@ -110,7 +113,7 @@ internal static class TranslationJsonCompatibilityContract
         if (editor.Contains("SubtitleCueList.IsEnabled = hasSource && idle && !_subtitleManualDirty;", StringComparison.Ordinal))
             throw new InvalidOperationException("live Vietsub must keep the cue list browseable while translation is running");
         var snapshotIndex = editor.IndexOf("var snapshot = _application.Jobs.GetSnapshot(_translationJobId);", StringComparison.Ordinal);
-        var liveApplyIndex = editor.IndexOf("var liveCount = await TryApplyLiveTranslationCheckpointAsync();", snapshotIndex, StringComparison.Ordinal);
+        var liveApplyIndex = editor.IndexOf("var live = await TryApplyLiveTranslationCheckpointAsync();", snapshotIndex, StringComparison.Ordinal);
         var doneGateIndex = editor.IndexOf("if (!snapshot.Done) { await Task.Delay(350); continue; }", snapshotIndex, StringComparison.Ordinal);
         if (snapshotIndex < 0 || liveApplyIndex <= snapshotIndex || doneGateIndex <= liveApplyIndex)
             throw new InvalidOperationException("live cue checkpoint must be applied before the full-job done gate");
