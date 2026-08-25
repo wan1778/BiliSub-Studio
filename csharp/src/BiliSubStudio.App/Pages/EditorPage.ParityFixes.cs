@@ -112,7 +112,7 @@ public sealed partial class EditorPage
 
     private void RefreshEditorParityControls()
     {
-        if (!_editorCoreInitialized) return;
+        if (_editorCoreInitialized is false) return;
         if (_editorOutputPathText is not null) _editorOutputPathText.Text = _application.Config.OutputDirectory;
         if (_editorChooseOutputButton is not null) _editorChooseOutputButton.IsEnabled = !EditorBusy && !_playback.IsPreviewMode;
         if (_editorOpenOutputButton is not null) _editorOpenOutputButton.IsEnabled = Directory.Exists(_application.Config.OutputDirectory);
