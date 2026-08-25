@@ -29,7 +29,7 @@ for token in (
     'ValidPe(LlamaServer) && RuntimeStampMatches()',
     'var needsInference = checkpoint.AnalysisPagesCompleted < analysisPages',
     'TranslationServerSession? runtime = null;',
-    'runtime = await StartTranslationServerWithFallbackAsync(layers, job, job.CancellationToken);',
+    'runtime = await StartTranslationServerWithFallbackAsync(model, layers, job, job.CancellationToken);',
     'if (runtime is not null) await runtime.DisposeAsync();',
     'new ProcessStartInfo(LlamaServer)',
     '"--host", "127.0.0.1", "--port", port.ToString()',
@@ -49,7 +49,7 @@ require('private string LlamaCli' not in source and '"llama-cli.exe"' not in sou
         "SPEED-02 still contains the per-request llama-cli runtime path")
 require('_processes.RunAsync(' not in source,
         "SPEED-02 still starts one inference process per request")
-require(source.count('await RestartTranslationServerAsync(runtime!, LowerGpuLayers(layers), job.CancellationToken);') == 2,
+require(source.count('await RestartTranslationServerAsync(runtime!, model, LowerGpuLayers(layers), job.CancellationToken);') == 2,
         "SPEED-02 analysis and translation runtime faults must restart the same session on CPU fallback")
 require(source.count('await RunJsonAsync(runtime!,') >= 6,
         "SPEED-02 analysis/retry/translation calls are not routed through the persistent session")

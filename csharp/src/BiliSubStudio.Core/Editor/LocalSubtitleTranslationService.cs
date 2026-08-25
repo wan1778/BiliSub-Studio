@@ -14,6 +14,12 @@ using BiliSubStudio.Core.Processes;
 
 namespace BiliSubStudio.Core.Editor;
 
+public enum EditorTranslationModelMode
+{
+    Quality,
+    Fast,
+}
+
 public sealed record LocalTranslationStatus(
     bool RuntimeReady,
     bool ModelReady,
@@ -27,7 +33,8 @@ public sealed record EditorTranslationRequest(
     EditorSubtitleSource Source,
     string OutputDirectory,
     string OutputFileName,
-    bool ForceFresh = false);
+    bool ForceFresh = false,
+    EditorTranslationModelMode ModelMode = EditorTranslationModelMode.Quality);
 
 public sealed record EditorTranslationResult(
     IReadOnlyList<EditorSubtitleCue> Cues,
@@ -46,6 +53,12 @@ public sealed class LocalSubtitleTranslationService : IDisposable
     internal const string ModelUrl = "https://huggingface.co/Qwen/Qwen3-8B-GGUF/resolve/7c41481f57cb95916b40956ab2f0b139b296d974/Qwen3-8B-Q4_K_M.gguf?download=true";
     internal const long ModelBytes = 5_027_783_488;
     internal const string ModelSha256 = "d98cdcbd03e17ce47681435b5150e34c1417f50b5c0019dd560e4882c5745785";
+    internal const string QualityModelKey = "qwen3-8b-q4-k-m";
+    internal const string FastModelName = "Qwen3-4B Q4_K_M";
+    internal const string FastModelUrl = "https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/a9a60d009fa7ff9606305047c2bf77ac25dbec49/Qwen3-4B-Q4_K_M.gguf?download=true";
+    internal const long FastModelBytes = 2_497_280_256;
+    internal const string FastModelSha256 = "7485fe6f11af29433bc51cab58009521f205840f5b4ae3a32fa7f92e8534fdf5";
+    internal const string FastModelKey = "qwen3-4b-q4-k-m";
     internal const string ThinkingTemplateKwargs = "{\"enable_thinking\":false}";
     internal const string ReasoningMode = "off";
     internal const int RuntimeAutoGpuLayers = -1;
@@ -66,6 +79,7 @@ public sealed class LocalSubtitleTranslationService : IDisposable
     private TranslationSkillBundle? _skill;
     private bool? _runtimeReady;
     private bool? _modelReady;
+    private bool? _fastModelReady;
     private readonly SemaphoreSlim _prepareGate = new(1, 1);
     private readonly JsonSerializerOptions _json = new() { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower, WriteIndented = true };
 
@@ -88,28 +102,34 @@ public sealed class LocalSubtitleTranslationService : IDisposable
     private string RuntimeStamp => Path.Combine(RuntimeDirectory, ".verified");
     private string LlamaServer => Path.Combine(RuntimeDirectory, "llama-server.exe");
     private string ModelDirectory => Path.Combine(Root, "Models");
-    private string ModelPath => Path.Combine(ModelDirectory, "Qwen3-8B-Q4_K_M.gguf");
-    private string ModelStamp => ModelPath + ".verified";
     private string CheckpointDirectory => Path.Combine(_paths.Data, "Projects", "Translation");
+    private static readonly TranslationModelSpec QualityModel = new(EditorTranslationModelMode.Quality, QualityModelKey, ModelName, ModelUrl, ModelBytes, ModelSha256, "Qwen3-8B-Q4_K_M.gguf");
+    private static readonly TranslationModelSpec FastModel = new(EditorTranslationModelMode.Fast, FastModelKey, FastModelName, FastModelUrl, FastModelBytes, FastModelSha256, "Qwen3-4B-Q4_K_M.gguf");
+    private string ModelPath(TranslationModelSpec model) => Path.Combine(ModelDirectory, model.FileName);
+    private string ModelStamp(TranslationModelSpec model) => ModelPath(model) + ".verified";
+    private static TranslationModelSpec ModelFor(EditorTranslationModelMode mode) => mode == EditorTranslationModelMode.Fast ? FastModel : QualityModel;
     private TranslationSkillBundle Skill => _skill ??= TranslationSkillBundle.Load(_skillPath, requireBuiltInHash: true);
 
-    public LocalTranslationStatus Status
+    public LocalTranslationStatus Status => StatusFor(EditorTranslationModelMode.Quality);
+
+    public LocalTranslationStatus StatusFor(EditorTranslationModelMode mode)
     {
-        get
-        {
-            var runtime = _runtimeReady ??= ValidPe(LlamaServer) && RuntimeStampMatches();
-            var model = _modelReady ??= ValidSizedFile(ModelPath, ModelBytes) && ModelStampMatches();
-            return new LocalTranslationStatus(runtime, model, ModelName, ModelBytes, Skill.Info.Name, Skill.Info.Sha256);
-        }
+        var model = ModelFor(mode);
+        var runtimeReady = _runtimeReady ??= ValidPe(LlamaServer) && RuntimeStampMatches();
+        var modelReady = mode == EditorTranslationModelMode.Fast
+            ? _fastModelReady ??= ModelStampMatches(model)
+            : _modelReady ??= ModelStampMatches(model);
+        return new LocalTranslationStatus(runtimeReady, modelReady, model.Name, model.Bytes, Skill.Info.Name, Skill.Info.Sha256);
     }
 
-    public async Task PrepareAsync(AppJob job)
+    public async Task PrepareAsync(AppJob job, EditorTranslationModelMode mode = EditorTranslationModelMode.Quality)
     {
         await _prepareGate.WaitAsync(job.CancellationToken);
         try
         {
+            var model = ModelFor(mode);
             Directory.CreateDirectory(Root);
-            if (!Status.RuntimeReady)
+            if (!StatusFor(mode).RuntimeReady)
             {
                 job.Set("ai-runtime", 1, "Đang tải runtime AI local đã xác minh (~35 MB)...");
                 await DownloadVerifiedAsync(RuntimeUrl, RuntimeArchive, RuntimeArchiveBytes, RuntimeArchiveSha256, 1, 8, job);
@@ -117,15 +137,15 @@ public sealed class LocalSubtitleTranslationService : IDisposable
                 ExtractRuntime(RuntimeArchive);
                 _runtimeReady = null;
             }
-            if (!Status.ModelReady)
+            if (!StatusFor(mode).ModelReady)
             {
                 Directory.CreateDirectory(ModelDirectory);
-                job.Set("ai-model", 10, "Đang tải Qwen3-8B Q4_K_M (~5,03 GB); có thể hủy và tải tiếp sau.");
-                await DownloadVerifiedAsync(ModelUrl, ModelPath, ModelBytes, ModelSha256, 10, 98, job);
-                WriteModelStamp();
-                _modelReady = null;
+                job.Set("ai-model", 10, $"Đang tải {model.Name} (~{model.Bytes / 1024d / 1024 / 1024:0.00} GB); có thể hủy và tải tiếp sau.");
+                await DownloadVerifiedAsync(model.Url, ModelPath(model), model.Bytes, model.Sha256, 10, 98, job);
+                WriteModelStamp(model);
+                ResetModelReady(mode);
             }
-            job.Set("ai-ready", 99, $"AI local sẵn sàng · {ModelName} · skill {Skill.Info.Name}.");
+            job.Set("ai-ready", 99, $"AI local sẵn sàng · {model.Name} · skill {Skill.Info.Name}.");
         }
         finally { _prepareGate.Release(); }
     }
@@ -134,8 +154,10 @@ public sealed class LocalSubtitleTranslationService : IDisposable
     {
         ArgumentNullException.ThrowIfNull(request);
         ValidateProjectId(request.ProjectId);
-        EnsureResources();
-        if (!Status.RuntimeReady || !Status.ModelReady) throw new InvalidOperationException("Hãy bấm Chuẩn bị AI trước khi Vietsub.");
+        var model = ModelFor(request.ModelMode);
+        EnsureResources(model);
+        var selectedStatus = StatusFor(request.ModelMode);
+        if (!selectedStatus.RuntimeReady || !selectedStatus.ModelReady) throw new InvalidOperationException($"Hãy bấm Chuẩn bị AI cho {model.Name} trước khi Vietsub.");
         var currentSource = await EditorSubtitleDocument.LoadAsync(request.Source.Path, job.CancellationToken);
         if (!string.Equals(currentSource.Sha256, request.Source.Sha256, StringComparison.Ordinal))
             throw new InvalidDataException("File SRT nguồn đã thay đổi sau khi nạp; hãy chọn lại để không dịch nhầm checkpoint.");
@@ -143,12 +165,12 @@ public sealed class LocalSubtitleTranslationService : IDisposable
         if (source.Count == 0) throw new InvalidDataException("SRT nguồn không có cue.");
         var checkpointPath = Path.Combine(CheckpointDirectory, request.ProjectId + ".json");
         if (request.ForceFresh) TryDelete(checkpointPath);
-        var checkpoint = await LoadCheckpointAsync(checkpointPath, request.Source.Sha256, job.CancellationToken);
+        var checkpoint = await LoadCheckpointAsync(checkpointPath, request.Source.Sha256, model, job.CancellationToken);
         var layers = RuntimeAutoGpuLayers;
         var analysisBatches = CreateBatches(source, AnalysisBatchSize, 45_000);
         var analysisPages = analysisBatches.Count;
         if (checkpoint.AnalysisPagesCompleted < 0 || checkpoint.AnalysisPagesCompleted > analysisPages || checkpoint.Bible.Length > 24_000)
-            checkpoint = TranslationCheckpoint.New(request.Source.Sha256, Skill.Info.Sha256);
+            checkpoint = TranslationCheckpoint.New(request.Source.Sha256, Skill.Info.Sha256, model.Key);
         var recovered = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var cue in source)
         {
@@ -169,8 +191,8 @@ public sealed class LocalSubtitleTranslationService : IDisposable
         {
             if (needsInference)
             {
-                runtime = await StartTranslationServerWithFallbackAsync(layers, job, job.CancellationToken);
-                job.Log($"Qwen runtime giữ model trong RAM/VRAM cho toàn bộ lượt Vietsub · {ModelName}.");
+                runtime = await StartTranslationServerWithFallbackAsync(model, layers, job, job.CancellationToken);
+                job.Log($"Qwen runtime giữ model trong RAM/VRAM cho toàn bộ lượt Vietsub · {model.Name}.");
             }
 
             if (checkpoint.AnalysisPagesCompleted < analysisPages)
@@ -190,7 +212,7 @@ public sealed class LocalSubtitleTranslationService : IDisposable
                     catch (Exception first) when (first is not OperationCanceledException)
                     {
                         job.Warn($"Lượt đọc SRT {page + 1} gặp lỗi runtime; thử lại bằng CPU an toàn: {first.Message}");
-                        await RestartTranslationServerAsync(runtime!, LowerGpuLayers(layers), job.CancellationToken);
+                        await RestartTranslationServerAsync(runtime!, model, LowerGpuLayers(layers), job.CancellationToken);
                         nextBible = ValidateBible(await RunJsonAsync(runtime!, prompt + "\nLần trước runtime không hoàn tất. Chỉ trả đúng một JSON object theo schema.", BibleSchema, 2048, job.CancellationToken));
                     }
                     bible = nextBible;
@@ -229,7 +251,7 @@ public sealed class LocalSubtitleTranslationService : IDisposable
                 catch (Exception first) when (first is not OperationCanceledException)
                 {
                     job.Warn($"Batch bắt đầu cue {batch[0].Number} gặp lỗi runtime; thử lại bằng CPU an toàn: {first.Message}");
-                    await RestartTranslationServerAsync(runtime!, LowerGpuLayers(layers), job.CancellationToken);
+                    await RestartTranslationServerAsync(runtime!, model, LowerGpuLayers(layers), job.CancellationToken);
                     var retry = await RunJsonAsync(runtime!, prompt + "\nLần trước runtime không hoàn tất. Dịch lại đúng toàn bộ TARGET và chỉ trả đúng một JSON object.",
                         TranslationSchema, 4096, job.CancellationToken);
                     translations = ValidateBatch(retry, batch);
@@ -275,7 +297,7 @@ public sealed class LocalSubtitleTranslationService : IDisposable
         var output = FileNamePolicy.UniquePath(Path.Combine(outputDirectory, safeName), request.Source.Path);
         await WriteAtomicAsync(output, EditorSubtitleDocument.RenderVietnamese(translated), job.CancellationToken);
         job.Set("translation-finalizing", 98, "Đã kiểm tra số block, thứ tự và timecode; đang hoàn tất SRT Việt...");
-        return new EditorTranslationResult(translated, output, restored, ModelName, Skill.Info.Sha256);
+        return new EditorTranslationResult(translated, output, restored, model.Name, Skill.Info.Sha256);
     }
 
     internal static int RecommendedGpuLayers(HardwareResourceSnapshot resources)
@@ -352,6 +374,7 @@ public sealed class LocalSubtitleTranslationService : IDisposable
     }
 
     private async Task<TranslationServerSession> StartTranslationServerWithFallbackAsync(
+        TranslationModelSpec model,
         int gpuLayers,
         AppJob job,
         CancellationToken cancellationToken)
@@ -359,7 +382,7 @@ public sealed class LocalSubtitleTranslationService : IDisposable
         var session = new TranslationServerSession();
         try
         {
-            await RestartTranslationServerAsync(session, gpuLayers, cancellationToken);
+            await RestartTranslationServerAsync(session, model, gpuLayers, cancellationToken);
             return session;
         }
         catch (OperationCanceledException)
@@ -372,7 +395,7 @@ public sealed class LocalSubtitleTranslationService : IDisposable
             job.Warn("Qwen GPU/Vulkan không khởi động được persistent runtime; chuyển sang CPU an toàn: " + first.Message);
             try
             {
-                await RestartTranslationServerAsync(session, 0, cancellationToken);
+                await RestartTranslationServerAsync(session, model, 0, cancellationToken);
                 return session;
             }
             catch
@@ -385,6 +408,7 @@ public sealed class LocalSubtitleTranslationService : IDisposable
 
     private async Task RestartTranslationServerAsync(
         TranslationServerSession session,
+        TranslationModelSpec model,
         int gpuLayers,
         CancellationToken cancellationToken)
     {
@@ -403,7 +427,7 @@ public sealed class LocalSubtitleTranslationService : IDisposable
         };
         var args = new List<string>
         {
-            "-m", ModelPath, "--host", "127.0.0.1", "--port", port.ToString(),
+            "-m", ModelPath(model), "--host", "127.0.0.1", "--port", port.ToString(),
             "-ngl", gpuLayers < 0 ? "auto" : gpuLayers.ToString(), "--fit", "on", "-c", "24576", "-np", "1",
             "--jinja", "--no-warmup", "--no-context-shift", "--cache-prompt",
             "--chat-template-kwargs", ThinkingTemplateKwargs, "--reasoning", ReasoningMode, "--reasoning-format", "none",
@@ -734,14 +758,14 @@ public sealed class LocalSubtitleTranslationService : IDisposable
             throw new InvalidDataException($"Cue {cue.Number} chứa ký tự điều khiển.");
     }
 
-    private void EnsureResources()
+    private void EnsureResources(TranslationModelSpec model)
     {
         const long gib = 1024L * 1024 * 1024;
         var resource = _hardware.ResourceSnapshot();
         if (resource.TotalMemoryBytes < 8 * gib)
-            throw new InvalidOperationException("Qwen3-8B cần máy có ít nhất 8 GB RAM.");
+            throw new InvalidOperationException($"{model.Name} cần máy có ít nhất 8 GB RAM theo gate an toàn hiện tại.");
         if (resource.AvailableMemoryBytes < 7 * gib / 2 && RecommendedGpuLayers(resource) == 0)
-            throw new InvalidOperationException("RAM trống chưa đủ để chạy Qwen3-8B an toàn. Hãy đóng bớt ứng dụng rồi thử lại.");
+            throw new InvalidOperationException($"RAM trống chưa đủ để chạy {model.Name} an toàn. Hãy đóng bớt ứng dụng rồi thử lại.");
     }
 
     private async Task DownloadVerifiedAsync(string url, string destination, long expectedSize, string expectedSha, double startProgress, double endProgress, AppJob job)
@@ -826,19 +850,32 @@ public sealed class LocalSubtitleTranslationService : IDisposable
         finally { TryDeleteDirectory(temporary); TryDelete(archivePath); }
     }
 
-    private async Task<TranslationCheckpoint> LoadCheckpointAsync(string path, string sourceSha, CancellationToken cancellationToken)
+    private async Task<TranslationCheckpoint> LoadCheckpointAsync(string path, string sourceSha, TranslationModelSpec model, CancellationToken cancellationToken)
     {
         try
         {
-            if (!File.Exists(path) || new FileInfo(path).Length > 64L * 1024 * 1024) return TranslationCheckpoint.New(sourceSha, Skill.Info.Sha256);
+            if (!File.Exists(path) || new FileInfo(path).Length > 64L * 1024 * 1024) return TranslationCheckpoint.New(sourceSha, Skill.Info.Sha256, model.Key);
             await using var stream = File.OpenRead(path);
             var loaded = await JsonSerializer.DeserializeAsync<TranslationCheckpoint>(stream, _json, cancellationToken);
             if (loaded is null || loaded.Schema != 1 || loaded.SourceSha256 != sourceSha || loaded.SkillSha256 != Skill.Info.Sha256)
-                return TranslationCheckpoint.New(sourceSha, Skill.Info.Sha256);
-            return loaded with { Translations = new Dictionary<string, string>(loaded.Translations, StringComparer.Ordinal) };
+                return TranslationCheckpoint.New(sourceSha, Skill.Info.Sha256, model.Key);
+            var checkpointModelKey = loaded.ModelKey;
+            if (string.IsNullOrWhiteSpace(checkpointModelKey))
+            {
+                if (model.Mode != EditorTranslationModelMode.Quality)
+                    return TranslationCheckpoint.New(sourceSha, Skill.Info.Sha256, model.Key);
+                checkpointModelKey = QualityModelKey;
+            }
+            if (!string.Equals(checkpointModelKey, model.Key, StringComparison.Ordinal))
+                return TranslationCheckpoint.New(sourceSha, Skill.Info.Sha256, model.Key);
+            return loaded with
+            {
+                ModelKey = checkpointModelKey,
+                Translations = new Dictionary<string, string>(loaded.Translations, StringComparer.Ordinal),
+            };
         }
         catch (OperationCanceledException) { throw; }
-        catch { return TranslationCheckpoint.New(sourceSha, Skill.Info.Sha256); }
+        catch { return TranslationCheckpoint.New(sourceSha, Skill.Info.Sha256, model.Key); }
     }
 
     private async Task SaveCheckpointAsync(string path, TranslationCheckpoint checkpoint, CancellationToken cancellationToken)
@@ -924,17 +961,28 @@ public sealed class LocalSubtitleTranslationService : IDisposable
 
     private static bool ValidSizedFile(string path, long expected) => File.Exists(path) && new FileInfo(path).Length == expected && new FileInfo(path).LinkTarget is null;
     private static void WriteStamp(string path, string value) => File.WriteAllText(path, value + Environment.NewLine, new UTF8Encoding(false));
-    private bool ModelStampMatches()
+    private bool ModelStampMatches(TranslationModelSpec model)
     {
         try
         {
-            if (!File.Exists(ModelStamp) || !ValidSizedFile(ModelPath, ModelBytes)) return false;
-            var expected = $"{ModelSha256}|{ModelBytes}|{new FileInfo(ModelPath).LastWriteTimeUtc.Ticks}";
-            return string.Equals(File.ReadAllText(ModelStamp).Trim(), expected, StringComparison.Ordinal);
+            var path = ModelPath(model);
+            var stamp = ModelStamp(model);
+            if (!File.Exists(stamp) || !ValidSizedFile(path, model.Bytes)) return false;
+            var expected = $"{model.Sha256}|{model.Bytes}|{new FileInfo(path).LastWriteTimeUtc.Ticks}";
+            return string.Equals(File.ReadAllText(stamp).Trim(), expected, StringComparison.Ordinal);
         }
         catch { return false; }
     }
-    private void WriteModelStamp() => WriteStamp(ModelStamp, $"{ModelSha256}|{ModelBytes}|{new FileInfo(ModelPath).LastWriteTimeUtc.Ticks}");
+    private void WriteModelStamp(TranslationModelSpec model)
+    {
+        var path = ModelPath(model);
+        WriteStamp(ModelStamp(model), $"{model.Sha256}|{model.Bytes}|{new FileInfo(path).LastWriteTimeUtc.Ticks}");
+    }
+    private void ResetModelReady(EditorTranslationModelMode mode)
+    {
+        if (mode == EditorTranslationModelMode.Fast) _fastModelReady = null;
+        else _modelReady = null;
+    }
     private bool RuntimeStampMatches()
     {
         try
@@ -976,8 +1024,17 @@ public sealed class LocalSubtitleTranslationService : IDisposable
         _http.Dispose();
     }
 
-    private sealed record TranslationCheckpoint(int Schema, string SourceSha256, string SkillSha256, string Bible, int AnalysisPagesCompleted, Dictionary<string, string> Translations)
+    private sealed record TranslationModelSpec(
+        EditorTranslationModelMode Mode,
+        string Key,
+        string Name,
+        string Url,
+        long Bytes,
+        string Sha256,
+        string FileName);
+
+    private sealed record TranslationCheckpoint(int Schema, string SourceSha256, string SkillSha256, string? ModelKey, string Bible, int AnalysisPagesCompleted, Dictionary<string, string> Translations)
     {
-        public static TranslationCheckpoint New(string sourceSha, string skillSha) => new(1, sourceSha, skillSha, string.Empty, 0, new Dictionary<string, string>(StringComparer.Ordinal));
+        public static TranslationCheckpoint New(string sourceSha, string skillSha, string modelKey) => new(1, sourceSha, skillSha, modelKey, string.Empty, 0, new Dictionary<string, string>(StringComparer.Ordinal));
     }
 }

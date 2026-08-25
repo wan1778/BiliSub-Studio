@@ -137,6 +137,7 @@
                                 <Button x:Name="ImportSrtButton" Click="ImportSubtitle_Click" Content="Chọn SRT tiếng Trung" />
                                 <TextBlock x:Name="AsrStatusText" Style="{StaticResource MutedTextStyle}" Text="Whisper timing chưa chạy." TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
                                 <TextBlock x:Name="SrtSummaryText" Style="{StaticResource MutedTextStyle}" Text="Skill: Dịch Trung Tu Tiên." TextWrapping="Wrap" />
+                                <ToggleSwitch x:Name="TranslationFastModeToggle" Header="Model Vietsub" OffContent="8B Chất lượng" OnContent="4B Nhanh / nháp" IsOn="False" Toggled="TranslationFastMode_Toggled" />
                                 <Grid ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
                                     <Button x:Name="PrepareAiButton" Click="PrepareAi_Click" Content="Chuẩn bị AI" Style="{StaticResource SecondaryButtonStyle}" />
                                     <Button Grid.Column="1" x:Name="TranslateButton" Click="Translate_Click" Content="Vietsub" IsEnabled="False" />
