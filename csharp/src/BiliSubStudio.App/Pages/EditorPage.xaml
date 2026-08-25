@@ -79,7 +79,11 @@
                 </Grid>
             </Border>
 
-            <Grid Grid.Column="1">
+            <Grid Grid.Column="1" RowSpacing="7">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
                 <Border x:Name="PreviewSurface" Background="Black" BorderBrush="{ThemeResource StrongBorderBrush}" BorderThickness="1" CornerRadius="12">
                     <Grid AutomationProperties.Name="Player Editor">
                         <MediaPlayerElement x:Name="PreviewPlayer" AreTransportControlsEnabled="False" AutoPlay="False" Stretch="Uniform" Visibility="Collapsed" AutomationProperties.Name="Video preview" />
@@ -90,24 +94,24 @@
                                 AutomationProperties.Name="Vùng chỉnh trực tiếp" />
                         <Canvas x:Name="ImageOverlayCanvas" Background="Transparent" IsHitTestVisible="False" AutomationProperties.Name="Ảnh và logo trên preview" />
 
-                        <Border x:Name="PlayerControlBar" Height="48" VerticalAlignment="Bottom" Margin="8" Padding="8,5" Background="#D9000000" CornerRadius="9">
-                            <Grid ColumnSpacing="7">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="36" />
-                                    <ColumnDefinition Width="78" />
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="44" />
-                                    <ColumnDefinition Width="72" />
-                                    <ColumnDefinition Width="36" />
-                                </Grid.ColumnDefinitions>
-                                <Button x:Name="PlayerPlayPauseButton" Click="PlayerPlayPause_Click" Content="▶" IsEnabled="False" Padding="0" HorizontalContentAlignment="Center" ToolTipService.ToolTip="Phát / tạm dừng preview" />
-                                <TextBlock Grid.Column="1" x:Name="ClockText" VerticalAlignment="Center" Foreground="White" FontSize="11" Text="00:00 / 00:00" />
-                                <Slider Grid.Column="2" x:Name="Timeline" Minimum="0" IsEnabled="False" ValueChanged="Timeline_ValueChanged" VerticalAlignment="Center" AutomationProperties.Name="Vị trí video" />
-                                <ToggleSwitch Grid.Column="3" x:Name="PreviewMuteToggle" Toggled="PreviewMute_Toggled" OffContent="" OnContent="" MinWidth="0" HorizontalAlignment="Center" ToolTipService.ToolTip="Tắt / bật tiếng" />
-                                <Slider Grid.Column="4" x:Name="PreviewVolumeSlider" Minimum="0" Maximum="100" Value="100" ValueChanged="PreviewVolume_ValueChanged" VerticalAlignment="Center" AutomationProperties.Name="Âm lượng preview" />
-                                <Button Grid.Column="5" x:Name="FullscreenButton" AccessKey="F" Click="Fullscreen_Click" Content="⛶" IsEnabled="False" Padding="0" HorizontalContentAlignment="Center" ToolTipService.ToolTip="Toàn màn hình" />
-                            </Grid>
-                        </Border>
+                    </Grid>
+                </Border>
+                <Border Grid.Row="1" x:Name="PlayerControlBar" Height="48" Padding="8,5" Background="{ThemeResource RaisedSurfaceBrush}" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="1" CornerRadius="9" AutomationProperties.Name="Điều khiển preview">
+                    <Grid ColumnSpacing="7">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="36" />
+                            <ColumnDefinition Width="78" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="44" />
+                            <ColumnDefinition Width="72" />
+                            <ColumnDefinition Width="36" />
+                        </Grid.ColumnDefinitions>
+                        <Button x:Name="PlayerPlayPauseButton" Click="PlayerPlayPause_Click" Content="▶" IsEnabled="False" Padding="0" HorizontalContentAlignment="Center" ToolTipService.ToolTip="Phát / tạm dừng preview" />
+                        <TextBlock Grid.Column="1" x:Name="ClockText" VerticalAlignment="Center" FontSize="11" Text="00:00 / 00:00" />
+                        <Slider Grid.Column="2" x:Name="Timeline" Minimum="0" IsEnabled="False" ValueChanged="Timeline_ValueChanged" VerticalAlignment="Center" AutomationProperties.Name="Vị trí video" />
+                        <ToggleSwitch Grid.Column="3" x:Name="PreviewMuteToggle" Toggled="PreviewMute_Toggled" OffContent="" OnContent="" MinWidth="0" HorizontalAlignment="Center" ToolTipService.ToolTip="Tắt / bật tiếng" />
+                        <Slider Grid.Column="4" x:Name="PreviewVolumeSlider" Minimum="0" Maximum="100" Value="100" ValueChanged="PreviewVolume_ValueChanged" VerticalAlignment="Center" AutomationProperties.Name="Âm lượng preview" />
+                        <Button Grid.Column="5" x:Name="FullscreenButton" AccessKey="F" Click="Fullscreen_Click" Content="⛶" IsEnabled="False" Padding="0" HorizontalContentAlignment="Center" ToolTipService.ToolTip="Toàn màn hình" />
                     </Grid>
                 </Border>
             </Grid>

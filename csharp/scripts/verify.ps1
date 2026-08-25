@@ -127,6 +127,7 @@ Invoke-Checked python @("csharp/scripts/verify_editor_voice_preview_contract.py"
 Invoke-Checked python @("csharp/scripts/verify_editor_voice_mix_contract.py")
 Invoke-Checked python @("csharp/scripts/verify_editor_voice_preview_export_contract.py")
 Invoke-Checked python @("csharp/scripts/verify_editor_voice_reopen_contract.py")
+Invoke-Checked python @("csharp/scripts/verify_editor_preview_unload_contract.py")
 Invoke-Checked python @("csharp/scripts/generate_csharp_code_map.py", "--check")
 Invoke-Checked python @("csharp/scripts/verify_global_log_ui_contract.py")
 Invoke-Checked python @("csharp/scripts/verify_logging_contract.py")

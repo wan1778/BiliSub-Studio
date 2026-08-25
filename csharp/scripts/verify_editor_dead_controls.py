@@ -34,6 +34,7 @@ def require(condition: bool, message: str) -> None:
 xaml = XAML.read_text(encoding="utf-8")
 code = "\n".join(path.read_text(encoding="utf-8") for path in PARTIALS)
 root = ET.parse(XAML).getroot()
+parents = {child: parent for parent in root.iter() for child in parent}
 
 # CLEAN-05: these five visual containers are still required for layout, but their
 # x:Name identities generated unused WinUI fields. Keep the containers, remove only
@@ -81,6 +82,21 @@ for live_layout_name in (
         re.search(rf"\b{re.escape(live_layout_name)}\b", code) is not None,
         f"CLEAN-05 live layout control lost its code owner: {live_layout_name}",
     )
+
+# The preview surface contains only the visual preview and direct-edit overlays.
+# PREVIEW-LAYOUT-01 keeps the transport below it, so controls never cover the
+# user-visible video frame.
+preview_surface = next(element for element in root.iter()
+                       if element.attrib.get(f"{{{XAML_NS}}}Name") == "PreviewSurface")
+player_control_bar = next(element for element in root.iter()
+                          if element.attrib.get(f"{{{XAML_NS}}}Name") == "PlayerControlBar")
+ancestor = player_control_bar
+while ancestor in parents:
+    ancestor = parents[ancestor]
+    require(ancestor is not preview_surface,
+            "PREVIEW-LAYOUT-01 transport bar must not be inside PreviewSurface")
+require(player_control_bar.attrib.get("Grid.Row") == "1",
+        "PREVIEW-LAYOUT-01 transport bar must occupy the row below PreviewSurface")
 
 fixture_xaml = '<Grid xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Name="DeadContainer" />'
 fixture_code = "private void SomethingElse() { }"

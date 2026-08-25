@@ -1,119 +1,82 @@
 # Codex handoff — BiliSub Studio
 
-- Current main/base SHA: `8eb2a8a2600b37d29bfd0deaae9eeb94b3cda635`
-- Current branch: `editor-preview-blur-01-17`
-- Remote branch: `origin/editor-preview-blur-01-17`
-- PR: none; do not create, merge, release or bump version without explicit authorization
-- Last completed task: `VOICE-12 — Preview track Việt` (`af30b463d80388ce6e060cd9c0029bc223a05c5c`)
-- Task completed: `VOICE-13 — Mix voice + original audio`
-- Exact next task after this one: `VOICE-14 — Preview = Export`
+- Current main/base SHA: `717ad3ffa9e39fb17a80107a0c4a1c2485e9e640`
+- Current branch: `editor-transport-layout` (created from `origin/main`)
+- PR: none; do not create, merge, release, or bump version without explicit authorization
+- Last completed task: upstream `PROJECT-10` / release `4.0.31` on `main`; this branch has no completed task yet
+- Task in progress: `EDITOR-PREVIEW-UI-AND-UNLOAD — separate transport and prevent preview teardown crash`
+- Exact next task: install/restore .NET SDK `10.0.400`, then run the full Windows WinUI gate and reproduce Editor preview -> leave tab -> reopen before any merge, release, or update publication
 
-## VOICE-12 scope and ownership
+## Root cause
 
-The production call path was already present and is intentionally kept single-owner:
+`PlayerControlBar` was a bottom-aligned child of `PreviewSurface` in
+`csharp/src/BiliSubStudio.App/Pages/EditorPage.xaml`. It therefore rendered as a
+dark overlay inside the user-visible preview frame rather than as its own editor
+control area.
 
-```text
-EditorTtsResult.VoiceTrack
-  -> EditorPage._voiceTrack
-  -> CurrentEditRequest(...)
-  -> CreatePreviewSegmentAsync
-  -> BuildPreviewSlice (timeline-only; keeps Audio/VoiceTrack)
-  -> BuildVoiceAudioFilter + BuildPreviewArguments
-  -> rendered segment -> MediaPlayer
-```
+The observed crash on leaving Editor while preview was active also has an unsafe
+teardown path: `EditorPage_Unloaded` awaits preview cancellation while queued
+MediaPlayer callbacks can still target the page, and `ResetAsync` still writes
+the presentation after the page has unloaded. The player remained attached to
+`PreviewPlayer` when disposed.
 
-Root cause for VOICE-12 was a missing dedicated regression gate for this end-to-end
-Preview handoff. The existing implementation already passed the shared AUDIO-08
-Preview/Export graph checks, but no contract explicitly protected promotion of the
-validated Vietnamese master into processed Preview and its MediaPlayer activation.
+## Changes made
 
-## VOICE-12 changes
+- `EditorPage.xaml`: the centre column now has two rows. `PreviewSurface` is the
+  top row and contains only the player/image/direct-edit overlays. The existing
+  `PlayerControlBar` is now a separate, themed 48px row below it.
+- Control names and the existing event handlers are unchanged:
+  `PlayerPlayPause_Click`, `Timeline_ValueChanged`, `PreviewMute_Toggled`,
+  `PreviewVolume_ValueChanged`, and `Fullscreen_Click` retain their single
+  owners. Native WinUI transport remains disabled.
+- `csharp/scripts/verify_editor_dead_controls.py`: added the
+  `PREVIEW-LAYOUT-01` regression contract requiring the transport bar to be
+  outside `PreviewSurface` and in the lower row.
+- `EditorPage.Playback.cs`: `UnloadAsync` now owns the unloading state before
+  awaiting preview cancellation. Late position/end/failure callbacks and render
+  completion UI updates are ignored during teardown; unload skips visual
+  presentation writes and detaches `MediaPlayerElement` before disposing its
+  `MediaPlayer`. Normal source-change reset/reopen presentation remains intact.
+- Added `csharp/scripts/verify_editor_preview_unload_contract.py`, and included
+  it in the Windows verification gate. Updated the existing PROJECT-03 contract
+  for the explicit presentation-skip teardown parameter.
 
-- Added `csharp/scripts/verify_editor_voice_preview_contract.py`.
-- Added the VOICE-12 contract to `csharp/scripts/verify.ps1`.
-- Updated the stale AUDIO contract marker to match the current `internal`
-  `BuildPreviewArguments` owner; production audio behavior is unchanged.
-- Quoted the Windows startup-smoke sentinel argument so verification works from
-  the current workspace path containing spaces; production startup behavior is unchanged.
-- Regenerated `docs/migration/CSHARP_CODE_MAP.generated.md` so the checked-in map
-  matches the already-landed VOICE-11 LocalTtsService method list.
-- No production Editor, Subtitle, TTS, audio graph or media-source behavior was changed.
+## Files changed
 
-## VOICE-13 scope and changes
+- `csharp/src/BiliSubStudio.App/Pages/EditorPage.xaml`
+- `csharp/src/BiliSubStudio.App/Pages/EditorPage.Playback.cs`
+- `csharp/scripts/verify.ps1`
+- `csharp/scripts/verify_editor_dead_controls.py`
+- `csharp/scripts/verify_editor_preview_unload_contract.py`
+- `csharp/scripts/verify_editor_project_tab_reopen_contract.py`
+- `docs/handoff/CODEX_HANDOFF.md`
 
-The production graph already has the correct owner and is unchanged:
+## Tests and status
 
-```text
-EditorAudioSettings + EditorVoiceTrack
-  -> BuildVoiceAudioFilter
-  -> Keep: source + voice
-  -> Duck: attenuated source + voice
-  -> Mute: voice only
-  -> [aout] -> Preview/Export
-```
-
-Root cause for VOICE-13 was the absence of a task-specific contract covering all
-three source-audio policies, voice timing/gain, and the requirement that Player
-monitor mute/volume never enter the render graph. Added only that regression gate.
-
-- Added `csharp/scripts/verify_editor_voice_mix_contract.py`.
-- Added the VOICE-13 contract to `csharp/scripts/verify.ps1`.
-- No production audio or voice behavior was changed.
-
-## Verification status
-
-Targeted checks:
-
-- `python -m py_compile csharp/scripts/verify_editor_voice_preview_contract.py`: PASS
-- `python csharp/scripts/validate_csharp_migration.py`: PASS
+- `python csharp/scripts/verify_editor_dead_controls.py .`: PASS
 - `python csharp/scripts/verify_editor_voice_preview_contract.py`: PASS
-- `python csharp/scripts/verify_editor_voice_mix_contract.py`: PASS
-- `python csharp/scripts/verify_editor_audio_preview_export_contract.py`: PASS
-- `python csharp/scripts/verify_editor_voice_subtitle_invalidation_contract.py`: PASS
-- .NET 10.0.400 Core contract tests: `71/71` PASS
-- `python csharp/scripts/generate_csharp_code_map.py --check`: PASS after regeneration
-- Windows x64 `csharp/scripts/verify.ps1`: PASS
-  - SDK `10.0.400`
-  - Release x64 WinUI build: 0 warnings, 0 errors
-  - Core contracts: `71/71` PASS
-  - RangeRegression: PASS
-  - self-contained WinUI publish: PASS
-  - real startup smoke: PASS
-  - PE32+ x64 / worker identity / checksum readback: PASS
-  - published `BiliSubStudio.exe` SHA-256: `bbb0e46db7c8fba72e61ff0647797617518e24ae86323c34a05750c324b01f8c`
-  - source tree SHA-256: `19b23595d579537a6252c638d38796538ee5da7301fb01f9efc9f838fc8f9757`
-  - SDK `10.0.400`
-  - Release x64 WinUI build: 0 warnings, 0 errors
-  - Core contracts: `71/71` PASS
-  - RangeRegression: PASS
-  - self-contained WinUI publish: PASS
-  - real startup smoke: PASS
-  - PE32+ x64 / worker identity / checksum readback: PASS
-  - published `BiliSubStudio.exe` SHA-256: `dce1aac6713e959546319612ac4b9beb7bc71795af4546eab445dd8c7980aabd`
-  - source tree SHA-256: `73dbccb1c275482dcdb8d00fd5e140d032ae25a51b99d82c24587547a609ac4b`
+- `python csharp/scripts/verify_editor_preview_unload_contract.py .`: PASS
+- `python csharp/scripts/verify_editor_project_tab_reopen_contract.py .`: PASS
+- `python csharp/scripts/validate_csharp_migration.py`: PASS
+- `python csharp/scripts/generate_csharp_code_map.py --check`: PASS
+- `python csharp/scripts/verify_editor_event_map.py .`: FAIL on unchanged
+  `origin/main` XAML event-count baseline (`expected 52, found 53`); the layout
+  move did not add or remove an event binding, so this is an upstream stale test
+  baseline and must be reconciled separately rather than hidden in this task.
+- `dotnet build csharp/src/BiliSubStudio.App/BiliSubStudio.App.csproj --no-restore -v:minimal`: BLOCKED — this machine currently exposes `C:\Program Files\dotnet\dotnet.exe`, but no installed SDK. The repository pins SDK `10.0.400`.
 
-Previous task commits pushed to GitHub:
-
-- `31c5627726cb1cafafa1d08288b693422d3274c4` — VOICE-12 Preview contract + handoff/code map
-- `ae0069570e104acdad3a4f89a43ddfa6f8ad67b9` — stale AUDIO contract marker alignment
-- `881e28af2baadd38db703c34c85df05f73548dd2` — Windows startup-smoke path quoting
-- `a8b0db2497f85aeefcdef16d6fa0dbb54906091d` — VOICE-13 voice/source mix contract
-
-The gate gives compile/static and startup functional PASS, but it is not a voice
-audio field-test. The following remain untested here until the real Editor is
-exercised with a source video, completed local TTS, and a valid `voice-master.flac`:
-
-- audible Vietnamese voice in processed Preview from start and after seeking;
-- voice timing across internal preview segment boundaries;
-- MediaPlayer behavior on the target Windows/WinUI machine.
+No Windows/WinUI compile, startup, or real-machine layout test has been run for
+this branch. The installed runtime at `E:\New folder\testrc` is an older built
+release and does not contain this source change; it must not be used to claim
+this layout change passes.
 
 ## Constraints to preserve
 
 - Windows desktop app: C# + .NET 10 + WinUI 3; no web/demo replacement.
-- Never overwrite source media.
-- Translation, ASR and TTS remain local; Chinese -> Vietnamese uses the project translation skill.
-- Preview/Export must use the same request-owned source audio and Vietnamese voice semantics.
-- Keep one event/owner, one button/handler, no handler-calls-handler.
-- Do not add Repair/Fix/Parity layers when the real owner can be corrected.
-- One small task and one targeted regression at a time; do not reopen Subtitle/Blur without a demonstrated regression.
-- No version bump, release, PR or merge without explicit authorization and passing gates.
+- Never overwrite source media. Translation, ASR and TTS remain local.
+- Keep one event and one state/control owner; no handler calls another handler.
+- Do not layer Repair/Fix/Parity files when the actual owner can be changed.
+- One small task at a time; do not reopen completed Subtitle work without an
+  actual regression.
+- No version bump, release, PR, or merge without explicit authorization and
+  passing gates.

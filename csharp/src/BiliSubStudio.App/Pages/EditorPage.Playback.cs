@@ -43,6 +43,7 @@ public sealed partial class EditorPage
         private FullscreenSnapshot? _fullscreenSnapshot;
         private long? _fullWindowChangedToken;
         private bool _foregroundRendering;
+        private bool _isUnloading;
         private long _playbackRevision;
         private Task _prefetchTask = Task.CompletedTask;
         private EditorPreviewSegment? _prefetchedSegment;
@@ -61,6 +62,7 @@ public sealed partial class EditorPage
 
         internal async Task PrepareAsync()
         {
+            _isUnloading = false;
             await CancelPreviewWorkAsync();
             ClearFullscreenTracking(unregisterCallback: true);
             DisposePlayer();
@@ -80,6 +82,7 @@ public sealed partial class EditorPage
 
         internal async Task ToggleAsync()
         {
+            if (_isUnloading) return;
             if (HasEnded) await ReplayFromStartAsync();
             else if (IsPreviewMode && _player is not null)
             {
@@ -173,10 +176,10 @@ public sealed partial class EditorPage
             }
         }
 
-        private void ClearFullscreenTracking(bool unregisterCallback)
+        private void ClearFullscreenTracking(bool unregisterCallback, bool updateElement = true)
         {
             _fullscreenSnapshot = null;
-            _page.PreviewPlayer.IsFullWindow = false;
+            if (updateElement) _page.PreviewPlayer.IsFullWindow = false;
             if (!unregisterCallback || _fullWindowChangedToken is not { } token) return;
             _page.PreviewPlayer.UnregisterPropertyChangedCallback(MediaPlayerElement.IsFullWindowProperty, token);
             _fullWindowChangedToken = null;
@@ -196,6 +199,7 @@ public sealed partial class EditorPage
 
         internal async Task SetModeAsync(bool enabled, bool play)
         {
+            if (_isUnloading) return;
             if (enabled)
             {
                 if (IsPreviewMode)
@@ -237,6 +241,7 @@ public sealed partial class EditorPage
 
         internal async Task SeekAsync(double sourcePosition)
         {
+            if (_isUnloading) return;
             if (!IsPreviewMode || _page._media is null) return;
             try
             {
@@ -257,18 +262,23 @@ public sealed partial class EditorPage
 
         internal Task DisposeForSourceChangeAsync() => ResetAsync();
 
-        internal Task UnloadAsync() => ResetAsync();
+        internal async Task UnloadAsync()
+        {
+            _isUnloading = true;
+            IsPreviewMode = false;
+            await ResetAsync(skipPresentation: true);
+        }
 
-        private async Task ResetAsync()
+        private async Task ResetAsync(bool skipPresentation = false)
         {
             await CancelPreviewWorkAsync();
-            ClearFullscreenTracking(unregisterCallback: true);
+            ClearFullscreenTracking(unregisterCallback: true, updateElement: !skipPresentation);
             DisposePlayer();
             IsPreviewMode = false;
             HasEnded = false;
             _sourceStart = 0;
             _sourceDuration = 0;
-            ApplyPresentation(processed: false);
+            if (!skipPresentation) ApplyPresentation(processed: false);
             var previewPath = _previewPath;
             _previewPath = null;
             if (previewPath is not null)
@@ -294,8 +304,11 @@ public sealed partial class EditorPage
             finally
             {
                 if (foreground && revision == _playbackRevision) _foregroundRendering = false;
-                _page.RefreshEditorActions();
-                _page.SyncShellPlayerControls();
+                if (!_isUnloading)
+                {
+                    _page.RefreshEditorActions();
+                    _page.SyncShellPlayerControls();
+                }
             }
             if (revision == _playbackRevision && IsPreviewMode) StartNextSegmentPrefetch();
         }
@@ -333,7 +346,7 @@ public sealed partial class EditorPage
                     player.Source = null;
                     _previewPath = null;
                     IsPreviewMode = false;
-                    ApplyPresentation(processed: false);
+                    if (!_isUnloading) ApplyPresentation(processed: false);
                 }
                 throw;
             }
@@ -477,6 +490,7 @@ public sealed partial class EditorPage
             _player.MediaFailed -= PlayerMediaFailed;
             _player.Pause();
             _player.Source = null;
+            _page.PreviewPlayer.SetMediaPlayer(null);
             _player.Dispose();
             _player = null;
         }
@@ -498,11 +512,11 @@ public sealed partial class EditorPage
 
         private void PlayerPositionChanged(MediaPlaybackSession sender, object args)
         {
-            if (!IsPreviewMode) return;
+            if (_isUnloading || !IsPreviewMode) return;
             var seconds = _sourceStart + Math.Clamp(sender.Position.TotalSeconds, 0, _sourceDuration);
             _page.DispatcherQueue.TryEnqueue(() =>
             {
-                if (!IsPreviewMode || _page._media is null) return;
+                if (_isUnloading || !IsPreviewMode || _page._media is null) return;
                 _page._syncingTimeline = true;
                 try { _page.Timeline.Value = Math.Clamp(seconds, _page.Timeline.Minimum, _page.Timeline.Maximum); }
                 finally { _page._syncingTimeline = false; }
@@ -513,6 +527,7 @@ public sealed partial class EditorPage
 
         private void PlayerMediaEnded(MediaPlayer sender, object args)
         {
+            if (_isUnloading) return;
             _page.DispatcherQueue.TryEnqueue(() => _ = ContinueAfterSegmentAsync());
         }
 
@@ -520,7 +535,7 @@ public sealed partial class EditorPage
         {
             try
             {
-                if (!IsPreviewMode || _page._media is null) return;
+                if (_isUnloading || !IsPreviewMode || _page._media is null) return;
                 var nextStart = VideoEditorService.NextPreviewStart(
                     _sourceStart, _sourceDuration, _page._media.Duration);
                 if (nextStart is null)
@@ -572,6 +587,7 @@ public sealed partial class EditorPage
 
         private async Task CompletePlaybackAsync()
         {
+            if (_isUnloading) return;
             await SetModeAsync(enabled: false, play: false);
             HasEnded = true;
             _page._syncingTimeline = true;
@@ -584,12 +600,14 @@ public sealed partial class EditorPage
 
         private void PlayerMediaFailed(MediaPlayer sender, MediaPlayerFailedEventArgs args)
         {
+            if (_isUnloading) return;
             var errorMessage = args.ErrorMessage;
             _page.DispatcherQueue.TryEnqueue(() => _ = RecoverFromPlayerFailureAsync(sender, errorMessage));
         }
 
         private async Task RecoverFromPlayerFailureAsync(MediaPlayer failedPlayer, string errorMessage)
         {
+            if (_isUnloading) return;
             if (!ReferenceEquals(failedPlayer, _player)) return;
             try
             {

@@ -70,10 +70,10 @@ def verify_source(main: str, editor: str, bootstrap: str, playback: str) -> None
         "PROJECT-03 tab unload must not destroy the in-memory project/source identity",
     )
 
-    reset = method_body(playback, "private async Task ResetAsync()")
+    reset = method_body(playback, "private async Task ResetAsync(bool skipPresentation = false)")
     require(
-        "DisposePlayer();" in reset,
-        "PROJECT-03 playback unload must be recognized as disposing the MediaPlayer",
+        "DisposePlayer();" in reset and "if (!skipPresentation) ApplyPresentation(processed: false);" in reset,
+        "PROJECT-03 playback reset must dispose MediaPlayer while skipping visual writes during tab unload",
     )
 
     loaded = method_body(bootstrap, "private async void EditorPage_Loaded(")
