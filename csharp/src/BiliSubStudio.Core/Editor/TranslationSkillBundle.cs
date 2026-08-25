@@ -13,6 +13,7 @@ public sealed partial class TranslationSkillBundle
     private const int MaxEntries = 32;
     private const long MaxEntryBytes = 2L * 1024 * 1024;
     private const long MaxExpandedBytes = 8L * 1024 * 1024;
+    private const string CompactCultivationProfile = "SKILL TU TIÊN: phim tu tiên/tiên hiệp/cổ trang Trung Quốc; giữ Hán-Việt, vai vế, xưng hô, thuật ngữ; không hiện đại hóa hay bịa.";
     private static readonly string[] Required =
     [
         "SKILL.md",
@@ -81,13 +82,17 @@ public sealed partial class TranslationSkillBundle
     {
         var source = string.Join('\n', sourceTexts);
         var selected = new StringBuilder(Math.Min(maxCharacters, 64_000));
+        if (initialCharacters + CompactCultivationProfile.Length + Environment.NewLine.Length <= maxCharacters)
+            selected.AppendLine(CompactCultivationProfile);
+
         foreach (var pair in _references)
         {
             foreach (var section in pair.Value)
             {
                 if (!Relevant(section, source)) continue;
-                if (initialCharacters + selected.Length + section.Length + 80 > maxCharacters) break;
-                selected.AppendLine().Append("TỪ ").Append(pair.Key).AppendLine(":").AppendLine(section.Trim());
+                var block = Environment.NewLine + "TỪ " + pair.Key + ":" + Environment.NewLine + section.Trim() + Environment.NewLine;
+                if (initialCharacters + selected.Length + block.Length > maxCharacters) continue;
+                selected.Append(block);
             }
         }
         return selected.ToString();
@@ -112,7 +117,6 @@ public sealed partial class TranslationSkillBundle
 
     private static bool Relevant(string section, string source)
     {
-        if (section.StartsWith("#", StringComparison.Ordinal) && section.Length < 800) return true;
         foreach (Match token in HanTokenRegex().Matches(section))
             if (token.Length >= 2 && source.Contains(token.Value, StringComparison.Ordinal)) return true;
         return false;

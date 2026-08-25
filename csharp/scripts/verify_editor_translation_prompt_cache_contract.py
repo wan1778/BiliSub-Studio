@@ -44,15 +44,23 @@ if 'checkpoint = checkpoint with { Bible = string.Empty, AnalysisPagesCompleted 
 required_skill = [
     'public string BuildCoreInstructions()',
     'public string BuildReferenceInstructions(IEnumerable<string> sourceTexts, int maxCharacters, int initialCharacters = 0)',
-    'if (initialCharacters + selected.Length + section.Length + 80 > maxCharacters) break;',
+    'private const string CompactCultivationProfile = "SKILL TU TIÊN: phim tu tiên/tiên hiệp/cổ trang Trung Quốc; giữ Hán-Việt, vai vế, xưng hô, thuật ngữ; không hiện đại hóa hay bịa.";',
+    'selected.AppendLine(CompactCultivationProfile);',
+    'if (!Relevant(section, source)) continue;',
+    'if (initialCharacters + selected.Length + block.Length > maxCharacters) continue;',
+    'private static bool Relevant(string section, string source)',
 ]
 for marker in required_skill:
     if marker not in skill:
-        raise SystemExit(f"FAIL: LIVE-SRT-02 reviewed skill reader marker missing: {marker}")
+        raise SystemExit(f"FAIL: LIVE-SRT-03 compact cultivation skill marker missing: {marker}")
 
-# The runtime prompt still consults the reviewed skill bundle, but only the cue-relevant
-# reference slice is attached. The full SKILL.md/full-film bible are no longer repeated.
+if 'section.StartsWith("#", StringComparison.Ordinal) && section.Length < 800' in skill:
+    raise SystemExit('FAIL: LIVE-SRT-03 generic markdown headings can still consume the compact skill budget before matched cultivation terms')
+
+# The runtime prompt consults a strict <=2k skill slice. That slice now always identifies
+# the cultivation genre, then spends the remaining budget only on sections containing
+# Han terms that actually occur in the local SRT context.
 if 'Skill.BuildReferenceInstructions(context.Select(x => x.SourceText), 2_000)' not in prompt:
-    raise SystemExit('FAIL: LIVE-SRT-02 compact prompt stopped consulting the reviewed translation skill')
+    raise SystemExit('FAIL: LIVE-SRT-03 compact prompt stopped consulting the reviewed translation skill')
 
-print("PASS: LIVE-SRT-02 keeps per-cue translation prompts compact while retaining a bounded relevant slice of the reviewed skill")
+print("PASS: LIVE-SRT-03 keeps the per-cue skill budget at 2k, locks cultivation genre, and prioritizes source-matched Han terminology")
