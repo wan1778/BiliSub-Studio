@@ -186,13 +186,44 @@ public sealed class LocalSubtitleTranslationService : IDisposable
         var latencyBaselineMsPerCue = 0d;
         var needsInference = checkpoint.AnalysisPagesCompleted < analysisPages
             || source.Any(x => !checkpoint.Translations.ContainsKey(x.Id));
+
+        var liveEvents = new Queue<string>();
+        void PushLive(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return;
+            while (liveEvents.Count >= 4) liveEvents.Dequeue();
+            liveEvents.Enqueue(value);
+        }
+        void SetLive(string status, double progress, string headline, string? eventLine = null)
+        {
+            if (!string.IsNullOrWhiteSpace(eventLine)) PushLive(eventLine);
+            var tail = liveEvents.Count == 0 ? string.Empty : Environment.NewLine + string.Join(Environment.NewLine, liveEvents);
+            var alignedProgress = status is "translation-validating" or "translation-writing"
+                ? 100d
+                : status.StartsWith("translation", StringComparison.Ordinal)
+                    ? TranslationOverallProgress(checkpoint.Translations.Count, source.Count)
+                    : progress;
+            job.Set(status, alignedProgress, headline + tail);
+        }
+
+        if (restored > 0)
+        {
+            var resumeLine = $"Khôi phục {restored:N0} câu đã dịch từ checkpoint.";
+            job.Log(resumeLine);
+            PushLive(resumeLine);
+        }
+
         TranslationServerSession? runtime = null;
         try
         {
             if (needsInference)
             {
+                SetLive("translation-loading", checkpoint.AnalysisPagesCompleted < analysisPages ? 1 : TranslationOverallProgress(restored, source.Count),
+                    $"Bước 1/6 · Nạp model {model.Name} vào runtime...");
                 runtime = await StartTranslationServerWithFallbackAsync(model, layers, job, job.CancellationToken);
                 job.Log($"Qwen runtime giữ model trong RAM/VRAM cho toàn bộ lượt Vietsub · {model.Name}.");
+                SetLive("translation-loading", checkpoint.AnalysisPagesCompleted < analysisPages ? 2 : TranslationOverallProgress(restored, source.Count),
+                    $"Bước 1/6 · Nạp model xong · {model.Name}.", "Model đã sẵn sàng; bắt đầu xử lý SRT.");
             }
 
             if (checkpoint.AnalysisPagesCompleted < analysisPages)
@@ -201,56 +232,91 @@ public sealed class LocalSubtitleTranslationService : IDisposable
                 {
                     job.CancellationToken.ThrowIfCancellationRequested();
                     var pageCues = analysisBatches[page];
+                    var analysisProgress = 2 + page / (double)analysisPages * 10;
+                    SetLive("translation-analysis", analysisProgress,
+                        $"Bước 2/6 · Phân tích SRT · phần {page + 1}/{analysisPages}." + Environment.NewLine +
+                        $"Bước 3/6 · Tạo bible · phần {page + 1}/{analysisPages}...");
                     var prompt = BuildBiblePrompt(pageCues, bible, page + 1, analysisPages);
                     string nextBible;
                     try
                     {
-                        nextBible = ValidateBible(await RunJsonAsync(runtime!, prompt, BibleSchema, 2048, job.CancellationToken));
+                        nextBible = ValidateBible(await RunJsonAsync(runtime!, prompt, BibleSchema, 2048, job.CancellationToken, job));
                         if (string.IsNullOrWhiteSpace(nextBible))
                         {
+                            const string warning = "Bible rỗng → giữ hồ sơ trước đó và tiếp tục.";
                             job.Warn($"Lượt đọc SRT {page + 1} không trả bible; giữ hồ sơ trước đó và tiếp tục Vietsub.");
+                            SetLive("translation-bible-warning", analysisProgress,
+                                $"Bước 3/6 · Tạo bible · phần {page + 1}/{analysisPages}.", warning);
                             nextBible = bible;
                         }
                     }
                     catch (InvalidDataException first)
                     {
+                        var warning = $"JSON/hồ sơ sai → giữ bible cũ: {TrimLiveText(first.Message, 110)}";
                         job.Warn($"Lượt đọc SRT {page + 1} trả JSON/hồ sơ không hợp lệ; giữ hồ sơ trước đó và tiếp tục Vietsub: {first.Message}");
+                        SetLive("translation-bible-warning", analysisProgress,
+                            $"Bước 3/6 · Tạo bible · phần {page + 1}/{analysisPages}.", warning);
                         nextBible = bible;
                     }
                     catch (Exception first) when (first is not OperationCanceledException)
                     {
+                        var warning = $"GPU/runtime lỗi → chuyển CPU: {TrimLiveText(first.Message, 100)}";
                         job.Warn($"Lượt đọc SRT {page + 1} gặp lỗi runtime; thử lại bằng CPU an toàn: {first.Message}");
+                        SetLive("translation-fallback", analysisProgress,
+                            $"Bước 3/6 · Tạo bible · phần {page + 1}/{analysisPages}.", warning);
                         await RestartTranslationServerAsync(runtime!, model, LowerGpuLayers(layers), job.CancellationToken);
                         try
                         {
-                            nextBible = ValidateBible(await RunJsonAsync(runtime!, prompt + "\nRuntime vừa được chuyển sang CPU. Chỉ trả đúng JSON object theo schema và luôn có key bible.", BibleSchema, 2048, job.CancellationToken));
+                            nextBible = ValidateBible(await RunJsonAsync(runtime!, prompt + "\nRuntime vừa được chuyển sang CPU. Chỉ trả đúng JSON object theo schema và luôn có key bible.", BibleSchema, 2048, job.CancellationToken, job));
                             if (string.IsNullOrWhiteSpace(nextBible))
                             {
+                                const string cpuWarning = "CPU fallback vẫn thiếu bible → giữ hồ sơ trước đó.";
                                 job.Warn($"Lượt đọc SRT {page + 1} sau CPU fallback vẫn thiếu bible; giữ hồ sơ trước đó và tiếp tục Vietsub.");
+                                SetLive("translation-bible-warning", analysisProgress,
+                                    $"Bước 3/6 · Tạo bible · phần {page + 1}/{analysisPages}.", cpuWarning);
                                 nextBible = bible;
                             }
                         }
                         catch (InvalidDataException retryError)
                         {
+                            var retryWarning = $"CPU fallback vẫn sai JSON → giữ bible cũ: {TrimLiveText(retryError.Message, 90)}";
                             job.Warn($"Lượt đọc SRT {page + 1} sau CPU fallback vẫn trả JSON/hồ sơ không hợp lệ; giữ hồ sơ trước đó và tiếp tục Vietsub: {retryError.Message}");
+                            SetLive("translation-bible-warning", analysisProgress,
+                                $"Bước 3/6 · Tạo bible · phần {page + 1}/{analysisPages}.", retryWarning);
                             nextBible = bible;
                         }
                     }
                     bible = nextBible;
                     checkpoint = checkpoint with { Bible = bible, AnalysisPagesCompleted = page + 1 };
                     await SaveCheckpointAsync(checkpointPath, checkpoint, job.CancellationToken);
-                    job.Set("translation-analysis", 2 + (page + 1d) / analysisPages * 10,
-                        $"Đã đọc/ngữ cảnh hóa SRT {page + 1}/{analysisPages} · đang khóa tên và thuật ngữ.");
+                    SetLive("translation-analysis", 2 + (page + 1d) / analysisPages * 10,
+                        $"Bước 3/6 · Tạo bible · đã xong phần {page + 1}/{analysisPages}.");
                 }
             }
 
             var pending = source.Where(x => !checkpoint.Translations.ContainsKey(x.Id)).ToArray();
             var pendingOffset = 0;
+            var completedBatches = 0;
+            var translationClock = Stopwatch.StartNew();
             if (pending.Length > 0)
+            {
                 job.Log($"Adaptive Vietsub chọn batch {translationBatchSize} câu theo VRAM khả dụng trước khi nạp Qwen.");
+                SetLive("translation-batch", TranslationOverallProgress(checkpoint.Translations.Count, source.Count),
+                    $"Bước 4/6 · Dịch batch · chuẩn bị {pending.Length:N0} câu còn lại.");
+            }
             while (pendingOffset < pending.Length)
             {
                 job.CancellationToken.ThrowIfCancellationRequested();
+                var remainingBatches = CountAdaptiveTranslationBatches(pending, pendingOffset, translationBatchSize, 20_000);
+                var batchNumber = completedBatches + 1;
+                var batchTotal = completedBatches + remainingBatches;
+                var completedBefore = checkpoint.Translations.Count;
+                var sentencePercentBefore = completedBefore / (double)source.Count * 100;
+                var overallBefore = TranslationOverallProgress(completedBefore, source.Count);
+                SetLive("translation-batch", overallBefore,
+                    $"Bước 4/6 · Dịch batch · Batch {batchNumber}/{batchTotal}." + Environment.NewLine +
+                    $"Đã dịch {completedBefore:N0} / {source.Count:N0} câu · {sentencePercentBefore:0.#}%.");
+
                 var batch = CreateAdaptiveTranslationBatch(pending, pendingOffset, translationBatchSize, 20_000);
                 var firstIndex = IndexOf(source, batch[0].Id);
                 var context = source.Skip(Math.Max(0, firstIndex - 4)).Take(batch.Length + 8).ToArray();
@@ -259,22 +325,28 @@ public sealed class LocalSubtitleTranslationService : IDisposable
                 IReadOnlyDictionary<string, string> translations;
                 try
                 {
-                    var root = await RunJsonAsync(runtime!, prompt, TranslationSchema, 4096, job.CancellationToken);
+                    var root = await RunJsonAsync(runtime!, prompt, TranslationSchema, 4096, job.CancellationToken, job);
                     translations = ValidateBatch(root, batch);
                 }
                 catch (InvalidDataException first)
                 {
+                    var warning = $"JSON sai → retry Batch {batchNumber}/{batchTotal}: {TrimLiveText(first.Message, 90)}";
                     job.Warn($"Batch bắt đầu cue {batch[0].Number} sai JSON/ID/nội dung; đang thử lại chặt hơn: {first.Message}");
+                    SetLive("translation-retry", overallBefore,
+                        $"Bước 4/6 · Dịch batch · Batch {batchNumber}/{batchTotal}.", warning);
                     var retry = await RunJsonAsync(runtime!, prompt + "\nLần trước sai JSON/schema/ID hoặc còn chữ Hán. Dịch lại đúng toàn bộ TARGET và chỉ trả đúng một JSON object.",
-                        TranslationSchema, 4096, job.CancellationToken);
+                        TranslationSchema, 4096, job.CancellationToken, job);
                     translations = ValidateBatch(retry, batch);
                 }
                 catch (Exception first) when (first is not OperationCanceledException)
                 {
+                    var warning = $"GPU/runtime lỗi → chuyển CPU · Batch {batchNumber}/{batchTotal}: {TrimLiveText(first.Message, 80)}";
                     job.Warn($"Batch bắt đầu cue {batch[0].Number} gặp lỗi runtime; thử lại bằng CPU an toàn: {first.Message}");
+                    SetLive("translation-fallback", overallBefore,
+                        $"Bước 4/6 · Dịch batch · Batch {batchNumber}/{batchTotal}.", warning);
                     await RestartTranslationServerAsync(runtime!, model, LowerGpuLayers(layers), job.CancellationToken);
                     var retry = await RunJsonAsync(runtime!, prompt + "\nLần trước runtime không hoàn tất. Dịch lại đúng toàn bộ TARGET và chỉ trả đúng một JSON object.",
-                        TranslationSchema, 4096, job.CancellationToken);
+                        TranslationSchema, 4096, job.CancellationToken, job);
                     translations = ValidateBatch(retry, batch);
                 }
                 batchWatch.Stop();
@@ -286,7 +358,9 @@ public sealed class LocalSubtitleTranslationService : IDisposable
                         var previousBatchSize = translationBatchSize;
                         translationBatchSize = LowerTranslationBatchSize(translationBatchSize);
                         latencyBaselineMsPerCue = 0d;
+                        var warning = $"Batch chậm → giảm batch {previousBatchSize} xuống {translationBatchSize} câu.";
                         job.Warn($"Adaptive Vietsub: batch {previousBatchSize} mất {batchWatch.Elapsed.TotalSeconds:0.0}s, phản hồi tăng đột biến; giảm batch lượt sau còn {translationBatchSize} câu.");
+                        PushLive(warning);
                     }
                     else
                     {
@@ -296,9 +370,26 @@ public sealed class LocalSubtitleTranslationService : IDisposable
                 foreach (var pair in translations) checkpoint.Translations[pair.Key] = pair.Value;
                 await SaveCheckpointAsync(checkpointPath, checkpoint, job.CancellationToken);
                 pendingOffset += batch.Length;
+                completedBatches++;
+
                 var completed = checkpoint.Translations.Count;
-                var percent = 12 + completed / (double)source.Count * 84;
-                job.Set("translation", percent, $"Đang Vietsub bằng AI local · {completed}/{source.Count} câu · checkpoint đã lưu.");
+                var sentencePercent = completed / (double)source.Count * 100;
+                var overallProgress = TranslationOverallProgress(completed, source.Count);
+                var speed = translationClock.Elapsed.TotalSeconds >= 1
+                    ? pendingOffset / translationClock.Elapsed.TotalMinutes
+                    : 0d;
+                var speedText = speed > 0 ? $" · {speed:0.0} câu/phút" : string.Empty;
+                var lastCue = batch[^1];
+                var lastTranslation = translations.TryGetValue(lastCue.Id, out var liveTranslation) ? liveTranslation : string.Empty;
+                var pairLine = $"Câu {lastCue.Number}: {TrimLiveText(lastCue.SourceText, 52)} → {TrimLiveText(lastTranslation, 72)}";
+                job.Log(pairLine);
+
+                var nextRemainingBatches = CountAdaptiveTranslationBatches(pending, pendingOffset, translationBatchSize, 20_000);
+                var currentBatchTotal = completedBatches + nextRemainingBatches;
+                SetLive("translation-batch", overallProgress,
+                    $"Bước 4/6 · Dịch batch · Batch {completedBatches}/{currentBatchTotal}." + Environment.NewLine +
+                    $"Đã dịch {completed:N0} / {source.Count:N0} câu · {sentencePercent:0.#}%{speedText}.",
+                    $"Vừa xong · {pairLine}");
             }
         }
         finally
@@ -306,6 +397,8 @@ public sealed class LocalSubtitleTranslationService : IDisposable
             if (runtime is not null) await runtime.DisposeAsync();
         }
 
+        SetLive("translation-validating", 97,
+            $"Bước 5/6 · Kiểm tra {source.Count:N0} câu · số block, thứ tự và timecode...");
         var translated = source.Select(cue => cue with
         {
             VietnameseText = checkpoint.Translations.TryGetValue(cue.Id, out var value) ? value : string.Empty,
@@ -316,8 +409,9 @@ public sealed class LocalSubtitleTranslationService : IDisposable
         var safeName = FileNamePolicy.Sanitize(request.OutputFileName, Path.GetFileNameWithoutExtension(request.Source.Path) + ".vi.srt");
         if (!safeName.EndsWith(".srt", StringComparison.OrdinalIgnoreCase)) safeName += ".srt";
         var output = FileNamePolicy.UniquePath(Path.Combine(outputDirectory, safeName), request.Source.Path);
+        SetLive("translation-writing", 99, $"Bước 6/6 · Ghi SRT Việt · {Path.GetFileName(output)}...");
         await WriteAtomicAsync(output, EditorSubtitleDocument.RenderVietnamese(translated), job.CancellationToken);
-        job.Set("translation-finalizing", 98, "Đã kiểm tra số block, thứ tự và timecode; đang hoàn tất SRT Việt...");
+        job.Log($"Đã ghi SRT Việt: {output}");
         return new EditorTranslationResult(translated, output, restored, model.Name, Skill.Info.Sha256);
     }
 
@@ -350,6 +444,34 @@ public sealed class LocalSubtitleTranslationService : IDisposable
         > TranslationBatchSmall => TranslationBatchSmall,
         _ => TranslationBatchSmall,
     };
+
+    internal static double TranslationOverallProgress(int completed, int total)
+    {
+        if (total <= 0) return 0;
+        return Math.Clamp(completed, 0, total) / (double)total * 100;
+    }
+
+    private static int CountAdaptiveTranslationBatches(IReadOnlyList<EditorSubtitleCue> cues, int startIndex, int maxItems, int maxCharacters)
+    {
+        if (startIndex >= cues.Count) return 0;
+        var count = 0;
+        var offset = Math.Max(0, startIndex);
+        while (offset < cues.Count)
+        {
+            var batch = CreateAdaptiveTranslationBatch(cues, offset, maxItems, maxCharacters);
+            if (batch.Length == 0) break;
+            offset += batch.Length;
+            count++;
+        }
+        return count;
+    }
+
+    private static string TrimLiveText(string value, int maxLength)
+    {
+        var flat = value.Replace('\r', ' ').Replace('\n', ' ').Trim();
+        if (flat.Length <= maxLength) return flat;
+        return flat[..Math.Max(1, maxLength - 3)] + "...";
+    }
 
     internal static bool IsTranslationLatencySpike(TimeSpan elapsed, int cueCount, double baselineMsPerCue)
     {
@@ -416,6 +538,7 @@ public sealed class LocalSubtitleTranslationService : IDisposable
         catch (Exception first)
         {
             job.Warn("Qwen GPU/Vulkan không khởi động được persistent runtime; chuyển sang CPU an toàn: " + first.Message);
+            job.Set("translation-fallback", -1, "Bước 1/6 · GPU lỗi → chuyển CPU để nạp model an toàn...");
             try
             {
                 await RestartTranslationServerAsync(session, model, 0, cancellationToken);
@@ -520,7 +643,8 @@ public sealed class LocalSubtitleTranslationService : IDisposable
         string prompt,
         string schema,
         int maxTokens,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        AppJob? progressJob = null)
     {
         async Task<JsonElement> RunAttemptAsync(string attemptPrompt, bool enforceSchema)
         {
@@ -555,8 +679,10 @@ public sealed class LocalSubtitleTranslationService : IDisposable
             {
                 return await RunAttemptAsync(prompt, enforceSchema: true);
             }
-            catch (InvalidDataException)
+            catch (InvalidDataException first)
             {
+                progressJob?.Warn("JSON sai → retry không schema với cùng model: " + first.Message);
+                progressJob?.Set("translation-retry", -1, "JSON sai → retry với cùng model; progress hiện tại được giữ nguyên...");
                 // Keep the reviewed Qwen fallback: if schema-constrained generation is empty or malformed,
                 // retry on the same loaded model without grammar while downstream validators still own shape/IDs/text.
                 return await RunAttemptAsync(prompt + "\nCHỈ TRẢ đúng một JSON object hợp lệ, không markdown, không giải thích hay tiền tố/hậu tố.", enforceSchema: false);
