@@ -1,7 +1,7 @@
 {
-  "version": "4.0.0-beta.48-csharp-p5",
+  "version": "4.0.0-beta.49-csharp-p5",
   "notes": [
-    "Danh sách Chỉnh từng câu SRT nay cập nhật ngay sau mỗi batch Vietsub hoàn tất: câu đã dịch hiển thị trực tiếp lời Việt, đánh dấu câu mới nhất, tự cuộn theo tiến độ và báo AI đã dịch xong tới câu nào.",
-    "Tinh chỉnh thanh điều khiển Preview trong Editor với bố cục cân đối hơn cho Play/Pause, thời gian, seek, mute, âm lượng và toàn màn hình; không thay đổi logic playback."
+    "Vietsub AI local nay dịch trực tiếp từng câu SRT Trung và lưu kết quả ngay sau mỗi câu, giúp danh sách phụ đề hiển thị lời Việt liên tục thay vì chờ cả nhóm câu hoàn tất.",
+    "Rút gọn dữ liệu hướng dẫn gửi vào AI cho từng câu: chỉ giữ ngữ cảnh lân cận và phần skill liên quan, giảm độ dài xử lý mà vẫn giữ quy tắc dịch Trung → Việt đã duyệt."
   ]
 }
