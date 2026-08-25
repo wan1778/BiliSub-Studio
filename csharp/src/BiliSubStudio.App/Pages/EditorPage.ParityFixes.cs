@@ -6,22 +6,12 @@ namespace BiliSubStudio.App.Pages;
 
 public sealed partial class EditorPage
 {
-    private bool _editorParityInitialized;
     private TextBlock? _editorOutputPathText;
     private Button? _editorChooseOutputButton;
     private Button? _editorOpenOutputButton;
     private ToggleSwitch? _editorAutoCompositeToggle;
     private CancellationTokenSource? _editorAutoCompositeCancellation;
     private bool _editorAutoCompositeRebuilding;
-
-    // UI SHELL owns all visible controls in XAML. This method now initializes
-    // behavior only; it never inserts or reparents visual elements.
-    private void EnsureEditorParityInitialized()
-    {
-        if (_editorParityInitialized) return;
-        _editorParityInitialized = true;
-        RefreshEditorParityControls();
-    }
 
     private async void EditorChooseOutput_Click(object sender, RoutedEventArgs e)
     {
@@ -122,7 +112,7 @@ public sealed partial class EditorPage
 
     private void RefreshEditorParityControls()
     {
-        if (!_editorParityInitialized) return;
+        if (!_editorCoreInitialized) return;
         if (_editorOutputPathText is not null) _editorOutputPathText.Text = _application.Config.OutputDirectory;
         if (_editorChooseOutputButton is not null) _editorChooseOutputButton.IsEnabled = !EditorBusy && !_playback.IsPreviewMode;
         if (_editorOpenOutputButton is not null) _editorOpenOutputButton.IsEnabled = Directory.Exists(_application.Config.OutputDirectory);

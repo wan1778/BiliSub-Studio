@@ -30,7 +30,7 @@ public sealed partial class EditorPage
     private readonly List<EditorImageOverlayState> _imageOverlays = [];
     private readonly Dictionary<string, BitmapImage> _imageBitmaps = new(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim _imageMissingReconcileGate = new(1, 1);
-    private bool _imageFeatureInitialized;
+    private bool _imageFeatureInitialized => _editorCoreInitialized;
     private bool _syncingImageInputs;
     private bool _imageMissingReconcileInProgress;
     private string? _imageProjectId;
@@ -53,17 +53,6 @@ public sealed partial class EditorPage
     private NumberBox? _imageWidthBox;
     private NumberBox? _imageHeightBox;
     private Slider? _imageOpacitySlider;
-
-
-
-    // Static UI SHELL declares Image/Logo controls in XAML. Initialization
-    // is state-only and must never insert or reparent visual elements.
-    private void EnsureImageFeatureInitialized()
-    {
-        if (_imageFeatureInitialized) return;
-        _imageFeatureInitialized = true;
-        RefreshImageControls();
-    }
 
     private async Task EnsureImageProjectLoadedAsync()
     {
