@@ -1,14 +1,12 @@
 {
-  "version": "4.0.0-beta.45-csharp-p5",
+  "version": "4.0.0-beta.46-csharp-p5",
   "channel_ready": true,
-  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.31/BiliSubStudio_4.0.31_Windows-x64-portable.zip",
-  "sha256": "6b0b72dbbfb85f6064b58f668ebb23c8b0d1452ae510aa41d45d75a931a124b1",
-  "size": 94775999,
+  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.32/BiliSubStudio_4.0.32_Windows-x64-portable.zip",
+  "sha256": "9e3292be8defa0b61f9ea8bd111b1630b87d0af0cd00863460172931851126ea",
+  "size": 94776571,
   "payload_kind": "winui3-portable-zip",
   "notes": [
-    "Vietsub realtime được hoàn thiện: Nhật ký toàn ứng dụng hiển thị thanh tiến trình đang chạy, và câu nào Qwen dịch xong theo batch sẽ cập nhật ngay vào danh sách chỉnh SRT, ô lời Việt và preview thay vì chờ dịch hết file.",
-    "Tăng chất lượng Vietsub: prompt ưu tiên nguyên văn Trung + ngữ cảnh trước Bible/skill, giảm sampler dễ sáng tác, giới hạn Quality 8B tối đa 24 câu mỗi batch và vô hiệu checkpoint cũ khi policy dịch thay đổi để không tái dùng bản dịch sai.",
-    "Nâng cấp logging chẩn đoán: lưu full exception/stack trace cho lỗi job, redact secret ngay từ nguồn, ghi application.log qua background queue, giữ 5 thế hệ rotation và dùng chung LogRedactor cho báo lỗi.",
-    "Sửa crash khi đang Vietsub rồi chuyển tab: job Qwen tiếp tục chạy nền, Editor không còn cập nhật XAML/preview khi đã unload, quay lại tab sẽ đồng bộ tiến độ/kết quả; WinUI E_ABORT do thao tác bị hủy không còn bị báo nhầm thành lỗi khởi động rồi đóng app."
+    "Tách thanh điều khiển Preview khỏi khung hình: Play, thời lượng, seek, âm lượng và toàn màn hình nay nằm thành hàng riêng bên dưới Preview.",
+    "Sửa lỗi ứng dụng có thể thoát khi rời tab Chỉnh video lúc Preview đang phát: hủy preview an toàn, bỏ callback muộn và tháo MediaPlayer khỏi control trước khi dispose."
   ]
 }
