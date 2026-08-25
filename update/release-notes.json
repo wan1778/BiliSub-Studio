@@ -1,9 +1,9 @@
 {
-  "version": "4.0.0-beta.44-csharp-p5",
+  "version": "4.0.0-beta.45-csharp-p5",
   "notes": [
-    "Tăng tốc Vietsub local: Qwen được giữ trong RAM/VRAM suốt một job, tận dụng GPU offload và prompt cache ổn định thay vì nạp lại model cho từng lượt.",
-    "Adaptive batch Vietsub theo VRAM và độ trễ, tự chọn 8/24/48 câu và giảm batch khi phản hồi chậm; bổ sung chế độ Fast Qwen3-4B bên cạnh Quality Qwen3-8B.",
-    "Tăng độ bền cho SRT dài: Bible JSON lỗi giữ hồ sơ cũ; lỗi runtime chuyển sang CPU, clean-restart có kiểm soát và giữ checkpoint để có thể tiếp tục thay vì làm chết toàn bộ job.",
-    "Bổ sung tiến độ Vietsub realtime với số câu đã dịch, batch hiện tại, tốc độ câu/phút, câu vừa dịch và cảnh báo retry/fallback."
+    "Vietsub realtime được hoàn thiện: Nhật ký toàn ứng dụng hiển thị thanh tiến trình đang chạy, và câu nào Qwen dịch xong theo batch sẽ cập nhật ngay vào danh sách chỉnh SRT, ô lời Việt và preview thay vì chờ dịch hết file.",
+    "Tăng chất lượng Vietsub: prompt ưu tiên nguyên văn Trung + ngữ cảnh trước Bible/skill, giảm sampler dễ sáng tác, giới hạn Quality 8B tối đa 24 câu mỗi batch và vô hiệu checkpoint cũ khi policy dịch thay đổi để không tái dùng bản dịch sai.",
+    "Nâng cấp logging chẩn đoán: lưu full exception/stack trace cho lỗi job, redact secret ngay từ nguồn, ghi application.log qua background queue, giữ 5 thế hệ rotation và dùng chung LogRedactor cho báo lỗi.",
+    "Sửa crash khi đang Vietsub rồi chuyển tab: job Qwen tiếp tục chạy nền, Editor không còn cập nhật XAML/preview khi đã unload, quay lại tab sẽ đồng bộ tiến độ/kết quả; WinUI E_ABORT do thao tác bị hủy không còn bị báo nhầm thành lỗi khởi động rồi đóng app."
   ]
 }
