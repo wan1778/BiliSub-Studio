@@ -1,12 +1,12 @@
 {
-  "version": "4.0.0-beta.52-csharp-p5",
+  "version": "4.0.0-beta.53-csharp-p5",
   "channel_ready": true,
-  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.38/BiliSubStudio_4.0.38_Windows-x64-portable.zip",
-  "sha256": "b8f66f41e3b3ebd4df2653c4e8ecd91d9fe8914415d3a8d31d0b09d0f2409d1e",
-  "size": 94779807,
+  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.39/BiliSubStudio_4.0.39_Windows-x64-portable.zip",
+  "sha256": "1d886d66acd8f0607fa177f6378b9dc5c2900427e7e4b0bcb3dbeaedcd4f6a38",
+  "size": 94792417,
   "payload_kind": "winui3-portable-zip",
   "notes": [
-    "Trong lúc Vietsub AI đang chạy, danh sách Chỉnh từng câu SRT vẫn có thể cuộn lên/xuống để xem các câu đã dịch mà không bị AI kéo trở lại câu mới nhất.",
-    "Chỉ mở quyền xem/cuộn khi đang dịch; phần sửa lời, khóa câu và dịch lại câu vẫn giữ khóa để tránh xung đột dữ liệu với tiến trình Vietsub."
+    "Vietsub ưu tiên đúng thuật ngữ và tên riêng: chỉ đưa các mục liên quan của bảng dịch vào từng câu để giảm dịch sai tên Hán-Việt và thuật ngữ tu tiên.",
+    "Vietsub ghi nhớ tên, quan hệ và cách xưng hô trong từng phim, kiểm tra lại kết quả trước khi chấp nhận và vẫn hiển thị từng câu ngay khi dịch xong."
   ]
 }
