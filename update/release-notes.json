@@ -1,6 +1,7 @@
 {
-  "version": "4.0.0-beta.54-csharp-p5",
+  "version": "4.0.0-beta.55-csharp-p5",
   "notes": [
-    "Trong khi Vietsub đang chạy, danh sách Chỉnh từng câu SRT vẫn nhận chuột/touchpad để cuộn lên xuống xem các câu; các thao tác sửa, khóa, lưu và dịch lại câu vẫn tạm khóa để tránh xung đột."
+    "Chọn hoặc nhập SRT mới không còn tự nạp lời Việt và trạng thái khóa từ lần trước trước khi bấm Vietsub; project đã dịch hợp lệ vẫn được khôi phục khi mở lại.",
+    "Vietsub local tự sửa thuật ngữ tu tiên đã khóa như 师父=sư phụ sau khi model trả kết quả, kể cả khi model làm rơi token hoặc trả lại chữ Hán; không còn retry hoặc fail chỉ vì lỗi glossary có thể tự sửa an toàn."
   ]
 }
