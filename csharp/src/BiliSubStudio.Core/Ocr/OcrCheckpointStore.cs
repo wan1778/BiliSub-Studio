@@ -5,14 +5,16 @@ using BiliSubStudio.Core.Configuration;
 
 namespace BiliSubStudio.Core.Ocr;
 
-internal sealed record OcrScanMode(double Fps, double Guard, double ActiveGuard, double DiffTrigger, double LowConfidence);
+internal sealed record OcrScanMode(double Fps, double Guard, double ActiveGuard, double DiffTrigger, double LowConfidence, bool EveryFrame = false);
 internal sealed record OcrScanSegment(int Index, double CoreStart, double CoreEnd, double ScanStart, double ScanEnd);
 internal sealed record OcrLaneCheckpoint(OcrScanSegment Segment, double MediaSeconds, List<OcrCue> Cues, OcrCue? Active, int Frames, int OcrImages, bool Completed);
 internal sealed record OcrParallelCheckpoint(int Schema, string Key, int SelectedParallelism, List<OcrLaneCheckpoint> Lanes, int BoundaryMerges = 0);
 
 internal sealed class OcrCheckpointStore
 {
-    private const int Schema = 4;
+    // Accurate scan semantics changed from sampled frames to every decoded frame.
+    // Never resume a checkpoint produced by the old sampled implementation.
+    private const int Schema = 5;
     private readonly AppPaths _paths;
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -41,7 +43,7 @@ internal sealed class OcrCheckpointStore
     public async Task SaveAsync(OcrScanRequest request, OcrParallelCheckpoint checkpoint, CancellationToken cancellationToken)
     {
         var key = await KeyAsync(request, Schema, cancellationToken);
-        if (checkpoint.Schema != Schema || checkpoint.Key != key) throw new InvalidDataException("Checkpoint OCR schema 4 không hợp lệ.");
+        if (checkpoint.Schema != Schema || checkpoint.Key != key) throw new InvalidDataException("Checkpoint OCR schema 5 không hợp lệ.");
         Directory.CreateDirectory(DirectoryPath);
         var path = Path.Combine(DirectoryPath, key + ".json");
         var temporary = path + ".tmp";
@@ -78,7 +80,7 @@ internal sealed class OcrCheckpointStore
 
     public async Task RemoveAsync(OcrScanRequest request, CancellationToken cancellationToken)
     {
-        foreach (var schema in new[] { 4, 3 })
+        foreach (var schema in new[] { 5, 4, 3 })
         {
             var key = await KeyAsync(request, schema, cancellationToken);
             var path = Path.Combine(DirectoryPath, key + ".json");
@@ -117,7 +119,8 @@ internal sealed class OcrCheckpointStore
     {
         var result = mode.Trim().ToLowerInvariant() switch
         {
-            "accurate" or "precise" or "chinh-xac" => new OcrScanMode(4, 3, 12, 0.10, 0.68),
+            // Accurate means every decoded source frame, never a fixed-rate sample.
+            "accurate" or "precise" or "chinh-xac" => new OcrScanMode(4, 3, 12, 0.10, 0.68, EveryFrame: true),
             "fast" or "nhanh" => new OcrScanMode(1.5, 8, 24, 0.22, 0.58),
             _ => new OcrScanMode(2.5, 5, 16, 0.16, 0.62),
         };

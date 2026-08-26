@@ -5,17 +5,26 @@ internal sealed class SubtitleTracker
     private readonly double _frameSpan;
     private readonly double _candidateGap;
     private readonly double _lowConfidence;
+    private readonly bool _exactFrameTiming;
     private readonly List<OcrCue> _committed = [];
     private Candidate? _candidate;
     private OcrCue? _active;
     private int _emptyHits;
     private double _emptyStart;
+    private double _lastFrameDuration;
 
     public SubtitleTracker(double framesPerSecond, double lowConfidence = 0.68)
+        : this(framesPerSecond, lowConfidence, exactFrameTiming: false)
+    {
+    }
+
+    internal SubtitleTracker(double framesPerSecond, double lowConfidence, bool exactFrameTiming)
     {
         _frameSpan = 1 / Math.Max(0.25, framesPerSecond);
         _candidateGap = Math.Max(0.75, _frameSpan * 2.5);
         _lowConfidence = Math.Clamp(lowConfidence, 0, 1);
+        _exactFrameTiming = exactFrameTiming;
+        _lastFrameDuration = _frameSpan;
     }
 
     public bool CanCheckpoint => _candidate is null && _emptyHits == 0;
@@ -35,11 +44,15 @@ internal sealed class SubtitleTracker
         _emptyHits = 0;
     }
 
-    public void Observe(double at, OcrResult result)
+    public void Observe(double at, OcrResult result) => Observe(at, _frameSpan, result);
+
+    public void Observe(double at, double frameDuration, OcrResult result)
     {
+        frameDuration = NormalizeFrameDuration(frameDuration);
+        _lastFrameDuration = frameDuration;
         if (!result.Ok || !result.Detected || string.IsNullOrWhiteSpace(result.Text))
         {
-            ObserveEmpty(at);
+            ObserveEmpty(at, frameDuration);
             return;
         }
         if (!ChineseSubtitleNormalizer.TryNormalize(result.Text, out var text))
@@ -55,7 +68,7 @@ internal sealed class SubtitleTracker
             _candidate = null;
             _active = _active with
             {
-                End = Math.Max(_active.End, at + _frameSpan / 2),
+                End = Math.Max(_active.End, at + ActiveFrameEnd(frameDuration)),
                 Text = PreferText(_active.Text, _active.Confidence, text, result.Confidence),
                 Confidence = Math.Max(_active.Confidence, result.Confidence),
             };
@@ -65,7 +78,7 @@ internal sealed class SubtitleTracker
         var required = text.EnumerateRunes().Count() <= 1 || result.Confidence < _lowConfidence ? 3 : 2;
         if (_candidate is null || at - _candidate.Last > _candidateGap || Similarity(_candidate.Text, text) < 0.80)
         {
-            _candidate = new Candidate(text, EstimateBoundary(at), at, result.Confidence, 1, required);
+            _candidate = new Candidate(text, EstimateBoundary(at, frameDuration), at, result.Confidence, 1, required);
             return;
         }
         _candidate = _candidate with
@@ -76,16 +89,16 @@ internal sealed class SubtitleTracker
             Required = Math.Max(_candidate.Required, required),
             Text = PreferText(_candidate.Text, _candidate.Confidence, text, result.Confidence),
         };
-        if (_candidate.Hits >= _candidate.Required) PromoteCandidate();
+        if (_candidate.Hits >= _candidate.Required) PromoteCandidate(frameDuration);
     }
 
     public void Finish(double end)
     {
         _candidate = null;
-        if (_active is not null) CommitActive(Math.Max(end, _active.Start + _frameSpan));
+        if (_active is not null) CommitActive(Math.Max(end, _active.Start + MinimumCueDuration(_lastFrameDuration)));
     }
 
-    private void ObserveEmpty(double at)
+    private void ObserveEmpty(double at, double frameDuration)
     {
         _candidate = null;
         if (_active is null)
@@ -96,16 +109,16 @@ internal sealed class SubtitleTracker
         if (_emptyHits == 0) _emptyStart = at;
         if (++_emptyHits >= 2)
         {
-            CommitActive(Math.Max(EstimateBoundary(_emptyStart), _active.Start + _frameSpan));
+            CommitActive(Math.Max(EstimateBoundary(_emptyStart, frameDuration), _active.Start + MinimumCueDuration(frameDuration)));
             _emptyHits = 0;
         }
     }
 
-    private void PromoteCandidate()
+    private void PromoteCandidate(double frameDuration)
     {
         if (_candidate is null) return;
         if (_active is not null) CommitActive(_candidate.Start);
-        _active = new OcrCue(_candidate.Start, _candidate.Last + _frameSpan / 2, _candidate.Text, _candidate.Confidence);
+        _active = new OcrCue(_candidate.Start, _candidate.Last + ActiveFrameEnd(frameDuration), _candidate.Text, _candidate.Confidence);
         _candidate = null;
     }
 
@@ -119,7 +132,19 @@ internal sealed class SubtitleTracker
         _active = null;
     }
 
-    private double EstimateBoundary(double sampledAt) => Math.Max(0, sampledAt - _frameSpan / 2);
+    private double EstimateBoundary(double sampledAt, double frameDuration) => _exactFrameTiming
+        ? Math.Max(0, sampledAt)
+        : Math.Max(0, sampledAt - _frameSpan / 2);
+
+    private double ActiveFrameEnd(double frameDuration) => _exactFrameTiming ? frameDuration : _frameSpan / 2;
+
+    private double MinimumCueDuration(double frameDuration) => _exactFrameTiming
+        ? Math.Max(0.001, frameDuration)
+        : _frameSpan;
+
+    private double NormalizeFrameDuration(double value) => value > 0 && !double.IsNaN(value) && !double.IsInfinity(value)
+        ? value
+        : _frameSpan;
 
     private static string PreferText(string current, double currentConfidence, string candidate, double candidateConfidence)
     {

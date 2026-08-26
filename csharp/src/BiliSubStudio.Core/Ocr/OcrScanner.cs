@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.Text;
+using System.Text.RegularExpressions;
+using System.Threading.Channels;
 using BiliSubStudio.Core.Hardware;
 using BiliSubStudio.Core.Jobs;
 using BiliSubStudio.Core.Processes;
@@ -123,7 +125,7 @@ public sealed class OcrScanner
             throw new InvalidDataException($"OCR checkpoint yêu cầu {selected} lane nhưng worker pool đang có {configuredWorkers}.");
         job.Log(saved is null
             ? $"OCR Commit: benchmark xong, khóa {selected} pipeline = {selected} FFmpeg lane + {configuredWorkers} Python worker ({_ocr.Status.WorkerKinds})."
-            : $"Resume checkpoint schema 4: giữ và kiểm tra lại {selected} pipeline = {selected} FFmpeg lane + {configuredWorkers} Python worker ({_ocr.Status.WorkerKinds}).");
+            : $"Resume checkpoint schema 5: giữ và kiểm tra lại {selected} pipeline = {selected} FFmpeg lane + {configuredWorkers} Python worker ({_ocr.Status.WorkerKinds}).");
         var decoder = await ProbeNvdecAsync(ffmpeg, source, request.Region, mode, processes, token) ? "nvdec" : "software";
         job.Log(decoder == "nvdec" ? "Decoder: NVIDIA NVDEC." : "Decoder: software fallback.");
 
@@ -450,7 +452,8 @@ public sealed class OcrScanner
         process.Start();
         using var ownership = processes.Track(process);
         using var registration = cancellationToken.Register(() => Kill(process));
-        var errorTask = process.StandardError.ReadToEndAsync(cancellationToken);
+        var timestamps = mode.EveryFrame ? new FrameTimestampReader(process.StandardError) : null;
+        var errorTask = timestamps is null ? process.StandardError.ReadToEndAsync(cancellationToken) : timestamps.Completion;
         var reader = new JpegStreamReader(process.StandardOutput.BaseStream);
         var frames = saved.Frames;
         var images = saved.OcrImages;
@@ -462,12 +465,17 @@ public sealed class OcrScanner
         {
             while (await reader.ReadAsync(cancellationToken) is { } jpeg)
             {
-                var at = startAt + frameIndex / mode.Fps;
+                var timing = timestamps is null
+                    ? new FrameTiming(startAt + frameIndex / mode.Fps, 1 / mode.Fps)
+                    : await timestamps.ReadAsync(cancellationToken);
+                var at = timing.PresentationTime;
                 if (at > segment.ScanEnd + 0.001) { stoppedAtBoundary = true; break; }
                 frameIndex++;
                 frames++;
                 images++;
-                mediaSeconds = at;
+                mediaSeconds = mode.EveryFrame
+                    ? Math.Min(segment.ScanEnd, at + timing.Duration)
+                    : at;
                 OcrResult result;
                 try
                 {
@@ -496,7 +504,7 @@ public sealed class OcrScanner
                         job.Log($"OCR frame {at:0.000}s: enhanced retry skipped ({Compact(error.Message)}).");
                     }
                 }
-                tracker.Observe(at, result);
+                tracker.Observe(at, timing.Duration, result);
                 onProgress(at, frames, images);
                 if (job.IsPauseRequested && tracker.CanCheckpoint)
                 {
@@ -515,7 +523,7 @@ public sealed class OcrScanner
         if (!paused && !stoppedAtBoundary && process.ExitCode != 0) throw new InvalidOperationException(Compact(stderr));
         if (!paused)
         {
-            tracker.Finish(segment.ScanEnd);
+            tracker.Finish(mode.EveryFrame ? mediaSeconds : segment.ScanEnd);
             mediaSeconds = segment.CoreEnd;
         }
         return saved with
@@ -616,18 +624,22 @@ public sealed class OcrScanner
 
     private static IReadOnlyList<string> BuildLaneArguments(string source, OcrRegion region, OcrScanMode mode, double start, double end, bool nvdec)
     {
-        var args = new List<string> { "-hide_banner", "-loglevel", "error", "-nostdin" };
+        var args = new List<string> { "-hide_banner", "-loglevel", mode.EveryFrame ? "info" : "error", "-nostdin" };
         if (nvdec) args.AddRange(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda", "-hwaccel_device", "0"]);
-        if (start > 0) args.AddRange(["-ss", start.ToString("0.000", CultureInfo.InvariantCulture)]);
+        if (start > 0) args.AddRange(["-ss", start.ToString("0.######", CultureInfo.InvariantCulture)]);
+        if (mode.EveryFrame) args.Add("-copyts");
         args.AddRange(["-i", source]);
-        if (end > start) args.AddRange(["-t", (end - start).ToString("0.000", CultureInfo.InvariantCulture)]);
+        if (end > start) args.AddRange(["-t", (end - start).ToString("0.######", CultureInfo.InvariantCulture)]);
         var crop = string.Format(CultureInfo.InvariantCulture,
             "crop=iw*{0}:ih*{1}:iw*{2}:ih*{3},scale=1280:320:force_original_aspect_ratio=decrease:flags=fast_bilinear,pad=1280:320:(ow-iw)/2:(oh-ih)/2:black",
             region.Width, region.Height, region.X, region.Y);
         var fps = mode.Fps.ToString("0.######", CultureInfo.InvariantCulture);
+        var timing = mode.EveryFrame ? ",showinfo" : string.Empty;
         var filter = nvdec
-            ? $"hwdownload,format=nv12|p010le|p016le,fps={fps},{crop}"
-            : $"fps={fps},{crop}";
+            ? mode.EveryFrame
+                ? $"hwdownload,format=nv12|p010le|p016le,{crop}{timing}"
+                : $"hwdownload,format=nv12|p010le|p016le,fps={fps},{crop}"
+            : mode.EveryFrame ? $"{crop}{timing}" : $"fps={fps},{crop}";
         args.AddRange(["-map", "0:v:0", "-an", "-sn", "-dn", "-vf", filter, "-q:v", "4", "-c:v", "mjpeg", "-f", "image2pipe", "pipe:1"]);
         return args;
     }
@@ -675,6 +687,65 @@ public sealed class OcrScanner
 
     private sealed record OcrTopologyProbe(double Throughput);
     private sealed class OcrRecognitionException(string message, Exception? inner = null) : Exception(message, inner);
+    private readonly record struct FrameTiming(double PresentationTime, double Duration);
+
+    // FFmpeg writes showinfo before it emits the matching JPEG. Keep only a small
+    // ordered queue so an every-frame scan remains streaming and cannot buffer a video.
+    private sealed class FrameTimestampReader
+    {
+        private static readonly Regex TimestampPattern = new(
+            @"\bpts_time:(?<pts>-?(?:\d+(?:\.\d*)?|\.\d+))\s+duration:\s*-?\d+\s+duration_time:(?<duration>\d+(?:\.\d*)?|\.\d+)",
+            RegexOptions.CultureInvariant | RegexOptions.Compiled);
+        private readonly Channel<FrameTiming> _timestamps = Channel.CreateBounded<FrameTiming>(new BoundedChannelOptions(48)
+        {
+            FullMode = BoundedChannelFullMode.Wait,
+            SingleReader = true,
+            SingleWriter = true,
+        });
+        private readonly StringBuilder _diagnostic = new();
+
+        public FrameTimestampReader(StreamReader standardError) => Completion = PumpAsync(standardError);
+
+        public Task<string> Completion { get; }
+
+        public async Task<FrameTiming> ReadAsync(CancellationToken cancellationToken)
+        {
+            try { return await _timestamps.Reader.ReadAsync(cancellationToken); }
+            catch (ChannelClosedException error)
+            {
+                throw new InvalidDataException(
+                    "FFmpeg không trả PTS cho frame OCR Chính xác. " + Compact(_diagnostic.ToString()), error);
+            }
+        }
+
+        private async Task<string> PumpAsync(StreamReader standardError)
+        {
+            Exception? failure = null;
+            try
+            {
+                while (await standardError.ReadLineAsync() is { } line)
+                {
+                    if (_diagnostic.Length < 48 * 1024) _diagnostic.AppendLine(line);
+                    var match = TimestampPattern.Match(line);
+                    if (!match.Success) continue;
+                    if (!double.TryParse(match.Groups["pts"].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var pts)
+                        || !double.TryParse(match.Groups["duration"].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var duration)
+                        || double.IsNaN(pts) || double.IsInfinity(pts) || duration <= 0 || double.IsNaN(duration) || double.IsInfinity(duration))
+                        throw new InvalidDataException("FFmpeg trả PTS frame OCR không hợp lệ.");
+                    await _timestamps.Writer.WriteAsync(new FrameTiming(pts, duration));
+                }
+            }
+            catch (Exception error)
+            {
+                failure = error;
+            }
+            finally
+            {
+                _timestamps.Writer.TryComplete(failure);
+            }
+            return _diagnostic.ToString();
+        }
+    }
 
     private sealed class JpegStreamReader
     {
