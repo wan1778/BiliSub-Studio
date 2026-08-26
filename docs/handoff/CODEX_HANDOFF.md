@@ -1,11 +1,11 @@
 # Codex handoff — BiliSub Studio
 
-- Current main/base SHA: `92cce21285715d6d935df3f2174091319a955bbe`.
+- Current main/base SHA: `5b7da5f4f193f750595d340d3d1acb6198108d9f`.
 - Current branch: `main`.
 - PR: none.
-- Last completed task: `OCR-STABILIZE-01` — stabilize every-frame reveal/fade variants and remove a demonstrated far-row OCR glyph contaminant.
+- Last completed task: `OCR-OVERLAY-01` — exclude a demonstrated persistent vertical left-side visual overlay from subtitle OCR.
 - Task in progress: none.
-- Exact next task: field-test a longer bounded Accurate OCR segment before treating the full-video OCR quality gate as PASS; use source-frame PTS as timing truth and record any intentional visual-text versus supplied-SRT differences separately.
+- Exact next task: field-test a longer representative Accurate OCR segment before treating the full-video OCR quality gate as PASS; use source-frame PTS as timing truth and record any intentional visual-text versus supplied-SRT differences separately.
 
 ## Root cause
 
@@ -19,6 +19,10 @@ continuous text can vary by a leading/trailing glyph between adjacent frames.
 The similarity threshold treated those variants as different cues, fragmenting
 one subtitle even though every PTS was read correctly. It also accepted a
 separate, one-glyph OCR line far above the dominant subtitle baseline.
+
+The 60-second field scan then demonstrated a persistent vertical left-side
+overlay (`在原地`, x=0..62 and y=33..221) being joined with the horizontal
+subtitle at the bottom of the OCR crop. It is not subtitle content.
 
 ## Changes made
 
@@ -36,10 +40,10 @@ separate, one-glyph OCR line far above the dominant subtitle baseline.
   of a reveal/fade when it vanishes or changes quickly, but becomes a new cue
   when it persists for 0.75 seconds. This preserves `你走吧` while separating a
   later repeated `幸福` cue.
-- OCR tracking and single-frame recognition remove a one-glyph line only when
-  a high-confidence, 3+ glyph subtitle exists on a geometrically distant row.
-  This removes the demonstrated `州`/`怡` contamination without discarding
-  normal same-baseline text.
+- OCR tracking and single-frame recognition choose the bottom-most horizontal
+  text baseline, then remove vertical or far-above lines. This removes the
+  demonstrated `州`/`怡` noise and `在原地` overlay without discarding normal
+  same-baseline subtitle lines.
 - Exact-frame cue commits now use source frame duration rather than the former
   fixed 120 ms minimum.
 - Bumped OCR checkpoint schema to 5 so no old 4-fps Accurate checkpoint can be
@@ -64,16 +68,16 @@ separate, one-glyph OCR line far above the dominant subtitle baseline.
   `showinfo` returned sequential source PTS `59.600000`, `59.633313`,
   `59.666688`, with exact per-frame durations.
 - Bounded Windows local OCR pipeline field test (new source, GPU, one lane,
-  0–20 seconds of `C:\Users\Man PC\Downloads\test\*.mp4`): PASS for the
-  demonstrated regression. It completed 600/600 frames through NVDEC at
-  0.62× realtime, retained source-frame PTS, merged reveal fragments, split
-  the later persistent `幸福` cue, and removed the spurious `州` glyph. Result:
-  `C:\Users\Man PC\AppData\Local\Temp\BiliSubOcrFieldProbe\state\accurate-20s.json`.
-- The result has 15 visibly recognized cues while the supplied Chinese SRT has
-  14 in the same 20 seconds because the video visibly shows `当然知晓` at
-  13.8s while that SRT keeps the prior text through 14.4s. Do not force source
-  PTS output to match a different subtitle track without a verified visual
-  ground-truth decision.
+  0–60 seconds of `C:\Users\Man PC\Downloads\test\*.mp4`): PASS for the
+  demonstrated regressions. It completed 1,800/1,800 frames through NVDEC at
+  0.64× realtime, retained source-frame PTS, merged reveal fragments, split
+  the later persistent `幸福` cue, and emitted no `州`, `怡`, or `在原地`
+  contamination. Result:
+  `C:\Users\Man PC\AppData\Local\Temp\BiliSubOcrFieldProbe\state\accurate-60-s.json`.
+- The supplied Chinese SRT is not an exact visual-overlay ground truth: it
+  omits visibly recognised on-screen text such as `当然知晓` at 13.8s. Do not
+  force source PTS output to match a different subtitle track without a
+  verified visual ground-truth decision.
 - Full-video OCR accuracy and the WinUI user-flow remain untested. No release
   may be made from this bounded field evidence alone.
 - No version bump, release, PR, merge, or source-media overwrite was performed.

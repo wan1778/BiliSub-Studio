@@ -41,7 +41,7 @@ public sealed class OcrScanner
             var alternate = await _ocr.RunAsync(Convert.ToBase64String(enhanced), cancellationToken);
             if (alternate.Ok && alternate.Confidence > result.Confidence) result = alternate;
         }
-        return FilterIsolatedFarGlyphLine(result);
+        return FilterOffBaselineOverlayLines(result);
     }
 
     public async Task<OcrScanResult> RunAsync(AppJob job, OcrScanRequest request, OcrScanStartMode startMode)
@@ -504,7 +504,7 @@ public sealed class OcrScanner
                         job.Log($"OCR frame {at:0.000}s: enhanced retry skipped ({Compact(error.Message)}).");
                     }
                 }
-                tracker.Observe(at, timing.Duration, FilterIsolatedFarGlyphLine(result));
+                tracker.Observe(at, timing.Duration, FilterOffBaselineOverlayLines(result));
                 onProgress(at, frames, images);
                 if (job.IsPauseRequested && tracker.CanCheckpoint)
                 {
@@ -677,22 +677,28 @@ public sealed class OcrScanner
             || candidateRunes > currentRunes && candidate.Confidence >= current.Confidence - .08;
     }
 
-    private static OcrResult FilterIsolatedFarGlyphLine(OcrResult result)
+    private static OcrResult FilterOffBaselineOverlayLines(OcrResult result)
     {
         if (!result.Ok || result.Lines.Count < 2) return result;
-        var dominant = result.Lines
-            .Where(line => line.Text.EnumerateRunes().Count() >= 3)
-            .OrderByDescending(line => line.Confidence)
+        var baseline = result.Lines
+            .Where(line => line.Box.Length >= 4
+                && line.Confidence >= .90
+                && Math.Abs(line.Box[2] - line.Box[0]) >= Math.Abs(line.Box[3] - line.Box[1]) * .8)
+            .OrderByDescending(line => line.Box[3])
+            .ThenByDescending(line => line.Confidence)
             .FirstOrDefault();
-        if (dominant is null || dominant.Confidence < .95 || dominant.Box.Length < 4) return result;
+        if (baseline is null) return result;
 
-        var dominantHeight = Math.Max(1, Math.Abs(dominant.Box[3] - dominant.Box[1]));
+        var baselineHeight = Math.Max(1, Math.Abs(baseline.Box[3] - baseline.Box[1]));
+        var baselineCenter = baseline.Box[1] + baseline.Box[3];
         var retained = result.Lines.Where(line =>
         {
-            var singleGlyph = line.Text.EnumerateRunes().Count() <= 1;
-            var separateRow = line.Box.Length >= 4
-                && Math.Abs((line.Box[1] + line.Box[3]) - (dominant.Box[1] + dominant.Box[3])) > dominantHeight * 4;
-            return !(singleGlyph && separateRow);
+            if (ReferenceEquals(line, baseline) || line.Box.Length < 4) return true;
+            var width = Math.Abs(line.Box[2] - line.Box[0]);
+            var height = Math.Abs(line.Box[3] - line.Box[1]);
+            var vertical = height > width * 1.5;
+            var farAbove = baselineCenter - (line.Box[1] + line.Box[3]) > baselineHeight * 3;
+            return !(vertical || farAbove);
         }).ToArray();
         if (retained.Length == result.Lines.Count) return result;
         return result with
