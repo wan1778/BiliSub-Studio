@@ -13,11 +13,9 @@ import wave
 from pathlib import Path
 
 
-MALE_PITCH_FACTOR = 0.84
-TARGET_SAMPLE_RATE = 22050
-VOICE_PROFILE_REVISION = "3d796cc2f2c884b3517c527507e084f7bb245aea-profile-v1"
-MALE_PROFILE_NAME = "vais1000-male-profile-v1"
-FEMALE_PROFILE_NAME = "vais1000-female-profile-v1"
+TARGET_SAMPLE_RATE = 24000
+VOICE_REVISION = "9f210d622209fcc216fe2ac6159fed2ff381cb8a-ngoc-huyen-v1"
+VOICE_NAME = "ngoc-huyen"
 
 
 def emit(payload: dict) -> None:
@@ -28,10 +26,9 @@ def emit(payload: dict) -> None:
 def args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--manifest", required=True)
-    parser.add_argument("--male-model", required=True)
-    parser.add_argument("--male-config", required=True)
-    parser.add_argument("--female-model", required=True)
-    parser.add_argument("--female-config", required=True)
+    parser.add_argument("--model", required=True)
+    parser.add_argument("--voicepack", required=True)
+    parser.add_argument("--config", required=True)
     parser.add_argument("--ffmpeg", required=True)
     parser.add_argument("--output-root", required=True)
     return parser.parse_args()
@@ -67,15 +64,43 @@ def write_wav_float(path: Path, samples, sample_rate: int) -> None:
         wav.writeframes(pcm.tobytes())
 
 
-def synth_wav(voice, text: str, length_scale: float, path: Path) -> None:
-    from piper import SynthesisConfig
+class KokoroNgocHuyen:
+    def __init__(self, model_path: Path, voicepack_path: Path, config_path: Path) -> None:
+        import numpy as np
+        import onnxruntime as ort
+        import torch
 
-    config = SynthesisConfig(length_scale=float(length_scale), noise_scale=0.667, noise_w_scale=0.8, normalize_audio=True)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with wave.open(str(path), "wb") as wav_file:
-        voice.synthesize_wav(text, wav_file, syn_config=config)
-    if not path.is_file() or path.stat().st_size <= 44:
-        raise RuntimeError("Piper produced an empty WAV")
+        self.np = np
+        self.phonemize = __import__("vig2p", fromlist=["phonemize_text"]).phonemize_text
+        self.config = json.loads(config_path.read_text(encoding="utf-8"))
+        self.context_length = int(self.config["plbert"]["max_position_embeddings"])
+        self.voicepack = torch.load(voicepack_path, map_location="cpu", weights_only=True).detach().cpu().numpy()
+        if self.voicepack.ndim != 3 or self.voicepack.shape[1:] != (1, 256):
+            raise ValueError(f"Unexpected Ngoc Huyen voicepack shape {self.voicepack.shape}")
+        self.session = ort.InferenceSession(str(model_path), providers=["CPUExecutionProvider"])
+
+    def synthesize(self, text: str, length_scale: float):
+        phonemes = self.phonemize(text)
+        if not phonemes:
+            raise ValueError("Kokoro received no pronounceable Vietnamese text")
+        token_ids = [self.config["vocab"][symbol] for symbol in phonemes if symbol in self.config["vocab"]]
+        if len(token_ids) + 2 > self.context_length:
+            raise ValueError(f"Kokoro phoneme group too long ({len(token_ids) + 2} > {self.context_length})")
+        index = min(max(1, len(phonemes)), self.voicepack.shape[0]) - 1
+        speed = self.np.asarray(1.0 / max(0.20, float(length_scale)), dtype=self.np.float32)
+        waveform, _ = self.session.run(None, {
+            "input_ids": self.np.asarray([[0, *token_ids, 0]], dtype=self.np.int64),
+            "ref_s": self.np.asarray(self.voicepack[index], dtype=self.np.float32),
+            "speed": speed,
+        })
+        return self.np.asarray(waveform, dtype=self.np.float32).reshape(-1)
+
+
+def synth_wav(voice: KokoroNgocHuyen, text: str, length_scale: float, path: Path) -> None:
+    samples = voice.synthesize(text, length_scale)
+    if len(samples) == 0:
+        raise RuntimeError("Kokoro produced an empty WAV")
+    write_wav_float(path, samples, TARGET_SAMPLE_RATE)
 
 
 def run_ffmpeg_filter(ffmpeg: Path, source: Path, destination: Path, audio_filter: str) -> None:
@@ -97,37 +122,11 @@ def run_ffmpeg_filter(ffmpeg: Path, source: Path, destination: Path, audio_filte
         raise RuntimeError("FFmpeg audio filter failed: " + (result.stderr.strip().splitlines()[-1] if result.stderr.strip() else "unknown error"))
 
 
-def apply_voice_profile(ffmpeg: Path, path: Path, voice_name: str) -> None:
-    if voice_name != "male":
-        return
-    # The licensed VAIS-1000 base is one female Northern Vietnamese voice. The male
-    # route is a deterministic synthetic profile, not a real-person identity claim.
-    profiled = path.with_name(path.stem + "-male-profile.wav")
-    pitched_rate = int(round(TARGET_SAMPLE_RATE * MALE_PITCH_FACTOR))
-    tempo_compensation = 1.0 / MALE_PITCH_FACTOR
-    run_ffmpeg_filter(
-        ffmpeg,
-        path,
-        profiled,
-        f"asetrate={pitched_rate},aresample={TARGET_SAMPLE_RATE},atempo={tempo_compensation:.6f}",
-    )
-    try:
-        path.unlink()
-    except OSError:
-        pass
-    profiled.replace(path)
-
-
-def synth_profiled_wav(voice, text: str, length_scale: float, path: Path, ffmpeg: Path, voice_name: str) -> None:
-    synth_wav(voice, text, length_scale, path)
-    apply_voice_profile(ffmpeg, path, voice_name)
-
-
 def run_atempo(ffmpeg: Path, source: Path, destination: Path, ratio: float) -> None:
     run_ffmpeg_filter(ffmpeg, source, destination, f"atempo={ratio:.6f}")
 
 
-def fit_group(voice, voice_name: str, text: str, target: float, cache_path: Path, ffmpeg: Path, temp_root: Path) -> tuple[float, float, float, str]:
+def fit_group(voice, text: str, target: float, cache_path: Path, ffmpeg: Path, temp_root: Path) -> tuple[float, float, float, str]:
     """Returns raw_duration, final_duration, length_scale, status."""
     if cache_path.is_file() and cache_path.stat().st_size > 44:
         final = wav_duration(cache_path)
@@ -138,7 +137,7 @@ def fit_group(voice, voice_name: str, text: str, target: float, cache_path: Path
     baseline = temp_root / f"{identity}-base.wav"
     tuned = temp_root / f"{identity}-tuned.wav"
     stretched = temp_root / f"{identity}-stretch.wav"
-    synth_profiled_wav(voice, text, 1.0, baseline, ffmpeg, voice_name)
+    synth_wav(voice, text, 1.0, baseline)
     raw = wav_duration(baseline)
     if raw <= 0.02 or target <= 0.08:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -148,7 +147,7 @@ def fit_group(voice, voice_name: str, text: str, target: float, cache_path: Path
     desired = max(0.86, min(1.16, target / raw))
     candidate = baseline
     if abs(desired - 1.0) >= 0.025:
-        synth_profiled_wav(voice, text, desired, tuned, ffmpeg, voice_name)
+        synth_wav(voice, text, desired, tuned)
         candidate = tuned
     current = wav_duration(candidate)
     ratio = current / target
@@ -166,10 +165,10 @@ def fit_group(voice, voice_name: str, text: str, target: float, cache_path: Path
     return raw, final, desired, status
 
 
-def ensure_profile_cache(output_root: Path) -> None:
-    marker = output_root / "profile-revision.txt"
+def ensure_voice_cache(output_root: Path) -> None:
+    marker = output_root / "voice-revision.txt"
     current = marker.read_text(encoding="utf-8").strip() if marker.is_file() else ""
-    if current == VOICE_PROFILE_REVISION:
+    if current == VOICE_REVISION:
         return
     for name in ("clips", "blocks"):
         shutil.rmtree(output_root / name, ignore_errors=True)
@@ -186,7 +185,7 @@ def ensure_profile_cache(output_root: Path) -> None:
                 pass
     output_root.mkdir(parents=True, exist_ok=True)
     temporary = marker.with_name(marker.name + ".tmp-" + os.urandom(6).hex())
-    temporary.write_text(VOICE_PROFILE_REVISION + "\n", encoding="utf-8")
+    temporary.write_text(VOICE_REVISION + "\n", encoding="utf-8")
     temporary.replace(marker)
 
 
@@ -195,11 +194,10 @@ def main() -> int:
     manifest_path = Path(parsed.manifest).resolve()
     output_root = Path(parsed.output_root).resolve()
     ffmpeg = Path(parsed.ffmpeg).resolve()
-    male_model = Path(parsed.male_model).resolve()
-    male_config = Path(parsed.male_config).resolve()
-    female_model = Path(parsed.female_model).resolve()
-    female_config = Path(parsed.female_config).resolve()
-    for path in (manifest_path, male_model, male_config, female_model, female_config, ffmpeg):
+    model = Path(parsed.model).resolve()
+    voicepack = Path(parsed.voicepack).resolve()
+    config = Path(parsed.config).resolve()
+    for path in (manifest_path, model, voicepack, config, ffmpeg):
         if not path.exists():
             raise FileNotFoundError(path)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -211,33 +209,27 @@ def main() -> int:
 
     os.environ["HF_HUB_OFFLINE"] = "1"
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
-    from piper import PiperVoice
-
-    base = PiperVoice.load(str(female_model), config_path=str(female_config))
-    if male_model == female_model and male_config == female_config:
-        voices = {"male": base, "female": base}
-    else:
-        male = PiperVoice.load(str(male_model), config_path=str(male_config))
-        voices = {"male": male, "female": base}
+    voice = KokoroNgocHuyen(model, voicepack, config)
     output_root.mkdir(parents=True, exist_ok=True)
-    ensure_profile_cache(output_root)
+    ensure_voice_cache(output_root)
     run_id = os.urandom(8).hex()
     clip_root = output_root / "clips"
     block_root = output_root / "blocks"
     clip_root.mkdir(parents=True, exist_ok=True)
     block_root.mkdir(parents=True, exist_ok=True)
-    emit({"event": "ready", "cues": len(cues), "male_pitch_factor": MALE_PITCH_FACTOR, "profile_revision": VOICE_PROFILE_REVISION})
+    emit({"event": "ready", "cues": len(cues), "voice": VOICE_NAME, "voice_revision": VOICE_REVISION})
 
     clip_entries: list[dict] = []
     cue_results: list[dict] = []
-    with tempfile.TemporaryDirectory(prefix="bilisub-tts-") as temp:
+    # Temp clips must share the cache volume: Path.replace is intentionally atomic
+    # and Windows cannot move a file from %TEMP% on C: into a portable cache on E:.
+    with tempfile.TemporaryDirectory(prefix="bilisub-tts-", dir=output_root) as temp:
         temp_root = Path(temp)
         for cue_index, cue in enumerate(cues):
             cue_id = str(cue["id"])
-            voice_name = str(cue.get("voice") or "female")
-            voice = voices.get(voice_name, base)
+            voice_name = VOICE_NAME
             groups = cue.get("groups") or []
-            cue_review = bool(cue.get("voice_review", False))
+            cue_review = False
             raw_total = 0.0
             final_total = 0.0
             statuses: list[str] = []
@@ -248,9 +240,9 @@ def main() -> int:
                 target = max(0.08, end - start)
                 if not text:
                     continue
-                cache_key = str(group.get("cache_key") or hashlib.sha256(f"{cue_id}|{group_index}|{voice_name}|{text}|{target:.3f}".encode("utf-8")).hexdigest())
+                cache_key = str(group.get("cache_key") or hashlib.sha256(f"{cue_id}|{group_index}|{VOICE_REVISION}|{text}|{target:.3f}".encode("utf-8")).hexdigest())
                 cache_path = clip_root / f"{cache_key}.wav"
-                raw, final, length_scale, status = fit_group(voice, voice_name, text, target, cache_path, ffmpeg, temp_root)
+                raw, final, length_scale, status = fit_group(voice, text, target, cache_path, ffmpeg, temp_root)
                 raw_total += raw
                 final_total += final
                 statuses.append(status)
@@ -315,7 +307,8 @@ def main() -> int:
 
     master_wav = output_root / "voice-master.wav"
     master_flac = output_root / f"voice-master-{run_id}.flac"
-    master_flac_temp = output_root / (master_flac.name + ".tmp-" + os.urandom(6).hex())
+    # Keep the final extension while writing: FFmpeg selects its muxer from it.
+    master_flac_temp = output_root / (master_flac.stem + ".tmp-" + os.urandom(6).hex() + master_flac.suffix)
     block_by_start = {round(float(item["start"]), 6): Path(item["path"]) for item in blocks}
     total_samples = max(1, int(math.ceil(max_end * sample_rate)))
     with wave.open(str(master_wav), "wb") as master:
@@ -359,10 +352,9 @@ def main() -> int:
 
     result = {
         "schema": 1,
-        "engine": "piper-vais1000-profiles",
+        "engine": "kokoro-vietnamese-onnx",
         "engine_version": manifest.get("engine_version", "unknown"),
-        "male_model": MALE_PROFILE_NAME,
-        "female_model": FEMALE_PROFILE_NAME,
+        "voice": VOICE_NAME,
         "cues": cue_results,
         "blocks": blocks,
         "master": {"path": str(master_flac), "start": 0.0, "duration": max_end},

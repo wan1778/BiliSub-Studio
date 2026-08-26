@@ -89,7 +89,6 @@ public sealed partial class EditorPage
             await SeekEditorToSubtitleCueAsync(cue.Start);
             LoadSelectedSubtitleCue();
             RenderOverlays();
-            UpdateCurrentCueVoiceUi();
             RefreshSubtitleCueEditorControls();
             SubtitleCueEditorStatus.Text = _media is null
                 ? $"Đã chọn câu {cue.Number}; timecode sẽ dùng khi mở video."
@@ -108,7 +107,6 @@ public sealed partial class EditorPage
         finally { _syncingTimeline = false; }
         UpdateClock();
         RenderOverlays();
-        UpdateCurrentCueVoiceUi();
         if (_playback.IsPreviewMode) await _playback.SeekAsync(target);
         else await UpdateFrameAsync();
     }

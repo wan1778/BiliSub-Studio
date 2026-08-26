@@ -380,9 +380,8 @@ public sealed partial class EditorPage : Page
         _voiceTrack = null;
         if (_project?.Speech is not { Status: "complete" } speech)
         {
-            AsrStatusText.Text = "Whisper chưa phân tích video. Vào Âm thanh để lấy word timing, khoảng lặng và Nam/Nữ gợi ý.";
+            AsrStatusText.Text = "Whisper chưa phân tích video. Vào Âm thanh để lấy word timing và khoảng lặng.";
             VoiceStatusText.Text = "Chưa phân tích nhịp thoại.";
-            UpdateCurrentCueVoiceUi();
             return;
         }
         try
@@ -396,7 +395,6 @@ public sealed partial class EditorPage : Page
             _cueSpeechTiming = [];
             VoiceStatusText.Text = "Whisper timing cũ không còn hợp lệ: " + error.Message;
             AsrStatusText.Text = VoiceStatusText.Text;
-            UpdateCurrentCueVoiceUi();
             return;
         }
         if (_project.Tts is { Status: "complete" } tts && File.Exists(tts.VoiceTrack.Path))
@@ -410,7 +408,6 @@ public sealed partial class EditorPage : Page
         {
             VoiceStatusText.Text = "Đã có nhịp thoại. Vietsub đầy đủ rồi bấm Tạo voice Việt local.";
         }
-        UpdateCurrentCueVoiceUi();
     }
 
     private async Task RefreshSpeechTimingForSubtitleAsync()
@@ -419,7 +416,6 @@ public sealed partial class EditorPage : Page
         if (_project?.Speech is not { Status: "complete" } speech || _subtitleSource is null) return;
         _cueSpeechTiming = await _application.LoadEditorCueSpeechTimingAsync(
             speech.AnalysisPath, speech.AnalysisSha256, _subtitleSource.Cues, CancellationToken.None);
-        UpdateCurrentCueVoiceUi();
     }
 
     private async void ImportSubtitle_Click(object sender, RoutedEventArgs e)
@@ -597,7 +593,7 @@ public sealed partial class EditorPage : Page
         {
             _asrJobId = _application.StartEditorAsr(new EditorAsrRequest(_project.Id, _path, _media.Duration));
             VoiceProgress.Value = 0;
-            AsrStatusText.Text = "Đang benchmark Whisper local rồi phân tích word timing, khoảng lặng và chất giọng Nam/Nữ.";
+            AsrStatusText.Text = "Đang benchmark Whisper local rồi phân tích word timing và khoảng lặng.";
             VoiceStatusText.Text = AsrStatusText.Text;
             RefreshEditorActions();
             await PollAsrJobAsync();
@@ -650,7 +646,7 @@ public sealed partial class EditorPage : Page
                     await RefreshSpeechTimingForSubtitleAsync();
                     UpdateSubtitleSummary();
                     AsrStatusText.Text = $"Whisper timing hoàn tất · {result.WordCount} từ · {result.Device.ToUpperInvariant()}/{result.ComputeType} · benchmark {result.ProbeRealtimeFactor:0.00}×.";
-                    VoiceStatusText.Text = $"Đã có word timing và Nam/Nữ gợi ý cho video. Có thể Vietsub rồi tạo voice Việt local.";
+                    VoiceStatusText.Text = "Đã có word timing cho video. Có thể Vietsub rồi tạo voice Ngọc Huyền local.";
                     RenderOverlays();
                     await SaveProjectNowAsync();
                 }
@@ -672,7 +668,7 @@ public sealed partial class EditorPage : Page
         }
         if (_project.Speech is not { Status: "complete" } speech)
         {
-            VoiceStatusText.Text = "Hãy chạy Phân tích nhịp + Nam/Nữ trước khi tạo voice.";
+            VoiceStatusText.Text = "Hãy chạy Phân tích word timing trước khi tạo voice.";
             return;
         }
         if (_subtitleSource.Cues.Any(x => string.IsNullOrWhiteSpace(x.VietnameseText)))
@@ -688,10 +684,9 @@ public sealed partial class EditorPage : Page
                 _media.Duration,
                 _subtitleSource,
                 speech.AnalysisPath,
-                speech.AnalysisSha256,
-                _project.VoiceOverrides));
+                speech.AnalysisSha256));
             VoiceProgress.Value = 0;
-            VoiceStatusText.Text = "Đang chuẩn bị NghiTTS/Piper local và fit voice theo nhịp Whisper...";
+            VoiceStatusText.Text = "Đang chuẩn bị voice Ngọc Huyền local và fit theo word timing Whisper...";
             RefreshEditorActions();
             await PollTtsJobAsync();
         }
@@ -722,8 +717,8 @@ public sealed partial class EditorPage : Page
                             "complete",
                             result.Engine,
                             result.EngineVersion,
-                            result.MaleVoice,
-                            result.FemaleVoice,
+                            result.Voice,
+                            result.Voice,
                             result.ManifestPath,
                             result.ManifestSha256,
                             result.VoiceTrack,
@@ -760,49 +755,6 @@ public sealed partial class EditorPage : Page
         QueueProjectSave();
         if (!_playback.IsPreviewMode) QueuePreviewRefresh();
         NotifyEditorCompositeChanged();
-    }
-
-    private void CurrentCueVoice_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (!IsLoaded || _syncingVoice || _project is null) return;
-        var cue = CurrentSubtitleCue();
-        if (cue is null) return;
-        var value = (CurrentCueVoiceBox.SelectedItem as ComboBoxItem)?.Tag?.ToString()?.Trim().ToLowerInvariant() ?? "auto";
-        var overrides = new Dictionary<string, string>(_project.VoiceOverrides ?? new Dictionary<string, string>(), StringComparer.Ordinal);
-        if (value is "male" or "female") overrides[cue.Id] = value;
-        else overrides.Remove(cue.Id);
-        _voiceTrack = null;
-        _project = _project with { VoiceOverrides = overrides, Tts = null };
-        VoiceStatusText.Text = value switch
-        {
-            "male" => "Đã ép câu hiện tại dùng voice Nam. Hãy tạo lại voice Việt để áp dụng.",
-            "female" => "Đã ép câu hiện tại dùng voice Nữ. Hãy tạo lại voice Việt để áp dụng.",
-            _ => "Câu hiện tại trở lại tự động Nam/Nữ. Hãy tạo lại voice Việt để áp dụng.",
-        };
-        QueueProjectSave();
-        RefreshEditorActions();
-    }
-
-    private void UpdateCurrentCueVoiceUi()
-    {
-        if (!IsLoaded) return;
-        _syncingVoice = true;
-        try
-        {
-            var cue = CurrentSubtitleCue();
-            var value = cue is not null && _project?.VoiceOverrides is { } overrides && overrides.TryGetValue(cue.Id, out var selected)
-                ? selected
-                : "auto";
-            for (var index = 0; index < CurrentCueVoiceBox.Items.Count; index++)
-            {
-                if (CurrentCueVoiceBox.Items[index] is ComboBoxItem item && string.Equals(item.Tag?.ToString(), value, StringComparison.OrdinalIgnoreCase))
-                {
-                    CurrentCueVoiceBox.SelectedIndex = index;
-                    break;
-                }
-            }
-        }
-        finally { _syncingVoice = false; }
     }
 
     private async void Translate_Click(object sender, RoutedEventArgs e)
@@ -916,7 +868,6 @@ public sealed partial class EditorPage : Page
     {
         UpdateClock();
         RenderOverlays();
-        UpdateCurrentCueVoiceUi();
         if (_playback.IsPreviewMode && !_syncingTimeline && _media is not null)
         {
             _ = _playback.SeekAsync(Math.Clamp(e.NewValue, Timeline.Minimum, Timeline.Maximum));
@@ -2134,7 +2085,6 @@ public sealed partial class EditorPage : Page
         SourceAudioGainSlider.IsEnabled = editable && _audioSettings.SourceMode == "duck";
         GenerateTtsButton.IsEnabled = editable && !_subtitleManualDirty && subtitleReady && _project?.Speech is { Status: "complete" };
         CancelVoiceButton.IsEnabled = _asrJobId is not null || _ttsJobId is not null;
-        CurrentCueVoiceBox.IsEnabled = editable && _subtitleSource is not null && _project?.Speech is { Status: "complete" };
         KaraokeToggle.IsEnabled = idle && !_playback.IsPreviewMode && _subtitleSource is not null;
         RefreshImageControls();
         RefreshEditorParityControls();

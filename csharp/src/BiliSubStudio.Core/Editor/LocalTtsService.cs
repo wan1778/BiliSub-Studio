@@ -23,8 +23,7 @@ public sealed record EditorTtsRequest(
     double Duration,
     EditorSubtitleSource Subtitle,
     string SpeechAnalysisPath,
-    string SpeechAnalysisSha256,
-    IReadOnlyDictionary<string, string>? VoiceOverrides = null);
+    string SpeechAnalysisSha256);
 public sealed record EditorTtsResult(
     string ManifestPath,
     string ManifestSha256,
@@ -33,8 +32,7 @@ public sealed record EditorTtsResult(
     int ReviewCount,
     string Engine,
     string EngineVersion,
-    string MaleVoice,
-    string FemaleVoice);
+    string Voice);
 
 internal sealed class LocalTtsService : IDisposable
 {
@@ -84,21 +82,18 @@ internal sealed class LocalTtsService : IDisposable
             if (text.Length == 0) throw new InvalidDataException($"Cue {cue.Number} chưa có câu Việt để tạo voice.");
             if (!cueTiming.TryGetValue(cue.Id, out var timing))
                 timing = new EditorCueSpeechTiming(cue.Id, cue.Start, cue.End, cue.Start, cue.End, 0, 0, [], [], "uncertain", 0, 0);
-            var selection = SelectVoice(cue.Id, timing, request.VoiceOverrides);
-            var groups = BuildRhythmGroups(cue, timing, text, selection.Voice);
+            var groups = BuildRhythmGroups(cue, timing, text, LocalTtsInstaller.Voice);
             cues.Add(new TtsCueManifest(
                 cue.Id,
                 cue.Start,
                 cue.End,
-                selection.Voice,
-                selection.Review,
+                LocalTtsInstaller.Voice,
                 groups));
         }
         var manifest = new TtsInputManifest(
             ManifestSchema,
-            LocalTtsInstaller.PiperVersion,
-            LocalTtsInstaller.MaleVoice,
-            LocalTtsInstaller.FemaleVoice,
+            LocalTtsInstaller.EngineVersion,
+            LocalTtsInstaller.Voice,
             TimingAlgorithm,
             BlockSeconds,
             cues);
@@ -116,10 +111,9 @@ internal sealed class LocalTtsService : IDisposable
                 [
                     "-I", runtime.Worker,
                     "--manifest", inputPath,
-                    "--male-model", runtime.MaleModel,
-                    "--male-config", runtime.MaleConfig,
-                    "--female-model", runtime.FemaleModel,
-                    "--female-config", runtime.FemaleConfig,
+                    "--model", runtime.Model,
+                    "--voicepack", runtime.VoicePack,
+                    "--config", runtime.Config,
                     "--ffmpeg", ffmpeg,
                     "--output-root", outputRoot,
                 ],
@@ -188,8 +182,7 @@ internal sealed class LocalTtsService : IDisposable
             parsedResult.ReviewCount,
             parsedResult.Engine,
             parsedResult.EngineVersion,
-            parsedResult.MaleModel,
-            parsedResult.FemaleModel);
+                parsedResult.Voice);
     }
 
     internal static IReadOnlyList<TtsRhythmGroup> BuildRhythmGroups(EditorSubtitleCue cue, EditorCueSpeechTiming timing, string normalizedText, string voice)
@@ -241,24 +234,9 @@ internal sealed class LocalTtsService : IDisposable
         return groups;
     }
 
-    private static (string Voice, bool Review) SelectVoice(string cueId, EditorCueSpeechTiming timing, IReadOnlyDictionary<string, string>? overrides)
-    {
-        if (overrides is not null && overrides.TryGetValue(cueId, out var manual))
-        {
-            var normalized = manual.Trim().ToLowerInvariant();
-            if (normalized is "male" or "female") return (normalized, false);
-        }
-        return timing.VoiceClass switch
-        {
-            "male_like" when timing.VoiceConfidence >= .60 => ("male", false),
-            "female_like" when timing.VoiceConfidence >= .60 => ("female", false),
-            _ => (timing.MedianPitchHz is > 0 and < 170 ? "male" : "female", true),
-        };
-    }
-
     private static string CacheKey(string cueId, int groupIndex, string text, string voice, double start, double end)
     {
-        var value = $"{TimingAlgorithm}\n{LocalTtsInstaller.PiperVersion}\n{LocalTtsInstaller.VoiceRevision}\n{cueId}\n{groupIndex}\n{voice}\n{start:0.000}\n{end:0.000}\n{text}";
+        var value = $"{TimingAlgorithm}\n{LocalTtsInstaller.EngineVersion}\n{LocalTtsInstaller.VoiceRevision}\n{cueId}\n{groupIndex}\n{voice}\n{start:0.000}\n{end:0.000}\n{text}";
         return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
     }
 
@@ -275,6 +253,10 @@ internal sealed class LocalTtsService : IDisposable
         if (result.Schema != ManifestSchema || result.Cues is null || result.Master is null || result.ReviewCount < 0
             || string.IsNullOrWhiteSpace(result.Engine) || string.IsNullOrWhiteSpace(result.EngineVersion))
             throw new InvalidDataException("Result TTS sai schema.");
+        if (!string.Equals(result.Engine, "kokoro-vietnamese-onnx", StringComparison.Ordinal)
+            || !string.Equals(result.EngineVersion, LocalTtsInstaller.EngineVersion, StringComparison.Ordinal)
+            || !string.Equals(result.Voice, LocalTtsInstaller.Voice, StringComparison.Ordinal))
+            throw new InvalidDataException("Result TTS không thuộc voice Ngọc Huyền local đã khóa.");
         var masterPath = Path.GetFullPath(result.Master.Path);
         if (!masterPath.StartsWith(safeRoot, StringComparison.OrdinalIgnoreCase) || !File.Exists(masterPath) || new FileInfo(masterPath).Length <= 64
             || !double.IsFinite(result.Master.Start) || result.Master.Start < 0 || !double.IsFinite(result.Master.Duration)
@@ -337,9 +319,9 @@ internal sealed class LocalTtsService : IDisposable
     public void Dispose() => _installer.Dispose();
 
     internal sealed record TtsRhythmGroup(double Start, double End, string Text, string CacheKey);
-    private sealed record TtsCueManifest(string Id, double CueStart, double CueEnd, string Voice, bool VoiceReview, IReadOnlyList<TtsRhythmGroup> Groups);
-    private sealed record TtsInputManifest(int Schema, string EngineVersion, string MaleModel, string FemaleModel, string TimingAlgorithm, double BlockSeconds, IReadOnlyList<TtsCueManifest> Cues);
+    private sealed record TtsCueManifest(string Id, double CueStart, double CueEnd, string Voice, IReadOnlyList<TtsRhythmGroup> Groups);
+    private sealed record TtsInputManifest(int Schema, string EngineVersion, string Voice, string TimingAlgorithm, double BlockSeconds, IReadOnlyList<TtsCueManifest> Cues);
     private sealed record TtsWorkerCue(string Id, string Voice, bool VoiceReview, double RawDuration, double FittedDuration, string Status);
     private sealed record TtsWorkerTrack(string Path, double Start, double Duration);
-    private sealed record TtsWorkerResult(int Schema, string Engine, string EngineVersion, string MaleModel, string FemaleModel, IReadOnlyList<TtsWorkerCue> Cues, TtsWorkerTrack Master, int ReviewCount);
+    private sealed record TtsWorkerResult(int Schema, string Engine, string EngineVersion, string Voice, IReadOnlyList<TtsWorkerCue> Cues, TtsWorkerTrack Master, int ReviewCount);
 }

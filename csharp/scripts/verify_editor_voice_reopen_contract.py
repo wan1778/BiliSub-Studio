@@ -84,9 +84,8 @@ tts = project_store.split("private static EditorTtsProject? NormalizeTts(", 1)[1
 )[0]
 for token in (
     "CurrentTtsEngine",
-    "LocalTtsInstaller.PiperVersion",
-    "LocalTtsInstaller.MaleVoice",
-    "LocalTtsInstaller.FemaleVoice",
+    "LocalTtsInstaller.EngineVersion",
+    "LocalTtsInstaller.Voice",
 ):
     require(token in tts, f"VOICE-15 TTS reopen lost pinned runtime/profile check: {token}")
 require("!File.Exists(manifest)" in tts

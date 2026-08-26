@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import os
 import sys
 import time
-import wave
 from pathlib import Path
 
 
@@ -28,88 +26,6 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_pcm16_mono(path: Path):
-    import numpy as np
-
-    with wave.open(str(path), "rb") as wav:
-        if wav.getnchannels() != 1 or wav.getsampwidth() != 2:
-            raise ValueError("ASR analysis audio must be mono PCM16")
-        sample_rate = wav.getframerate()
-        data = wav.readframes(wav.getnframes())
-    return np.frombuffer(data, dtype="<i2").astype(np.float32) / 32768.0, sample_rate
-
-
-def estimate_voice_class(samples, sample_rate: int, start: float, end: float) -> tuple[str, float, float]:
-    """Return male_like/female_like/uncertain using a lightweight language-neutral F0 heuristic.
-
-    This is an advisory routing signal for selecting a TTS voice, never a biological-gender claim.
-    """
-    import numpy as np
-
-    if end <= start + 0.12:
-        return "uncertain", 0.0, 0.0
-    left = max(0, int(start * sample_rate))
-    right = min(len(samples), int(end * sample_rate))
-    clip = samples[left:right]
-    if clip.size < int(sample_rate * 0.12):
-        return "uncertain", 0.0, 0.0
-
-    frame_size = max(256, int(sample_rate * 0.05))
-    hop = max(128, int(sample_rate * 0.025))
-    min_lag = max(1, int(sample_rate / 320.0))
-    max_lag = min(frame_size - 2, int(sample_rate / 70.0))
-    pitches: list[float] = []
-    attempted = 0
-    window = np.hanning(frame_size).astype(np.float32)
-
-    for pos in range(0, max(1, clip.size - frame_size + 1), hop):
-        frame = clip[pos:pos + frame_size]
-        if frame.size != frame_size:
-            continue
-        attempted += 1
-        frame = (frame - float(frame.mean())) * window
-        rms = float(np.sqrt(np.mean(frame * frame) + 1e-12))
-        if rms < 0.012:
-            continue
-        corr = np.correlate(frame, frame, mode="full")[frame_size - 1:]
-        base = float(corr[0])
-        if not math.isfinite(base) or base <= 1e-7 or max_lag <= min_lag:
-            continue
-        span = corr[min_lag:max_lag + 1]
-        lag = int(np.argmax(span)) + min_lag
-        strength = float(corr[lag] / base)
-        if strength < 0.28:
-            continue
-        # Parabolic interpolation around the autocorrelation peak.
-        refined = float(lag)
-        if 1 <= lag < len(corr) - 1:
-            y0, y1, y2 = float(corr[lag - 1]), float(corr[lag]), float(corr[lag + 1])
-            denom = y0 - 2.0 * y1 + y2
-            if abs(denom) > 1e-12:
-                refined += 0.5 * (y0 - y2) / denom
-        pitch = sample_rate / max(1e-6, refined)
-        if 70.0 <= pitch <= 320.0 and math.isfinite(pitch):
-            pitches.append(float(pitch))
-
-    if not pitches:
-        return "uncertain", 0.0, 0.0
-    median_pitch = float(np.median(np.asarray(pitches, dtype=np.float32)))
-    voiced_ratio = len(pitches) / max(1, attempted)
-    if median_pitch <= 155.0:
-        label = "male_like"
-        distance = min(1.0, (170.0 - median_pitch) / 70.0)
-    elif median_pitch >= 185.0:
-        label = "female_like"
-        distance = min(1.0, (median_pitch - 170.0) / 90.0)
-    else:
-        label = "uncertain"
-        distance = abs(median_pitch - 170.0) / 15.0
-    confidence = min(0.97, max(0.0, 0.35 + 0.45 * distance + 0.20 * min(1.0, voiced_ratio / 0.45)))
-    if label == "uncertain":
-        confidence = min(confidence, 0.59)
-    return label, float(confidence), median_pitch
-
-
 def main() -> int:
     args = parse_args()
     model_dir = Path(args.model).resolve()
@@ -123,7 +39,6 @@ def main() -> int:
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
     from faster_whisper import WhisperModel
 
-    samples, sample_rate = load_pcm16_mono(audio)
     started = time.perf_counter()
     model = WhisperModel(
         str(model_dir),
@@ -169,7 +84,6 @@ def main() -> int:
                 "text": value,
                 "probability": float(word.probability or 0.0),
             })
-        voice_class, voice_confidence, median_pitch = estimate_voice_class(samples, sample_rate, local_start, local_end)
         emit({
             "event": "segment",
             "start": start,
@@ -178,9 +92,6 @@ def main() -> int:
             "avg_logprob": float(segment.avg_logprob),
             "no_speech_prob": float(segment.no_speech_prob),
             "words": words,
-            "voice_class": voice_class,
-            "voice_confidence": voice_confidence,
-            "median_pitch_hz": median_pitch,
         })
         count += 1
         word_count += len(words)

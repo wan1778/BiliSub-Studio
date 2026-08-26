@@ -781,7 +781,7 @@ require("PrepareAiButton.IsEnabled = idle && hasMedia" not in editor,
         "Editor AI preparation regressed to requiring a selected video")
 for marker in (
     "CreateAsrButton", "CreateAsr_Click", "CreateAsrButton.IsEnabled = editable;", "PollAsrJobAsync",
-    "GenerateTtsButton", "GenerateTts_Click", "KaraokeToggle", "CurrentCueVoiceBox", "SaveKaraokeAssButton",
+    "GenerateTtsButton", "GenerateTts_Click", "KaraokeToggle", "SaveKaraokeAssButton",
     "EditorSpeechProject", "EditorTtsProject",
 ):
     require(marker in editor, f"Editor Whisper timing/TTS UI-state contract missing {marker}")
@@ -811,7 +811,7 @@ for marker in (
     require(marker in asr_installer, f"ASR pinned installer contract missing {marker}")
 for marker in ("SelectRuntimeAsync", "ProbeRealtimeFactor", "asr-probe-gpu", "asr-probe-cpu", "SaveCheckpointAsync", "RunStreamingAsync", "OwnedProcessGroup"):
     require(marker in asr_service, f"ASR benchmark/checkpoint/process contract missing {marker}")
-for marker in ('local_files_only=True', 'language="zh"', "word_timestamps=True", "vad_filter=True", '"event": "segment"', '"voice_class"', '"median_pitch_hz"'):
+for marker in ('local_files_only=True', 'language="zh"', "word_timestamps=True", "vad_filter=True", '"event": "segment"'):
     require(marker in asr_worker, f"ASR worker offline/Chinese/timestamp contract missing {marker}")
 require("WhisperModel(" in asr_worker and "str(model_dir)" in asr_worker,
         "ASR worker must load only the verified local model directory")
@@ -821,29 +821,26 @@ tts_installer = read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalTtsInstaller.c
 tts_service = read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalTtsService.cs")
 tts_worker = read(ROOT / "internal/tts/worker.py")
 for marker in (
-    'PiperVersion = "1.4.2"',
-    "9c4a3a11f5889ea9d0df4414dce2bd9bee5ce7d9cf604c8fd5e307441d4c031f",
-    'VoiceRepository = "rhasspy/piper-voices"',
-    'ModelRevision = "3d796cc2f2c884b3517c527507e084f7bb245aea"',
-    'VoiceRevision = ModelRevision + "-profile-v1"',
-    'BaseVoice = "vi_VN-vais1000-medium"',
-    'MaleVoice = "vais1000-male-profile-v1"', 'FemaleVoice = "vais1000-female-profile-v1"',
-    "ec7c89e2c85f4d1edc24b6120c18aaf1bda614f06b511567eb9c7c0de15e2dab",
-    "fafb9da1354ed4b77c31af228ed41fb41cd825c14cffa105454b25e6ae751ee0",
+    'EngineVersion = "kokoro-vietnamese-onnx-2026-06-27"',
+    'ModelRepository = "contextboxai/Kokoro-Vietnamese"',
+    'ModelRevision = "9f210d622209fcc216fe2ac6159fed2ff381cb8a"',
+    'Voice = "ngoc-huyen"',
+    "da191277f58633649a9c0d2ae8012e80ef57ea8e2a56e30323c0f7df1ca29087",
+    "2ae069207dedfd62700957d84d9dec12268a0f115adca63129faf58a6196812a",
     "DownloadVerifiedAsync", "EnsurePrivatePythonAsync",
 ):
-    require(marker in tts_installer, f"licensed VAIS/Piper installer contract missing {marker}")
-for retired in ("sannht/vi_voice", "deepman3909", "calmwoman3688"):
-    require(retired not in tts_installer and retired not in tts_service and retired not in tts_worker,
-            f"retired ambiguous NghiTTS weight returned to production: {retired}")
-for marker in ("whisper-rhythm-v1", "BuildRhythmGroups", "SelectVoice", "EditorSpeechAnalysisDocument.MapToCues", "OwnedProcessGroup"):
+    require(marker in tts_installer, f"Ngoc Huyen local installer contract missing {marker}")
+for retired in ("PiperVoice", "MALE_PITCH_FACTOR", "SelectVoice"):
+    require(retired not in tts_service and retired not in tts_worker,
+            f"retired Nam/Nu TTS route returned to production: {retired}")
+for marker in ("whisper-rhythm-v1", "BuildRhythmGroups", "EditorSpeechAnalysisDocument.MapToCues", "OwnedProcessGroup"):
     require(marker in tts_service, f"local TTS timing/cache/process contract missing {marker}")
 for marker in (
-    "PiperVoice.load", "SynthesisConfig", "length_scale", "atempo=", "voice-master.flac",
-    'MALE_PITCH_FACTOR = 0.84', 'VOICE_PROFILE_REVISION = "3d796cc2f2c884b3517c527507e084f7bb245aea-profile-v1"',
-    "ensure_profile_cache(output_root)", '"engine": "piper-vais1000-profiles"', '"event": "cue"', '"event": "block"',
+    "class KokoroNgocHuyen", "length_scale", "atempo=", "voice-master.flac",
+    'VOICE_REVISION = "9f210d622209fcc216fe2ac6159fed2ff381cb8a-ngoc-huyen-v1"',
+    "ensure_voice_cache(output_root)", '"engine": "kokoro-vietnamese-onnx"', '"event": "cue"', '"event": "block"',
 ):
-    require(marker in tts_worker, f"licensed VAIS TTS worker contract missing {marker}")
+    require(marker in tts_worker, f"Ngoc Huyen local TTS worker contract missing {marker}")
 
 main_xaml = read(CSHARP / "src/BiliSubStudio.App/MainWindow.xaml")
 main_code = read(CSHARP / "src/BiliSubStudio.App/MainWindow.xaml.cs")

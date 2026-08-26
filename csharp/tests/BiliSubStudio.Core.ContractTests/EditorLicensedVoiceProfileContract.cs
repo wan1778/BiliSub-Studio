@@ -18,7 +18,7 @@ internal static class EditorLicensedVoiceProfileContract
 
         Replace(tests,
             "local NghiTTS manifest and rhythm grouping stay pinned",
-            "local licensed VAIS profiles and rhythm grouping stay pinned",
+            "local Ngọc Huyền voice and rhythm grouping stay pinned",
             VerifyVoiceProfileAsync);
         Replace(tests,
             "editor project persists, isolates source drift and quarantines corrupt state",
@@ -44,27 +44,19 @@ internal static class EditorLicensedVoiceProfileContract
             ?? throw new InvalidOperationException("missing LocalTtsInstaller type");
         static object? Constant(Type type, string name) => type.GetField(name, BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public)?.GetRawConstantValue();
 
-        Equal("1.4.2", Constant(installer, "PiperVersion")?.ToString());
-        Equal("rhasspy/piper-voices", Constant(installer, "VoiceRepository")?.ToString());
-        Equal("3d796cc2f2c884b3517c527507e084f7bb245aea", Constant(installer, "ModelRevision")?.ToString());
-        Equal("3d796cc2f2c884b3517c527507e084f7bb245aea-profile-v1", Constant(installer, "VoiceRevision")?.ToString());
-        Equal("vi_VN-vais1000-medium", Constant(installer, "BaseVoice")?.ToString());
-        Equal("vais1000-male-profile-v1", Constant(installer, "MaleVoice")?.ToString());
-        Equal("vais1000-female-profile-v1", Constant(installer, "FemaleVoice")?.ToString());
-        Equal(63_201_294L, (long)(Constant(installer, "VoiceModelBytes") ?? 0L));
-        Equal(4_860L, (long)(Constant(installer, "VoiceConfigBytes") ?? 0L));
-        Equal("ec7c89e2c85f4d1edc24b6120c18aaf1bda614f06b511567eb9c7c0de15e2dab", Constant(installer, "VoiceModelSha256")?.ToString());
-        Equal("fafb9da1354ed4b77c31af228ed41fb41cd825c14cffa105454b25e6ae751ee0", Constant(installer, "VoiceConfigSha256")?.ToString());
+        Equal("kokoro-vietnamese-onnx-2026-06-27", Constant(installer, "EngineVersion")?.ToString());
+        Equal("contextboxai/Kokoro-Vietnamese", Constant(installer, "ModelRepository")?.ToString());
+        Equal("9f210d622209fcc216fe2ac6159fed2ff381cb8a", Constant(installer, "ModelRevision")?.ToString());
+        Equal("9f210d622209fcc216fe2ac6159fed2ff381cb8a-ngoc-huyen-v1", Constant(installer, "VoiceRevision")?.ToString());
+        Equal("ngoc-huyen", Constant(installer, "Voice")?.ToString());
 
         var workerPath = Path.Combine(AppContext.BaseDirectory, "Fixtures", "tts-worker.py");
         var worker = File.ReadAllText(workerPath);
-        True(worker.Contains("MALE_PITCH_FACTOR = 0.84", StringComparison.Ordinal), "VAIS male acoustic factor drifted");
-        True(worker.Contains("VOICE_PROFILE_REVISION = \"3d796cc2f2c884b3517c527507e084f7bb245aea-profile-v1\"", StringComparison.Ordinal), "TTS cache profile revision drifted");
-        True(worker.Contains("asetrate=", StringComparison.Ordinal) && worker.Contains("tempo_compensation = 1.0 / MALE_PITCH_FACTOR", StringComparison.Ordinal), "male profile lost pitch/tempo compensation");
-        True(worker.Contains("ensure_profile_cache(output_root)", StringComparison.Ordinal), "old TTS clips can bypass profile cache invalidation");
-        True(worker.Contains("\"engine\": \"piper-vais1000-profiles\"", StringComparison.Ordinal), "TTS worker engine identity drifted");
-        True(!worker.Contains("deepman3909", StringComparison.Ordinal) && !worker.Contains("calmwoman3688", StringComparison.Ordinal)
-            && !worker.Contains("sannht/vi_voice", StringComparison.Ordinal), "retired ambiguous NghiTTS weights returned to production worker");
+        True(worker.Contains("class KokoroNgocHuyen", StringComparison.Ordinal), "Ngọc Huyền ONNX worker is missing");
+        True(worker.Contains("VOICE_REVISION = \"9f210d622209fcc216fe2ac6159fed2ff381cb8a-ngoc-huyen-v1\"", StringComparison.Ordinal), "TTS cache revision drifted");
+        True(worker.Contains("ensure_voice_cache(output_root)", StringComparison.Ordinal), "old TTS clips can bypass voice cache invalidation");
+        True(worker.Contains("\"engine\": \"kokoro-vietnamese-onnx\"", StringComparison.Ordinal), "TTS worker engine identity drifted");
+        True(!worker.Contains("PiperVoice", StringComparison.Ordinal) && !worker.Contains("MALE_PITCH_FACTOR", StringComparison.Ordinal), "retired Nam/Nữ Piper route returned to production worker");
 
         var service = assembly.GetType("BiliSubStudio.Core.Editor.LocalTtsService")
             ?? throw new InvalidOperationException("missing LocalTtsService type");
@@ -74,7 +66,7 @@ internal static class EditorLicensedVoiceProfileContract
         var timing = new EditorCueSpeechTiming(cue.Id, 1, 5, 1.2, 4.7, .2, .3,
             [new EditorWordTiming("你", 1.2, 2, .9), new EditorWordTiming("好", 3, 4.7, .9)],
             [new EditorPauseTiming(2, 3)], "female_like", .8, 210);
-        var groups = ((System.Collections.IEnumerable)method.Invoke(null, [cue, timing, "Xin chào đạo hữu", "female"])!).Cast<object>().ToArray();
+        var groups = ((System.Collections.IEnumerable)method.Invoke(null, [cue, timing, "Xin chào đạo hữu", "ngoc-huyen"])!).Cast<object>().ToArray();
         Equal(2, groups.Length);
         var firstType = groups[0].GetType();
         Equal(1.2d, (double)(firstType.GetProperty("Start")?.GetValue(groups[0]) ?? 0d));
@@ -124,8 +116,8 @@ internal static class EditorLicensedVoiceProfileContract
             var ttsManifestSha = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(await File.ReadAllBytesAsync(ttsManifest)));
 
             var validTts = new EditorTtsProject(
-                "complete", "piper-vais1000-profiles", "1.4.2",
-                "vais1000-male-profile-v1", "vais1000-female-profile-v1",
+                "complete", "kokoro-vietnamese-onnx", "kokoro-vietnamese-onnx-2026-06-27",
+                "ngoc-huyen", "ngoc-huyen",
                 ttsManifest, ttsManifestSha, new EditorVoiceTrack(voicePath, 0, 120), 1, 0);
             await store.SaveAsync(created with
             {
@@ -156,7 +148,7 @@ internal static class EditorLicensedVoiceProfileContract
             Equal("complete", reopened.Speech!.Status);
             Equal(speechSha, reopened.Speech.AnalysisSha256);
             Equal("complete", reopened.Tts!.Status);
-            Equal("piper-vais1000-profiles", reopened.Tts.Engine);
+            Equal("kokoro-vietnamese-onnx", reopened.Tts.Engine);
             Equal("female", reopened.VoiceOverrides![subtitle.Cues[0].Id]);
 
             // A project created by the retired beta.36 voice path must keep all upstream work

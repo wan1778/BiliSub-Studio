@@ -89,7 +89,7 @@ public sealed class EditorProjectStore
 {
     public const int CurrentSchema = 5;
     private const long MaxProjectBytes = 64L * 1024 * 1024;
-    private const string CurrentTtsEngine = "piper-vais1000-profiles";
+    private const string CurrentTtsEngine = "kokoro-vietnamese-onnx";
     private readonly string _directory;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly JsonSerializerOptions _json = new()
@@ -469,9 +469,9 @@ public sealed class EditorProjectStore
         var maleVoice = tts.MaleVoice.Trim();
         var femaleVoice = tts.FemaleVoice.Trim();
         if (!string.Equals(engine, CurrentTtsEngine, StringComparison.Ordinal)
-            || !string.Equals(engineVersion, LocalTtsInstaller.PiperVersion, StringComparison.Ordinal)
-            || !string.Equals(maleVoice, LocalTtsInstaller.MaleVoice, StringComparison.Ordinal)
-            || !string.Equals(femaleVoice, LocalTtsInstaller.FemaleVoice, StringComparison.Ordinal))
+            || !string.Equals(engineVersion, LocalTtsInstaller.EngineVersion, StringComparison.Ordinal)
+            || !string.Equals(maleVoice, LocalTtsInstaller.Voice, StringComparison.Ordinal)
+            || !string.Equals(femaleVoice, LocalTtsInstaller.Voice, StringComparison.Ordinal))
             return null;
         var manifest = string.IsNullOrWhiteSpace(tts.ManifestPath) ? string.Empty : Path.GetFullPath(tts.ManifestPath.Trim());
         var track = tts.VoiceTrack;
