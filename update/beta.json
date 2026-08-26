@@ -1,12 +1,12 @@
 {
-  "version": "4.0.0-beta.56-csharp-p5",
+  "version": "4.0.0-beta.57-csharp-p5",
   "channel_ready": true,
-  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.42/BiliSubStudio_4.0.42_Windows-x64-portable.zip",
-  "sha256": "033cac0e268a5bfbb8a3f2542ee676dbcdc21d42a30ece10cd83da9d5485ab15",
-  "size": 94794389,
+  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.43/BiliSubStudio_4.0.43_Windows-x64-portable.zip",
+  "sha256": "2427b2bfb5027a9c6ed0634dc946668f4db9e5358c368c91949b6f880c358d78",
+  "size": 94794844,
   "payload_kind": "winui3-portable-zip",
   "notes": [
-    "Sửa lỗi Vietsub local bị dừng ở câu khi model Qwen trả số cue/ID ngữ cảnh thay vì ID kỹ thuật nội bộ. Khi chỉ có một câu đích, app giữ bản dịch hợp lệ và gán an toàn vào đúng câu đó.",
-    "Vẫn từ chối JSON có thiếu hoặc thừa câu; batch nhiều câu tiếp tục yêu cầu ID duy nhất, đúng thứ tự để không gán sai phụ đề."
+    "Sửa lỗi Vietsub local dừng khi Qwen trả cả cue CONTEXT lẫn cue TARGET cho một lượt dịch đơn. App chỉ nhận bản dịch được nhận diện duy nhất là TARGET bằng ID kỹ thuật hoặc số cue hiển thị.",
+    "Nếu response không xác định được duy nhất TARGET thì app vẫn từ chối và retry, không đoán bản dịch từ cue ngữ cảnh."
   ]
 }
