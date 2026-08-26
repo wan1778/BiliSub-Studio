@@ -1,12 +1,12 @@
 {
-  "version": "4.0.0-beta.60-csharp-p5",
+  "version": "4.0.0-beta.61-csharp-p5",
   "channel_ready": true,
-  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.46/BiliSubStudio_4.0.46_Windows-x64-portable.zip",
-  "sha256": "554fae58a8a39e0146bbf07e563981c58348a48c6e7ab09a7c048955582ef7ea",
-  "size": 94796860,
+  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.47/BiliSubStudio_4.0.47_Windows-x64-portable.zip",
+  "sha256": "beef89e70fe3e0218f6bdd697683f40eadc9830a8d9db49b27f4f1e2775a6d86",
+  "size": 94797191,
   "payload_kind": "winui3-portable-zip",
   "notes": [
-    "Editor có nút Nạp SRT Việt đã dịch: ghép lời Việt vào SRT Trung hiện có để preview, export và tạo voice local.",
-    "Ứng dụng chỉ nhận SRT Việt có đúng số cue, số thứ tự và timecode với SRT Trung; file sai hoặc cancel không đổi project."
+    "Nút nạp SRT Việt đã dịch được xếp dọc, không cắt chữ trên khung Details hẹp.",
+    "Nút hiển thị rõ bước còn thiếu: chọn SRT Trung trước, rồi chọn video trước khi nạp bản Việt."
   ]
 }
