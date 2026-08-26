@@ -1,58 +1,57 @@
 # Codex handoff — BiliSub Studio
 
-- Current main/base SHA: `1aff47eb1ef9c89cb81036d9588c0d75bf7859b1`
-- Current branch: `translation-json-id-recovery` (fast-forwarded to published `origin/main`)
+- Current main/base SHA: `c77d88f1e10c09611f9f53c6adba8eba2514d5bf`
+- Current branch: `fix/translation-context-target-recovery`.
 - PR: none. User authorizes the normal fix → test → `main` → beta updater flow.
-- Last completed task: `TRANSLATION-JSON-ID-01 — recover a valid single-cue translation when Qwen echoes the wrong cue ID`.
-- Task source commit: `66050ebda88099f7be159093a135c3c8407a5b4c`.
-- Release commit: `a977c47ddc52a381c4fac4688f6417220636f8cf`; published manifest commit: `1aff47eb1ef9c89cb81036d9588c0d75bf7859b1`.
-- Published version: `4.0.42` / `4.0.0-beta.56-csharp-p5`.
-- Task in progress: none.
-- Exact next task: wait for the next user-reported issue; then reproduce it before changing source.
+- Last completed task: `TRANSLATION-CONTEXT-TARGET-01 — recover a uniquely identified TARGET when Qwen echoes read-only CONTEXT`.
+- Task source commit: `8e93af0119d27a427eae5d52ab24f0a21cafcea5`.
+- Release preparation: pending commit for `4.0.43` / `4.0.0-beta.57-csharp-p5`.
+- Task in progress: release CI and user field test.
+- Exact next task: after the release is available, verify that resuming the supplied SRT after three checkpointed cues advances past cue 4 without `Model bỏ sót hoặc trả thừa cue trong batch.`
 
 ## Root cause
 
-The active local Vietsub path intentionally sends one cue per Qwen request, but
-`ValidateMemoryBatch` still required Qwen to echo the exact opaque technical cue
-ID. Qwen can instead return the visible SRT number or a context ID. Its one valid
-translation was therefore rejected as `Model trả cue ID thừa, lặp hoặc sai` even
-after the strict retry.
+When asked for one TARGET cue, Qwen can return `translations` for the adjacent
+read-only CONTEXT cues too. `MatchTranslationItems` rejected the complete response
+by count before it could examine the uniquely identifiable target, producing
+`Model bỏ sót hoặc trả thừa cue trong batch.` after the strict retry.
 
 ## Changes made
 
-- Added `MatchTranslationItems` in `LocalSubtitleTranslationService`, the shared
-  translation response matcher.
-- For exactly one expected cue, it requires exactly one JSON translation object
-  with a string `text`, then assigns it to that sole technical cue ID regardless
-  of the model's ID echo. This is unambiguous and does not accept extra items.
+- Extended the shared `MatchTranslationItems` single-cue recovery path. With
+  multiple response items, it accepts only one item whose ID matches the target's
+  technical ID or visible SRT number; otherwise it rejects the response.
+- Strengthened the prompt: CONTEXT is read-only and `translations` must contain
+  only TARGET items.
 - Multi-cue responses still require an exact, unique expected ID for every item.
 - `ValidateMemoryBatch` now uses this matcher before glossary/name/relation
   validation; there is no added UI handler or second translation pipeline.
-- Added a contract regression that reproduces model ID `"4"` for technical ID
-  `"technical-cue-id"` and verifies the text is retained for the only cue.
+- Added a contract regression for a three-item CONTEXT leak, plus an ambiguous
+  response rejection regression.
 
 ## Files changed
 
 - `csharp/src/BiliSubStudio.Core/Editor/LocalSubtitleTranslationService.cs`
 - `csharp/src/BiliSubStudio.Core/Editor/LocalSubtitleTranslationService.TranslationMemory.cs`
 - `csharp/tests/BiliSubStudio.Core.ContractTests/TranslationJsonCompatibilityContract.cs`
+- `csharp/Directory.Build.props`
+- `update/release-notes.json`
 - `docs/handoff/CODEX_HANDOFF.md`
 
 ## Tests and status
 
-- `dotnet run --project csharp/tests/BiliSubStudio.Core.ContractTests/BiliSubStudio.Core.ContractTests.csproj -c Release -p:NuGetAudit=false`: PASS, 71/71.
-- `dotnet build csharp/src/BiliSubStudio.Core/BiliSubStudio.Core.csproj -c Release -p:NuGetAudit=false -v:minimal`: PASS, 0 warnings and 0 errors.
-- `python csharp/scripts/verify_translation_skill_contract.py`: PASS.
+- Direct runtime reproduction on installed `4.0.42` / build `a977c47`: FAIL.
+  The supplied SRT resumed from three checkpoints, then received an error at cue
+  4: `Model bỏ sót hoặc trả thừa cue trong batch.` The job ended safely with no
+  source media overwrite.
+- `dotnet run --project csharp/tests/BiliSubStudio.Core.ContractTests/BiliSubStudio.Core.ContractTests.csproj --no-restore`: PASS, 71/71.
 - Full `./csharp/scripts/verify.ps1`: PASS. This included Windows WinUI compile
   with 0 warnings/errors, 71/71 contracts, range regression, self-contained
   publish, startup smoke, worker identity, PE x64 and checksum readback.
-- The 5 GB local Qwen model was not downloaded and run against the user's SRT in
-  this task. Real inference and installed-updater field tests remain required.
-- GitHub Actions Windows release run `#32925340187`: PASS for
-  `a977c47ddc52a381c4fac4688f6417220636f8cf`.
-- GitHub release `v4.0.42` is published. `update/beta.json` is channel-ready and
-  points to the portable payload with SHA-256
-  `033cac0e268a5bfbb8a3f2542ee676dbcdc21d42a30ece10cd83da9d5485ab15`.
+- The patched build has compile/startup coverage but has not yet completed real
+  local-Qwen inference against the supplied SRT; this remains a field test.
+- GitHub release/CI for `4.0.43` is pending; no claim of update-channel readiness
+  until it passes.
 
 ## Constraints to preserve
 

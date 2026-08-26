@@ -1,7 +1,7 @@
 {
-  "version": "4.0.0-beta.56-csharp-p5",
+  "version": "4.0.0-beta.57-csharp-p5",
   "notes": [
-    "Sửa lỗi Vietsub local bị dừng ở câu khi model Qwen trả số cue/ID ngữ cảnh thay vì ID kỹ thuật nội bộ. Khi chỉ có một câu đích, app giữ bản dịch hợp lệ và gán an toàn vào đúng câu đó.",
-    "Vẫn từ chối JSON có thiếu hoặc thừa câu; batch nhiều câu tiếp tục yêu cầu ID duy nhất, đúng thứ tự để không gán sai phụ đề."
+    "Sửa lỗi Vietsub local dừng khi Qwen trả cả cue CONTEXT lẫn cue TARGET cho một lượt dịch đơn. App chỉ nhận bản dịch được nhận diện duy nhất là TARGET bằng ID kỹ thuật hoặc số cue hiển thị.",
+    "Nếu response không xác định được duy nhất TARGET thì app vẫn từ chối và retry, không đoán bản dịch từ cue ngữ cảnh."
   ]
 }
