@@ -1,12 +1,14 @@
 # Codex handoff — BiliSub Studio
 
-- Current main/base SHA: `ee5999ab0094c445853d5e83c128696a1e81d049`
-- Current branch: `translation-json-id-recovery` (from current `origin/main`)
+- Current main/base SHA: `1aff47eb1ef9c89cb81036d9588c0d75bf7859b1`
+- Current branch: `translation-json-id-recovery` (fast-forwarded to published `origin/main`)
 - PR: none. User authorizes the normal fix → test → `main` → beta updater flow.
-- Last completed upstream release: `4.0.41` / `4.0.0-beta.55-csharp-p5`.
+- Last completed task: `TRANSLATION-JSON-ID-01 — recover a valid single-cue translation when Qwen echoes the wrong cue ID`.
 - Task source commit: `66050ebda88099f7be159093a135c3c8407a5b4c`.
-- Task in progress: `RELEASE-TRANSLATION-JSON-ID-01 — publish the verified single-cue ID recovery through the beta updater`.
-- Exact next task: merge the prepared beta release to `main`, wait for the Windows release workflow, then verify the installed application's updater payload.
+- Release commit: `a977c47ddc52a381c4fac4688f6417220636f8cf`; published manifest commit: `1aff47eb1ef9c89cb81036d9588c0d75bf7859b1`.
+- Published version: `4.0.42` / `4.0.0-beta.56-csharp-p5`.
+- Task in progress: none.
+- Exact next task: wait for the next user-reported issue; then reproduce it before changing source.
 
 ## Root cause
 
@@ -46,6 +48,11 @@ after the strict retry.
   publish, startup smoke, worker identity, PE x64 and checksum readback.
 - The 5 GB local Qwen model was not downloaded and run against the user's SRT in
   this task. Real inference and installed-updater field tests remain required.
+- GitHub Actions Windows release run `#32925340187`: PASS for
+  `a977c47ddc52a381c4fac4688f6417220636f8cf`.
+- GitHub release `v4.0.42` is published. `update/beta.json` is channel-ready and
+  points to the portable payload with SHA-256
+  `033cac0e268a5bfbb8a3f2542ee676dbcdc21d42a30ece10cd83da9d5485ab15`.
 
 ## Constraints to preserve
 
