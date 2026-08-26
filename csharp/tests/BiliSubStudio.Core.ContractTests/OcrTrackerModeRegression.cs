@@ -96,6 +96,32 @@ internal static class OcrTrackerModeRegression
 
         var cues = trackerType.GetProperty("Cues", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("missing tracker cue list");
+
+        var scriptVariant = exactConstructor.Invoke([30d, .68d, true]);
+        var simplified = new OcrResult(true, true, "别睡傻了", .99, []);
+        var traditional = new OcrResult(true, true, "別睡傻了", .90, []);
+        observeExact.Invoke(scriptVariant, [12d, 1d / 30d, simplified]);
+        observeExact.Invoke(scriptVariant, [12d + 1d / 30d, 1d / 30d, simplified]);
+        observeExact.Invoke(scriptVariant, [12d + 2d / 30d, 1d / 30d, traditional]);
+        observeExact.Invoke(scriptVariant, [12d + 3d / 30d, 1d / 30d, simplified]);
+        var scriptVariantActive = (OcrCue)(exactActive.GetValue(scriptVariant)
+            ?? throw new InvalidOperationException("simplified/traditional OCR variant unexpectedly split a continuous cue"));
+        if (scriptVariantActive.Text != "别睡傻了" || Math.Abs(scriptVariantActive.Start - 12d) > .000001
+            || Math.Abs(scriptVariantActive.End - (12d + 4d / 30d)) > .000001)
+            throw new InvalidOperationException("simplified/traditional OCR variant changed exact cue timing or text");
+
+        var distinctText = exactConstructor.Invoke([30d, .68d, true]);
+        observeExact.Invoke(distinctText, [14d, 1d / 30d, simplified]);
+        observeExact.Invoke(distinctText, [14d + 1d / 30d, 1d / 30d, simplified]);
+        var genuinelyDifferent = new OcrResult(true, true, "别睡呆了", .99, []);
+        observeExact.Invoke(distinctText, [14d + 2d / 30d, 1d / 30d, genuinelyDifferent]);
+        observeExact.Invoke(distinctText, [14d + 3d / 30d, 1d / 30d, genuinelyDifferent]);
+        var distinctCues = (IReadOnlyList<OcrCue>)(cues.GetValue(distinctText)
+            ?? throw new InvalidOperationException("missing committed cue list for distinct subtitle text"));
+        if (distinctCues.Count != 1 || distinctCues[0].Text != "别睡傻了"
+            || Math.Abs(distinctCues[0].End - (14d + 2d / 30d)) > .000001)
+            throw new InvalidOperationException("a genuinely different subtitle was merged as a script variant");
+
         var reveal = exactConstructor.Invoke([30d, .68d, true]);
         var full = new OcrResult(true, true, "你走吧", .99, []);
         observeExact.Invoke(reveal, [20d, 1d / 30d, full]);

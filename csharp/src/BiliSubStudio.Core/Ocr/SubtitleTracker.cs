@@ -216,19 +216,51 @@ internal sealed class SubtitleTracker
     {
         if (left == right) return 1;
         if (left.Length == 0 || right.Length == 0) return 0;
-        var previous = Enumerable.Range(0, right.Length + 1).ToArray();
-        for (var i = 1; i <= left.Length; i++)
+        var leftRunes = left.EnumerateRunes().ToArray();
+        var rightRunes = right.EnumerateRunes().ToArray();
+        var previous = Enumerable.Range(0, rightRunes.Length + 1).ToArray();
+        for (var i = 1; i <= leftRunes.Length; i++)
         {
-            var current = new int[right.Length + 1];
+            var current = new int[rightRunes.Length + 1];
             current[0] = i;
-            for (var j = 1; j <= right.Length; j++)
+            for (var j = 1; j <= rightRunes.Length; j++)
             {
-                current[j] = Math.Min(Math.Min(current[j - 1] + 1, previous[j] + 1), previous[j - 1] + (left[i - 1] == right[j - 1] ? 0 : 1));
+                current[j] = Math.Min(
+                    Math.Min(current[j - 1] + 1, previous[j] + 1),
+                    previous[j - 1] + (SameTrackingRune(leftRunes[i - 1].Value, rightRunes[j - 1].Value) ? 0 : 1));
             }
             previous = current;
         }
-        return 1 - previous[^1] / (double)Math.Max(left.Length, right.Length);
+        return 1 - previous[^1] / (double)Math.Max(leftRunes.Length, rightRunes.Length);
     }
+
+    // Paddle can alternate between simplified and traditional glyphs on adjacent
+    // video frames. This is a tracking equivalence only: the cue keeps the best
+    // observed spelling and SRT text is not rewritten by this map.
+    private static bool SameTrackingRune(int left, int right) =>
+        left == right || CanonicalTrackingRune(left) == CanonicalTrackingRune(right);
+
+    private static int CanonicalTrackingRune(int value) => value switch
+    {
+        '別' => '别', '長' => '长', '萬' => '万', '師' => '师', '這' => '这',
+        '為' => '为', '還' => '还', '讓' => '让', '與' => '与', '從' => '从',
+        '來' => '来', '後' => '后', '時' => '时', '過' => '过', '個' => '个',
+        '們' => '们', '說' => '说', '問' => '问', '開' => '开', '關' => '关',
+        '當' => '当', '無' => '无', '實' => '实', '見' => '见', '對' => '对',
+        '發' => '发', '現' => '现', '於' => '于', '國' => '国', '靈' => '灵',
+        '體' => '体', '劍' => '剑', '門' => '门', '龍' => '龙', '風' => '风',
+        '雲' => '云', '戰' => '战', '聖' => '圣', '術' => '术', '學' => '学',
+        '練' => '练', '藥' => '药', '寶' => '宝', '氣' => '气', '陣' => '阵',
+        '權' => '权', '場' => '场', '聲' => '声', '頭' => '头', '臉' => '脸',
+        '淚' => '泪', '傷' => '伤', '愛' => '爱', '點' => '点', '將' => '将',
+        '應' => '应', '該' => '该', '誰' => '谁', '請' => '请', '講' => '讲',
+        '話' => '话', '認' => '认', '證' => '证', '變' => '变', '處' => '处',
+        '選' => '选', '進' => '进', '遠' => '远', '終' => '终', '離' => '离',
+        '繼' => '继', '續' => '续', '護' => '护', '靜' => '静', '覺' => '觉',
+        '隻' => '只', '隱' => '隐', '顯' => '显', '驚' => '惊', '難' => '难',
+        '億' => '亿', '歲' => '岁', '壽' => '寿', '屆' => '届',
+        _ => value,
+    };
 
     private static bool IsContinuousVariant(string active, string observed) =>
         Similarity(active, observed) >= 0.80

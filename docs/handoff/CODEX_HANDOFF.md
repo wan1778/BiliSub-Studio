@@ -1,11 +1,11 @@
 # Codex handoff — BiliSub Studio
 
-- Current main/base SHA: `9d8cbc97f06804c42b97bdb28689922bfaded0a1`.
+- Current main/base SHA: `ddc79ebf0182379c61594124f109848d1c29597c`.
 - Current branch: `main`.
 - PR: none.
-- Last completed task: `OCR-GLYPH-01` — exclude a demonstrated upper-right one-glyph visual overlay from lower-screen subtitle OCR.
+- Last completed task: `OCR-TIMING-02` — keep a continuous subtitle together when OCR alternates between equivalent simplified/traditional glyphs on adjacent source frames.
 - Task in progress: none.
-- Exact next task: run the current build through the WinUI OCR user flow and field-test a representative longer Accurate segment before treating the full-video OCR quality gate as PASS; use source-frame PTS as timing truth and record any intentional visual-text versus supplied-SRT differences separately.
+- Exact next task: run the current Release build through the WinUI OCR user flow, then field-test a representative longer Accurate segment before treating the full-video OCR quality gate as PASS; use source-frame PTS as timing truth and record intentional visual-text versus supplied-SRT differences separately.
 
 ## Root cause
 
@@ -27,6 +27,11 @@ subtitle at the bottom of the OCR crop. It is not subtitle content.
 The five-minute field scan then demonstrated a separate upper-right, one-glyph
 overlay (`口`, x≈1225 and y≈30) that appeared briefly between two real bottom
 subtitles. It is not a short subtitle cue.
+
+The next real scan demonstrated a timing-fragmentation defect: on adjacent
+source frames Paddle alternated between simplified `别` and traditional `別` in
+the same visually continuous line (`别睡傻了`). The tracker treated those
+spellings as different text and emitted multiple short cues.
 
 ## Changes made
 
@@ -53,6 +58,10 @@ subtitles. It is not a short subtitle cue.
   this does not turn a global one-character-caption rule into a data-loss rule.
 - Exact-frame cue commits now use source frame duration rather than the former
   fixed 120 ms minimum.
+- Tracker text comparison now treats a curated set of equivalent
+  simplified/traditional Han glyphs as the same for temporal tracking only.
+  It retains the best recognised spelling in the actual cue/SRT and still
+  separates genuinely different text.
 - Bumped OCR checkpoint schema to 5 so no old 4-fps Accurate checkpoint can be
   resumed under the new every-frame semantics.
 - Added contract coverage for every-frame argument construction, PTS parsing,
@@ -71,6 +80,7 @@ subtitles. It is not a short subtitle cue.
 - `dotnet build csharp/src/BiliSubStudio.Core/BiliSubStudio.Core.csproj --no-restore`: PASS, 0 warnings / 0 errors.
 - `dotnet build csharp/BiliSubStudio.sln --no-restore`: PASS, including the WinUI application, 0 warnings / 0 errors.
 - `dotnet run --project csharp/tests/BiliSubStudio.Core.ContractTests/BiliSubStudio.Core.ContractTests.csproj --no-build`: PASS, 71/71.
+- `dotnet build csharp/BiliSubStudio.sln -c Release --no-restore`: PASS, 0 warnings / 0 errors. Debug build was not used for this final check because the separate `build dev` test window held its DLL open.
 - Local FFmpeg runtime probe on the supplied test video: PASS — `-copyts` plus
   `showinfo` returned sequential source PTS `59.600000`, `59.633313`,
   `59.666688`, with exact per-frame durations.
@@ -89,12 +99,21 @@ subtitles. It is not a short subtitle cue.
   expected lower-screen cues with no `口` cue. The source file was not changed;
   the temporary clip is at
   `C:\Users\Man PC\AppData\Local\Temp\BiliSubOcrFieldProbe\scene-280-300.mp4`.
+- Targeted full OCR pipeline field test after the simplified/traditional
+  tracking fix: 0–146 seconds of the supplied video completed 4,380/4,380
+  source frames through GPU, one lane, at 0.651× realtime. The demonstrated
+  line is now one cue, exactly `144.166687 → 145.233313`, rather than being
+  fragmented by `别`/`別`. Result:
+  `C:\Users\Man PC\AppData\Local\Temp\BiliSubOcrFieldProbe\state\accurate-146-s.json`.
 - The supplied Chinese SRT is not an exact visual-overlay ground truth: it
   omits visibly recognised on-screen text such as `当然知晓` at 13.8s. Do not
   force source PTS output to match a different subtitle track without a
   verified visual ground-truth decision.
-- Full-video OCR accuracy and the WinUI user-flow remain untested. No release
-  may be made from this bounded field evidence alone.
+- The WinUI OCR page opens in the current debug build, but its Windows file
+  picker is hosted by `PickerHost.exe` and was not targetable by the test
+  automation; a human WinUI file-selection/scan flow remains field-test work.
+  Full-video OCR accuracy remains untested. No release may be made from this
+  bounded field evidence alone.
 - No version bump, release, PR, merge, or source-media overwrite was performed.
 
 ## Constraints to preserve
