@@ -138,10 +138,11 @@
                             <StackPanel x:Name="SubtitleInspectorPanel" Spacing="10">
                                 <TextBlock FontSize="14" FontWeight="SemiBold" Text="Subtitle / Vietsub" />
                                 <TextBlock Style="{StaticResource MutedTextStyle}" Text="SRT Trung → Việt bằng AI local + skill. Timecode và thứ tự block được giữ nguyên." TextWrapping="Wrap" />
-                                <Grid ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
+                                <StackPanel Spacing="6">
                                     <Button x:Name="ImportSrtButton" Click="ImportSubtitle_Click" Content="Chọn SRT tiếng Trung" />
-                                    <Button Grid.Column="1" x:Name="ImportTranslatedSrtButton" Click="ImportTranslatedSubtitle_Click" Content="Nạp SRT Việt đã dịch" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />
-                                </Grid>
+                                    <Button x:Name="ImportTranslatedSrtButton" Click="ImportTranslatedSubtitle_Click" Content="Chọn SRT Trung trước" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />
+                                    <TextBlock Style="{StaticResource MutedTextStyle}" Text="Nạp SRT Việt đã dịch sau khi đã chọn video và SRT tiếng Trung; app sẽ kiểm tra cue và timecode trước khi ghép." TextWrapping="Wrap" />
+                                </StackPanel>
                                 <TextBlock x:Name="AsrStatusText" Style="{StaticResource MutedTextStyle}" Text="Whisper timing chưa chạy." TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
                                 <TextBlock x:Name="SrtSummaryText" Style="{StaticResource MutedTextStyle}" Text="Skill: Dịch Trung Tu Tiên." TextWrapping="Wrap" />
                                 <ToggleSwitch x:Name="TranslationFastModeToggle" Header="Model Vietsub" OffContent="8B Chất lượng" OnContent="4B Nhanh / nháp" IsOn="False" Toggled="TranslationFastMode_Toggled" />

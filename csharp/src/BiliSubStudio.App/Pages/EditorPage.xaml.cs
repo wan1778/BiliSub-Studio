@@ -2110,6 +2110,11 @@ public sealed partial class EditorPage : Page
         FileNameBox.IsEnabled = editable;
         ImportSrtButton.IsEnabled = idle && !_playback.IsPreviewMode;
         ImportTranslatedSrtButton.IsEnabled = idle && !_playback.IsPreviewMode && _project is not null && _subtitleSource is not null;
+        ImportTranslatedSrtButton.Content = _subtitleSource is null
+            ? "Chọn SRT Trung trước"
+            : _project is null
+                ? "Chọn video trước"
+                : "Nạp SRT Việt đã dịch";
         CreateAsrButton.IsEnabled = editable;
         PrepareAiButton.IsEnabled = idle && !_playback.IsPreviewMode;
         TranslationFastModeToggle.IsEnabled = idle && !_playback.IsPreviewMode;
