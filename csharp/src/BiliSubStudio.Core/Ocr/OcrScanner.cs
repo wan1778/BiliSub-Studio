@@ -680,7 +680,7 @@ public sealed class OcrScanner
     private static OcrResult FilterOffBaselineOverlayLines(OcrResult result, OcrRegion region)
     {
         if (!result.Ok) return result;
-        if (result.Lines.Count == 1 && IsUpperSingleGlyphOverlay(result.Lines[0], region))
+        if (result.Lines.Count == 1 && IsUpperOffBaselineOverlay(result.Lines[0], region))
             return result with { Detected = false, Text = string.Empty, Confidence = 0, Lines = [] };
         if (result.Lines.Count < 2) return result;
         var baseline = result.Lines
@@ -712,15 +712,17 @@ public sealed class OcrScanner
         };
     }
 
-    private static bool IsUpperSingleGlyphOverlay(OcrLine line, OcrRegion region)
+    private static bool IsUpperOffBaselineOverlay(OcrLine line, OcrRegion region)
     {
         // OCR frames are normalized to a 1280x320 canvas. For the default
         // lower-screen subtitle ROI, a one-glyph detection in the upper band
-        // is an unrelated visual overlay, not a very short subtitle at the
-        // subtitle baseline. Do not apply this rule to a user-selected upper
-        // ROI, where a single glyph can be genuine caption content.
-        if (region.Y < .5 || line.Box.Length < 4 || line.Text.EnumerateRunes().Count() != 1) return false;
-        return line.Box[1] + line.Box[3] < 170;
+        // or a left-aligned scene/branding overlay there is not subtitle text.
+        // The latter was observed as a stylized scene title which Paddle read
+        // differently on adjacent frames, producing a run of false cues.
+        // Do not apply this rule to a user-selected upper ROI, where either
+        // shape can be genuine caption content.
+        if (region.Y < .5 || line.Box.Length < 4 || line.Box[1] + line.Box[3] >= 170) return false;
+        return line.Text.EnumerateRunes().Count() == 1 || line.Box[0] <= 80;
     }
 
     private static string FormatClock(double seconds) => TimeSpan.FromSeconds(Math.Max(0, seconds)).ToString(seconds >= 3600 ? @"hh\:mm\:ss" : @"mm\:ss");

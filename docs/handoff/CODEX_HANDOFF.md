@@ -1,11 +1,11 @@
 # Codex handoff — BiliSub Studio
 
-- Current main/base SHA: `b0ccd199116627d5f69872dabff6ceb95ae89a22`.
+- Current main/base SHA: `4ce838c70aaf010803238ab18758eb6b5053881c`.
 - Current branch: `main`.
 - PR: none.
-- Last completed task: `OCR-TIMING-03` — keep an OCR cue continuous when adjacent source frames alternate only ASCII versus Chinese punctuation.
+- Last completed task: `OCR-OVERLAY-02` — reject observed left/top scene and branding overlays from the default lower subtitle ROI without discarding a user-selected upper ROI.
 - Task in progress: none.
-- Exact next task: audit the demonstrated stylized scene-title OCR instability separately from dialogue captions, then resume the WinUI OCR field gate. Do not claim full-video OCR quality PASS until that evidence exists.
+- Exact next task: resume the current Release WinUI OCR user-flow gate, then separately audit residual visual-text recognition errors before claiming broader OCR quality PASS.
 
 ## Root cause
 
@@ -43,6 +43,10 @@ fragmentation issue: Paddle alternated `?` and `？` for one unchanged on-screen
 caption. The tracker treated the punctuation glyphs as different text and
 emitted adjacent 100-ms cues.
 
+That same scan showed three non-dialogue lower-ROI false positives with the
+same geometry: a persistent left/top branding overlay, a stylized scene title,
+and another left/top label. Normal dialogue was centered in the lower band.
+
 ## Changes made
 
 - `accurate` now means every decoded video frame; `balanced` remains 2.5 fps and
@@ -79,6 +83,8 @@ emitted adjacent 100-ms cues.
 - `OCR-TIMING-03` treats the equivalent ASCII/Chinese punctuation forms as one
   tracking glyph only, preserving the originally selected caption spelling and
   source-frame PTS boundaries.
+- `OCR-OVERLAY-02` adds a geometry-specific left/top overlay guard for the
+  default lower subtitle ROI only; custom upper ROIs retain their text.
 - Bumped OCR checkpoint schema to 5 so no old 4-fps Accurate checkpoint can be
   resumed under the new every-frame semantics.
 - Added contract coverage for every-frame argument construction, PTS parsing,
@@ -89,9 +95,11 @@ emitted adjacent 100-ms cues.
 - `csharp/src/BiliSubStudio.Core/Ocr/OcrCheckpointStore.cs`
 - `csharp/src/BiliSubStudio.Core/Ocr/OcrScanner.cs`
 - `csharp/src/BiliSubStudio.Core/Ocr/SubtitleTracker.cs`
+- `csharp/src/BiliSubStudio.Core/Ocr/OcrScanner.cs`
 - `csharp/src/BiliSubStudio.Core/Ocr/OcrInstaller.cs`
 - `csharp/src/BiliSubStudio.Core/Ocr/SubtitleTracker.cs`
 - `csharp/tests/BiliSubStudio.Core.ContractTests/OcrTrackerModeRegression.cs`
+- `csharp/tests/BiliSubStudio.Core.ContractTests/OcrOverlayFilterRegression.cs`
 - `csharp/tests/BiliSubStudio.Core.ContractTests/OcrRuntimePathRegression.cs`
 - `docs/handoff/CODEX_HANDOFF.md`
 
@@ -139,6 +147,10 @@ emitted adjacent 100-ms cues.
   `所以?` is exactly one source-frame-bounded cue from 2.333333 to 2.833333;
   the former 66-ms `所以？` duplicate is absent. The temporary clip did not
   modify source media.
+- Targeted OCR-OVERLAY-02 runtime test: PASS. A temporary 139–144 second clip
+  completed 150/150 source frames with GPU OCR. The demonstrated stylized
+  scene-title false cues are absent, while normal dialogue `大黄啊大黄` remains
+  from `2.666667` to `3.966667`. The clip did not modify source media.
 - The supplied Chinese SRT is not an exact visual-overlay ground truth: it
   omits visibly recognised on-screen text such as `当然知晓` at 13.8s. Do not
   force source PTS output to match a different subtitle track without a
