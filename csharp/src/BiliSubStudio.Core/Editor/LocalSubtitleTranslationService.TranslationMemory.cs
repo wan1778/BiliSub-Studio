@@ -85,8 +85,9 @@ public sealed partial class LocalSubtitleTranslationService
             NAMES: {{names}}
             RELATION: {{relations}}
             {{relevantSkill}}
-            CONTEXT: {{contextJson}}
-            TARGET: {{targetJson}}
+            CONTEXT (chỉ để hiểu ngữ cảnh, tuyệt đối không dịch/trả lại trong translations): {{contextJson}}
+            TARGET (chỉ các cue phải dịch): {{targetJson}}
+            translations phải chứa đúng {{target.Count}} phần tử cho TARGET, không chứa bất kỳ cue CONTEXT nào.
             Nếu CONTEXT/TARGET xác nhận tên riêng, tông môn/địa danh hoặc quan hệ-xưng hô mới: names ghi source Hán + text Hán-Việt; relations ghi key là người đang được gọi, address là đại từ tiếng Việt đã chắc (vd con/ngươi), note thật ngắn. Không chắc thì trả []. Chỉ trả JSON.
             """;
     }

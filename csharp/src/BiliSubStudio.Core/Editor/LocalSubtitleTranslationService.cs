@@ -534,24 +534,37 @@ public sealed partial class LocalSubtitleTranslationService : IDisposable
         if (expected.Count == 0) throw new InvalidDataException("Không có cue đích để đối chiếu bản dịch.");
 
         var items = array.EnumerateArray().ToArray();
-        if (items.Length != expected.Count) throw new InvalidDataException("Model bỏ sót hoặc trả thừa cue trong batch.");
-
         // Direct Vietsub intentionally sends one cue per model call. In that
-        // unambiguous case, the model's opaque echo of the technical cue ID is
-        // not a source of truth: Qwen may return the visible SRT number or a
-        // context ID. Keep the text, but map its sole item to the sole target.
+        // unambiguous case, Qwen can echo the read-only CONTEXT as well as the
+        // one TARGET. Recover only the uniquely identifiable target; never
+        // guess from a context item.
         if (expected.Count == 1)
         {
-            var item = items[0];
-            if (item.ValueKind != JsonValueKind.Object
-                || !item.TryGetProperty("text", out var textValue)
-                || textValue.ValueKind != JsonValueKind.String)
-                throw new InvalidDataException("Model không trả text hợp lệ cho cue duy nhất.");
+            var target = expected[0];
+            var candidates = items
+                .Where(item => item.ValueKind == JsonValueKind.Object
+                    && item.TryGetProperty("text", out var textValue)
+                    && textValue.ValueKind == JsonValueKind.String)
+                .Where(item =>
+                {
+                    if (items.Length == 1) return true;
+                    if (!item.TryGetProperty("id", out var idValue) || idValue.ValueKind != JsonValueKind.String) return false;
+                    var id = idValue.GetString()?.Trim();
+                    return string.Equals(id, target.Id, StringComparison.Ordinal)
+                        || string.Equals(id, target.Number, StringComparison.Ordinal);
+                })
+                .ToArray();
+            if (candidates.Length != 1)
+                throw new InvalidDataException("Model bỏ sót hoặc trả thừa TARGET cho cue đơn.");
+
+            var text = candidates[0].GetProperty("text").GetString()?.Trim() ?? string.Empty;
             return new Dictionary<string, string>(StringComparer.Ordinal)
             {
-                [expected[0].Id] = textValue.GetString()?.Trim() ?? string.Empty,
+                [target.Id] = text,
             };
         }
+
+        if (items.Length != expected.Count) throw new InvalidDataException("Model bỏ sót hoặc trả thừa cue trong batch.");
 
         var expectedIds = expected.Select(x => x.Id).ToHashSet(StringComparer.Ordinal);
         var result = new Dictionary<string, string>(StringComparer.Ordinal);

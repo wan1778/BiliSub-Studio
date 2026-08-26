@@ -34,6 +34,21 @@ internal static class TranslationJsonCompatibilityContract
         if (direct.Count != 1 || !string.Equals(direct[cue.Id], "Ngươi đi đi.", StringComparison.Ordinal))
             throw new InvalidOperationException("single-cue translation must recover a model-visible ID to its only technical target ID");
 
+        using var contextLeakJson = JsonDocument.Parse("{\"translations\":[{\"id\":\"3\",\"text\":\"Sư phụ.\"},{\"id\":\"4\",\"text\":\"Ngươi đi đi.\"},{\"id\":\"5\",\"text\":\"Đệ tử vẫn muốn ở bên ngài.\"}]}");
+        var contextLeak = (IReadOnlyDictionary<string, string>)match.Invoke(null, [contextLeakJson.RootElement.Clone(), new[] { cue }])!;
+        if (contextLeak.Count != 1 || !string.Equals(contextLeak[cue.Id], "Ngươi đi đi.", StringComparison.Ordinal))
+            throw new InvalidOperationException("single-cue translation must recover the uniquely identified TARGET when Qwen echoes CONTEXT");
+
+        using var ambiguousContextJson = JsonDocument.Parse("{\"translations\":[{\"id\":\"3\",\"text\":\"Sư phụ.\"},{\"id\":\"5\",\"text\":\"Đệ tử vẫn muốn ở bên ngài.\"}]}");
+        try
+        {
+            _ = match.Invoke(null, [ambiguousContextJson.RootElement.Clone(), new[] { cue }]);
+            throw new InvalidOperationException("ambiguous context output must not be guessed as the TARGET");
+        }
+        catch (TargetInvocationException error) when (error.InnerException is InvalidDataException)
+        {
+        }
+
         var sourcePath = Path.Combine(Directory.GetCurrentDirectory(), "csharp", "src", "BiliSubStudio.Core", "Editor", "LocalSubtitleTranslationService.cs");
         if (!File.Exists(sourcePath)) return;
         var source = File.ReadAllText(sourcePath);
