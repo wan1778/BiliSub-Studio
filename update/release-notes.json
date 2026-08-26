@@ -1,7 +1,6 @@
 {
-  "version": "4.0.0-beta.53-csharp-p5",
+  "version": "4.0.0-beta.54-csharp-p5",
   "notes": [
-    "Vietsub ưu tiên đúng thuật ngữ và tên riêng: chỉ đưa các mục liên quan của bảng dịch vào từng câu để giảm dịch sai tên Hán-Việt và thuật ngữ tu tiên.",
-    "Vietsub ghi nhớ tên, quan hệ và cách xưng hô trong từng phim, kiểm tra lại kết quả trước khi chấp nhận và vẫn hiển thị từng câu ngay khi dịch xong."
+    "Trong khi Vietsub đang chạy, danh sách Chỉnh từng câu SRT vẫn nhận chuột/touchpad để cuộn lên xuống xem các câu; các thao tác sửa, khóa, lưu và dịch lại câu vẫn tạm khóa để tránh xung đột."
   ]
 }
