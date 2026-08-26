@@ -1,11 +1,12 @@
 {
-  "version": "4.0.0-beta.54-csharp-p5",
+  "version": "4.0.0-beta.55-csharp-p5",
   "channel_ready": true,
-  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.40/BiliSubStudio_4.0.40_Windows-x64-portable.zip",
-  "sha256": "a3e89572c2036f2b5993517d34949356130bc7716f5b71167eda15c748c43c49",
-  "size": 94792497,
+  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.41/BiliSubStudio_4.0.41_Windows-x64-portable.zip",
+  "sha256": "a46e5db4464b50c2d6a26c984fc20195e9863202be3ed4485f72c9e77fa35770",
+  "size": 94794082,
   "payload_kind": "winui3-portable-zip",
   "notes": [
-    "Trong khi Vietsub đang chạy, danh sách Chỉnh từng câu SRT vẫn nhận chuột/touchpad để cuộn lên xuống xem các câu; các thao tác sửa, khóa, lưu và dịch lại câu vẫn tạm khóa để tránh xung đột."
+    "Chọn hoặc nhập SRT mới không còn tự nạp lời Việt và trạng thái khóa từ lần trước trước khi bấm Vietsub; project đã dịch hợp lệ vẫn được khôi phục khi mở lại.",
+    "Vietsub local tự sửa thuật ngữ tu tiên đã khóa như 师父=sư phụ sau khi model trả kết quả, kể cả khi model làm rơi token hoặc trả lại chữ Hán; không còn retry hoặc fail chỉ vì lỗi glossary có thể tự sửa an toàn."
   ]
 }
