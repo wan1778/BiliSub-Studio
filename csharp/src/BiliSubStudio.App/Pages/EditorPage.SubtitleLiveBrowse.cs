@@ -17,6 +17,15 @@ public sealed partial class EditorPage
 
     private void EnsureSubtitleCueLiveBrowseBound()
     {
+        if (_translationJobId is not null && _subtitleSource is not null)
+        {
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                if (_translationJobId is null || _subtitleSource is null) return;
+                SubtitleCueList.IsEnabled = true;
+                SubtitleCueList.IsHitTestVisible = true;
+            });
+        }
         var scrollViewer = FindSubtitleCueDescendant<ScrollViewer>(SubtitleCueList);
         if (scrollViewer is null || ReferenceEquals(scrollViewer, _subtitleCueBrowseScrollViewer)) return;
         DetachSubtitleCueLiveBrowse();
