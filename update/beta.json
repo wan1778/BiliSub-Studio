@@ -1,12 +1,12 @@
 {
-  "version": "4.0.0-beta.58-csharp-p5",
+  "version": "4.0.0-beta.59-csharp-p5",
   "channel_ready": true,
-  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.44/BiliSubStudio_4.0.44_Windows-x64-portable.zip",
-  "sha256": "9eca425b2faa5fc338ce8b71fce47c4e1852cf13667f15d948051745c3100ae6",
-  "size": 94795133,
+  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.45/BiliSubStudio_4.0.45_Windows-x64-portable.zip",
+  "sha256": "46a6089a88c3002c039b4ac1ec03f5d913327a480b0117ce0148e8ee79d8b9b6",
+  "size": 94795366,
   "payload_kind": "winui3-portable-zip",
   "notes": [
-    "Vietsub tu tiên không còn chấp nhận lối xưng hô hiện đại như cậu, bạn, tớ. Model sẽ bị yêu cầu dịch lại theo giọng cổ phong thay vì lưu bản dịch sai.",
-    "Checkpoint dịch cũ được phân phiên bản lại để không khôi phục các cue đã có lối xưng hô hiện đại."
+    "Mở lại project không còn nạp bản Vietsub AI cũ khi policy dịch đã đổi; SRT nguồn được giữ nguyên và yêu cầu dịch lại sạch.",
+    "Nếu model trả relation/key ngoài CONTEXT hoặc TARGET, ứng dụng bỏ riêng dữ liệu bộ nhớ không tin cậy thay vì dừng cả lượt Vietsub."
   ]
 }
