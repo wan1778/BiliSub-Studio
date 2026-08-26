@@ -140,20 +140,31 @@ internal static class OcrTrackerModeRegression
             ?? throw new InvalidOperationException("missing OcrScanner");
         var filterOverlayLines = scannerType.GetMethod("FilterOffBaselineOverlayLines", BindingFlags.Static | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("missing off-baseline OCR line filter");
+        var lowerRegion = new OcrRegion(.05, .65, .90, .29);
         var filtered = (OcrResult)(filterOverlayLines.Invoke(null, [new OcrResult(true, true, "州\n整整一万年", .955d,
         [
             new OcrLine("州", .911d, [675, 62, 710, 101]),
             new OcrLine("整整一万年", .999d, [514, 221, 765, 277]),
-        ])]) ?? throw new InvalidOperationException("isolated OCR line filter returned null"));
+        ]), lowerRegion]) ?? throw new InvalidOperationException("isolated OCR line filter returned null"));
         if (filtered.Text != "整整一万年" || filtered.Lines.Count != 1 || filtered.Confidence < .99d)
             throw new InvalidOperationException("isolated weak one-glyph OCR line contaminated the subtitle text");
         var filteredOverlay = (OcrResult)(filterOverlayLines.Invoke(null, [new OcrResult(true, true, "在原地\n去吧", .998d,
         [
             new OcrLine("在原地", .999d, [0, 33, 62, 221]),
             new OcrLine("去吧", .999d, [591, 224, 694, 277]),
-        ])]) ?? throw new InvalidOperationException("off-baseline OCR overlay filter returned null"));
+        ]), lowerRegion]) ?? throw new InvalidOperationException("off-baseline OCR overlay filter returned null"));
         if (filteredOverlay.Text != "去吧" || filteredOverlay.Lines.Count != 1)
             throw new InvalidOperationException("vertical left-side OCR overlay contaminated the subtitle text");
+        var filteredGlyph = (OcrResult)(filterOverlayLines.Invoke(null, [new OcrResult(true, true, "口", .99d,
+        [new OcrLine("口", .99d, [1225, 30, 1280, 100])]), lowerRegion])
+            ?? throw new InvalidOperationException("upper one-glyph OCR filter returned null"));
+        if (filteredGlyph.Detected || filteredGlyph.Lines.Count != 0)
+            throw new InvalidOperationException("upper single-glyph overlay became an OCR cue");
+        var upperRegionGlyph = (OcrResult)(filterOverlayLines.Invoke(null, [new OcrResult(true, true, "口", .99d,
+        [new OcrLine("口", .99d, [1225, 30, 1280, 100])]), new OcrRegion(.05, .10, .90, .29)])
+            ?? throw new InvalidOperationException("upper ROI one-glyph filter returned null"));
+        if (!upperRegionGlyph.Detected || upperRegionGlyph.Text != "口")
+            throw new InvalidOperationException("user-selected upper ROI lost a legitimate one-glyph caption");
         var buildLane = scannerType.GetMethod("BuildLaneArguments", BindingFlags.Static | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("missing OCR FFmpeg argument builder");
         var args = (IReadOnlyList<string>)(buildLane.Invoke(null, ["source.mp4", new OcrRegion(.05, .65, .90, .29), accurateMode, 1d, 2d, false])

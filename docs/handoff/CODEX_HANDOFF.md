@@ -1,11 +1,11 @@
 # Codex handoff — BiliSub Studio
 
-- Current main/base SHA: `5b7da5f4f193f750595d340d3d1acb6198108d9f`.
+- Current main/base SHA: `9d8cbc97f06804c42b97bdb28689922bfaded0a1`.
 - Current branch: `main`.
 - PR: none.
-- Last completed task: `OCR-OVERLAY-01` — exclude a demonstrated persistent vertical left-side visual overlay from subtitle OCR.
+- Last completed task: `OCR-GLYPH-01` — exclude a demonstrated upper-right one-glyph visual overlay from lower-screen subtitle OCR.
 - Task in progress: none.
-- Exact next task: field-test a longer representative Accurate OCR segment before treating the full-video OCR quality gate as PASS; use source-frame PTS as timing truth and record any intentional visual-text versus supplied-SRT differences separately.
+- Exact next task: run the current build through the WinUI OCR user flow and field-test a representative longer Accurate segment before treating the full-video OCR quality gate as PASS; use source-frame PTS as timing truth and record any intentional visual-text versus supplied-SRT differences separately.
 
 ## Root cause
 
@@ -23,6 +23,10 @@ separate, one-glyph OCR line far above the dominant subtitle baseline.
 The 60-second field scan then demonstrated a persistent vertical left-side
 overlay (`在原地`, x=0..62 and y=33..221) being joined with the horizontal
 subtitle at the bottom of the OCR crop. It is not subtitle content.
+
+The five-minute field scan then demonstrated a separate upper-right, one-glyph
+overlay (`口`, x≈1225 and y≈30) that appeared briefly between two real bottom
+subtitles. It is not a short subtitle cue.
 
 ## Changes made
 
@@ -44,6 +48,9 @@ subtitle at the bottom of the OCR crop. It is not subtitle content.
   text baseline, then remove vertical or far-above lines. This removes the
   demonstrated `州`/`怡` noise and `在原地` overlay without discarding normal
   same-baseline subtitle lines.
+- For lower-screen ROIs only, a lone glyph in the upper normalized frame band
+  is ignored. The same glyph remains valid for a user-selected upper ROI, so
+  this does not turn a global one-character-caption rule into a data-loss rule.
 - Exact-frame cue commits now use source frame duration rather than the former
   fixed 120 ms minimum.
 - Bumped OCR checkpoint schema to 5 so no old 4-fps Accurate checkpoint can be
@@ -74,6 +81,14 @@ subtitle at the bottom of the OCR crop. It is not subtitle content.
   the later persistent `幸福` cue, and emitted no `州`, `怡`, or `在原地`
   contamination. Result:
   `C:\Users\Man PC\AppData\Local\Temp\BiliSubOcrFieldProbe\state\accurate-60-s.json`.
+- Five-minute field scan before the final glyph fix: 9,000/9,000 source frames
+  completed, 162/164 supplied-SRT cues had matching text with temporal overlap,
+  and it exposed the otherwise isolated `口` false cue at 292.867–293.033.
+- Targeted streaming field test after the glyph fix: a temporary 20-second
+  clip of source 280–300 seconds completed 600/600 frames and emitted eight
+  expected lower-screen cues with no `口` cue. The source file was not changed;
+  the temporary clip is at
+  `C:\Users\Man PC\AppData\Local\Temp\BiliSubOcrFieldProbe\scene-280-300.mp4`.
 - The supplied Chinese SRT is not an exact visual-overlay ground truth: it
   omits visibly recognised on-screen text such as `当然知晓` at 13.8s. Do not
   force source PTS output to match a different subtitle track without a

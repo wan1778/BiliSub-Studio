@@ -41,7 +41,7 @@ public sealed class OcrScanner
             var alternate = await _ocr.RunAsync(Convert.ToBase64String(enhanced), cancellationToken);
             if (alternate.Ok && alternate.Confidence > result.Confidence) result = alternate;
         }
-        return FilterOffBaselineOverlayLines(result);
+        return FilterOffBaselineOverlayLines(result, region);
     }
 
     public async Task<OcrScanResult> RunAsync(AppJob job, OcrScanRequest request, OcrScanStartMode startMode)
@@ -504,7 +504,7 @@ public sealed class OcrScanner
                         job.Log($"OCR frame {at:0.000}s: enhanced retry skipped ({Compact(error.Message)}).");
                     }
                 }
-                tracker.Observe(at, timing.Duration, FilterOffBaselineOverlayLines(result));
+                tracker.Observe(at, timing.Duration, FilterOffBaselineOverlayLines(result, request.Region));
                 onProgress(at, frames, images);
                 if (job.IsPauseRequested && tracker.CanCheckpoint)
                 {
@@ -677,9 +677,12 @@ public sealed class OcrScanner
             || candidateRunes > currentRunes && candidate.Confidence >= current.Confidence - .08;
     }
 
-    private static OcrResult FilterOffBaselineOverlayLines(OcrResult result)
+    private static OcrResult FilterOffBaselineOverlayLines(OcrResult result, OcrRegion region)
     {
-        if (!result.Ok || result.Lines.Count < 2) return result;
+        if (!result.Ok) return result;
+        if (result.Lines.Count == 1 && IsUpperSingleGlyphOverlay(result.Lines[0], region))
+            return result with { Detected = false, Text = string.Empty, Confidence = 0, Lines = [] };
+        if (result.Lines.Count < 2) return result;
         var baseline = result.Lines
             .Where(line => line.Box.Length >= 4
                 && line.Confidence >= .90
@@ -707,6 +710,17 @@ public sealed class OcrScanner
             Confidence = retained.Average(line => line.Confidence),
             Lines = retained,
         };
+    }
+
+    private static bool IsUpperSingleGlyphOverlay(OcrLine line, OcrRegion region)
+    {
+        // OCR frames are normalized to a 1280x320 canvas. For the default
+        // lower-screen subtitle ROI, a one-glyph detection in the upper band
+        // is an unrelated visual overlay, not a very short subtitle at the
+        // subtitle baseline. Do not apply this rule to a user-selected upper
+        // ROI, where a single glyph can be genuine caption content.
+        if (region.Y < .5 || line.Box.Length < 4 || line.Text.EnumerateRunes().Count() != 1) return false;
+        return line.Box[1] + line.Box[3] < 170;
     }
 
     private static string FormatClock(double seconds) => TimeSpan.FromSeconds(Math.Max(0, seconds)).ToString(seconds >= 3600 ? @"hh\:mm\:ss" : @"mm\:ss");
