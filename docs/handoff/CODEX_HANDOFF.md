@@ -1,12 +1,13 @@
 # Codex handoff — BiliSub Studio
 
-- Current main/base SHA: `c77d88f1e10c09611f9f53c6adba8eba2514d5bf`
-- Current branch: `fix/translation-context-target-recovery`.
+- Current main/base SHA: `31b524bb8e756458faa6fbeaa3bd124ea17039bf`
+- Current branch: `main`.
 - PR: none. User authorizes the normal fix → test → `main` → beta updater flow.
 - Last completed task: `TRANSLATION-CONTEXT-TARGET-01 — recover a uniquely identified TARGET when Qwen echoes read-only CONTEXT`.
 - Task source commit: `8e93af0119d27a427eae5d52ab24f0a21cafcea5`.
-- Release preparation: pending commit for `4.0.43` / `4.0.0-beta.57-csharp-p5`.
-- Task in progress: release CI and user field test.
+- Release preparation commit: `0633797861d8684074190bff206710fbbc689d7f`; published manifest commit: `31b524bb8e756458faa6fbeaa3bd124ea17039bf`.
+- Published version: `4.0.43` / `4.0.0-beta.57-csharp-p5`.
+- Task in progress: user field test only.
 - Exact next task: after the release is available, verify that resuming the supplied SRT after three checkpointed cues advances past cue 4 without `Model bỏ sót hoặc trả thừa cue trong batch.`
 
 ## Root cause
@@ -50,8 +51,11 @@ by count before it could examine the uniquely identifiable target, producing
   publish, startup smoke, worker identity, PE x64 and checksum readback.
 - The patched build has compile/startup coverage but has not yet completed real
   local-Qwen inference against the supplied SRT; this remains a field test.
-- GitHub release/CI for `4.0.43` is pending; no claim of update-channel readiness
-  until it passes.
+- GitHub Actions Windows release run `#32927141512`: PASS for
+  `0633797861d8684074190bff206710fbbc689d7f`.
+- GitHub release `v4.0.43` is published. `update/beta.json` is channel-ready and
+  points to the portable payload with SHA-256
+  `2427b2bfb5027a9c6ed0634dc946668f4db9e5358c368c91949b6f880c358d78`.
 
 ## Constraints to preserve
 
