@@ -4,7 +4,7 @@
 - Current branch: `main`.
 - PR: none. Release `v4.0.45` is published and its updater manifest is live.
 - Last completed task: `TRANSLATION-POLICY-RESTORE-RELATIONS-01`.
-- Task source commit: `ba935004c070499142610362bcf473d47106f616`.
+- Task source commit: `ba93500f4eae0698f4763ee2b92a6e61ac6a6ee8`.
 - Release preparation commit: `6289d27116956ce7287ac48f6d03cfab8d763674` (`4.0.0-beta.59-csharp-p5` / public `4.0.45`).
 - Release manifest commit: `e8a911b5242e3fc11fb4f8da29111553b1ed0241`.
 - Task in progress: none; awaiting user field test of `4.0.45`.
