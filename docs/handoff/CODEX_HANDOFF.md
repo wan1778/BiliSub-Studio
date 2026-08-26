@@ -4,8 +4,9 @@
 - Current branch: `translation-json-id-recovery` (from current `origin/main`)
 - PR: none. User authorizes the normal fix → test → `main` → beta updater flow.
 - Last completed upstream release: `4.0.41` / `4.0.0-beta.55-csharp-p5`.
-- Task in progress: `TRANSLATION-JSON-ID-01 — recover a valid single-cue translation when Qwen echoes the wrong cue ID`.
-- Exact next task: commit this focused fix, run the full Windows gate, then prepare the next immutable beta release and verify its updater payload.
+- Task source commit: `66050ebda88099f7be159093a135c3c8407a5b4c`.
+- Task in progress: `RELEASE-TRANSLATION-JSON-ID-01 — publish the verified single-cue ID recovery through the beta updater`.
+- Exact next task: merge the prepared beta release to `main`, wait for the Windows release workflow, then verify the installed application's updater payload.
 
 ## Root cause
 
@@ -40,9 +41,11 @@ after the strict retry.
 - `dotnet run --project csharp/tests/BiliSubStudio.Core.ContractTests/BiliSubStudio.Core.ContractTests.csproj -c Release -p:NuGetAudit=false`: PASS, 71/71.
 - `dotnet build csharp/src/BiliSubStudio.Core/BiliSubStudio.Core.csproj -c Release -p:NuGetAudit=false -v:minimal`: PASS, 0 warnings and 0 errors.
 - `python csharp/scripts/verify_translation_skill_contract.py`: PASS.
-- Compile/contract PASS only so far for this source commit. The 5 GB local Qwen
-  model was not downloaded and run against the user's SRT in this task, so a
-  real inference and installed-updater field test remain required.
+- Full `./csharp/scripts/verify.ps1`: PASS. This included Windows WinUI compile
+  with 0 warnings/errors, 71/71 contracts, range regression, self-contained
+  publish, startup smoke, worker identity, PE x64 and checksum readback.
+- The 5 GB local Qwen model was not downloaded and run against the user's SRT in
+  this task. Real inference and installed-updater field tests remain required.
 
 ## Constraints to preserve
 

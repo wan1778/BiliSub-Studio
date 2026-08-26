@@ -1,7 +1,7 @@
 {
-  "version": "4.0.0-beta.55-csharp-p5",
+  "version": "4.0.0-beta.56-csharp-p5",
   "notes": [
-    "Chọn hoặc nhập SRT mới không còn tự nạp lời Việt và trạng thái khóa từ lần trước trước khi bấm Vietsub; project đã dịch hợp lệ vẫn được khôi phục khi mở lại.",
-    "Vietsub local tự sửa thuật ngữ tu tiên đã khóa như 师父=sư phụ sau khi model trả kết quả, kể cả khi model làm rơi token hoặc trả lại chữ Hán; không còn retry hoặc fail chỉ vì lỗi glossary có thể tự sửa an toàn."
+    "Sửa lỗi Vietsub local bị dừng ở câu khi model Qwen trả số cue/ID ngữ cảnh thay vì ID kỹ thuật nội bộ. Khi chỉ có một câu đích, app giữ bản dịch hợp lệ và gán an toàn vào đúng câu đó.",
+    "Vẫn từ chối JSON có thiếu hoặc thừa câu; batch nhiều câu tiếp tục yêu cầu ID duy nhất, đúng thứ tự để không gán sai phụ đề."
   ]
 }
