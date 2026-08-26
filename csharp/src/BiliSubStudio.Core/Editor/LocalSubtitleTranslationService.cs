@@ -62,7 +62,7 @@ public sealed partial class LocalSubtitleTranslationService : IDisposable
     internal const string ThinkingTemplateKwargs = "{\"enable_thinking\":false}";
     internal const string ReasoningMode = "off";
     internal const int RuntimeAutoGpuLayers = -1;
-    internal const string TranslationPolicyKey = "locked-memory-v1";
+    internal const string TranslationPolicyKey = "locked-memory-v2";
     private const int DirectTranslationBatchSize = 1;
     private const int TranslationBatchSmall = 8;
     private const int TranslationBatchMedium = 24;
@@ -993,6 +993,8 @@ public sealed partial class LocalSubtitleTranslationService : IDisposable
             throw new InvalidDataException($"Cue {cue.Number} chứa giải thích/định dạng ngoài nội dung phụ đề.");
         if (text.Any(ch => ch is >= '\u3400' and <= '\u9FFF'))
             throw new InvalidDataException($"Cue {cue.Number} còn chữ Hán chưa Vietsub.");
+        if (new[] { "cậu", "bạn", "tớ" }.Any(modern => text.Contains(modern, StringComparison.OrdinalIgnoreCase)))
+            throw new InvalidDataException($"Cue {cue.Number} dùng xưng hô hiện đại; Vietsub tu tiên phải giữ giọng cổ phong.");
         if (text.Length > Math.Max(400, cue.SourceText.Length * 10))
             throw new InvalidDataException($"Cue {cue.Number} dài bất thường; từ chối để tránh model lan man.");
         if (text.Any(char.IsControl) && text.Any(ch => ch is not ('\r' or '\n' or '\t')))

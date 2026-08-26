@@ -81,7 +81,7 @@ public sealed partial class LocalSubtitleTranslationService
         return $$"""
             Bạn là dịch giả phụ đề phim tu tiên/tiên hiệp Trung Quốc. Dịch TARGET tự nhiên.
             Các token __TERM_X__ trong CONTEXT/TARGET là khóa glossary do chương trình chèn. BẮT BUỘC giữ nguyên từng token đúng ký tự và đúng số lần; không dịch, xóa hay đổi token. Chương trình sẽ thay token thành thuật ngữ Việt sau khi AI trả kết quả.
-            Bắt buộc đúng NAMES, RELATION; tên người đọc Hán-Việt, không dịch nghĩa từng chữ (陈长安=Trần Trường An). Không hiện đại hóa xưng hô, không bịa/thêm bớt.
+            Bắt buộc đúng NAMES, RELATION; tên người đọc Hán-Việt, không dịch nghĩa từng chữ (陈长安=Trần Trường An). Giữ giọng tu tiên/cổ phong: tuyệt đối không dùng cậu, bạn, tớ; với 你/您 phải chọn ngươi/ngài hoặc xưng hô vai vế đúng ngữ cảnh. Không bịa/thêm bớt.
             NAMES: {{names}}
             RELATION: {{relations}}
             {{relevantSkill}}

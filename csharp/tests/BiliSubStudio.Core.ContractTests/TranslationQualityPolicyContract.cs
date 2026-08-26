@@ -12,7 +12,7 @@ internal static class TranslationQualityPolicyContract
         var service = typeof(LocalSubtitleTranslationService);
         var policy = service.GetField("TranslationPolicyKey", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public)
             ?.GetRawConstantValue()?.ToString();
-        if (!string.Equals(policy, "locked-memory-v1", StringComparison.Ordinal))
+        if (!string.Equals(policy, "locked-memory-v2", StringComparison.Ordinal))
             throw new InvalidOperationException("locked-memory translation policy revision is not pinned");
 
         var sourcePath = Path.Combine(Directory.GetCurrentDirectory(), "csharp", "src", "BiliSubStudio.Core", "Editor", "LocalSubtitleTranslationService.cs");
@@ -40,6 +40,7 @@ internal static class TranslationQualityPolicyContract
             "loaded.Schema != 3",
             "loaded.PolicyKey, TranslationPolicyKey",
             "new(3, sourceSha, skillSha, modelKey, TranslationPolicyKey",
+            "Vietsub tu tiên phải giữ giọng cổ phong",
         })
         {
             if (!source.Contains(marker, StringComparison.Ordinal))
@@ -95,7 +96,21 @@ internal static class TranslationQualityPolicyContract
             throw new InvalidOperationException("translation must not penalize repeated names/terms with presence_penalty=1.0");
         if (source.Contains("loaded.Schema != 2", StringComparison.Ordinal))
             throw new InvalidOperationException("old translation checkpoints must be invalidated after locked-memory policy change");
-        if (source.Contains("internal const string TranslationPolicyKey = \"direct-cue-v1\"", StringComparison.Ordinal))
-            throw new InvalidOperationException("old direct-cue checkpoint policy must not survive locked-memory migration");
+        var validate = service.GetMethod("ValidateTranslationText", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing translation text validator");
+        var cue = new EditorSubtitleCue("cue-modern-address", "4", "00:00:00,000 --> 00:00:01,000", 0, 1, "你走吧");
+        try
+        {
+            validate.Invoke(null, [cue, "Cậu đi nào."]);
+            throw new InvalidOperationException("modern address must be rejected for cultivation Vietsub");
+        }
+        catch (TargetInvocationException error) when (error.InnerException is InvalidDataException)
+        {
+        }
+        validate.Invoke(null, [cue, "Ngươi đi đi."]);
+
+        if (source.Contains("internal const string TranslationPolicyKey = \"locked-memory-v1\"", StringComparison.Ordinal)
+            || source.Contains("internal const string TranslationPolicyKey = \"direct-cue-v1\"", StringComparison.Ordinal))
+            throw new InvalidOperationException("old translation checkpoints must not survive the cultivation-address policy");
     }
 }
