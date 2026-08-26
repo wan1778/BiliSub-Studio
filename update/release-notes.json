@@ -1,7 +1,7 @@
 {
-  "version": "4.0.0-beta.57-csharp-p5",
+  "version": "4.0.0-beta.58-csharp-p5",
   "notes": [
-    "Sửa lỗi Vietsub local dừng khi Qwen trả cả cue CONTEXT lẫn cue TARGET cho một lượt dịch đơn. App chỉ nhận bản dịch được nhận diện duy nhất là TARGET bằng ID kỹ thuật hoặc số cue hiển thị.",
-    "Nếu response không xác định được duy nhất TARGET thì app vẫn từ chối và retry, không đoán bản dịch từ cue ngữ cảnh."
+    "Vietsub tu tiên không còn chấp nhận lối xưng hô hiện đại như cậu, bạn, tớ. Model sẽ bị yêu cầu dịch lại theo giọng cổ phong thay vì lưu bản dịch sai.",
+    "Checkpoint dịch cũ được phân phiên bản lại để không khôi phục các cue đã có lối xưng hô hiện đại."
   ]
 }
