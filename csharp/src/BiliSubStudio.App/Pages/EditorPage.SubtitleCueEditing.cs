@@ -45,7 +45,18 @@ public sealed partial class EditorPage
             }
             catch { }
             var stored = await SubtitleManualStore.LoadAsync(_subtitleSource.Sha256, CancellationToken.None);
-            foreach (var pair in stored) _manualCueStates[pair.Key] = pair.Value;
+            var restoreStoredVietnamese = _subtitleSource.Cues.Any(c => !string.IsNullOrWhiteSpace(c.VietnameseText))
+                || !string.IsNullOrWhiteSpace(_project?.Subtitle?.OutputPath);
+            foreach (var pair in stored)
+            {
+                if (restoreStoredVietnamese)
+                {
+                    _manualCueStates[pair.Key] = pair.Value;
+                    continue;
+                }
+                if (string.IsNullOrWhiteSpace(pair.Value.SourceOverride)) continue;
+                _manualCueStates[pair.Key] = pair.Value with { VietnameseOverride = null, Locked = false };
+            }
             _subtitleSource = EditorSubtitleManualStore.Apply(_subtitleSource, _manualCueStates);
             _subtitleCueSelectedIndex = _subtitleSource.Cues.Count > 0 ? 0 : -1;
             _subtitleManualDirty = false;
