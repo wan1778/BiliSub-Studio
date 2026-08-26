@@ -436,7 +436,7 @@ public sealed class OcrScanner
     {
         var segment = saved.Segment;
         var startAt = Math.Clamp(saved.MediaSeconds, segment.ScanStart, segment.ScanEnd);
-        var tracker = new SubtitleTracker(mode.Fps, mode.LowConfidence);
+        var tracker = new SubtitleTracker(mode.Fps, mode.LowConfidence, exactFrameTiming: mode.EveryFrame);
         tracker.Restore(saved.Cues, saved.Active);
         var args = BuildLaneArguments(source, request.Region, mode, startAt, segment.ScanEnd, nvdec);
         var start = new ProcessStartInfo(ffmpeg)
