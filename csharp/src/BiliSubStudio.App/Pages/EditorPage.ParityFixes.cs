@@ -113,6 +113,7 @@ public sealed partial class EditorPage
     private void RefreshEditorParityControls()
     {
         if (_editorCoreInitialized is false) return;
+        EnsureSubtitleCueLiveBrowseBound();
         if (_editorOutputPathText is not null) _editorOutputPathText.Text = _application.Config.OutputDirectory;
         if (_editorChooseOutputButton is not null) _editorChooseOutputButton.IsEnabled = !EditorBusy && !_playback.IsPreviewMode;
         if (_editorOpenOutputButton is not null) _editorOpenOutputButton.IsEnabled = Directory.Exists(_application.Config.OutputDirectory);
@@ -130,6 +131,7 @@ public sealed partial class EditorPage
         // CLEAN-01: EditorPage_Unloaded is the only Unloaded event owner.
         // Progress/voice cleanup is a subordinate lifecycle operation, never a second event subscription.
         CleanupEditorProgress();
+        DetachSubtitleCueLiveBrowse();
         _editorAutoCompositeCancellation?.Cancel();
         _editorAutoCompositeCancellation?.Dispose();
         _editorAutoCompositeCancellation = null;
