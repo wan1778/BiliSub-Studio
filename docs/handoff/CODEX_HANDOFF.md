@@ -1,11 +1,11 @@
 # Codex handoff — BiliSub Studio
 
-- Current main/base SHA: `18a7e2263057b9f815ee24b884f3764466a4a0c7`.
+- Current main/base SHA: `dd147526ae40f45a0df0b93df83d6de41bf2bd92`.
 - Current branch: `main`.
 - PR: none.
-- Last completed task: `OCR-ACCURACY-01` (commit pending at this handoff update).
-- Task in progress: none after the targeted test gate; do not start another task until the pushed Windows CI result is known.
-- Exact next task: field-test the OCR scan with the supplied video and Chinese SRT, then verify the resulting cue text and boundaries before starting another OCR task.
+- Last completed task: `OCR-ACCURACY-01` (published source commit `dd147526ae40f45a0df0b93df83d6de41bf2bd92`).
+- Task in progress: `RELEASE-4.0.48` — rebuild and publish only after the Windows installer gate passes.
+- Exact next task: wait for the Windows installer workflow on the release-preparation commit; if it passes, the workflow creates the immutable 4.0.48 beta release and updater manifest.
 
 ## Root cause
 
@@ -24,6 +24,10 @@ subtitle glyphs could be rejected before tracker confirmation.
   confident.
 - Uses midpoint cue boundaries and accepts a stable one-character CJK recovery
   when its confidence remains close to the prior frame.
+- Regenerated the checked-in C# source inventory required by the Windows release
+  verifier after the OCR methods were added.
+- Prepared the next immutable public beta number `4.0.48` (technical
+  `4.0.0-beta.62-csharp-p5`) and release notes for the completed Voice and OCR work.
 
 ## Files changed
 
@@ -31,6 +35,9 @@ subtitle glyphs could be rejected before tracker confirmation.
 - `csharp/src/BiliSubStudio.Core/Ocr/OcrScanner.cs`
 - `csharp/src/BiliSubStudio.Core/Ocr/SubtitleTracker.cs`
 - `csharp/tests/BiliSubStudio.Core.ContractTests/OcrTrackerModeRegression.cs`
+- `docs/migration/CSHARP_CODE_MAP.generated.md`
+- `csharp/Directory.Build.props`
+- `update/release-notes.json`
 
 ## Tests and status
 
@@ -41,6 +48,9 @@ subtitle glyphs could be rejected before tracker confirmation.
 - Core contract tests: PASS, 71/71, including the new one-character recovery and midpoint-timing regression.
 - Only compile/contract PASS: no complete OCR scan has yet run through the WinUI app with
   `C:\Users\Man PC\Downloads\test`; that full-video field test and Windows CI remain pending.
+- The first OCR CI run `#478` failed only because the generated code map was stale;
+  local `csharp/scripts/verify.ps1` passes after regeneration. The next CI run is
+  the release gate for 4.0.48.
 
 ## Constraints to preserve
 

@@ -1,7 +1,7 @@
 {
-  "version": "4.0.0-beta.61-csharp-p5",
+  "version": "4.0.0-beta.62-csharp-p5",
   "notes": [
-    "Nút nạp SRT Việt đã dịch được xếp dọc, không cắt chữ trên khung Details hẹp.",
-    "Nút hiển thị rõ bước còn thiếu: chọn SRT Trung trước, rồi chọn video trước khi nạp bản Việt."
+    "Voice Việt local dùng giọng Ngọc Huyền; bỏ lựa chọn và phân tích Nam/Nữ, vẫn giữ word timing để ghép đúng timeline Preview và Export.",
+    "OCR phụ đề Trung giữ lại ký tự bị thiếu ở frame kế tiếp, căn cue sát hơn theo điểm giữa lần quét và thử lại frame confidence thấp bằng ảnh được tăng rõ nét."
   ]
 }
