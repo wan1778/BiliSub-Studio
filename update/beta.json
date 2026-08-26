@@ -1,12 +1,12 @@
 {
-  "version": "4.0.0-beta.51-csharp-p5",
+  "version": "4.0.0-beta.52-csharp-p5",
   "channel_ready": true,
-  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.37/BiliSubStudio_4.0.37_Windows-x64-portable.zip",
-  "sha256": "8b8f3d8adcff653c09ad42d4cd0770cedfb6b67b3972c98678de5e54f8d37174",
-  "size": 94778275,
+  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.38/BiliSubStudio_4.0.38_Windows-x64-portable.zip",
+  "sha256": "b8f66f41e3b3ebd4df2653c4e8ecd91d9fe8914415d3a8d31d0b09d0f2409d1e",
+  "size": 94779807,
   "payload_kind": "winui3-portable-zip",
   "notes": [
-    "Khi SRT đã Vietsub xong, nút Vietsub đổi thành Dịch lại từ đầu để có thể bỏ bản AI cũ và chạy lại toàn bộ.",
-    "Dịch lại từ đầu xóa checkpoint/kết quả AI cũ của file hiện tại, giữ các câu đã khóa thủ công và hiển thị lại bản dịch mới từng câu từ câu 1."
+    "Trong lúc Vietsub AI đang chạy, danh sách Chỉnh từng câu SRT vẫn có thể cuộn lên/xuống để xem các câu đã dịch mà không bị AI kéo trở lại câu mới nhất.",
+    "Chỉ mở quyền xem/cuộn khi đang dịch; phần sửa lời, khóa câu và dịch lại câu vẫn giữ khóa để tránh xung đột dữ liệu với tiến trình Vietsub."
   ]
 }
