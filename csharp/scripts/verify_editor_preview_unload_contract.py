@@ -45,6 +45,12 @@ prepare = method_body(source, "internal async Task PrepareAsync()")
 require("_isUnloading = false;" in prepare,
         "PREVIEW-UNLOAD reopening Editor must re-enable the controller")
 
+toggle = method_body(source, "internal async Task ToggleAsync()")
+require("var wasPlaying = IsPlaying;" in toggle
+        and "if (IsPlaying) PauseAtCurrentFrame();" in toggle
+        and "if (wasPlaying) await SetModeAsync(false, false);" in toggle,
+        "PREVIEW-UNLOAD stopping processed preview must hold the current frame then exit preview mode so editor controls unlock")
+
 unload = method_body(source, "internal async Task UnloadAsync()")
 require("_isUnloading = true;" in unload and "IsPreviewMode = false;" in unload
         and "await ResetAsync(skipPresentation: true);" in unload,
@@ -75,4 +81,4 @@ load = method_body(source, "private async Task LoadSegmentAsync(")
 require("if (!_isUnloading)" in load and "_page.RefreshEditorActions();" in load,
         "PREVIEW-UNLOAD rendering completion must not update a closed Editor UI")
 
-print("PASS: PREVIEW-UNLOAD teardown detaches player and rejects late callbacks")
+print("PASS: PREVIEW-UNLOAD stop exits preview mode through owned cleanup and unlocks editing")

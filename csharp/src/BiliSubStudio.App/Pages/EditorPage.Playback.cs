@@ -86,8 +86,10 @@ public sealed partial class EditorPage
             if (HasEnded) await ReplayFromStartAsync();
             else if (IsPreviewMode && _player is not null)
             {
+                var wasPlaying = IsPlaying;
                 if (IsPlaying) PauseAtCurrentFrame();
                 else ResumeFromCurrentFrame();
+                if (wasPlaying) await SetModeAsync(false, false);
             }
             else
             {
