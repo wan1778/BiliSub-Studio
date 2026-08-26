@@ -1,7 +1,7 @@
 {
-  "version": "4.0.0-beta.58-csharp-p5",
+  "version": "4.0.0-beta.59-csharp-p5",
   "notes": [
-    "Vietsub tu tiên không còn chấp nhận lối xưng hô hiện đại như cậu, bạn, tớ. Model sẽ bị yêu cầu dịch lại theo giọng cổ phong thay vì lưu bản dịch sai.",
-    "Checkpoint dịch cũ được phân phiên bản lại để không khôi phục các cue đã có lối xưng hô hiện đại."
+    "Mở lại project không còn nạp bản Vietsub AI cũ khi policy dịch đã đổi; SRT nguồn được giữ nguyên và yêu cầu dịch lại sạch.",
+    "Nếu model trả relation/key ngoài CONTEXT hoặc TARGET, ứng dụng bỏ riêng dữ liệu bộ nhớ không tin cậy thay vì dừng cả lượt Vietsub."
   ]
 }
