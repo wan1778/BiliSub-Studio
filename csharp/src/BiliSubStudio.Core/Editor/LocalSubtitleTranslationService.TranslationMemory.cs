@@ -91,60 +91,6 @@ public sealed partial class LocalSubtitleTranslationService
             """;
     }
 
-    private static int CountOccurrences(string text, string value, StringComparison comparison)
-    {
-        if (string.IsNullOrEmpty(value)) return 0;
-        var count = 0;
-        var offset = 0;
-        while (offset <= text.Length - value.Length)
-        {
-            var index = text.IndexOf(value, offset, comparison);
-            if (index < 0) break;
-            count++;
-            offset = index + value.Length;
-        }
-        return count;
-    }
-
-    private static string RepairGlossaryForCue(
-        EditorSubtitleCue cue,
-        string modelText,
-        IReadOnlyList<(string Source, string Vietnamese, string Token)> glossary)
-    {
-        var translated = modelText;
-        foreach (var entry in glossary)
-        {
-            var expectedCount = CountOccurrences(cue.SourceText, entry.Source, StringComparison.Ordinal);
-            if (expectedCount == 0) continue;
-
-            // Runtime glossary violations are repairable data, not a reason to retry Qwen.
-            // Accept either the exact placeholder or leaked source Han text and restore both here.
-            translated = translated.Replace(entry.Token, entry.Vietnamese, StringComparison.OrdinalIgnoreCase);
-            translated = translated.Replace(entry.Source, entry.Vietnamese, StringComparison.Ordinal);
-
-            var actualCount = CountOccurrences(translated, entry.Vietnamese, StringComparison.OrdinalIgnoreCase);
-            if (actualCount < expectedCount)
-            {
-                var missing = expectedCount - actualCount;
-                translated = (translated.TrimEnd() + " " + string.Join(" ", Enumerable.Repeat(entry.Vietnamese, missing))).Trim();
-            }
-        }
-
-        // Exact and case-varied placeholders have already been restored above. Any remaining
-        // TERM marker means the model structurally damaged a placeholder and C# cannot know
-        // which locked term it represented safely.
-        if (translated.Contains("__TERM", StringComparison.OrdinalIgnoreCase)
-            || translated.Contains("TERM_", StringComparison.OrdinalIgnoreCase))
-            throw new InvalidDataException($"Cue {cue.Number} làm hỏng token glossary.");
-
-        // Final idempotent sweep: never let a recognized locked Han term reach the generic
-        // Han validator. This is the runtime guarantee that replaces the old hard glossary throw.
-        foreach (var entry in glossary)
-            translated = translated.Replace(entry.Source, entry.Vietnamese, StringComparison.Ordinal);
-
-        return translated.Trim();
-    }
-
     private static ValidatedTranslationBatch ValidateMemoryBatch(
         JsonElement root,
         IReadOnlyList<EditorSubtitleCue> expected,
@@ -152,6 +98,53 @@ public sealed partial class LocalSubtitleTranslationService
         TranslationPromptMemory memory,
         TranslationCheckpoint checkpoint)
     {
+        static int CountOccurrences(string text, string value, StringComparison comparison)
+        {
+            if (string.IsNullOrEmpty(value)) return 0;
+            var count = 0;
+            var offset = 0;
+            while (offset <= text.Length - value.Length)
+            {
+                var index = text.IndexOf(value, offset, comparison);
+                if (index < 0) break;
+                count++;
+                offset = index + value.Length;
+            }
+            return count;
+        }
+
+        static string RepairGlossaryForCue(
+            EditorSubtitleCue cue,
+            string modelText,
+            IReadOnlyList<(string Source, string Vietnamese, string Token)> glossary)
+        {
+            var translated = modelText;
+            foreach (var entry in glossary)
+            {
+                var expectedCount = CountOccurrences(cue.SourceText, entry.Source, StringComparison.Ordinal);
+                if (expectedCount == 0) continue;
+
+                translated = translated.Replace(entry.Token, entry.Vietnamese, StringComparison.OrdinalIgnoreCase);
+                translated = translated.Replace(entry.Source, entry.Vietnamese, StringComparison.Ordinal);
+
+                var actualCount = CountOccurrences(translated, entry.Vietnamese, StringComparison.OrdinalIgnoreCase);
+                if (actualCount < expectedCount)
+                {
+                    var missing = expectedCount - actualCount;
+                    translated = (translated.TrimEnd() + " " + string.Join(" ", Enumerable.Repeat(entry.Vietnamese, missing))).Trim();
+                }
+            }
+
+            if (translated.Contains("__TERM", StringComparison.OrdinalIgnoreCase)
+                || translated.Contains("TERM_", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException($"Cue {cue.Number} làm hỏng token glossary.");
+
+            foreach (var entry in glossary)
+                translated = translated.Replace(entry.Source, entry.Vietnamese, StringComparison.Ordinal);
+
+            return translated.Trim();
+        }
+
         if (!root.TryGetProperty("translations", out var array) || array.ValueKind != JsonValueKind.Array)
             throw new InvalidDataException("Model không trả mảng translations.");
         var expectedIds = expected.Select(x => x.Id).ToHashSet(StringComparer.Ordinal);
