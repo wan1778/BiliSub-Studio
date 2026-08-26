@@ -1,11 +1,11 @@
 # Codex handoff — BiliSub Studio
 
-- Current main/base SHA: `08cb0f87a106258cb4f7b172dbaa7714b7289266`.
+- Current main/base SHA: `c11905c5326676a734761a2d6fa33a6395779925`.
 - Current branch: `main`.
 - PR: none.
-- Last completed task: `OCR-ACCURATE-01` — the accurate scan mode now decodes every source frame and uses FFmpeg presentation timestamps (PTS).
+- Last completed task: `OCR-ACCURATE-01` follow-up — Accurate scanner now passes its every-frame mode through to the PTS-aware subtitle tracker.
 - Task in progress: none.
-- Exact next task: field-test an Accurate OCR scan against a bounded representative portion of `C:\Users\Man PC\Downloads\test`, compare resulting text/timing against its Chinese SRT, then address the first demonstrated missing-character case only.
+- Exact next task: `OCR-STABILIZE-01` — prevent an every-frame text reveal/OCR variation from fragmenting a single visual subtitle into several cues, using the demonstrated 0–20 second scan before touching any unrelated OCR behavior.
 
 ## Root cause
 
@@ -13,6 +13,12 @@ The control labelled `Chính xác` was only a 4 fps sampling mode. Its timestamp
 were synthesized as `start + frameIndex / fps`, so it could skip short subtitles
 and could not retain variable-frame-rate timing. The tracker consequently used a
 sample midpoint instead of the true frame boundary.
+
+The first real every-frame scan also demonstrates a separate, still-unfixed
+stabilization defect: visually continuous text can vary by a leading/trailing
+glyph between adjacent frames. The similarity threshold treats those variants
+as different cues, so the output fragments one subtitle even though every PTS
+is read correctly.
 
 ## Changes made
 
@@ -24,6 +30,8 @@ sample midpoint instead of the true frame boundary.
   not collect a video’s frames or timestamps in memory.
 - The tracker accepts real frame duration and, for Accurate mode, starts/ends
   cues on source-frame boundaries instead of sampling midpoints.
+- Accurate scanner construction now explicitly enables that PTS-aware tracker
+  path (`exactFrameTiming: mode.EveryFrame`).
 - Bumped OCR checkpoint schema to 5 so no old 4-fps Accurate checkpoint can be
   resumed under the new every-frame semantics.
 - Added contract coverage for every-frame argument construction, PTS parsing,
@@ -35,6 +43,7 @@ sample midpoint instead of the true frame boundary.
 - `csharp/src/BiliSubStudio.Core/Ocr/OcrScanner.cs`
 - `csharp/src/BiliSubStudio.Core/Ocr/SubtitleTracker.cs`
 - `csharp/tests/BiliSubStudio.Core.ContractTests/OcrTrackerModeRegression.cs`
+- `docs/handoff/CODEX_HANDOFF.md`
 
 ## Tests and status
 
@@ -44,9 +53,17 @@ sample midpoint instead of the true frame boundary.
 - Local FFmpeg runtime probe on the supplied test video: PASS — `-copyts` plus
   `showinfo` returned sequential source PTS `59.600000`, `59.633313`,
   `59.666688`, with exact per-frame durations.
-- Only compile/contract/FFmpeg-stream PASS: a full OCR scan through the WinUI app
-  using the new build has not completed yet. It must not be called functional
-  OCR PASS; missing-character recovery remains unproven.
+- Bounded Windows local OCR pipeline field test (new source, GPU, one lane,
+  0–20 seconds of `C:\Users\Man PC\Downloads\test\*.mp4`): completed 600/600
+  frames and emitted PTS-aligned output. This proves the every-frame path runs,
+  but is **functional FAIL** versus the supplied Chinese SRT: it emitted 23
+  cues where the reference has 14 in that interval; `你走吧` starts at
+  `2.633313` instead of the reference `2.800`, and `一万年` fragments into
+  multiple cues. Result artifact:
+  `C:\Users\Man PC\AppData\Local\Temp\BiliSubOcrFieldProbe\state\accurate-20s.json`.
+- Therefore timing has frame-level source PTS precision, but OCR subtitle
+  output has not passed the functional accuracy/timing gate. No release may be
+  made from this evidence.
 - No version bump, release, PR, merge, or source-media overwrite was performed.
 
 ## Constraints to preserve
