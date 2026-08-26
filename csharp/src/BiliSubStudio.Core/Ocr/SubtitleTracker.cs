@@ -242,6 +242,11 @@ internal sealed class SubtitleTracker
 
     private static int CanonicalTrackingRune(int value) => value switch
     {
+        // Paddle can alternate between ASCII and Chinese punctuation across
+        // adjacent frames of the same caption. This is visual/OCR variance,
+        // not a new subtitle, and must not create a one-frame cue split.
+        '?' => '？', '!' => '！', ',' => '，', '.' => '。',
+        ';' => '；', ':' => '：',
         '別' => '别', '長' => '长', '萬' => '万', '師' => '师', '這' => '这',
         '為' => '为', '還' => '还', '讓' => '让', '與' => '与', '從' => '从',
         '來' => '来', '後' => '后', '時' => '时', '過' => '过', '個' => '个',

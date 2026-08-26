@@ -110,6 +110,19 @@ internal static class OcrTrackerModeRegression
             || Math.Abs(scriptVariantActive.End - (12d + 4d / 30d)) > .000001)
             throw new InvalidOperationException("simplified/traditional OCR variant changed exact cue timing or text");
 
+        var punctuationVariant = exactConstructor.Invoke([30d, .68d, true]);
+        var asciiQuestion = new OcrResult(true, true, "所以?", .99, []);
+        var chineseQuestion = new OcrResult(true, true, "所以？", .98, []);
+        observeExact.Invoke(punctuationVariant, [13d, 1d / 30d, asciiQuestion]);
+        observeExact.Invoke(punctuationVariant, [13d + 1d / 30d, 1d / 30d, asciiQuestion]);
+        observeExact.Invoke(punctuationVariant, [13d + 2d / 30d, 1d / 30d, chineseQuestion]);
+        observeExact.Invoke(punctuationVariant, [13d + 3d / 30d, 1d / 30d, asciiQuestion]);
+        var punctuationActive = (OcrCue)(exactActive.GetValue(punctuationVariant)
+            ?? throw new InvalidOperationException("ASCII/Chinese punctuation variant unexpectedly split a continuous cue"));
+        if (punctuationActive.Text != "所以?" || Math.Abs(punctuationActive.Start - 13d) > .000001
+            || Math.Abs(punctuationActive.End - (13d + 4d / 30d)) > .000001)
+            throw new InvalidOperationException("ASCII/Chinese punctuation variant changed exact cue timing or text");
+
         var distinctText = exactConstructor.Invoke([30d, .68d, true]);
         observeExact.Invoke(distinctText, [14d, 1d / 30d, simplified]);
         observeExact.Invoke(distinctText, [14d + 1d / 30d, 1d / 30d, simplified]);

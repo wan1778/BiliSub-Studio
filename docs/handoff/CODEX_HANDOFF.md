@@ -1,11 +1,11 @@
 # Codex handoff — BiliSub Studio
 
-- Current main/base SHA: `8c3f406830be675cf74e452a812dba6d5196fe73`.
+- Current main/base SHA: `b0ccd199116627d5f69872dabff6ceb95ae89a22`.
 - Current branch: `main`.
 - PR: none.
-- Last completed task: `OCR-RUNTIME-01` — avoid a Paddle native-DLL crash when a portable app/build path is too long.
+- Last completed task: `OCR-TIMING-03` — keep an OCR cue continuous when adjacent source frames alternate only ASCII versus Chinese punctuation.
 - Task in progress: none.
-- Exact next task: run the current Release build through the WinUI OCR user flow, then field-test a representative longer Accurate segment before treating the full-video OCR quality gate as PASS; use source-frame PTS as timing truth and record intentional visual-text versus supplied-SRT differences separately.
+- Exact next task: audit the demonstrated stylized scene-title OCR instability separately from dialogue captions, then resume the WinUI OCR field gate. Do not claim full-video OCR quality PASS until that evidence exists.
 
 ## Root cause
 
@@ -37,6 +37,11 @@ The Release WinUI OCR flow then demonstrated that a deeply nested portable
 build path creates a `libpaddle.pyd` path of 255 characters. Windows failed to
 load the native module (`DLL load failed: The filename or extension is too
 long`), so the worker exited before it could emit Ready.
+
+The post-runtime-fix 300-second Accurate scan found a second temporal
+fragmentation issue: Paddle alternated `?` and `？` for one unchanged on-screen
+caption. The tracker treated the punctuation glyphs as different text and
+emitted adjacent 100-ms cues.
 
 ## Changes made
 
@@ -71,6 +76,9 @@ long`), so the worker exited before it could emit Ready.
   creating its private environment. At 220+ characters it moves only the OCR
   worker, models and venv to compact `%LocalAppData%\BiliSub Studio\OCRBootstrap\store`.
   Short portable installs keep their existing app-local layout.
+- `OCR-TIMING-03` treats the equivalent ASCII/Chinese punctuation forms as one
+  tracking glyph only, preserving the originally selected caption spelling and
+  source-frame PTS boundaries.
 - Bumped OCR checkpoint schema to 5 so no old 4-fps Accurate checkpoint can be
   resumed under the new every-frame semantics.
 - Added contract coverage for every-frame argument construction, PTS parsing,
@@ -82,6 +90,7 @@ long`), so the worker exited before it could emit Ready.
 - `csharp/src/BiliSubStudio.Core/Ocr/OcrScanner.cs`
 - `csharp/src/BiliSubStudio.Core/Ocr/SubtitleTracker.cs`
 - `csharp/src/BiliSubStudio.Core/Ocr/OcrInstaller.cs`
+- `csharp/src/BiliSubStudio.Core/Ocr/SubtitleTracker.cs`
 - `csharp/tests/BiliSubStudio.Core.ContractTests/OcrTrackerModeRegression.cs`
 - `csharp/tests/BiliSubStudio.Core.ContractTests/OcrRuntimePathRegression.cs`
 - `docs/handoff/CODEX_HANDOFF.md`
@@ -121,6 +130,15 @@ long`), so the worker exited before it could emit Ready.
   failed: PASS. `PrepareOcrAsync("gpu")` created the compact private runtime,
   Paddle `3.2.0` reported CUDA enabled, and one actual video frame returned
   `陈长安` at `0.997593` confidence. The source video was not changed.
+- Post-runtime-fix Accurate field scan: PASS for frame timing/runtime. The
+  source 0–300 seconds completed 9,000/9,000 frames at 0.650x realtime and
+  kept source PTS. It revealed two adjacent cues for the same `所以?` caption
+  solely because Paddle alternated ASCII and Chinese question marks.
+- Targeted OCR-TIMING-03 runtime test: PASS. A temporary 89–93 second clip
+  completed 120/120 frames with the Release GPU runtime. After the fix,
+  `所以?` is exactly one source-frame-bounded cue from 2.333333 to 2.833333;
+  the former 66-ms `所以？` duplicate is absent. The temporary clip did not
+  modify source media.
 - The supplied Chinese SRT is not an exact visual-overlay ground truth: it
   omits visibly recognised on-screen text such as `当然知晓` at 13.8s. Do not
   force source PTS output to match a different subtitle track without a
