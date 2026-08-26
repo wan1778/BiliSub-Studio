@@ -94,6 +94,42 @@ internal static class OcrTrackerModeRegression
         if (Math.Abs(exactCue.End - (10d + 3d / 30d)) > .000001)
             throw new InvalidOperationException("every-frame OCR did not retain source-frame duration as cue end");
 
+        var cues = trackerType.GetProperty("Cues", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing tracker cue list");
+        var reveal = exactConstructor.Invoke([30d, .68d, true]);
+        var full = new OcrResult(true, true, "你走吧", .99, []);
+        observeExact.Invoke(reveal, [20d, 1d / 30d, full]);
+        observeExact.Invoke(reveal, [20d + 1d / 30d, 1d / 30d, full]);
+        observeExact.Invoke(reveal, [20d + 2d / 30d, 1d / 30d, new OcrResult(true, true, "走", .99, [])]);
+        var revealActive = (OcrCue)(exactActive.GetValue(reveal)
+            ?? throw new InvalidOperationException("subtitle reveal unexpectedly split the active cue"));
+        if (revealActive.Text != "你走吧")
+            throw new InvalidOperationException("subtitle reveal did not retain full text");
+        observeExact.Invoke(reveal, [20d + 3d / 30d, 1d / 30d, new OcrResult(true, true, "再见", .99, [])]);
+        observeExact.Invoke(reveal, [20d + 4d / 30d, 1d / 30d, new OcrResult(true, true, "再见", .99, [])]);
+        var revealCues = (IReadOnlyList<OcrCue>)(cues.GetValue(reveal)
+            ?? throw new InvalidOperationException("subtitle reveal did not commit the previous cue"));
+        if (revealCues.Count != 1 || revealCues[0].Text != "你走吧"
+            || Math.Abs(revealCues[0].End - (20d + 2d / 30d)) > .000001)
+            throw new InvalidOperationException("an actual new subtitle was not separated after a reveal fragment");
+
+        var repeated = exactConstructor.Invoke([30d, .68d, true]);
+        var longText = new OcrResult(true, true, "天天被幸福包围", .99, []);
+        observeExact.Invoke(repeated, [30d, 1d / 30d, longText]);
+        observeExact.Invoke(repeated, [30d + 1d / 30d, 1d / 30d, longText]);
+        for (var index = 0; index < 24; index++)
+        {
+            observeExact.Invoke(repeated, [30d + (index + 2d) / 30d, 1d / 30d, new OcrResult(true, true, "幸福", .99, [])]);
+        }
+        var repeatedCues = (IReadOnlyList<OcrCue>)(cues.GetValue(repeated)
+            ?? throw new InvalidOperationException("repeated substring did not commit the prior cue"));
+        var repeatedActive = (OcrCue)(exactActive.GetValue(repeated)
+            ?? throw new InvalidOperationException("repeated substring did not become a new cue"));
+        if (repeatedCues.Count != 1 || repeatedCues[0].Text != "天天被幸福包围"
+            || Math.Abs(repeatedCues[0].End - (30d + 2d / 30d)) > .000001
+            || repeatedActive.Text != "幸福")
+            throw new InvalidOperationException("persistent repeated substring was merged into the preceding subtitle");
+
         var checkpointType = assembly.GetType("BiliSubStudio.Core.Ocr.OcrCheckpointStore")
             ?? throw new InvalidOperationException("missing OCR checkpoint store");
         var modeFor = checkpointType.GetMethod("ModeFor", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)
@@ -102,6 +138,15 @@ internal static class OcrTrackerModeRegression
             ?? throw new InvalidOperationException("accurate OCR mode unavailable");
         var scannerType = typeof(OcrResult).Assembly.GetType("BiliSubStudio.Core.Ocr.OcrScanner")
             ?? throw new InvalidOperationException("missing OcrScanner");
+        var filterFarGlyphLine = scannerType.GetMethod("FilterIsolatedFarGlyphLine", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing isolated OCR line filter");
+        var filtered = (OcrResult)(filterFarGlyphLine.Invoke(null, [new OcrResult(true, true, "州\n整整一万年", .955d,
+        [
+            new OcrLine("州", .911d, [675, 62, 710, 101]),
+            new OcrLine("整整一万年", .999d, [514, 221, 765, 277]),
+        ])]) ?? throw new InvalidOperationException("isolated OCR line filter returned null"));
+        if (filtered.Text != "整整一万年" || filtered.Lines.Count != 1 || filtered.Confidence < .99d)
+            throw new InvalidOperationException("isolated weak one-glyph OCR line contaminated the subtitle text");
         var buildLane = scannerType.GetMethod("BuildLaneArguments", BindingFlags.Static | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("missing OCR FFmpeg argument builder");
         var args = (IReadOnlyList<string>)(buildLane.Invoke(null, ["source.mp4", new OcrRegion(.05, .65, .90, .29), accurateMode, 1d, 2d, false])

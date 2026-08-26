@@ -1,11 +1,11 @@
 # Codex handoff — BiliSub Studio
 
-- Current main/base SHA: `c11905c5326676a734761a2d6fa33a6395779925`.
+- Current main/base SHA: `92cce21285715d6d935df3f2174091319a955bbe`.
 - Current branch: `main`.
 - PR: none.
-- Last completed task: `OCR-ACCURATE-01` follow-up — Accurate scanner now passes its every-frame mode through to the PTS-aware subtitle tracker.
+- Last completed task: `OCR-STABILIZE-01` — stabilize every-frame reveal/fade variants and remove a demonstrated far-row OCR glyph contaminant.
 - Task in progress: none.
-- Exact next task: `OCR-STABILIZE-01` — prevent an every-frame text reveal/OCR variation from fragmenting a single visual subtitle into several cues, using the demonstrated 0–20 second scan before touching any unrelated OCR behavior.
+- Exact next task: field-test a longer bounded Accurate OCR segment before treating the full-video OCR quality gate as PASS; use source-frame PTS as timing truth and record any intentional visual-text versus supplied-SRT differences separately.
 
 ## Root cause
 
@@ -14,11 +14,11 @@ were synthesized as `start + frameIndex / fps`, so it could skip short subtitles
 and could not retain variable-frame-rate timing. The tracker consequently used a
 sample midpoint instead of the true frame boundary.
 
-The first real every-frame scan also demonstrates a separate, still-unfixed
-stabilization defect: visually continuous text can vary by a leading/trailing
-glyph between adjacent frames. The similarity threshold treats those variants
-as different cues, so the output fragments one subtitle even though every PTS
-is read correctly.
+The first real every-frame scan demonstrated a stabilization defect: visually
+continuous text can vary by a leading/trailing glyph between adjacent frames.
+The similarity threshold treated those variants as different cues, fragmenting
+one subtitle even though every PTS was read correctly. It also accepted a
+separate, one-glyph OCR line far above the dominant subtitle baseline.
 
 ## Changes made
 
@@ -32,6 +32,16 @@ is read correctly.
   cues on source-frame boundaries instead of sampling midpoints.
 - Accurate scanner construction now explicitly enables that PTS-aware tracker
   path (`exactFrameTiming: mode.EveryFrame`).
+- Accurate mode now holds a proper-substring reading briefly: it remains part
+  of a reveal/fade when it vanishes or changes quickly, but becomes a new cue
+  when it persists for 0.75 seconds. This preserves `你走吧` while separating a
+  later repeated `幸福` cue.
+- OCR tracking and single-frame recognition remove a one-glyph line only when
+  a high-confidence, 3+ glyph subtitle exists on a geometrically distant row.
+  This removes the demonstrated `州`/`怡` contamination without discarding
+  normal same-baseline text.
+- Exact-frame cue commits now use source frame duration rather than the former
+  fixed 120 ms minimum.
 - Bumped OCR checkpoint schema to 5 so no old 4-fps Accurate checkpoint can be
   resumed under the new every-frame semantics.
 - Added contract coverage for every-frame argument construction, PTS parsing,
@@ -54,16 +64,18 @@ is read correctly.
   `showinfo` returned sequential source PTS `59.600000`, `59.633313`,
   `59.666688`, with exact per-frame durations.
 - Bounded Windows local OCR pipeline field test (new source, GPU, one lane,
-  0–20 seconds of `C:\Users\Man PC\Downloads\test\*.mp4`): completed 600/600
-  frames and emitted PTS-aligned output. This proves the every-frame path runs,
-  but is **functional FAIL** versus the supplied Chinese SRT: it emitted 23
-  cues where the reference has 14 in that interval; `你走吧` starts at
-  `2.633313` instead of the reference `2.800`, and `一万年` fragments into
-  multiple cues. Result artifact:
+  0–20 seconds of `C:\Users\Man PC\Downloads\test\*.mp4`): PASS for the
+  demonstrated regression. It completed 600/600 frames through NVDEC at
+  0.62× realtime, retained source-frame PTS, merged reveal fragments, split
+  the later persistent `幸福` cue, and removed the spurious `州` glyph. Result:
   `C:\Users\Man PC\AppData\Local\Temp\BiliSubOcrFieldProbe\state\accurate-20s.json`.
-- Therefore timing has frame-level source PTS precision, but OCR subtitle
-  output has not passed the functional accuracy/timing gate. No release may be
-  made from this evidence.
+- The result has 15 visibly recognized cues while the supplied Chinese SRT has
+  14 in the same 20 seconds because the video visibly shows `当然知晓` at
+  13.8s while that SRT keeps the prior text through 14.4s. Do not force source
+  PTS output to match a different subtitle track without a verified visual
+  ground-truth decision.
+- Full-video OCR accuracy and the WinUI user-flow remain untested. No release
+  may be made from this bounded field evidence alone.
 - No version bump, release, PR, merge, or source-media overwrite was performed.
 
 ## Constraints to preserve

@@ -41,7 +41,7 @@ public sealed class OcrScanner
             var alternate = await _ocr.RunAsync(Convert.ToBase64String(enhanced), cancellationToken);
             if (alternate.Ok && alternate.Confidence > result.Confidence) result = alternate;
         }
-        return result;
+        return FilterIsolatedFarGlyphLine(result);
     }
 
     public async Task<OcrScanResult> RunAsync(AppJob job, OcrScanRequest request, OcrScanStartMode startMode)
@@ -504,7 +504,7 @@ public sealed class OcrScanner
                         job.Log($"OCR frame {at:0.000}s: enhanced retry skipped ({Compact(error.Message)}).");
                     }
                 }
-                tracker.Observe(at, timing.Duration, result);
+                tracker.Observe(at, timing.Duration, FilterIsolatedFarGlyphLine(result));
                 onProgress(at, frames, images);
                 if (job.IsPauseRequested && tracker.CanCheckpoint)
                 {
@@ -675,6 +675,32 @@ public sealed class OcrScanner
         var currentRunes = currentText.EnumerateRunes().Count();
         return candidate.Confidence > current.Confidence + .01
             || candidateRunes > currentRunes && candidate.Confidence >= current.Confidence - .08;
+    }
+
+    private static OcrResult FilterIsolatedFarGlyphLine(OcrResult result)
+    {
+        if (!result.Ok || result.Lines.Count < 2) return result;
+        var dominant = result.Lines
+            .Where(line => line.Text.EnumerateRunes().Count() >= 3)
+            .OrderByDescending(line => line.Confidence)
+            .FirstOrDefault();
+        if (dominant is null || dominant.Confidence < .95 || dominant.Box.Length < 4) return result;
+
+        var dominantHeight = Math.Max(1, Math.Abs(dominant.Box[3] - dominant.Box[1]));
+        var retained = result.Lines.Where(line =>
+        {
+            var singleGlyph = line.Text.EnumerateRunes().Count() <= 1;
+            var separateRow = line.Box.Length >= 4
+                && Math.Abs((line.Box[1] + line.Box[3]) - (dominant.Box[1] + dominant.Box[3])) > dominantHeight * 4;
+            return !(singleGlyph && separateRow);
+        }).ToArray();
+        if (retained.Length == result.Lines.Count) return result;
+        return result with
+        {
+            Text = string.Join("\n", retained.Select(line => line.Text)),
+            Confidence = retained.Average(line => line.Confidence),
+            Lines = retained,
+        };
     }
 
     private static string FormatClock(double seconds) => TimeSpan.FromSeconds(Math.Max(0, seconds)).ToString(seconds >= 3600 ? @"hh\:mm\:ss" : @"mm\:ss");

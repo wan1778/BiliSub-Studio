@@ -8,6 +8,7 @@ internal sealed class SubtitleTracker
     private readonly bool _exactFrameTiming;
     private readonly List<OcrCue> _committed = [];
     private Candidate? _candidate;
+    private SubtextVariant? _subtextVariant;
     private OcrCue? _active;
     private int _emptyHits;
     private double _emptyStart;
@@ -27,7 +28,7 @@ internal sealed class SubtitleTracker
         _lastFrameDuration = _frameSpan;
     }
 
-    public bool CanCheckpoint => _candidate is null && _emptyHits == 0;
+    public bool CanCheckpoint => _candidate is null && _subtextVariant is null && _emptyHits == 0;
     public IReadOnlyList<OcrCue> Cues => _committed;
     public OcrCue? Active => _active;
 
@@ -41,6 +42,7 @@ internal sealed class SubtitleTracker
         _active = active is not null && ChineseSubtitleNormalizer.TryNormalize(active.Text, out var activeText)
             ? active with { Text = activeText } : null;
         _candidate = null;
+        _subtextVariant = null;
         _emptyHits = 0;
     }
 
@@ -62,7 +64,24 @@ internal sealed class SubtitleTracker
             _candidate = null;
             return;
         }
-        if (_active is not null && Similarity(_active.Text, text) >= 0.80)
+        if (_active is not null && _exactFrameTiming && IsStrictSubtext(_active.Text, text))
+        {
+            ObserveSubtextVariant(at, frameDuration, text, result.Confidence);
+            return;
+        }
+        if (_active is not null && _subtextVariant is not null)
+        {
+            if (!IsContinuousVariant(_active.Text, text))
+            {
+                CommitActive(_subtextVariant.Start);
+                _subtextVariant = null;
+            }
+            else
+            {
+                _subtextVariant = null;
+            }
+        }
+        if (_active is not null && IsContinuousVariant(_active.Text, text))
         {
             _emptyHits = 0;
             _candidate = null;
@@ -95,7 +114,12 @@ internal sealed class SubtitleTracker
     public void Finish(double end)
     {
         _candidate = null;
-        if (_active is not null) CommitActive(Math.Max(end, _active.Start + MinimumCueDuration(_lastFrameDuration)));
+        if (_active is not null)
+        {
+            var activeEnd = _subtextVariant?.Start ?? end;
+            CommitActive(Math.Max(activeEnd, _active.Start + MinimumCueDuration(_lastFrameDuration)));
+        }
+        _subtextVariant = null;
     }
 
     private void ObserveEmpty(double at, double frameDuration)
@@ -109,9 +133,36 @@ internal sealed class SubtitleTracker
         if (_emptyHits == 0) _emptyStart = at;
         if (++_emptyHits >= 2)
         {
-            CommitActive(Math.Max(EstimateBoundary(_emptyStart, frameDuration), _active.Start + MinimumCueDuration(frameDuration)));
+            var end = _subtextVariant?.Start ?? EstimateBoundary(_emptyStart, frameDuration);
+            CommitActive(Math.Max(end, _active.Start + MinimumCueDuration(frameDuration)));
+            _subtextVariant = null;
             _emptyHits = 0;
         }
+    }
+
+    private void ObserveSubtextVariant(double at, double frameDuration, string text, double confidence)
+    {
+        if (_active is null) return;
+        if (_subtextVariant is null || !IsContinuousVariant(_subtextVariant.Text, text))
+        {
+            _subtextVariant = new SubtextVariant(text, at, at, confidence);
+            return;
+        }
+        _subtextVariant = _subtextVariant with
+        {
+            Last = at,
+            Text = PreferText(_subtextVariant.Text, _subtextVariant.Confidence, text, confidence),
+            Confidence = Math.Max(_subtextVariant.Confidence, confidence),
+        };
+        // A short suffix can be a fade/reveal of the active cue. If it remains
+        // on screen for this long, it is a real repeated subtitle (for example
+        // "天天被幸福包围" followed by "幸福") and must become its own cue.
+        if (at + ActiveFrameEnd(frameDuration) - _subtextVariant.Start < .75) return;
+        var variant = _subtextVariant;
+        CommitActive(variant.Start);
+        _active = new OcrCue(variant.Start, at + ActiveFrameEnd(frameDuration), variant.Text, variant.Confidence);
+        _subtextVariant = null;
+        _emptyHits = 0;
     }
 
     private void PromoteCandidate(double frameDuration)
@@ -127,7 +178,11 @@ internal sealed class SubtitleTracker
         if (_active is null) return;
         if (ChineseSubtitleNormalizer.TryNormalize(_active.Text, out var text))
         {
-            _committed.Add(_active with { Text = text, End = Math.Clamp(end, _active.Start + 0.12, _active.Start + 30) });
+            _committed.Add(_active with
+            {
+                Text = text,
+                End = Math.Clamp(end, _active.Start + MinimumCueDuration(_lastFrameDuration), _active.Start + 30),
+            });
         }
         _active = null;
     }
@@ -175,5 +230,19 @@ internal sealed class SubtitleTracker
         return 1 - previous[^1] / (double)Math.Max(left.Length, right.Length);
     }
 
+    private static bool IsContinuousVariant(string active, string observed) =>
+        Similarity(active, observed) >= 0.80
+        // Every-frame OCR sees subtitle reveals/fades one glyph at a time. A
+        // strict edit-distance threshold turns e.g. "你走吧" -> "走" into two
+        // cues even though the shorter reading is a frame-local fragment of the
+        // active visual subtitle. Containment is intentionally limited to the
+        // active cue only; candidates still require their normal confirmation.
+        || active.Contains(observed, StringComparison.Ordinal)
+        || observed.Contains(active, StringComparison.Ordinal);
+
+    private static bool IsStrictSubtext(string active, string observed) =>
+        active.Length > observed.Length && active.Contains(observed, StringComparison.Ordinal);
+
     private sealed record Candidate(string Text, double Start, double Last, double Confidence, int Hits, int Required);
+    private sealed record SubtextVariant(string Text, double Start, double Last, double Confidence);
 }
