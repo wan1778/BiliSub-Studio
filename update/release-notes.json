@@ -1,7 +1,7 @@
 {
-  "version": "4.0.0-beta.52-csharp-p5",
+  "version": "4.0.0-beta.53-csharp-p5",
   "notes": [
-    "Trong lúc Vietsub AI đang chạy, danh sách Chỉnh từng câu SRT vẫn có thể cuộn lên/xuống để xem các câu đã dịch mà không bị AI kéo trở lại câu mới nhất.",
-    "Chỉ mở quyền xem/cuộn khi đang dịch; phần sửa lời, khóa câu và dịch lại câu vẫn giữ khóa để tránh xung đột dữ liệu với tiến trình Vietsub."
+    "Vietsub ưu tiên đúng thuật ngữ và tên riêng: chỉ đưa các mục liên quan của bảng dịch vào từng câu để giảm dịch sai tên Hán-Việt và thuật ngữ tu tiên.",
+    "Vietsub ghi nhớ tên, quan hệ và cách xưng hô trong từng phim, kiểm tra lại kết quả trước khi chấp nhận và vẫn hiển thị từng câu ngay khi dịch xong."
   ]
 }
