@@ -1,7 +1,7 @@
 {
-  "version": "4.0.0-beta.60-csharp-p5",
+  "version": "4.0.0-beta.61-csharp-p5",
   "notes": [
-    "Editor có nút Nạp SRT Việt đã dịch: ghép lời Việt vào SRT Trung hiện có để preview, export và tạo voice local.",
-    "Ứng dụng chỉ nhận SRT Việt có đúng số cue, số thứ tự và timecode với SRT Trung; file sai hoặc cancel không đổi project."
+    "Nút nạp SRT Việt đã dịch được xếp dọc, không cắt chữ trên khung Details hẹp.",
+    "Nút hiển thị rõ bước còn thiếu: chọn SRT Trung trước, rồi chọn video trước khi nạp bản Việt."
   ]
 }
