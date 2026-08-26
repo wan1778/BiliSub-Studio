@@ -1,102 +1,56 @@
 # Codex handoff — BiliSub Studio
 
-- Current main/base SHA: `717ad3ffa9e39fb17a80107a0c4a1c2485e9e640`
-- Current branch: `editor-transport-layout` (created from `origin/main`)
-- Current task source commit: `0caf02e0d8dd98f43e441cc6c1e879877bb47109`
-- Current verification commits: `435dc399275abeff4af0ee18ebf6b585e0aaebb9` and `b6fe1daa3b86a1768725edaf68074a4d20ac2a48`
-- PR: none. User has now explicitly authorized merge to `main`, beta publication, and updater verification after the gates pass.
-- Last completed task: `EDITOR-PREVIEW-UI-AND-UNLOAD — separate transport and prevent preview teardown crash`
-- Task in progress: `RELEASE-EDITOR-PREVIEW-FIX — publish the verified fix through the existing beta updater`
-- Exact next task: bump the immutable beta metadata to the next release, merge the verified branch to `main`, wait for the Windows release workflow, then verify the installed application's updater.
+- Current main/base SHA: `ee5999ab0094c445853d5e83c128696a1e81d049`
+- Current branch: `translation-json-id-recovery` (from current `origin/main`)
+- PR: none. User authorizes the normal fix → test → `main` → beta updater flow.
+- Last completed upstream release: `4.0.41` / `4.0.0-beta.55-csharp-p5`.
+- Task in progress: `TRANSLATION-JSON-ID-01 — recover a valid single-cue translation when Qwen echoes the wrong cue ID`.
+- Exact next task: commit this focused fix, run the full Windows gate, then prepare the next immutable beta release and verify its updater payload.
 
 ## Root cause
 
-`PlayerControlBar` was a bottom-aligned child of `PreviewSurface` in
-`csharp/src/BiliSubStudio.App/Pages/EditorPage.xaml`. It therefore rendered as a
-dark overlay inside the user-visible preview frame rather than as its own editor
-control area.
-
-The observed crash on leaving Editor while preview was active also has an unsafe
-teardown path: `EditorPage_Unloaded` awaits preview cancellation while queued
-MediaPlayer callbacks can still target the page, and `ResetAsync` still writes
-the presentation after the page has unloaded. The player remained attached to
-`PreviewPlayer` when disposed.
+The active local Vietsub path intentionally sends one cue per Qwen request, but
+`ValidateMemoryBatch` still required Qwen to echo the exact opaque technical cue
+ID. Qwen can instead return the visible SRT number or a context ID. Its one valid
+translation was therefore rejected as `Model trả cue ID thừa, lặp hoặc sai` even
+after the strict retry.
 
 ## Changes made
 
-- `EditorPage.xaml`: the centre column now has two rows. `PreviewSurface` is the
-  top row and contains only the player/image/direct-edit overlays. The existing
-  `PlayerControlBar` is now a separate, themed 48px row below it.
-- Control names and the existing event handlers are unchanged:
-  `PlayerPlayPause_Click`, `Timeline_ValueChanged`, `PreviewMute_Toggled`,
-  `PreviewVolume_ValueChanged`, and `Fullscreen_Click` retain their single
-  owners. Native WinUI transport remains disabled.
-- `csharp/scripts/verify_editor_dead_controls.py`: added the
-  `PREVIEW-LAYOUT-01` regression contract requiring the transport bar to be
-  outside `PreviewSurface` and in the lower row.
-- `EditorPage.Playback.cs`: `UnloadAsync` now owns the unloading state before
-  awaiting preview cancellation. Late position/end/failure callbacks and render
-  completion UI updates are ignored during teardown; unload skips visual
-  presentation writes and detaches `MediaPlayerElement` before disposing its
-  `MediaPlayer`. Normal source-change reset/reopen presentation remains intact.
-- Added `csharp/scripts/verify_editor_preview_unload_contract.py`, and included
-  it in the Windows verification gate. Updated the existing PROJECT-03 contract
-  for the explicit presentation-skip teardown parameter.
-- `csharp/scripts/validate_csharp_migration.py`: source scanning now excludes
-  generated `bin` and `obj` trees, so a self-contained publish does not make the
-  source-only migration gate fail on generated framework XML.
-- `csharp/scripts/verify.ps1`: the local startup smoke uses the system temporary
-  directory when `RUNNER_TEMP` is not set outside GitHub Actions.
+- Added `MatchTranslationItems` in `LocalSubtitleTranslationService`, the shared
+  translation response matcher.
+- For exactly one expected cue, it requires exactly one JSON translation object
+  with a string `text`, then assigns it to that sole technical cue ID regardless
+  of the model's ID echo. This is unambiguous and does not accept extra items.
+- Multi-cue responses still require an exact, unique expected ID for every item.
+- `ValidateMemoryBatch` now uses this matcher before glossary/name/relation
+  validation; there is no added UI handler or second translation pipeline.
+- Added a contract regression that reproduces model ID `"4"` for technical ID
+  `"technical-cue-id"` and verifies the text is retained for the only cue.
 
 ## Files changed
 
-- `csharp/src/BiliSubStudio.App/Pages/EditorPage.xaml`
-- `csharp/src/BiliSubStudio.App/Pages/EditorPage.Playback.cs`
-- `csharp/scripts/verify.ps1`
-- `csharp/scripts/verify_editor_dead_controls.py`
-- `csharp/scripts/verify_editor_preview_unload_contract.py`
-- `csharp/scripts/verify_editor_project_tab_reopen_contract.py`
-- `csharp/scripts/validate_csharp_migration.py`
+- `csharp/src/BiliSubStudio.Core/Editor/LocalSubtitleTranslationService.cs`
+- `csharp/src/BiliSubStudio.Core/Editor/LocalSubtitleTranslationService.TranslationMemory.cs`
+- `csharp/tests/BiliSubStudio.Core.ContractTests/TranslationJsonCompatibilityContract.cs`
 - `docs/handoff/CODEX_HANDOFF.md`
 
 ## Tests and status
 
-- `python csharp/scripts/verify_editor_dead_controls.py .`: PASS
-- `python csharp/scripts/verify_editor_voice_preview_contract.py`: PASS
-- `python csharp/scripts/verify_editor_preview_unload_contract.py .`: PASS
-- `python csharp/scripts/verify_editor_project_tab_reopen_contract.py .`: PASS
-- `python csharp/scripts/validate_csharp_migration.py`: PASS
-- `python csharp/scripts/generate_csharp_code_map.py --check`: PASS
-- `python csharp/scripts/verify_editor_event_map.py .`: FAIL on unchanged
-  `origin/main` XAML event-count baseline (`expected 52, found 53`); the layout
-  move did not add or remove an event binding, so this is an upstream stale test
-  baseline and must be reconciled separately rather than hidden in this task.
-- Full `./csharp/scripts/verify.ps1`: PASS. This included the Windows WinUI
-  compile with `0 Warning(s), 0 Error(s)`, 71/71 core contracts, range
-  regression, self-contained publish, real startup smoke, worker identity,
-  PE x64, and checksum readback.
-- Functional Windows test with the user's local fixture
-  `C:\Users\Man PC\Downloads\test\万年老祖 第1~6季：弃徒被赶出师门，归来已是万年老祖！！！ p01 1-4季.mp4`:
-  PASS. The transport is visibly a separate row below Preview; playback reached
-  00:14; switching to `Tải media` during active Preview and reopening Editor did
-  not exit the app, and the video/position remained available.
-- `python csharp/scripts/verify_editor_event_map.py .`: still FAILS on the
-  unchanged upstream expected XAML event count (52 expected, 53 found). This
-  task did not change an event binding and `verify.ps1` does not use that stale
-  script; reconcile it separately.
-
-Only the source-built app has functional PASS. The installed runtime at
-`E:\New folder\testrc` has not yet received nor tested this updater payload.
-Seek races, end/replay, fullscreen, cache cleanup, subtitle/voice/image/export
-combinations and prolonged playback remain field-test work outside this task.
+- `dotnet run --project csharp/tests/BiliSubStudio.Core.ContractTests/BiliSubStudio.Core.ContractTests.csproj -c Release -p:NuGetAudit=false`: PASS, 71/71.
+- `dotnet build csharp/src/BiliSubStudio.Core/BiliSubStudio.Core.csproj -c Release -p:NuGetAudit=false -v:minimal`: PASS, 0 warnings and 0 errors.
+- `python csharp/scripts/verify_translation_skill_contract.py`: PASS.
+- Compile/contract PASS only so far for this source commit. The 5 GB local Qwen
+  model was not downloaded and run against the user's SRT in this task, so a
+  real inference and installed-updater field test remain required.
 
 ## Constraints to preserve
 
 - Windows desktop app: C# + .NET 10 + WinUI 3; no web/demo replacement.
-- Never overwrite source media. Translation, ASR and TTS remain local.
-- Keep one event and one state/control owner; no handler calls another handler.
-- Do not layer Repair/Fix/Parity files when the actual owner can be changed.
-- One small task at a time; do not reopen completed Subtitle work without an
-  actual regression.
-- No version bump, release, PR, or merge without explicit authorization and
-  passing gates.
+- Source media is never overwritten. Translation, ASR and TTS remain local.
+- One event and one state/control owner; no event handler calls another handler.
+- Fix the actual owner, not a Repair/Fix/Parity layer.
+- One small task at a time. Do not reopen passed Subtitle work without a real
+  regression.
+- Every completed task gets a small commit and GitHub update; release only after
+  the relevant Windows gate passes.

@@ -26,9 +26,19 @@ internal static class TranslationJsonCompatibilityContract
         if (!string.Equals(fenced.GetProperty("bible").GetString(), "Vân Tiêu Tông", StringComparison.Ordinal))
             throw new InvalidOperationException("translation JSON parser no longer tolerates wrapped model output");
 
+        var match = service.GetMethod("MatchTranslationItems", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public)
+            ?? throw new InvalidOperationException("missing model translation item matcher");
+        var cue = new EditorSubtitleCue("technical-cue-id", "4", "00:00:00,000 --> 00:00:01,000", 0, 1, "你走吧");
+        using var directJson = JsonDocument.Parse("{\"translations\":[{\"id\":\"4\",\"text\":\"Ngươi đi đi.\"}]}");
+        var direct = (IReadOnlyDictionary<string, string>)match.Invoke(null, [directJson.RootElement.Clone(), new[] { cue }])!;
+        if (direct.Count != 1 || !string.Equals(direct[cue.Id], "Ngươi đi đi.", StringComparison.Ordinal))
+            throw new InvalidOperationException("single-cue translation must recover a model-visible ID to its only technical target ID");
+
         var sourcePath = Path.Combine(Directory.GetCurrentDirectory(), "csharp", "src", "BiliSubStudio.Core", "Editor", "LocalSubtitleTranslationService.cs");
         if (!File.Exists(sourcePath)) return;
         var source = File.ReadAllText(sourcePath);
+        var memoryPath = Path.Combine(Directory.GetCurrentDirectory(), "csharp", "src", "BiliSubStudio.Core", "Editor", "LocalSubtitleTranslationService.TranslationMemory.cs");
+        var memory = File.Exists(memoryPath) ? File.ReadAllText(memoryPath) : string.Empty;
         foreach (var marker in new[]
         {
             "\"--chat-template-kwargs\", ThinkingTemplateKwargs",
@@ -40,11 +50,15 @@ internal static class TranslationJsonCompatibilityContract
             "[\"cache_prompt\"] = true",
             "TryGetProperty(\"content\", out var contentValue)",
             "enforceSchema: false",
+            "internal static IReadOnlyDictionary<string, string> MatchTranslationItems",
+            "if (expected.Count == 1)",
         })
         {
             if (!source.Contains(marker, StringComparison.Ordinal))
                 throw new InvalidOperationException("Qwen3 JSON compatibility path missing: " + marker);
         }
+        if (!memory.Contains("var rawTranslations = MatchTranslationItems(root, expected);", StringComparison.Ordinal))
+            throw new InvalidOperationException("memory translation validator does not use the shared single-cue ID matcher");
         const string bibleFallbackMarker = "var warning = $\"GPU/runtime lỗi → chuyển CPU:";
         const string bibleRecoveryCatch = "catch (Exception retryRuntimeError) when (retryRuntimeError is not OperationCanceledException)";
         const string bibleCheckpointAdvance = "checkpoint = checkpoint with { Bible = bible, AnalysisPagesCompleted = page + 1 };";

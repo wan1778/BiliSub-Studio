@@ -145,18 +145,7 @@ public sealed partial class LocalSubtitleTranslationService
             return translated.Trim();
         }
 
-        if (!root.TryGetProperty("translations", out var array) || array.ValueKind != JsonValueKind.Array)
-            throw new InvalidDataException("Model không trả mảng translations.");
-        var expectedIds = expected.Select(x => x.Id).ToHashSet(StringComparer.Ordinal);
-        var rawTranslations = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var item in array.EnumerateArray())
-        {
-            var id = item.TryGetProperty("id", out var idValue) ? idValue.GetString()?.Trim() : null;
-            var text = item.TryGetProperty("text", out var textValue) ? textValue.GetString()?.Trim() : null;
-            if (id is null || !expectedIds.Contains(id) || !rawTranslations.TryAdd(id, text ?? string.Empty))
-                throw new InvalidDataException("Model trả cue ID thừa, lặp hoặc sai.");
-        }
-        if (rawTranslations.Count != expected.Count) throw new InvalidDataException("Model bỏ sót cue trong batch.");
+        var rawTranslations = MatchTranslationItems(root, expected);
 
         var glossary = BuildGlossaryMask(memory);
         var translations = new Dictionary<string, string>(StringComparer.Ordinal);

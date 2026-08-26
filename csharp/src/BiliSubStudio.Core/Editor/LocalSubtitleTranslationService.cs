@@ -526,22 +526,61 @@ public sealed partial class LocalSubtitleTranslationService : IDisposable
         return baselineMsPerCue * (1 - TranslationLatencyEwmaAlpha) + currentMsPerCue * TranslationLatencyEwmaAlpha;
     }
 
-    internal static IReadOnlyDictionary<string, string> ValidateBatch(JsonElement root, IReadOnlyList<EditorSubtitleCue> expected)
+    internal static IReadOnlyDictionary<string, string> MatchTranslationItems(JsonElement root, IReadOnlyList<EditorSubtitleCue> expected)
     {
         if (!root.TryGetProperty("translations", out var array) || array.ValueKind != JsonValueKind.Array)
             throw new InvalidDataException("Model không trả mảng translations.");
+
+        if (expected.Count == 0) throw new InvalidDataException("Không có cue đích để đối chiếu bản dịch.");
+
+        var items = array.EnumerateArray().ToArray();
+        if (items.Length != expected.Count) throw new InvalidDataException("Model bỏ sót hoặc trả thừa cue trong batch.");
+
+        // Direct Vietsub intentionally sends one cue per model call. In that
+        // unambiguous case, the model's opaque echo of the technical cue ID is
+        // not a source of truth: Qwen may return the visible SRT number or a
+        // context ID. Keep the text, but map its sole item to the sole target.
+        if (expected.Count == 1)
+        {
+            var item = items[0];
+            if (item.ValueKind != JsonValueKind.Object
+                || !item.TryGetProperty("text", out var textValue)
+                || textValue.ValueKind != JsonValueKind.String)
+                throw new InvalidDataException("Model không trả text hợp lệ cho cue duy nhất.");
+            return new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                [expected[0].Id] = textValue.GetString()?.Trim() ?? string.Empty,
+            };
+        }
+
         var expectedIds = expected.Select(x => x.Id).ToHashSet(StringComparer.Ordinal);
         var result = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var item in array.EnumerateArray())
+        foreach (var item in items)
         {
-            var id = item.TryGetProperty("id", out var idValue) ? idValue.GetString()?.Trim() : null;
-            var text = item.TryGetProperty("text", out var textValue) ? textValue.GetString()?.Trim() : null;
+            var id = item.ValueKind == JsonValueKind.Object
+                && item.TryGetProperty("id", out var idValue)
+                && idValue.ValueKind == JsonValueKind.String
+                ? idValue.GetString()?.Trim()
+                : null;
+            var text = item.ValueKind == JsonValueKind.Object
+                && item.TryGetProperty("text", out var textValue)
+                && textValue.ValueKind == JsonValueKind.String
+                ? textValue.GetString()?.Trim()
+                : null;
             if (id is null || !expectedIds.Contains(id) || !result.TryAdd(id, text ?? string.Empty))
                 throw new InvalidDataException("Model trả cue ID thừa, lặp hoặc sai.");
-            var source = expected.First(x => string.Equals(x.Id, id, StringComparison.Ordinal));
-            ValidateTranslationText(source, text ?? string.Empty);
         }
-        if (result.Count != expected.Count) throw new InvalidDataException("Model bỏ sót cue trong batch.");
+        return result;
+    }
+
+    internal static IReadOnlyDictionary<string, string> ValidateBatch(JsonElement root, IReadOnlyList<EditorSubtitleCue> expected)
+    {
+        var result = MatchTranslationItems(root, expected);
+        foreach (var pair in result)
+        {
+            var source = expected.First(x => string.Equals(x.Id, pair.Key, StringComparison.Ordinal));
+            ValidateTranslationText(source, pair.Value);
+        }
         return result;
     }
 
