@@ -1,11 +1,11 @@
 # Codex handoff — BiliSub Studio
 
-- Current main/base SHA: `dd147526ae40f45a0df0b93df83d6de41bf2bd92`.
+- Current main/base SHA: `ea9b9ef` (release update manifest commit; build target `953abb8`).
 - Current branch: `main`.
 - PR: none.
-- Last completed task: `OCR-ACCURACY-01` (published source commit `dd147526ae40f45a0df0b93df83d6de41bf2bd92`).
-- Task in progress: `RELEASE-4.0.48` — rebuild and publish only after the Windows installer gate passes.
-- Exact next task: wait for the Windows installer workflow on the release-preparation commit; if it passes, the workflow creates the immutable 4.0.48 beta release and updater manifest.
+- Last completed task: `RELEASE-4.0.48` — public beta `v4.0.48` published from build target `953abb8`.
+- Task in progress: none.
+- Exact next task: field-test the OCR scan with the supplied video and Chinese SRT, then verify the resulting cue text and boundaries before starting another OCR task.
 
 ## Root cause
 
@@ -49,8 +49,10 @@ subtitle glyphs could be rejected before tracker confirmation.
 - Only compile/contract PASS: no complete OCR scan has yet run through the WinUI app with
   `C:\Users\Man PC\Downloads\test`; that full-video field test and Windows CI remain pending.
 - The first OCR CI run `#478` failed only because the generated code map was stale;
-  local `csharp/scripts/verify.ps1` passes after regeneration. The next CI run is
-  the release gate for 4.0.48.
+  it was regenerated. Windows CI run `#479` passed every gate, published public
+  prerelease `v4.0.48`, and committed the ready update manifest as `ea9b9ef`.
+- Functional field test remains pending: a full OCR scan through the real WinUI UI
+  with `C:\Users\Man PC\Downloads\test` has not yet been claimed as PASS.
 
 ## Constraints to preserve
 
