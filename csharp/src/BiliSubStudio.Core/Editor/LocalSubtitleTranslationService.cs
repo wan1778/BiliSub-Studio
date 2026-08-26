@@ -43,7 +43,7 @@ public sealed record EditorTranslationResult(
     string ModelName,
     string SkillSha256);
 
-public sealed class LocalSubtitleTranslationService : IDisposable
+public sealed partial class LocalSubtitleTranslationService : IDisposable
 {
     internal const string RuntimeVersion = "b10566";
     internal const string RuntimeUrl = "https://github.com/ggml-org/llama.cpp/releases/download/b10566/llama-b10566-bin-win-vulkan-x64.zip";
@@ -62,7 +62,7 @@ public sealed class LocalSubtitleTranslationService : IDisposable
     internal const string ThinkingTemplateKwargs = "{\"enable_thinking\":false}";
     internal const string ReasoningMode = "off";
     internal const int RuntimeAutoGpuLayers = -1;
-    internal const string TranslationPolicyKey = "direct-cue-v1";
+    internal const string TranslationPolicyKey = "locked-memory-v1";
     private const int DirectTranslationBatchSize = 1;
     private const int TranslationBatchSmall = 8;
     private const int TranslationBatchMedium = 24;
@@ -355,23 +355,24 @@ public sealed class LocalSubtitleTranslationService : IDisposable
                 var batch = CreateAdaptiveTranslationBatch(pending, pendingOffset, translationBatchSize, 20_000);
                 var firstIndex = IndexOf(source, batch[0].Id);
                 var context = source.Skip(Math.Max(0, firstIndex - 2)).Take(batch.Length + 4).ToArray();
-                var prompt = BuildTranslationPrompt(batch, context, bible);
+                var promptMemory = BuildTranslationPromptMemory(batch, context, checkpoint);
+                var prompt = BuildMemoryTranslationPrompt(batch, context, promptMemory);
                 var batchWatch = Stopwatch.StartNew();
-                IReadOnlyDictionary<string, string> translations;
+                ValidatedTranslationBatch validated;
                 try
                 {
-                    var root = await RunJsonAsync(runtime!, prompt, TranslationSchema, 1024, job.CancellationToken, job);
-                    translations = ValidateBatch(root, batch);
+                    var root = await RunJsonAsync(runtime!, prompt, MemoryTranslationSchema, 1024, job.CancellationToken, job);
+                    validated = ValidateMemoryBatch(root, batch, context, promptMemory, checkpoint);
                 }
                 catch (InvalidDataException first)
                 {
-                    var warning = $"JSON sai → retry câu {batch[0].Number}: {TrimLiveText(first.Message, 90)}";
-                    job.Warn($"Cue {batch[0].Number} sai JSON/ID/nội dung; đang thử lại chặt hơn: {first.Message}");
+                    var warning = $"JSON/khóa sai → retry câu {batch[0].Number}: {TrimLiveText(first.Message, 90)}";
+                    job.Warn($"Cue {batch[0].Number} sai JSON/ID/tên/thuật ngữ/xưng hô; đang thử lại chặt hơn: {first.Message}");
                     SetLive("translation-retry", overallBefore,
                         $"Bước 2/4 · Dịch trực tiếp · câu {batchNumber}/{batchTotal}.", warning);
-                    var retry = await RunJsonAsync(runtime!, prompt + "\nLần trước sai JSON/schema/ID hoặc còn chữ Hán. Dịch lại TARGET và chỉ trả đúng một JSON object.",
-                        TranslationSchema, 1024, job.CancellationToken, job);
-                    translations = ValidateBatch(retry, batch);
+                    var retry = await RunJsonAsync(runtime!, prompt + "\nLần trước vi phạm JSON hoặc TERMS/NAMES/RELATION. Dịch lại TARGET, giữ đúng các khóa và chỉ trả đúng một JSON object.",
+                        MemoryTranslationSchema, 1024, job.CancellationToken, job);
+                    validated = ValidateMemoryBatch(retry, batch, context, promptMemory, checkpoint);
                 }
                 catch (Exception first) when (first is not OperationCanceledException)
                 {
@@ -380,10 +381,12 @@ public sealed class LocalSubtitleTranslationService : IDisposable
                     SetLive("translation-fallback", overallBefore,
                         $"Bước 2/4 · Dịch trực tiếp · câu {batchNumber}/{batchTotal}.", warning);
                     await RestartTranslationServerAsync(runtime!, model, LowerGpuLayers(layers), job.CancellationToken);
-                    var retry = await RunJsonAsync(runtime!, prompt + "\nLần trước runtime không hoàn tất. Dịch lại TARGET và chỉ trả đúng một JSON object.",
-                        TranslationSchema, 1024, job.CancellationToken, job);
-                    translations = ValidateBatch(retry, batch);
+                    var retry = await RunJsonAsync(runtime!, prompt + "\nLần trước runtime không hoàn tất. Dịch lại TARGET, giữ đúng TERMS/NAMES/RELATION và chỉ trả đúng một JSON object.",
+                        MemoryTranslationSchema, 1024, job.CancellationToken, job);
+                    validated = ValidateMemoryBatch(retry, batch, context, promptMemory, checkpoint);
                 }
+                var translations = validated.Translations;
+                MergeTranslationMemory(checkpoint, validated);
                 batchWatch.Stop();
                 if (translationBatchSize > 1 && batch.Length == translationBatchSize)
                 {
@@ -1044,7 +1047,7 @@ public sealed class LocalSubtitleTranslationService : IDisposable
             await using var stream = File.OpenRead(path);
             var loaded = await JsonSerializer.DeserializeAsync<TranslationCheckpoint>(stream, _json, cancellationToken);
             if (loaded is null
-                || loaded.Schema != 2
+                || loaded.Schema != 3
                 || loaded.SourceSha256 != sourceSha
                 || loaded.SkillSha256 != Skill.Info.Sha256
                 || !string.Equals(loaded.PolicyKey, TranslationPolicyKey, StringComparison.Ordinal))
@@ -1063,6 +1066,8 @@ public sealed class LocalSubtitleTranslationService : IDisposable
                 ModelKey = checkpointModelKey,
                 PolicyKey = TranslationPolicyKey,
                 Translations = new Dictionary<string, string>(loaded.Translations, StringComparer.Ordinal),
+                Names = loaded.Names is null ? new Dictionary<string, string>(StringComparer.Ordinal) : new Dictionary<string, string>(loaded.Names, StringComparer.Ordinal),
+                Relations = loaded.Relations is null ? new Dictionary<string, TranslationRelationMemory>(StringComparer.Ordinal) : new Dictionary<string, TranslationRelationMemory>(loaded.Relations, StringComparer.Ordinal),
             };
         }
         catch (OperationCanceledException) { throw; }
@@ -1224,9 +1229,22 @@ public sealed class LocalSubtitleTranslationService : IDisposable
         string Sha256,
         string FileName);
 
-    private sealed record TranslationCheckpoint(int Schema, string SourceSha256, string SkillSha256, string? ModelKey, string? PolicyKey, string Bible, int AnalysisPagesCompleted, Dictionary<string, string> Translations)
+    private sealed record TranslationCheckpoint(
+        int Schema,
+        string SourceSha256,
+        string SkillSha256,
+        string? ModelKey,
+        string? PolicyKey,
+        string Bible,
+        int AnalysisPagesCompleted,
+        Dictionary<string, string> Translations,
+        Dictionary<string, string> Names,
+        Dictionary<string, TranslationRelationMemory> Relations)
     {
         public static TranslationCheckpoint New(string sourceSha, string skillSha, string modelKey) =>
-            new(2, sourceSha, skillSha, modelKey, TranslationPolicyKey, string.Empty, 0, new Dictionary<string, string>(StringComparer.Ordinal));
+            new(3, sourceSha, skillSha, modelKey, TranslationPolicyKey, string.Empty, 0,
+                new Dictionary<string, string>(StringComparer.Ordinal),
+                new Dictionary<string, string>(StringComparer.Ordinal),
+                new Dictionary<string, TranslationRelationMemory>(StringComparer.Ordinal));
     }
 }

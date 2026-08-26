@@ -2,65 +2,75 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SERVICE = ROOT / "csharp/src/BiliSubStudio.Core/Editor/LocalSubtitleTranslationService.cs"
+MEMORY = ROOT / "csharp/src/BiliSubStudio.Core/Editor/LocalSubtitleTranslationService.TranslationMemory.cs"
 SKILL = ROOT / "csharp/src/BiliSubStudio.Core/Editor/TranslationSkillBundle.cs"
 service = SERVICE.read_text(encoding="utf-8")
+memory = MEMORY.read_text(encoding="utf-8")
 skill = SKILL.read_text(encoding="utf-8")
 
-start = service.index('private string BuildTranslationPrompt')
-end = service.index('private static void ValidateTranslationText', start)
-prompt = service[start:end]
 translate_start = service.index('public async Task<EditorTranslationResult> TranslateAsync')
 translate_end = service.index('internal static int RecommendedGpuLayers', translate_start)
 translate = service[translate_start:translate_end]
 
 required_service = [
     '["cache_prompt"] = true',
-    'var relevantSkill = Skill.BuildReferenceInstructions(context.Select(x => x.SourceText), 2_000);',
-    'if (compactBible.Length > 1_600) compactBible = compactBible[..1_600];',
-    '{{relevantSkill}}', '{{contextJson}}', '{{targetJson}}',
-    'Dịch phụ đề Trung → Việt. Chỉ dịch TARGET và chỉ trả JSON.',
     'source.Skip(Math.Max(0, firstIndex - 2)).Take(batch.Length + 4).ToArray()',
-    'TranslationSchema, 1024, job.CancellationToken, job',
+    'var promptMemory = BuildTranslationPromptMemory(batch, context, checkpoint);',
+    'var prompt = BuildMemoryTranslationPrompt(batch, context, promptMemory);',
+    'MemoryTranslationSchema, 1024, job.CancellationToken, job',
+    'ValidateMemoryBatch(root, batch, context, promptMemory, checkpoint)',
+    'MergeTranslationMemory(checkpoint, validated)',
 ]
 for marker in required_service:
     if marker not in service:
-        raise SystemExit(f"FAIL: LIVE-SRT-02 compact prompt marker missing: {marker}")
+        raise SystemExit(f"FAIL: LIVE-SRT locked-memory marker missing: {marker}")
+
+required_memory = [
+    'Skill.MatchLockedTerms(context.Select(x => x.SourceText), 24)',
+    'Skill.MatchLockedTerms(target.Select(x => x.SourceText), 16)',
+    'Skill.BuildReferenceInstructions(context.Select(x => x.SourceText), 900)',
+    'Bắt buộc đúng TERMS, NAMES, RELATION',
+    '陈长安=Trần Trường An',
+    'TERMS: {{terms}}',
+    'NAMES: {{names}}',
+    'RELATION: {{relations}}',
+    'Nếu CONTEXT/TARGET xác nhận tên riêng',
+]
+for marker in required_memory:
+    if marker not in memory:
+        raise SystemExit(f"FAIL: compact locked-memory prompt marker missing: {marker}")
 
 for forbidden in (
-    'var coreSkill = Skill.BuildCoreInstructions();',
     '34_000',
     'QUY TẮC DỊCH BẮT BUỘC CHO TỪNG CUE:',
     'TỰ KIỂM TRA THẦM TRƯỚC KHI TRẢ JSON:',
     'Ví dụ phong cách ngắn:',
 ):
-    if forbidden in prompt:
-        raise SystemExit(f"FAIL: LIVE-SRT-02 translation prompt is still verbose: {forbidden}")
+    if forbidden in memory:
+        raise SystemExit(f"FAIL: locked-memory translation prompt is verbose: {forbidden}")
 
 if 'const int analysisPages = 0;' not in translate:
-    raise SystemExit('FAIL: LIVE-SRT-02 whole-SRT bible analysis still runs before direct translation')
+    raise SystemExit('FAIL: whole-SRT pre-analysis must stay disabled before direct translation')
 if 'checkpoint = checkpoint with { Bible = string.Empty, AnalysisPagesCompleted = 0, Translations = recovered };' not in translate:
-    raise SystemExit('FAIL: LIVE-SRT-02 direct runtime must not carry a large pre-analysis bible into every cue prompt')
+    raise SystemExit('FAIL: direct runtime must not carry a large pre-analysis bible into every cue prompt')
+if 'BuildTranslationPrompt(batch, context, bible)' in translate:
+    raise SystemExit('FAIL: runtime still calls the old generic per-cue prompt instead of locked memory prompt')
 
 required_skill = [
     'public string BuildCoreInstructions()',
     'public string BuildReferenceInstructions(IEnumerable<string> sourceTexts, int maxCharacters, int initialCharacters = 0)',
-    'private const string CompactCultivationProfile = "SKILL TU TIÊN: phim tu tiên/tiên hiệp/cổ trang Trung Quốc; giữ Hán-Việt, vai vế, xưng hô, thuật ngữ; không hiện đại hóa hay bịa.";',
-    'selected.AppendLine(CompactCultivationProfile);',
+    'private const string CompactCultivationProfile = "SKILL TU TIÊN:',
+    '陈长安=Trần Trường An',
+    'private static readonly (string Source, string Vietnamese)[] LockedCultivationTerms',
+    'public IReadOnlyList<KeyValuePair<string, string>> MatchLockedTerms(IEnumerable<string> sourceTexts, int maxItems = 24)',
+    'OrderByDescending(x => x.Source.Length)',
     'if (!Relevant(section, source)) continue;',
-    'if (initialCharacters + selected.Length + block.Length > maxCharacters) continue;',
-    'private static bool Relevant(string section, string source)',
 ]
 for marker in required_skill:
     if marker not in skill:
-        raise SystemExit(f"FAIL: LIVE-SRT-03 compact cultivation skill marker missing: {marker}")
+        raise SystemExit(f"FAIL: compact cultivation skill/glossary marker missing: {marker}")
 
 if 'section.StartsWith("#", StringComparison.Ordinal) && section.Length < 800' in skill:
-    raise SystemExit('FAIL: LIVE-SRT-03 generic markdown headings can still consume the compact skill budget before matched cultivation terms')
+    raise SystemExit('FAIL: generic markdown headings can still consume the compact skill budget before matched cultivation terms')
 
-# The runtime prompt consults a strict <=2k skill slice. That slice now always identifies
-# the cultivation genre, then spends the remaining budget only on sections containing
-# Han terms that actually occur in the local SRT context.
-if 'Skill.BuildReferenceInstructions(context.Select(x => x.SourceText), 2_000)' not in prompt:
-    raise SystemExit('FAIL: LIVE-SRT-03 compact prompt stopped consulting the reviewed translation skill')
-
-print("PASS: LIVE-SRT-03 keeps the per-cue skill budget at 2k, locks cultivation genre, and prioritizes source-matched Han terminology")
+print("PASS: per-cue prompt stays compact while locking matched cultivation terms, names and relation memory")

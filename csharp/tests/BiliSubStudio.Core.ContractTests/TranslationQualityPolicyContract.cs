@@ -12,12 +12,16 @@ internal static class TranslationQualityPolicyContract
         var service = typeof(LocalSubtitleTranslationService);
         var policy = service.GetField("TranslationPolicyKey", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public)
             ?.GetRawConstantValue()?.ToString();
-        if (!string.Equals(policy, "direct-cue-v1", StringComparison.Ordinal))
-            throw new InvalidOperationException("direct-cue translation policy revision is not pinned");
+        if (!string.Equals(policy, "locked-memory-v1", StringComparison.Ordinal))
+            throw new InvalidOperationException("locked-memory translation policy revision is not pinned");
 
         var sourcePath = Path.Combine(Directory.GetCurrentDirectory(), "csharp", "src", "BiliSubStudio.Core", "Editor", "LocalSubtitleTranslationService.cs");
-        if (!File.Exists(sourcePath)) return;
+        var memoryPath = Path.Combine(Directory.GetCurrentDirectory(), "csharp", "src", "BiliSubStudio.Core", "Editor", "LocalSubtitleTranslationService.TranslationMemory.cs");
+        var skillPath = Path.Combine(Directory.GetCurrentDirectory(), "csharp", "src", "BiliSubStudio.Core", "Editor", "TranslationSkillBundle.cs");
+        if (!File.Exists(sourcePath) || !File.Exists(memoryPath) || !File.Exists(skillPath)) return;
         var source = File.ReadAllText(sourcePath);
+        var memory = File.ReadAllText(memoryPath);
+        var skill = File.ReadAllText(skillPath);
 
         foreach (var marker in new[]
         {
@@ -27,24 +31,59 @@ internal static class TranslationQualityPolicyContract
             "const int analysisPages = 0;",
             "var translationBatchSize = DirectTranslationBatchSize;",
             "source.Skip(Math.Max(0, firstIndex - 2)).Take(batch.Length + 4).ToArray()",
-            "Skill.BuildReferenceInstructions(context.Select(x => x.SourceText), 2_000)",
-            "if (compactBible.Length > 1_600) compactBible = compactBible[..1_600];",
-            "Dịch phụ đề Trung → Việt. Chỉ dịch TARGET và chỉ trả JSON.",
-            "đúng nghĩa; giữ phủ định/câu hỏi/chủ thể; tên Hán-Việt và xưng hô theo ngữ cảnh; không bịa",
-            "TranslationSchema, 1024, job.CancellationToken, job",
+            "BuildTranslationPromptMemory(batch, context, checkpoint)",
+            "BuildMemoryTranslationPrompt(batch, context, promptMemory)",
+            "MemoryTranslationSchema, 1024, job.CancellationToken, job",
+            "ValidateMemoryBatch(root, batch, context, promptMemory, checkpoint)",
+            "MergeTranslationMemory(checkpoint, validated)",
             "await SaveCheckpointAsync(checkpointPath, checkpoint, job.CancellationToken);",
-            "loaded.Schema != 2",
+            "loaded.Schema != 3",
             "loaded.PolicyKey, TranslationPolicyKey",
-            "new(2, sourceSha, skillSha, modelKey, TranslationPolicyKey",
+            "new(3, sourceSha, skillSha, modelKey, TranslationPolicyKey",
         })
         {
             if (!source.Contains(marker, StringComparison.Ordinal))
-                throw new InvalidOperationException("direct-cue translation quality policy missing: " + marker);
+                throw new InvalidOperationException("locked-memory translation quality policy missing: " + marker);
+        }
+
+        foreach (var marker in new[]
+        {
+            "private const string MemoryTranslationSchema",
+            "Bắt buộc đúng TERMS, NAMES, RELATION",
+            "陈长安=Trần Trường An",
+            "names ghi source Hán + text Hán-Việt",
+            "relations ghi key là người đang được gọi",
+            "Cue {cue.Number} làm sai thuật ngữ khóa",
+            "Cue {cue.Number} làm sai tên đã khóa",
+            "Cue {cue.Number} không giữ xưng hô đã xác nhận",
+            "checkpoint.Names.Count >= 256",
+            "checkpoint.Relations.Count >= 256",
+        })
+        {
+            if (!memory.Contains(marker, StringComparison.Ordinal))
+                throw new InvalidOperationException("locked-memory validator/prompt missing: " + marker);
+        }
+
+        foreach (var marker in new[]
+        {
+            "LockedCultivationTerms",
+            "MatchLockedTerms(IEnumerable<string> sourceTexts, int maxItems = 24)",
+            "(\"师尊\", \"sư tôn\")",
+            "(\"筑基\", \"trúc cơ\")",
+            "(\"金丹\", \"kim đan\")",
+            "(\"元婴\", \"nguyên anh\")",
+            "OrderByDescending(x => x.Source.Length)",
+        })
+        {
+            if (!skill.Contains(marker, StringComparison.Ordinal))
+                throw new InvalidOperationException("locked cultivation glossary missing: " + marker);
         }
 
         if (source.Contains("[\"presence_penalty\"] = 1.0", StringComparison.Ordinal))
             throw new InvalidOperationException("translation must not penalize repeated names/terms with presence_penalty=1.0");
-        if (source.Contains("loaded.Schema != 1", StringComparison.Ordinal))
-            throw new InvalidOperationException("old translation checkpoints must stay invalidated after prompt/sampler policy changes");
+        if (source.Contains("loaded.Schema != 2", StringComparison.Ordinal))
+            throw new InvalidOperationException("old translation checkpoints must be invalidated after locked-memory policy change");
+        if (source.Contains("internal const string TranslationPolicyKey = \"direct-cue-v1\"", StringComparison.Ordinal))
+            throw new InvalidOperationException("old direct-cue checkpoint policy must not survive locked-memory migration");
     }
 }
