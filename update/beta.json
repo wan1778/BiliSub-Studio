@@ -1,12 +1,12 @@
 {
-  "version": "4.0.0-beta.55-csharp-p5",
+  "version": "4.0.0-beta.56-csharp-p5",
   "channel_ready": true,
-  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.41/BiliSubStudio_4.0.41_Windows-x64-portable.zip",
-  "sha256": "a46e5db4464b50c2d6a26c984fc20195e9863202be3ed4485f72c9e77fa35770",
-  "size": 94794082,
+  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.42/BiliSubStudio_4.0.42_Windows-x64-portable.zip",
+  "sha256": "033cac0e268a5bfbb8a3f2542ee676dbcdc21d42a30ece10cd83da9d5485ab15",
+  "size": 94794389,
   "payload_kind": "winui3-portable-zip",
   "notes": [
-    "Chọn hoặc nhập SRT mới không còn tự nạp lời Việt và trạng thái khóa từ lần trước trước khi bấm Vietsub; project đã dịch hợp lệ vẫn được khôi phục khi mở lại.",
-    "Vietsub local tự sửa thuật ngữ tu tiên đã khóa như 师父=sư phụ sau khi model trả kết quả, kể cả khi model làm rơi token hoặc trả lại chữ Hán; không còn retry hoặc fail chỉ vì lỗi glossary có thể tự sửa an toàn."
+    "Sửa lỗi Vietsub local bị dừng ở câu khi model Qwen trả số cue/ID ngữ cảnh thay vì ID kỹ thuật nội bộ. Khi chỉ có một câu đích, app giữ bản dịch hợp lệ và gán an toàn vào đúng câu đó.",
+    "Vẫn từ chối JSON có thiếu hoặc thừa câu; batch nhiều câu tiếp tục yêu cầu ID duy nhất, đúng thứ tự để không gán sai phụ đề."
   ]
 }
