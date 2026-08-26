@@ -327,7 +327,8 @@ public sealed partial class EditorPage : Page
             var restoreTranslatedCues = string.Equals(
                 saved.TranslationPolicyKey,
                 LocalSubtitleTranslationService.TranslationPolicyKey,
-                StringComparison.Ordinal);
+                StringComparison.Ordinal)
+                || string.Equals(saved.TranslationPolicyKey, EditorSubtitleDocument.ImportedTranslationPolicyKey, StringComparison.Ordinal);
             var translated = restoreTranslatedCues
                 ? saved.Cues.ToDictionary(x => x.Id, x => x.VietnameseText, StringComparer.Ordinal)
                 : new Dictionary<string, string>(StringComparer.Ordinal);
@@ -437,6 +438,22 @@ public sealed partial class EditorPage : Page
         }
     }
 
+    private async void ImportTranslatedSubtitle_Click(object sender, RoutedEventArgs e)
+    {
+        try { await ImportTranslatedSubtitleAsync(); }
+        catch (OperationCanceledException) { }
+        catch (InvalidDataException error)
+        {
+            TranslationStatusText.Text = "SRT Việt không hợp lệ: " + error.Message;
+            RefreshEditorActions();
+        }
+        catch (Exception error)
+        {
+            TranslationStatusText.Text = "Không nạp được SRT Việt: " + error.Message;
+            RefreshEditorActions();
+        }
+    }
+
     private async Task ImportSubtitleAsync()
     {
         // SUB-02 / SUB-04: picker cancel is a no-op and works before a video exists.
@@ -490,7 +507,37 @@ public sealed partial class EditorPage : Page
         RefreshEditorActions();
     }
 
-    private void AttachSubtitleToProject(string outputPath)
+    private async Task ImportTranslatedSubtitleAsync()
+    {
+        if (_project is null || _subtitleSource is null)
+            throw new InvalidDataException("Hãy chọn video và SRT tiếng Trung trước khi nạp SRT Việt đã dịch.");
+        EnsureCurrentSubtitleFingerprint();
+        var path = await _picker.PickTranslatedSubtitleAsync();
+        if (string.IsNullOrWhiteSpace(path)) return;
+
+        var vietnamese = await _application.LoadEditorSubtitleAsync(path, CancellationToken.None);
+        var attached = EditorSubtitleDocument.AttachVietnameseSrt(_subtitleSource, vietnamese);
+
+        // An explicitly selected Vietnamese SRT is the new authoritative text.
+        // Clear cue-local overrides from a former translation before synchronizing it.
+        _manualCueStates.Clear();
+        await SubtitleManualStore.SaveAsync(attached.Sha256, _manualCueStates, CancellationToken.None);
+        _subtitleSource = attached;
+        _subtitleManualDirty = false;
+        _voiceTrack = null;
+        _project = _project with { Tts = null };
+        AttachSubtitleToProject(vietnamese.Path, EditorSubtitleDocument.ImportedTranslationPolicyKey);
+        await RefreshSpeechTimingForSubtitleAsync();
+        await SyncSubtitleCueEditorAsync();
+        TranslationProgress.Value = 100;
+        TranslationStatusText.Text = "Đã nạp SRT Việt đã dịch; source Trung, thứ tự và timecode đã được kiểm tra khớp.";
+        UpdateSubtitleSummary();
+        RenderOverlays();
+        await SaveProjectNowAsync();
+        RefreshEditorActions();
+    }
+
+    private void AttachSubtitleToProject(string outputPath, string? translationPolicyKey = null)
     {
         if (_project is null || _subtitleSource is null) return;
         var skill = _application.LocalTranslationStatus;
@@ -507,7 +554,7 @@ public sealed partial class EditorPage : Page
                 skill.SkillSha256,
                 outputPath,
                 KaraokeToggle.IsOn,
-                null),
+                translationPolicyKey),
         };
     }
 
@@ -2062,6 +2109,7 @@ public sealed partial class EditorPage : Page
         EditorUseCurrentStartButton.IsEnabled = EditorUseCurrentEndButton.IsEnabled = editable && !WholeToggle.IsOn;
         FileNameBox.IsEnabled = editable;
         ImportSrtButton.IsEnabled = idle && !_playback.IsPreviewMode;
+        ImportTranslatedSrtButton.IsEnabled = idle && !_playback.IsPreviewMode && _project is not null && _subtitleSource is not null;
         CreateAsrButton.IsEnabled = editable;
         PrepareAiButton.IsEnabled = idle && !_playback.IsPreviewMode;
         TranslationFastModeToggle.IsEnabled = idle && !_playback.IsPreviewMode;

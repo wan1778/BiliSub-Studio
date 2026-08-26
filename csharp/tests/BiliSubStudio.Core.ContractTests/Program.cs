@@ -1716,6 +1716,20 @@ internal static class Program
         True(rendered.Contains("10\r\n00:00:01,250 --> 00:00:02,900 position:50%", StringComparison.Ordinal), "editor SRT changed original numbering/timing");
         True(rendered.Contains("20\r\n00:00:03,000 --> 00:00:04,500", StringComparison.Ordinal), "editor SRT changed second timing");
         EditorSubtitleDocument.ValidateUnchangedTimeline(cues, translated);
+        var imported = EditorSubtitleDocument.AttachVietnameseSrt(
+            new EditorSubtitleSource("C:\\fixture\\source.srt", 1, 1, new string('a', 64), cues),
+            new EditorSubtitleSource("C:\\fixture\\source.vi.srt", 1, 1, new string('b', 64), EditorSubtitleDocument.Parse(rendered)));
+        Equal("Ngươi là ai?", imported.Cues[0].VietnameseText);
+        var mismatchedTimeline = EditorSubtitleDocument.Parse(rendered.Replace("00:00:03,000 --> 00:00:04,500", "00:00:03,100 --> 00:00:04,500", StringComparison.Ordinal));
+        var rejectedImportedTimeline = false;
+        try
+        {
+            _ = EditorSubtitleDocument.AttachVietnameseSrt(
+                new EditorSubtitleSource("C:\\fixture\\source.srt", 1, 1, new string('a', 64), cues),
+                new EditorSubtitleSource("C:\\fixture\\source.vi.srt", 1, 1, new string('b', 64), mismatchedTimeline));
+        }
+        catch (InvalidDataException) { rejectedImportedTimeline = true; }
+        True(rejectedImportedTimeline, "pretranslated SRT with mismatched timecode was accepted");
         var sourceRendered = EditorSubtitleDocument.RenderSource(cues);
         True(sourceRendered.Contains("你是谁？", StringComparison.Ordinal), "ASR/source SRT renderer lost Chinese text");
         Equal(2, EditorSubtitleDocument.Parse(sourceRendered).Count);

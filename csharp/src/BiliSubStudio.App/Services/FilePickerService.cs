@@ -31,6 +31,13 @@ public sealed class FilePickerService(Func<Window> window) : IFilePickerService
         "Chọn SRT tiếng Trung",
         "SubRip (*.srt)\0*.srt\0\0");
 
+    public Task<string?> PickTranslatedSubtitleAsync() => PickAsync(
+        PickerViewMode.List,
+        PickerLocationId.DocumentsLibrary,
+        SubtitleExtensions,
+        "Chọn SRT Việt đã dịch",
+        "SubRip (*.srt)\0*.srt\0\0");
+
     public Task<string?> PickImageAsync() => PickAsync(
         PickerViewMode.Thumbnail,
         PickerLocationId.PicturesLibrary,

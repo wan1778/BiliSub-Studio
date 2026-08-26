@@ -26,6 +26,7 @@ public static partial class EditorSubtitleDocument
     public const long MaxSourceBytes = 32L * 1024 * 1024;
     public const int MaxCues = 100_000;
     public const int MaxCueCharacters = 2_000;
+    public const string ImportedTranslationPolicyKey = "imported-srt-v1";
 
     public static async Task<EditorSubtitleSource> LoadAsync(string path, CancellationToken cancellationToken)
     {
@@ -123,6 +124,34 @@ public static partial class EditorSubtitleDocument
                 !string.Equals(left.Timing, right.Timing, StringComparison.Ordinal))
                 throw new InvalidDataException($"Model làm thay đổi thứ tự hoặc timecode tại block {left.Number}.");
         }
+    }
+
+    public static EditorSubtitleSource AttachVietnameseSrt(
+        EditorSubtitleSource source,
+        EditorSubtitleSource vietnamese)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        ArgumentNullException.ThrowIfNull(vietnamese);
+        if (string.Equals(Path.GetFullPath(source.Path), Path.GetFullPath(vietnamese.Path), StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("Hãy chọn SRT Việt đã dịch khác với SRT tiếng Trung nguồn.");
+        if (source.Cues.Count != vietnamese.Cues.Count)
+            throw new InvalidDataException("SRT Việt không khớp số cue với SRT tiếng Trung nguồn.");
+
+        var merged = new EditorSubtitleCue[source.Cues.Count];
+        for (var index = 0; index < source.Cues.Count; index++)
+        {
+            var original = source.Cues[index];
+            var translated = vietnamese.Cues[index];
+            if (!string.Equals(original.Number, translated.Number, StringComparison.Ordinal)
+                || !string.Equals(original.Timing, translated.Timing, StringComparison.Ordinal))
+            {
+                throw new InvalidDataException($"SRT Việt không khớp số thứ tự hoặc timecode tại cue {original.Number}.");
+            }
+            if (string.IsNullOrWhiteSpace(translated.SourceText))
+                throw new InvalidDataException($"SRT Việt thiếu lời dịch tại cue {original.Number}.");
+            merged[index] = original with { VietnameseText = translated.SourceText.Trim() };
+        }
+        return source with { Cues = merged };
     }
 
     private static string Decode(byte[] bytes)

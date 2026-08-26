@@ -18,12 +18,16 @@ UI_EVENT_NAMES = {
     "ValueChanged", "LostFocus", "PointerPressed", "PointerMoved", "PointerReleased",
     "PointerCanceled", "Loaded", "Unloaded", "SizeChanged", "LayoutUpdated", "KeyDown",
 }
-EXPECTED_XAML_BINDINGS = 52
-EXPECTED_XAML_CLICKS = 25
-EXPECTED_USER_CLICK_BINDINGS = 37
+EXPECTED_XAML_BINDINGS = 54
+EXPECTED_XAML_CLICKS = 26
+EXPECTED_USER_CLICK_BINDINGS = 38
 
 RUNTIME_UI_BINDINGS = [
     ("Overlay", "SizeChanged", "Overlay_SizeChanged"),
+    ("scrollViewer", "KeyDown", "SubtitleCueBrowse_KeyDown"),
+    ("scrollViewer", "PointerPressed", "SubtitleCueBrowse_PointerPressed"),
+    ("scrollViewer", "PointerReleased", "SubtitleCueBrowse_PointerReleased"),
+    ("scrollViewer", "PointerCanceled", "SubtitleCueBrowse_PointerCanceled"),
     ("ImageSourceList", "SelectionChanged", "ImageList_SelectionChanged"),
     ("ImageOverlayCanvas", "PointerPressed", "ImageOverlay_PointerPressed"),
     ("ImageOverlayCanvas", "PointerMoved", "ImageOverlay_PointerMoved"),
@@ -73,6 +77,12 @@ FORBIDDEN_PERSISTENT_TIMER_REMOVES = (
     "_voiceArtifactMonitorTimer.Tick -= VoiceArtifactMonitor_Tick;",
 )
 EXPECTED_EVENT_REMOVALS = Counter({
+    ("scrollViewer", "KeyDown", "SubtitleCueBrowse_KeyDown"): 1,
+    ("scrollViewer", "PointerPressed", "SubtitleCueBrowse_PointerPressed"): 1,
+    ("scrollViewer", "PointerReleased", "SubtitleCueBrowse_PointerReleased"): 1,
+    ("scrollViewer", "PointerCanceled", "SubtitleCueBrowse_PointerCanceled"): 1,
+    ("scrollViewer", "PointerWheelChanged", "SubtitleCueBrowse_PointerWheelChanged"): 1,
+    ("scrollViewer", "ViewChanged", "SubtitleCueBrowse_ViewChanged"): 1,
     ("_voiceArtifactWatcher", "Deleted", "VoiceArtifactWatcher_Deleted"): 1,
     ("_voiceArtifactWatcher", "Renamed", "VoiceArtifactWatcher_Renamed"): 1,
     ("_player.PlaybackSession", "PositionChanged", "PlayerPositionChanged"): 1,
@@ -217,8 +227,9 @@ require("_voiceArtifactMonitorTimer.Start();" in voice_artifacts
         and "_voiceArtifactMonitorTimer?.Stop();" in voice_artifacts,
         "CLEAN-02 voice fallback timer must restart/stop without handler swapping")
 
-# The only remaining -= operators are tied to resources that are actually disposed/recreated:
-# FileSystemWatcher and MediaPlayer. Any additional runtime handler removal is a CLEAN-02 regression.
+# The only remaining -= operators are tied to resources that are actually disposed/recreated,
+# or to the named ScrollViewer visual re-acquired by the cue browse owner. Any additional
+# runtime handler removal is a CLEAN-02 regression.
 event_removals = Counter(re.findall(
     r"\b([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*\.\s*([A-Za-z_]\w*)\s*-=\s*([A-Za-z_]\w*)",
     code,
@@ -311,5 +322,5 @@ print(
     "PASS: CLEAN-01/02/07 Editor Event Map · "
     f"{len(bindings)} XAML bindings · {len(RUNTIME_UI_BINDINGS) + len(CONDITIONAL_RUNTIME_UI_BINDINGS) + len(TOOL_BUTTONS)} runtime UI bindings · "
     f"{EXPECTED_USER_CLICK_BINDINGS} user Click bindings · one Loaded/Unloaded owner each · no LayoutUpdated polling · "
-    "persistent page timers bind once · only watcher/player resources detach before dispose"
+    "persistent page timers bind once · only reviewed scroll-viewer/watcher/player owners detach"
 )

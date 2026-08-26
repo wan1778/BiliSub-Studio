@@ -13,9 +13,9 @@ The Editor currently uses two binding surfaces:
 
 At the audited checkpoint:
 
-- XAML event bindings: **52**;
+- XAML event bindings: **54**;
 - runtime user-UI bindings: **24**;
-- user-facing `Click` bindings: **37**;
+- user-facing `Click` bindings: **38**;
 - duplicate `(control, event)` bindings: **0**;
 - event handlers called from other event handlers: **0** under the AUDIT-01 static gate;
 - Page lifecycle bindings: **3** (`Loaded`, `LayoutUpdated`, `Unloaded`);
@@ -63,6 +63,7 @@ The important guard is `_editorCoreInitialized`: repeated `Loaded` events do not
 | `PlayerPlayPauseButton` | XAML | `PlayerPlayPause_Click` | 1 |
 | `FullscreenButton` | XAML | `Fullscreen_Click` | 1 |
 | `ImportSrtButton` | XAML | `ImportSubtitle_Click` | 1 |
+| `ImportTranslatedSrtButton` | XAML | `ImportTranslatedSubtitle_Click` | 1 |
 | `PrepareAiButton` | XAML | `PrepareAi_Click` | 1 |
 | `TranslateButton` | XAML | `Translate_Click` | 1 |
 | `CancelTranslationButton` | XAML | `CancelTranslation_Click` | 1 |
@@ -122,6 +123,7 @@ Every user-facing click above has **one binding**. `ShellTool_Click` is intentio
 | `KaraokeToggle` | `Toggled` | XAML | `Karaoke_Toggled` | 1 |
 | `CurrentCueVoiceBox` | `SelectionChanged` | XAML | `CurrentCueVoice_SelectionChanged` | 1 |
 | `FileNameBox` | `TextChanged` | XAML | `FileNameBox_TextChanged` | 1 |
+| `SubtitleCueList` scroll viewer | `KeyDown`, pointer x4, `ViewChanged` | runtime | matching `SubtitleCueBrowse_*` handlers | 1 each |
 | `ImageSourceList` | `SelectionChanged` | runtime | `ImageList_SelectionChanged` | 1 |
 | `ImageOverlayCanvas` | pointer x4 + `SizeChanged` | runtime | matching `ImageOverlay_*` handlers | 1 each |
 | `ImageXBox`, `ImageYBox`, `ImageWidthBox`, `ImageHeightBox` | `ValueChanged` | runtime | `ImageGeometry_ValueChanged` | 1 each |
