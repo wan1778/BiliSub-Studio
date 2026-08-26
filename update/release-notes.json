@@ -1,7 +1,7 @@
 {
-  "version": "4.0.0-beta.59-csharp-p5",
+  "version": "4.0.0-beta.60-csharp-p5",
   "notes": [
-    "Mở lại project không còn nạp bản Vietsub AI cũ khi policy dịch đã đổi; SRT nguồn được giữ nguyên và yêu cầu dịch lại sạch.",
-    "Nếu model trả relation/key ngoài CONTEXT hoặc TARGET, ứng dụng bỏ riêng dữ liệu bộ nhớ không tin cậy thay vì dừng cả lượt Vietsub."
+    "Editor có nút Nạp SRT Việt đã dịch: ghép lời Việt vào SRT Trung hiện có để preview, export và tạo voice local.",
+    "Ứng dụng chỉ nhận SRT Việt có đúng số cue, số thứ tự và timecode với SRT Trung; file sai hoặc cancel không đổi project."
   ]
 }
