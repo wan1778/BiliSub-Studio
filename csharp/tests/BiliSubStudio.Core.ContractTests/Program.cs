@@ -1482,7 +1482,8 @@ internal static class Program
                 new EditorSubtitlePlacement(.1, .72, .8, .18),
                 "Dịch Trung Tu Tiên",
                 TranslationSkillBundle.BuiltInSha256,
-                Path.Combine(root, "source.vi.srt"));
+                Path.Combine(root, "source.vi.srt"),
+                TranslationPolicyKey: LocalSubtitleTranslationService.TranslationPolicyKey);
             var speechPath = Path.Combine(root, "speech.json");
             var speechAnalysis = new EditorSpeechAnalysis(
                 EditorSpeechAnalysisDocument.CurrentSchema, new string('b', 64), "fixture Whisper",
@@ -1514,6 +1515,7 @@ internal static class Program
             Equal(2, reopened.Regions.Count);
             Equal("stable-region", reopened.Regions[0].Id);
             Equal(.1, reopened.Regions[0].X);
+            Equal(LocalSubtitleTranslationService.TranslationPolicyKey, reopened.Subtitle?.TranslationPolicyKey);
             Equal(EditorBlurStrength.Maximum, reopened.Regions[0].Strength);
             Equal("stable-mosaic", reopened.Regions[1].Id);
             Equal(EditorMosaicStrength.Maximum, reopened.Regions[1].Strength);

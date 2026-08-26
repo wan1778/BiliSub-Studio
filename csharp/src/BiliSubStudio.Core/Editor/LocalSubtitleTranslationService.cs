@@ -62,7 +62,7 @@ public sealed partial class LocalSubtitleTranslationService : IDisposable
     internal const string ThinkingTemplateKwargs = "{\"enable_thinking\":false}";
     internal const string ReasoningMode = "off";
     internal const int RuntimeAutoGpuLayers = -1;
-    internal const string TranslationPolicyKey = "locked-memory-v2";
+    public const string TranslationPolicyKey = "locked-memory-v3";
     private const int DirectTranslationBatchSize = 1;
     private const int TranslationBatchSmall = 8;
     private const int TranslationBatchMedium = 24;

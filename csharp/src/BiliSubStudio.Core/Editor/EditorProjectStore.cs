@@ -67,7 +67,8 @@ public sealed record EditorSubtitleProject(
     string SkillName,
     string SkillSha256,
     string OutputPath,
-    bool Karaoke = true);
+    bool Karaoke = true,
+    string? TranslationPolicyKey = null);
 
 public sealed record EditorProject(
     int Schema,

@@ -12,7 +12,7 @@ internal static class TranslationQualityPolicyContract
         var service = typeof(LocalSubtitleTranslationService);
         var policy = service.GetField("TranslationPolicyKey", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public)
             ?.GetRawConstantValue()?.ToString();
-        if (!string.Equals(policy, "locked-memory-v2", StringComparison.Ordinal))
+        if (!string.Equals(policy, "locked-memory-v3", StringComparison.Ordinal))
             throw new InvalidOperationException("locked-memory translation policy revision is not pinned");
 
         var sourcePath = Path.Combine(Directory.GetCurrentDirectory(), "csharp", "src", "BiliSubStudio.Core", "Editor", "LocalSubtitleTranslationService.cs");
@@ -58,7 +58,7 @@ internal static class TranslationQualityPolicyContract
             "không dịch, xóa hay đổi token",
             "陈长安=Trần Trường An",
             "names ghi source Hán + text Hán-Việt",
-            "relations ghi key là người đang được gọi",
+            "relations ghi key phải xuất hiện nguyên văn trong CONTEXT/TARGET",
             "translated.Replace(entry.Token, entry.Vietnamese",
             "translated.Replace(entry.Source, entry.Vietnamese",
             "CountOccurrences(cue.SourceText, entry.Source",
@@ -67,6 +67,8 @@ internal static class TranslationQualityPolicyContract
             "Cue {cue.Number} không giữ xưng hô đã xác nhận",
             "checkpoint.Names.Count >= 256",
             "checkpoint.Relations.Count >= 256",
+            "if (!IsRelationKeyInContext(key, contextText)) continue;",
+            "private static bool IsRelationKeyInContext",
         })
         {
             if (!memory.Contains(marker, StringComparison.Ordinal))
@@ -109,8 +111,32 @@ internal static class TranslationQualityPolicyContract
         }
         validate.Invoke(null, [cue, "Ngươi đi đi."]);
 
-        if (source.Contains("internal const string TranslationPolicyKey = \"locked-memory-v1\"", StringComparison.Ordinal)
-            || source.Contains("internal const string TranslationPolicyKey = \"direct-cue-v1\"", StringComparison.Ordinal))
+        if (source.Contains("TranslationPolicyKey = \"locked-memory-v1\"", StringComparison.Ordinal)
+            || source.Contains("TranslationPolicyKey = \"locked-memory-v2\"", StringComparison.Ordinal)
+            || source.Contains("TranslationPolicyKey = \"direct-cue-v1\"", StringComparison.Ordinal))
             throw new InvalidOperationException("old translation checkpoints must not survive the cultivation-address policy");
+
+        var relationKey = service.GetMethod("IsRelationKeyInContext", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing relation-memory context gate");
+        if ((bool)relationKey.Invoke(null, ["师尊", "弟子拜见师尊。"])! is false
+            || (bool)relationKey.Invoke(null, ["师兄", "弟子拜见师尊。"])!)
+            throw new InvalidOperationException("out-of-context relation memory must be discarded without failing translations");
+
+        var editorPath = Path.Combine(Directory.GetCurrentDirectory(), "csharp", "src", "BiliSubStudio.App", "Pages", "EditorPage.xaml.cs");
+        if (File.Exists(editorPath))
+        {
+            var editor = File.ReadAllText(editorPath);
+            foreach (var marker in new[]
+            {
+                "saved.TranslationPolicyKey",
+                "LocalSubtitleTranslationService.TranslationPolicyKey",
+                "Bản dịch AI cũ không còn tương thích với policy hiện tại",
+                "TranslationPolicyKey = null",
+            })
+            {
+                if (!editor.Contains(marker, StringComparison.Ordinal))
+                    throw new InvalidOperationException("stale project Vietsub restore policy is missing: " + marker);
+            }
+        }
     }
 }

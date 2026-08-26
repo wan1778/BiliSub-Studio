@@ -324,7 +324,13 @@ public sealed partial class EditorPage : Page
                 TranslationStatusText.Text = "File SRT nguồn đã thay đổi; hãy chọn lại để không ghép nhầm checkpoint/bản dịch.";
                 return;
             }
-            var translated = saved.Cues.ToDictionary(x => x.Id, x => x.VietnameseText, StringComparer.Ordinal);
+            var restoreTranslatedCues = string.Equals(
+                saved.TranslationPolicyKey,
+                LocalSubtitleTranslationService.TranslationPolicyKey,
+                StringComparison.Ordinal);
+            var translated = restoreTranslatedCues
+                ? saved.Cues.ToDictionary(x => x.Id, x => x.VietnameseText, StringComparer.Ordinal)
+                : new Dictionary<string, string>(StringComparer.Ordinal);
             _subtitleSource = current with
             {
                 Cues = current.Cues.Select(x => x with
@@ -332,14 +338,34 @@ public sealed partial class EditorPage : Page
                     VietnameseText = translated.TryGetValue(x.Id, out var value) ? value : string.Empty,
                 }).ToArray(),
             };
+            if (!restoreTranslatedCues && _project is not null)
+            {
+                // Project cue text is AI output. It has no semantic value after a
+                // translation-policy revision, unlike the immutable source SRT.
+                // Clearing its output path also keeps the manual-store restore path
+                // from applying old Vietnamese overrides over the fresh source.
+                _project = _project with
+                {
+                    Subtitle = saved with
+                    {
+                        Cues = _subtitleSource.Cues,
+                        OutputPath = string.Empty,
+                        TranslationPolicyKey = null,
+                    },
+                    Tts = null,
+                };
+                _voiceTrack = null;
+            }
             _subtitlePlacement = saved.Placement ?? EditorSubtitlePlacement.Default;
             _syncingVoice = true;
             try { KaraokeToggle.IsOn = saved.Karaoke; } finally { _syncingVoice = false; }
             SrtPathText.Text = saved.SourcePath;
             UpdateSubtitleSummary();
-            TranslationStatusText.Text = _subtitleSource.Cues.All(x => !string.IsNullOrWhiteSpace(x.VietnameseText))
-                ? "Bản Vietsub đã hoàn tất; có thể mở thư mục SRT Việt."
-                : "Đã khôi phục SRT và các câu dịch/checkpoint hiện có.";
+            TranslationStatusText.Text = !restoreTranslatedCues
+                ? "Bản dịch AI cũ không còn tương thích với policy hiện tại; đã giữ SRT gốc và cần Vietsub lại."
+                : _subtitleSource.Cues.All(x => !string.IsNullOrWhiteSpace(x.VietnameseText))
+                    ? "Bản Vietsub đã hoàn tất; có thể mở thư mục SRT Việt."
+                    : "Đã khôi phục SRT và các câu dịch/checkpoint hiện có.";
         }
         catch (Exception error)
         {
@@ -480,7 +506,8 @@ public sealed partial class EditorPage : Page
                 skill.SkillName,
                 skill.SkillSha256,
                 outputPath,
-                KaraokeToggle.IsOn),
+                KaraokeToggle.IsOn,
+                null),
         };
     }
 
@@ -1999,7 +2026,8 @@ public sealed partial class EditorPage : Page
             _project!.Subtitle?.SkillName ?? "Dịch Trung Tu Tiên",
             _project.Subtitle?.SkillSha256 ?? TranslationSkillBundle.BuiltInSha256,
             _project.Subtitle?.OutputPath ?? string.Empty,
-            KaraokeToggle.IsOn),
+            KaraokeToggle.IsOn,
+            _project.Subtitle?.TranslationPolicyKey),
         Audio = _audioSettings,
         UpdatedUtc = DateTimeOffset.UtcNow,
     };

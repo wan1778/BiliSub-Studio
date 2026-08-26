@@ -394,7 +394,8 @@ public sealed partial class EditorPage
                             subtitleSnapshot?.SkillName ?? "Dịch Trung Tu Tiên",
                             result.SkillSha256,
                             result.OutputPath,
-                            subtitleSnapshot?.Karaoke ?? false),
+                            subtitleSnapshot?.Karaoke ?? false,
+                            LocalSubtitleTranslationService.TranslationPolicyKey),
                         UpdatedUtc = DateTimeOffset.UtcNow,
                     };
                     await SubtitleManualStore.SaveAsync(_subtitleSource.Sha256, _manualCueStates, CancellationToken.None);

@@ -88,7 +88,7 @@ public sealed partial class LocalSubtitleTranslationService
             CONTEXT (chỉ để hiểu ngữ cảnh, tuyệt đối không dịch/trả lại trong translations): {{contextJson}}
             TARGET (chỉ các cue phải dịch): {{targetJson}}
             translations phải chứa đúng {{target.Count}} phần tử cho TARGET, không chứa bất kỳ cue CONTEXT nào.
-            Nếu CONTEXT/TARGET xác nhận tên riêng, tông môn/địa danh hoặc quan hệ-xưng hô mới: names ghi source Hán + text Hán-Việt; relations ghi key là người đang được gọi, address là đại từ tiếng Việt đã chắc (vd con/ngươi), note thật ngắn. Không chắc thì trả []. Chỉ trả JSON.
+            Nếu CONTEXT/TARGET xác nhận tên riêng, tông môn/địa danh hoặc quan hệ-xưng hô mới: names ghi source Hán + text Hán-Việt; relations ghi key phải xuất hiện nguyên văn trong CONTEXT/TARGET và là người đang được gọi, address là đại từ tiếng Việt đã chắc (vd con/ngươi), note thật ngắn. Không chắc hoặc key không có trong CONTEXT/TARGET thì bỏ mục đó, trả []. Chỉ trả JSON.
             """;
     }
 
@@ -217,8 +217,10 @@ public sealed partial class LocalSubtitleTranslationService
                 var address = item.TryGetProperty("address", out var addressValue) ? addressValue.GetString()?.Trim() ?? string.Empty : string.Empty;
                 var note = item.TryGetProperty("note", out var noteValue) ? noteValue.GetString()?.Trim() ?? string.Empty : string.Empty;
                 if (string.IsNullOrWhiteSpace(key) || (string.IsNullOrWhiteSpace(address) && string.IsNullOrWhiteSpace(note))) continue;
-                if (key.Length is < 1 or > 12 || !key.All(IsHan) || !contextText.Contains(key, StringComparison.Ordinal))
-                    throw new InvalidDataException("Model trả khóa quan hệ không nằm trong CONTEXT/TARGET.");
+                // Relation memory is optional. A model can hallucinate a relation key while
+                // still returning a valid TARGET translation; discard that untrusted memory
+                // instead of failing the entire translation batch.
+                if (!IsRelationKeyInContext(key, contextText)) continue;
                 if (address.Length > 24 || note.Length > 140 || address.Any(IsHan) || note.Any(IsHan)
                     || address.Any(char.IsControl) || note.Any(char.IsControl))
                     throw new InvalidDataException("Model trả quan hệ/xưng hô vượt giới hạn hoặc còn chữ Hán.");
@@ -250,6 +252,11 @@ public sealed partial class LocalSubtitleTranslationService
 
         return new ValidatedTranslationBatch(translations, learnedNames, learnedRelations);
     }
+
+    private static bool IsRelationKeyInContext(string key, string contextText) =>
+        key.Length is >= 1 and <= 12
+        && key.All(IsHan)
+        && contextText.Contains(key, StringComparison.Ordinal);
 
     private static void MergeTranslationMemory(TranslationCheckpoint checkpoint, ValidatedTranslationBatch validated)
     {
