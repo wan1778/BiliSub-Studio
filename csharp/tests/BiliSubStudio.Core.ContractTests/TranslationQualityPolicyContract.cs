@@ -49,11 +49,19 @@ internal static class TranslationQualityPolicyContract
         foreach (var marker in new[]
         {
             "private const string MemoryTranslationSchema",
-            "Bắt buộc đúng TERMS, NAMES, RELATION",
+            "MatchLockedTerms(context.Select(x => x.SourceText), int.MaxValue)",
+            "MatchLockedTerms(target.Select(x => x.SourceText), int.MaxValue)",
+            "$\"__TERM_{index}__\"",
+            "MaskText(x.SourceText)",
+            "Các token __TERM_X__",
+            "không dịch, xóa hay đổi token",
             "陈长安=Trần Trường An",
             "names ghi source Hán + text Hán-Việt",
             "relations ghi key là người đang được gọi",
-            "Cue {cue.Number} làm sai thuật ngữ khóa",
+            "translated.Replace(entry.Token, entry.Vietnamese",
+            "translated.Replace(entry.Source, entry.Vietnamese",
+            "CountOccurrences(cue.SourceText, entry.Source",
+            "actualCount < expectedCount",
             "Cue {cue.Number} làm sai tên đã khóa",
             "Cue {cue.Number} không giữ xưng hô đã xác nhận",
             "checkpoint.Names.Count >= 256",
@@ -61,7 +69,7 @@ internal static class TranslationQualityPolicyContract
         })
         {
             if (!memory.Contains(marker, StringComparison.Ordinal))
-                throw new InvalidOperationException("locked-memory validator/prompt missing: " + marker);
+                throw new InvalidOperationException("glossary-mask validator/prompt missing: " + marker);
         }
 
         foreach (var marker in new[]
@@ -79,6 +87,10 @@ internal static class TranslationQualityPolicyContract
                 throw new InvalidOperationException("locked cultivation glossary missing: " + marker);
         }
 
+        if (memory.Contains("TERMS: {{terms}}", StringComparison.Ordinal))
+            throw new InvalidOperationException("legacy advisory TERMS list must not return after glossary masking");
+        if (memory.Contains("Cue {cue.Number} làm sai thuật ngữ khóa", StringComparison.Ordinal))
+            throw new InvalidOperationException("glossary mismatch must be repaired in C# instead of throwing");
         if (source.Contains("[\"presence_penalty\"] = 1.0", StringComparison.Ordinal))
             throw new InvalidOperationException("translation must not penalize repeated names/terms with presence_penalty=1.0");
         if (source.Contains("loaded.Schema != 2", StringComparison.Ordinal))

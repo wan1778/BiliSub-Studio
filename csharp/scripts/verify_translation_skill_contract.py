@@ -10,6 +10,7 @@ from pathlib import Path, PurePosixPath
 ROOT = Path(__file__).resolve().parents[2]
 ARCHIVE = ROOT / "internal" / "translation" / "dich-trung-tu-tien.zip"
 SERVICE = ROOT / "csharp" / "src" / "BiliSubStudio.Core" / "Editor" / "LocalSubtitleTranslationService.cs"
+MEMORY = ROOT / "csharp" / "src" / "BiliSubStudio.Core" / "Editor" / "LocalSubtitleTranslationService.TranslationMemory.cs"
 SKILL_LOADER = ROOT / "csharp" / "src" / "BiliSubStudio.Core" / "Editor" / "TranslationSkillBundle.cs"
 APP_PROJECT = ROOT / "csharp" / "src" / "BiliSubStudio.App" / "BiliSubStudio.App.csproj"
 
@@ -46,6 +47,7 @@ def main() -> int:
             require(not path.is_absolute() and ".." not in path.parts and ":" not in name, "translation skill contains unsafe path")
 
     service = SERVICE.read_text(encoding="utf-8")
+    memory = MEMORY.read_text(encoding="utf-8")
     loader = SKILL_LOADER.read_text(encoding="utf-8")
     project = APP_PROJECT.read_text(encoding="utf-8")
     require(EXPECTED_ARCHIVE_SHA in loader, "runtime skill SHA pin drift")
@@ -53,7 +55,27 @@ def main() -> int:
     require(EXPECTED_RUNTIME_SHA in service and "34_937_857" in service, "llama.cpp runtime manifest/hash pin drift")
     require("resolve/7c41481f57cb95916b40956ab2f0b139b296d974/" in service, "Qwen download is not commit-pinned")
     require(re.search(r'Link="Assets\\Translation\\dich-trung-tu-tien\.zip"', project) is not None, "published app does not package translation skill")
-    print("PASS: pinned local translation model/runtime and exact translation skill bundle")
+
+    require("MatchLockedTerms(target.Select(x => x.SourceText), int.MaxValue)" in memory,
+            "TARGET glossary matching still has a hard item cap")
+    require("MatchLockedTerms(context.Select(x => x.SourceText), int.MaxValue)" in memory,
+            "CONTEXT glossary matching still has a hard item cap")
+    require('$"__TERM_{index}__"' in memory and "MaskText(x.SourceText)" in memory,
+            "glossary masking tokens are not applied before inference")
+    require("Các token __TERM_X__" in memory and "không dịch, xóa hay đổi token" in memory,
+            "masked glossary token preservation instruction is missing")
+    require("TERMS: {{terms}}" not in memory,
+            "legacy advisory TERMS list returned to the translation prompt")
+    require("translated.Replace(entry.Token, entry.Vietnamese" in memory
+            and "translated.Replace(entry.Source, entry.Vietnamese" in memory,
+            "post-inference glossary restoration/repair is missing")
+    require("làm sai thuật ngữ khóa" not in memory,
+            "glossary mismatch still throws instead of being repaired in C#")
+    require("CountOccurrences(cue.SourceText, entry.Source" in memory
+            and "actualCount < expectedCount" in memory,
+            "glossary repair does not enforce repeated locked terms")
+
+    print("PASS: pinned local translation model/runtime + glossary masking/restoration + exact translation skill bundle")
     return 0
 
 

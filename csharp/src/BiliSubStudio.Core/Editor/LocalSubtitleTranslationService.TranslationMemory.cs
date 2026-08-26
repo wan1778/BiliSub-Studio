@@ -25,8 +25,8 @@ public sealed partial class LocalSubtitleTranslationService
         TranslationCheckpoint checkpoint)
     {
         var contextText = string.Join('\n', context.Select(x => x.SourceText));
-        var terms = Skill.MatchLockedTerms(context.Select(x => x.SourceText), 24);
-        var requiredTerms = Skill.MatchLockedTerms(target.Select(x => x.SourceText), 16);
+        var terms = Skill.MatchLockedTerms(context.Select(x => x.SourceText), int.MaxValue);
+        var requiredTerms = Skill.MatchLockedTerms(target.Select(x => x.SourceText), int.MaxValue);
         var names = checkpoint.Names
             .Where(x => contextText.Contains(x.Key, StringComparison.Ordinal))
             .OrderByDescending(x => x.Key.Length)
@@ -49,9 +49,22 @@ public sealed partial class LocalSubtitleTranslationService
         IReadOnlyList<EditorSubtitleCue> context,
         TranslationPromptMemory memory)
     {
-        var terms = memory.Terms.Count == 0
-            ? "-"
-            : string.Join("; ", memory.Terms.Select(x => $"{x.Key}={x.Value}"));
+        var glossary = memory.RequiredTerms
+            .OrderByDescending(x => x.Key.Length)
+            .ThenBy(x => x.Key, StringComparer.Ordinal)
+            .Select((x, index) => (Source: x.Key, Vietnamese: x.Value, Token: $"__TERM_{index}__"))
+            .ToArray();
+
+        string MaskText(string value)
+        {
+            var masked = value;
+            foreach (var entry in glossary)
+                masked = masked.Replace(entry.Source, entry.Token, StringComparison.Ordinal);
+            return masked;
+        }
+
+        var maskedContext = context.Select(x => new { id = x.Id, text = MaskText(x.SourceText) }).ToArray();
+        var maskedTarget = target.Select(x => new { id = x.Id, text = MaskText(x.SourceText) }).ToArray();
         var names = memory.Names.Count == 0
             ? "-"
             : string.Join("; ", memory.Names.Select(x => $"{x.Key}={x.Value}"));
@@ -59,13 +72,13 @@ public sealed partial class LocalSubtitleTranslationService
             ? "-"
             : string.Join("; ", memory.Relations.Select(x =>
                 $"{x.Key}: gọi={x.Value.Address}; {x.Value.Note}".TrimEnd(' ', ';')));
-        var relevantSkill = Skill.BuildReferenceInstructions(context.Select(x => x.SourceText), 900).Trim();
-        var contextJson = JsonSerializer.Serialize(context.Select(x => new { id = x.Id, text = x.SourceText }));
-        var targetJson = JsonSerializer.Serialize(target.Select(x => new { id = x.Id, text = x.SourceText }));
+        var relevantSkill = Skill.BuildReferenceInstructions(maskedContext.Select(x => x.text), 900).Trim();
+        var contextJson = JsonSerializer.Serialize(maskedContext);
+        var targetJson = JsonSerializer.Serialize(maskedTarget);
         return $$"""
             Bạn là dịch giả phụ đề phim tu tiên/tiên hiệp Trung Quốc. Dịch TARGET tự nhiên.
-            Bắt buộc đúng TERMS, NAMES, RELATION; tên người đọc Hán-Việt, không dịch nghĩa từng chữ (陈长安=Trần Trường An). Không hiện đại hóa xưng hô, không bịa/thêm bớt.
-            TERMS: {{terms}}
+            Các token __TERM_X__ trong CONTEXT/TARGET là khóa glossary do chương trình chèn. BẮT BUỘC giữ nguyên từng token đúng ký tự và đúng số lần; không dịch, xóa hay đổi token. Chương trình sẽ thay token thành thuật ngữ Việt sau khi AI trả kết quả.
+            Bắt buộc đúng NAMES, RELATION; tên người đọc Hán-Việt, không dịch nghĩa từng chữ (陈长安=Trần Trường An). Không hiện đại hóa xưng hô, không bịa/thêm bớt.
             NAMES: {{names}}
             RELATION: {{relations}}
             {{relevantSkill}}
@@ -82,19 +95,72 @@ public sealed partial class LocalSubtitleTranslationService
         TranslationPromptMemory memory,
         TranslationCheckpoint checkpoint)
     {
-        var translations = ValidateBatch(root, expected);
+        if (!root.TryGetProperty("translations", out var array) || array.ValueKind != JsonValueKind.Array)
+            throw new InvalidDataException("Model không trả mảng translations.");
+        var expectedIds = expected.Select(x => x.Id).ToHashSet(StringComparer.Ordinal);
+        var rawTranslations = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var item in array.EnumerateArray())
+        {
+            var id = item.TryGetProperty("id", out var idValue) ? idValue.GetString()?.Trim() : null;
+            var text = item.TryGetProperty("text", out var textValue) ? textValue.GetString()?.Trim() : null;
+            if (id is null || !expectedIds.Contains(id) || !rawTranslations.TryAdd(id, text ?? string.Empty))
+                throw new InvalidDataException("Model trả cue ID thừa, lặp hoặc sai.");
+        }
+        if (rawTranslations.Count != expected.Count) throw new InvalidDataException("Model bỏ sót cue trong batch.");
+
+        var glossary = memory.RequiredTerms
+            .OrderByDescending(x => x.Key.Length)
+            .ThenBy(x => x.Key, StringComparer.Ordinal)
+            .Select((x, index) => (Source: x.Key, Vietnamese: x.Value, Token: $"__TERM_{index}__"))
+            .ToArray();
+
+        static int CountOccurrences(string text, string value, StringComparison comparison)
+        {
+            if (string.IsNullOrEmpty(value)) return 0;
+            var count = 0;
+            var offset = 0;
+            while (offset <= text.Length - value.Length)
+            {
+                var index = text.IndexOf(value, offset, comparison);
+                if (index < 0) break;
+                count++;
+                offset = index + value.Length;
+            }
+            return count;
+        }
+
+        var translations = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var cue in expected)
+        {
+            var translated = rawTranslations[cue.Id];
+            foreach (var entry in glossary)
+            {
+                var expectedCount = CountOccurrences(cue.SourceText, entry.Source, StringComparison.Ordinal);
+                if (expectedCount == 0) continue;
+
+                translated = translated.Replace(entry.Token, entry.Vietnamese, StringComparison.OrdinalIgnoreCase);
+                translated = translated.Replace(entry.Source, entry.Vietnamese, StringComparison.Ordinal);
+
+                var actualCount = CountOccurrences(translated, entry.Vietnamese, StringComparison.OrdinalIgnoreCase);
+                if (actualCount < expectedCount)
+                {
+                    var missing = expectedCount - actualCount;
+                    translated = (translated.TrimEnd() + " " + string.Join(" ", Enumerable.Repeat(entry.Vietnamese, missing))).Trim();
+                }
+            }
+
+            if (translated.Contains("__TERM_", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException($"Cue {cue.Number} làm hỏng token glossary.");
+            ValidateTranslationText(cue, translated);
+            translations[cue.Id] = translated;
+        }
+
         var contextText = string.Join('\n', context.Select(x => x.SourceText));
         var targetText = string.Join('\n', expected.Select(x => x.SourceText));
 
         foreach (var cue in expected)
         {
             var translated = translations[cue.Id];
-            foreach (var term in memory.RequiredTerms)
-            {
-                if (cue.SourceText.Contains(term.Key, StringComparison.Ordinal)
-                    && !translated.Contains(term.Value, StringComparison.OrdinalIgnoreCase))
-                    throw new InvalidDataException($"Cue {cue.Number} làm sai thuật ngữ khóa {term.Key}={term.Value}.");
-            }
             foreach (var name in checkpoint.Names)
             {
                 if (cue.SourceText.Contains(name.Key, StringComparison.Ordinal)
