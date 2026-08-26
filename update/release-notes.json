@@ -1,7 +1,7 @@
 {
-  "version": "4.0.0-beta.51-csharp-p5",
+  "version": "4.0.0-beta.52-csharp-p5",
   "notes": [
-    "Khi SRT đã Vietsub xong, nút Vietsub đổi thành Dịch lại từ đầu để có thể bỏ bản AI cũ và chạy lại toàn bộ.",
-    "Dịch lại từ đầu xóa checkpoint/kết quả AI cũ của file hiện tại, giữ các câu đã khóa thủ công và hiển thị lại bản dịch mới từng câu từ câu 1."
+    "Trong lúc Vietsub AI đang chạy, danh sách Chỉnh từng câu SRT vẫn có thể cuộn lên/xuống để xem các câu đã dịch mà không bị AI kéo trở lại câu mới nhất.",
+    "Chỉ mở quyền xem/cuộn khi đang dịch; phần sửa lời, khóa câu và dịch lại câu vẫn giữ khóa để tránh xung đột dữ liệu với tiến trình Vietsub."
   ]
 }
