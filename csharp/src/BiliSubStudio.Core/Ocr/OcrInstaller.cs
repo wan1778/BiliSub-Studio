@@ -50,16 +50,35 @@ internal sealed class OcrInstaller
 
     private string PythonInstallRoot => Path.Combine(BootstrapRoot, "python");
 
+    // Paddle loads several native DLLs below site-packages. A portable build can
+    // be started from a deeply nested directory (for example a source checkout),
+    // where the final libpaddle path exceeds the legacy Win32 limit even before
+    // dependent DLLs are resolved. Keep normal portable installs beside the app,
+    // but put this private runtime in a compact LocalAppData root when required.
+    private string StorageRoot => RequiresCompactStorage(_paths.Ocr)
+        ? Path.Combine(BootstrapRoot, "store")
+        : _paths.Ocr;
+
+    internal static bool RequiresCompactStorage(string ocrRoot)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(ocrRoot);
+        var nativePaddlePath = Path.Combine(ocrRoot, "runtime", "gpu", "venv", "Lib", "site-packages", "paddle", "base", "libpaddle.pyd");
+        // Stay below MAX_PATH with room for loader-generated dependent paths.
+        return nativePaddlePath.Length >= 220;
+    }
+
     public async Task<OcrRuntime> EnsureAsync(string kind, HardwareSnapshot hardware, CancellationToken cancellationToken)
     {
         await _gate.WaitAsync(cancellationToken);
         try
         {
             var spec = RuntimeSpec(kind, hardware);
-            Directory.CreateDirectory(_paths.Ocr);
-            Directory.CreateDirectory(Path.Combine(_paths.Ocr, "models"));
+            var storageRoot = StorageRoot;
+            Directory.CreateDirectory(storageRoot);
+            var modelsRoot = Path.Combine(storageRoot, "models");
+            Directory.CreateDirectory(modelsRoot);
             var worker = await EnsureWorkerAsync(cancellationToken);
-            var runtimeRoot = Path.Combine(_paths.Ocr, "runtime", kind);
+            var runtimeRoot = Path.Combine(storageRoot, "runtime", kind);
             var venvRoot = Path.Combine(runtimeRoot, "venv");
             var python = Path.Combine(venvRoot, "Scripts", "python.exe");
             var manifestPath = Path.Combine(runtimeRoot, "install.json");
@@ -68,7 +87,7 @@ internal sealed class OcrInstaller
             if (File.Exists(python) && await ManifestMatchesAsync(manifestPath, expected, cancellationToken))
             {
                 await WriteManifestAsync(manifestPath, expected, cancellationToken);
-                return new OcrRuntime(python, worker, Path.Combine(_paths.Ocr, "models"), spec.Device, kind);
+                return new OcrRuntime(python, worker, modelsRoot, spec.Device, kind);
             }
 
             // Never layer a new runtime over a partially populated venv. Models live outside
@@ -92,7 +111,7 @@ internal sealed class OcrInstaller
 
             await WriteManifestAsync(manifestPath, expected, cancellationToken);
             if (!File.Exists(python)) throw new FileNotFoundException("Cài OCR không tạo private Python.", python);
-            return new OcrRuntime(python, worker, Path.Combine(_paths.Ocr, "models"), spec.Device, kind);
+            return new OcrRuntime(python, worker, modelsRoot, spec.Device, kind);
         }
         finally { _gate.Release(); }
     }
@@ -155,7 +174,7 @@ internal sealed class OcrInstaller
 
     private async Task<string?> FindUsableBasePythonAsync(CancellationToken cancellationToken)
     {
-        foreach (var root in new[] { PythonInstallRoot, Path.Combine(_paths.Ocr, "python") }.Distinct(StringComparer.OrdinalIgnoreCase))
+        foreach (var root in new[] { PythonInstallRoot, Path.Combine(StorageRoot, "python") }.Distinct(StringComparer.OrdinalIgnoreCase))
         {
             if (!Directory.Exists(root)) continue;
             foreach (var directory in Directory.EnumerateDirectories(root)
@@ -250,7 +269,7 @@ internal sealed class OcrInstaller
     {
         var source = Path.Combine(AppContext.BaseDirectory, "Assets", "worker.py");
         if (!File.Exists(source)) throw new FileNotFoundException("Thiếu Assets/worker.py của OCR.", source);
-        var destination = Path.Combine(_paths.Ocr, "worker.py");
+        var destination = Path.Combine(StorageRoot, "worker.py");
         var sourceHash = await Sha256Async(source, cancellationToken);
         if (!File.Exists(destination) || !string.Equals(await Sha256Async(destination, cancellationToken), sourceHash, StringComparison.OrdinalIgnoreCase))
         {

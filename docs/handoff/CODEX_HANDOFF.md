@@ -1,9 +1,9 @@
 # Codex handoff — BiliSub Studio
 
-- Current main/base SHA: `ddc79ebf0182379c61594124f109848d1c29597c`.
+- Current main/base SHA: `8c3f406830be675cf74e452a812dba6d5196fe73`.
 - Current branch: `main`.
 - PR: none.
-- Last completed task: `OCR-TIMING-02` — keep a continuous subtitle together when OCR alternates between equivalent simplified/traditional glyphs on adjacent source frames.
+- Last completed task: `OCR-RUNTIME-01` — avoid a Paddle native-DLL crash when a portable app/build path is too long.
 - Task in progress: none.
 - Exact next task: run the current Release build through the WinUI OCR user flow, then field-test a representative longer Accurate segment before treating the full-video OCR quality gate as PASS; use source-frame PTS as timing truth and record intentional visual-text versus supplied-SRT differences separately.
 
@@ -32,6 +32,11 @@ The next real scan demonstrated a timing-fragmentation defect: on adjacent
 source frames Paddle alternated between simplified `别` and traditional `別` in
 the same visually continuous line (`别睡傻了`). The tracker treated those
 spellings as different text and emitted multiple short cues.
+
+The Release WinUI OCR flow then demonstrated that a deeply nested portable
+build path creates a `libpaddle.pyd` path of 255 characters. Windows failed to
+load the native module (`DLL load failed: The filename or extension is too
+long`), so the worker exited before it could emit Ready.
 
 ## Changes made
 
@@ -62,6 +67,10 @@ spellings as different text and emitted multiple short cues.
   simplified/traditional Han glyphs as the same for temporal tracking only.
   It retains the best recognised spelling in the actual cue/SRT and still
   separates genuinely different text.
+- `OcrInstaller` now calculates the final Paddle native DLL path before
+  creating its private environment. At 220+ characters it moves only the OCR
+  worker, models and venv to compact `%LocalAppData%\BiliSub Studio\OCRBootstrap\store`.
+  Short portable installs keep their existing app-local layout.
 - Bumped OCR checkpoint schema to 5 so no old 4-fps Accurate checkpoint can be
   resumed under the new every-frame semantics.
 - Added contract coverage for every-frame argument construction, PTS parsing,
@@ -72,7 +81,9 @@ spellings as different text and emitted multiple short cues.
 - `csharp/src/BiliSubStudio.Core/Ocr/OcrCheckpointStore.cs`
 - `csharp/src/BiliSubStudio.Core/Ocr/OcrScanner.cs`
 - `csharp/src/BiliSubStudio.Core/Ocr/SubtitleTracker.cs`
+- `csharp/src/BiliSubStudio.Core/Ocr/OcrInstaller.cs`
 - `csharp/tests/BiliSubStudio.Core.ContractTests/OcrTrackerModeRegression.cs`
+- `csharp/tests/BiliSubStudio.Core.ContractTests/OcrRuntimePathRegression.cs`
 - `docs/handoff/CODEX_HANDOFF.md`
 
 ## Tests and status
@@ -81,6 +92,7 @@ spellings as different text and emitted multiple short cues.
 - `dotnet build csharp/BiliSubStudio.sln --no-restore`: PASS, including the WinUI application, 0 warnings / 0 errors.
 - `dotnet run --project csharp/tests/BiliSubStudio.Core.ContractTests/BiliSubStudio.Core.ContractTests.csproj --no-build`: PASS, 71/71.
 - `dotnet build csharp/BiliSubStudio.sln -c Release --no-restore`: PASS, 0 warnings / 0 errors. Debug build was not used for this final check because the separate `build dev` test window held its DLL open.
+- `dotnet run --project csharp/tests/BiliSubStudio.Core.ContractTests/BiliSubStudio.Core.ContractTests.csproj --no-restore`: PASS, 71/71, including the short/long OCR private-runtime path guard.
 - Local FFmpeg runtime probe on the supplied test video: PASS — `-copyts` plus
   `showinfo` returned sequential source PTS `59.600000`, `59.633313`,
   `59.666688`, with exact per-frame durations.
@@ -105,13 +117,20 @@ spellings as different text and emitted multiple short cues.
   line is now one cue, exactly `144.166687 → 145.233313`, rather than being
   fragmented by `别`/`別`. Result:
   `C:\Users\Man PC\AppData\Local\Temp\BiliSubOcrFieldProbe\state\accurate-146-s.json`.
+- Release runtime field test under the same deep build root that previously
+  failed: PASS. `PrepareOcrAsync("gpu")` created the compact private runtime,
+  Paddle `3.2.0` reported CUDA enabled, and one actual video frame returned
+  `陈长安` at `0.997593` confidence. The source video was not changed.
 - The supplied Chinese SRT is not an exact visual-overlay ground truth: it
   omits visibly recognised on-screen text such as `当然知晓` at 13.8s. Do not
   force source PTS output to match a different subtitle track without a
   verified visual ground-truth decision.
-- The WinUI OCR page opens in the current debug build, but its Windows file
-  picker is hosted by `PickerHost.exe` and was not targetable by the test
-  automation; a human WinUI file-selection/scan flow remains field-test work.
+- The WinUI OCR page, picker, metadata read and `Chính xác` mode selection
+  were observed in the current Release build. The full post-fix UI worker gate
+  was validated via a path-bound Release runtime probe because window automation
+  began returning the user-installed app's build identity after a new launch;
+  do not risk interacting with that user session. A human `Prepare OCR` +
+  `Test frame` field-test remains desirable.
   Full-video OCR accuracy remains untested. No release may be made from this
   bounded field evidence alone.
 - No version bump, release, PR, merge, or source-media overwrite was performed.
