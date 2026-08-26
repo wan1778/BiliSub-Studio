@@ -55,8 +55,8 @@ internal sealed class SubtitleTracker
             _candidate = null;
             _active = _active with
             {
-                End = Math.Max(_active.End, at + _frameSpan),
-                Text = result.Confidence > _active.Confidence + 0.035 || text.Length > _active.Text.Length + 2 ? text : _active.Text,
+                End = Math.Max(_active.End, at + _frameSpan / 2),
+                Text = PreferText(_active.Text, _active.Confidence, text, result.Confidence),
                 Confidence = Math.Max(_active.Confidence, result.Confidence),
             };
             return;
@@ -65,7 +65,7 @@ internal sealed class SubtitleTracker
         var required = text.EnumerateRunes().Count() <= 1 || result.Confidence < _lowConfidence ? 3 : 2;
         if (_candidate is null || at - _candidate.Last > _candidateGap || Similarity(_candidate.Text, text) < 0.80)
         {
-            _candidate = new Candidate(text, at, at, result.Confidence, 1, required);
+            _candidate = new Candidate(text, EstimateBoundary(at), at, result.Confidence, 1, required);
             return;
         }
         _candidate = _candidate with
@@ -74,7 +74,7 @@ internal sealed class SubtitleTracker
             Confidence = Math.Max(_candidate.Confidence, result.Confidence),
             Hits = _candidate.Hits + 1,
             Required = Math.Max(_candidate.Required, required),
-            Text = result.Confidence > _candidate.Confidence + 0.035 || text.Length > _candidate.Text.Length + 2 ? text : _candidate.Text,
+            Text = PreferText(_candidate.Text, _candidate.Confidence, text, result.Confidence),
         };
         if (_candidate.Hits >= _candidate.Required) PromoteCandidate();
     }
@@ -96,7 +96,7 @@ internal sealed class SubtitleTracker
         if (_emptyHits == 0) _emptyStart = at;
         if (++_emptyHits >= 2)
         {
-            CommitActive(Math.Max(_emptyStart, _active.Start + _frameSpan));
+            CommitActive(Math.Max(EstimateBoundary(_emptyStart), _active.Start + _frameSpan));
             _emptyHits = 0;
         }
     }
@@ -105,7 +105,7 @@ internal sealed class SubtitleTracker
     {
         if (_candidate is null) return;
         if (_active is not null) CommitActive(_candidate.Start);
-        _active = new OcrCue(_candidate.Start, _candidate.Last + _frameSpan, _candidate.Text, _candidate.Confidence);
+        _active = new OcrCue(_candidate.Start, _candidate.Last + _frameSpan / 2, _candidate.Text, _candidate.Confidence);
         _candidate = null;
     }
 
@@ -117,6 +117,19 @@ internal sealed class SubtitleTracker
             _committed.Add(_active with { Text = text, End = Math.Clamp(end, _active.Start + 0.12, _active.Start + 30) });
         }
         _active = null;
+    }
+
+    private double EstimateBoundary(double sampledAt) => Math.Max(0, sampledAt - _frameSpan / 2);
+
+    private static string PreferText(string current, double currentConfidence, string candidate, double candidateConfidence)
+    {
+        if (candidateConfidence > currentConfidence + 0.035) return candidate;
+        // Paddle can recover a trailing/leading CJK glyph on the next frame while
+        // reporting nearly the same line confidence. Do not require a two-character
+        // gain: that was the source of stable one-character truncation.
+        if (candidate.EnumerateRunes().Count() > current.EnumerateRunes().Count()
+            && candidateConfidence >= currentConfidence - 0.08) return candidate;
+        return current;
     }
 
     private static double Similarity(string left, string right)

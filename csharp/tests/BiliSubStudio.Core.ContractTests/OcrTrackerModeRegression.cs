@@ -51,6 +51,16 @@ internal static class OcrTrackerModeRegression
         if (active.GetValue(interrupted) is null)
             throw new InvalidOperationException("subtitle candidate did not recover after fresh consecutive valid hits");
 
+        var recovered = Tracker(.58);
+        observe.Invoke(recovered, [1.00d, new OcrResult(true, true, "吃我的喝我", .80, [])]);
+        observe.Invoke(recovered, [1.40d, new OcrResult(true, true, "吃我的喝我的", .74, [])]);
+        var recoveredCue = (OcrCue)(active.GetValue(recovered)
+            ?? throw new InvalidOperationException("OCR did not promote stable recovered text"));
+        if (recoveredCue.Text != "吃我的喝我的")
+            throw new InvalidOperationException("OCR tracker discarded a stable one-character recovery");
+        if (Math.Abs(recoveredCue.Start - 2d / 3d) > .001)
+            throw new InvalidOperationException("OCR cue start still uses the late first-detected frame instead of midpoint timing");
+
         var scannerType = typeof(OcrResult).Assembly.GetType("BiliSubStudio.Core.Ocr.OcrScanner")
             ?? throw new InvalidOperationException("missing OcrScanner");
         var similarity = scannerType.GetMethod("Similarity", BindingFlags.Static | BindingFlags.NonPublic)

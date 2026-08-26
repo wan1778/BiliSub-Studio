@@ -1,64 +1,46 @@
 # Codex handoff — BiliSub Studio
 
-- Current main/base SHA: `d4e45ef` (public release `4.0.47`).
+- Current main/base SHA: `18a7e2263057b9f815ee24b884f3764466a4a0c7`.
 - Current branch: `main`.
 - PR: none.
-- Last completed task: `VOICE-NGOCHUYEN-01` (commit/release pending at this handoff update).
-- Task in progress: none after the final Windows CI/release gate; do not start another task until that result is known.
-- Exact next task: field-test this Voice flow with a real video and complete Vietsub: `Phân tích word timing` → `Tạo voice Ngọc Huyền local` → Preview → Export.
+- Last completed task: `OCR-ACCURACY-01` (commit pending at this handoff update).
+- Task in progress: none after the targeted test gate; do not start another task until the pushed Windows CI result is known.
+- Exact next task: field-test the OCR scan with the supplied video and Chinese SRT, then verify the resulting cue text and boundaries before starting another OCR task.
 
 ## Root cause
 
-The Editor was still a two-route Piper/VAIS implementation: Whisper measured a
-male/female-like classifier, the UI exposed per-cue gender override, and the TTS
-worker chose a synthetic profile. It could not provide the requested named Ngọc
-Huyền voice. Runtime testing also exposed two portable Windows failures: a temp
-clip created on C: could not atomically move into an E: cache, and the temporary
-FLAC filename hid its extension from FFmpeg.
+OCR discarded a legitimate one-character recovery when the next frame had a
+similar-but-slightly-lower confidence, because the prior policy required a gain
+of more than two characters. It also assigned cue boundaries to the first sampled
+frame, which makes timings late by roughly half the scan interval. Thin outlined
+subtitle glyphs could be rejected before tracker confirmation.
 
 ## Changes made
 
-- Replaced Piper voice synthesis with pinned local Kokoro Vietnamese ONNX and the
-  verified `ngoc_huyen` voicepack. Network access is only for first installation;
-  worker inference remains offline.
-- Kept the existing Whisper word-timing/pause grouping and bounded FFmpeg timing
-  fit. The generated master track still follows exact timeline slots for Preview
-  and Export.
-- Removed the visible and executable Nam/Nữ selector, its handler and the ASR
-  pitch/gender computation. Whisper now supplies only word timing and pauses.
-- Invalidates old Piper TTS on project reopen. Compatibility metadata retains two
-  persisted fields only so old project JSON can load safely; both new values are
-  always `ngoc-huyen` and are never used for routing.
-- Made the worker create temp clips inside the output cache volume and preserve
-  `.flac` on its temporary output filename.
+- Lowered the Paddle OCR detection and recognition gates while retaining the
+  consecutive-frame C# tracker guard against false positives.
+- Retries only low-confidence detected frames with the existing FFmpeg enhanced
+  frame transform and chooses it only when it is more complete or genuinely more
+  confident.
+- Uses midpoint cue boundaries and accepts a stable one-character CJK recovery
+  when its confidence remains close to the prior frame.
 
 ## Files changed
 
-- `internal/tts/worker.py`
-- `internal/asr/worker.py`
-- `csharp/src/BiliSubStudio.Core/Editor/LocalTtsInstaller.cs`
-- `csharp/src/BiliSubStudio.Core/Editor/LocalTtsService.cs`
-- `csharp/src/BiliSubStudio.Core/Editor/EditorProjectStore.cs`
-- `csharp/src/BiliSubStudio.App/Pages/EditorPage.xaml`
-- `csharp/src/BiliSubStudio.App/Pages/EditorPage.xaml.cs`
-- `csharp/src/BiliSubStudio.App/Pages/EditorPage.SubtitleCueEditing.cs`
-- `csharp/scripts/validate_csharp_migration.py`
-- `csharp/scripts/verify_editor_voice_reopen_contract.py`
-- `csharp/tests/BiliSubStudio.Core.ContractTests/EditorLicensedVoiceProfileContract.cs`
+- `internal/ocr/worker.py`
+- `csharp/src/BiliSubStudio.Core/Ocr/OcrScanner.cs`
+- `csharp/src/BiliSubStudio.Core/Ocr/SubtitleTracker.cs`
+- `csharp/tests/BiliSubStudio.Core.ContractTests/OcrTrackerModeRegression.cs`
 
 ## Tests and status
 
-- `py -3.10 -m py_compile internal/asr/worker.py internal/tts/worker.py`: PASS.
+- Python worker syntax compilation: PASS.
+- `dotnet build csharp/src/BiliSubStudio.Core/BiliSubStudio.Core.csproj -c Release --no-restore`: PASS, 0 warnings / 0 errors.
 - `dotnet build csharp/src/BiliSubStudio.App/BiliSubStudio.App.csproj -c Release --no-restore`: PASS, 0 warnings / 0 errors.
-- Static migration, voice Preview/Export/reopen contracts: PASS.
-- Core contract tests: PASS, 71/71.
-- Runtime PASS on this Windows machine under
-  `E:\New folder\testrc\Temp\bilisub-ngoc-huyen-runtime-test`:
-  verified model hashes, local ONNX/torch/vig2p imports, generated Ngọc Huyền
-  `voice-master.flac`; ffprobe duration exactly `3.000000` seconds.
-- Not yet functional PASS: the full WinUI app flow with the supplied media at
-  `C:\Users\Man PC\Downloads\test`, user listening quality, full-video preview
-  and actual Export. Windows CI/release also remain pending.
+- OCR worker and scanner contract scripts: PASS.
+- Core contract tests: PASS, 71/71, including the new one-character recovery and midpoint-timing regression.
+- Only compile/contract PASS: no complete OCR scan has yet run through the WinUI app with
+  `C:\Users\Man PC\Downloads\test`; that full-video field test and Windows CI remain pending.
 
 ## Constraints to preserve
 

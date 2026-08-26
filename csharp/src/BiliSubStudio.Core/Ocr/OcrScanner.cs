@@ -480,6 +480,22 @@ public sealed class OcrScanner
                 }
                 if (!result.Ok)
                     throw new OcrRecognitionException(result.Error ?? "OCR worker trả kết quả lỗi.");
+                if (result.Detected && result.Confidence < Math.Max(.78, mode.LowConfidence + .10))
+                {
+                    try
+                    {
+                        var enhanced = await CaptureFrameWithFfmpegAsync(ffmpeg, source, at, request.Region, enhanced: true, processes, cancellationToken);
+                        var alternate = await _ocr.RunAsync(Convert.ToBase64String(enhanced), cancellationToken);
+                        if (alternate.Ok && PreferRecognition(alternate, result)) result = alternate;
+                    }
+                    catch (OperationCanceledException) { throw; }
+                    catch (Exception error)
+                    {
+                        // A second-pass frame is an accuracy enhancement, never a reason
+                        // to discard the valid first OCR result or stop a long scan.
+                        job.Log($"OCR frame {at:0.000}s: enhanced retry skipped ({Compact(error.Message)}).");
+                    }
+                }
                 tracker.Observe(at, result);
                 onProgress(at, frames, images);
                 if (job.IsPauseRequested && tracker.CanCheckpoint)
@@ -637,6 +653,16 @@ public sealed class OcrScanner
             previous = current;
         }
         return 1 - previous[^1] / (double)Math.Max(leftRunes.Length, rightRunes.Length);
+    }
+
+    private static bool PreferRecognition(OcrResult candidate, OcrResult current)
+    {
+        if (!ChineseSubtitleNormalizer.TryNormalize(candidate.Text, out var candidateText)) return false;
+        if (!ChineseSubtitleNormalizer.TryNormalize(current.Text, out var currentText)) return true;
+        var candidateRunes = candidateText.EnumerateRunes().Count();
+        var currentRunes = currentText.EnumerateRunes().Count();
+        return candidate.Confidence > current.Confidence + .01
+            || candidateRunes > currentRunes && candidate.Confidence >= current.Confidence - .08;
     }
 
     private static string FormatClock(double seconds) => TimeSpan.FromSeconds(Math.Max(0, seconds)).ToString(seconds >= 3600 ? @"hh\:mm\:ss" : @"mm\:ss");

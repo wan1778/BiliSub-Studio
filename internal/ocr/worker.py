@@ -166,7 +166,10 @@ def main():
                 if not isinstance(encoded_batch, list) or not encoded_batch or len(encoded_batch) > 4:
                     raise ValueError("images_base64 phải là batch 1-4 ảnh")
                 images = [decode_image(str(encoded or "").strip()) for encoded in encoded_batch]
-                predictions = list(engine.predict(images, text_det_box_thresh=0.65, text_rec_score_thresh=0.60))
+                # Subtitle glyphs are often thin, outlined and partially covered by
+                # motion. Keep borderline detections here; the C# tracker requires
+                # consecutive frames before they can enter the SRT.
+                predictions = list(engine.predict(images, text_det_box_thresh=0.55, text_rec_score_thresh=0.45))
                 if len(predictions) != len(images):
                     raise RuntimeError(f"PaddleOCR batch trả {len(predictions)}/{len(images)} kết quả")
                 emit({
@@ -179,7 +182,7 @@ def main():
             if not encoded:
                 raise ValueError("image_base64 rỗng")
             image = decode_image(encoded)
-            result = parse_prediction(engine.predict(image, text_det_box_thresh=0.65, text_rec_score_thresh=0.60))
+            result = parse_prediction(engine.predict(image, text_det_box_thresh=0.55, text_rec_score_thresh=0.45))
             result["id"] = request_id
             emit(result)
         except Exception as exc:
