@@ -10,6 +10,8 @@ internal sealed class SubtitleTracker
     private Candidate? _candidate;
     private SubtextVariant? _subtextVariant;
     private OcrCue? _active;
+    private string? _longerVariantText;
+    private int _longerVariantHits;
     private int _emptyHits;
     private double _emptyStart;
     private double _lastFrameDuration;
@@ -28,7 +30,7 @@ internal sealed class SubtitleTracker
         _lastFrameDuration = _frameSpan;
     }
 
-    public bool CanCheckpoint => _candidate is null && _subtextVariant is null && _emptyHits == 0;
+    public bool CanCheckpoint => _candidate is null && _subtextVariant is null && _longerVariantHits == 0 && _emptyHits == 0;
     public IReadOnlyList<OcrCue> Cues => _committed;
     public OcrCue? Active => _active;
 
@@ -43,6 +45,8 @@ internal sealed class SubtitleTracker
             ? active with { Text = activeText } : null;
         _candidate = null;
         _subtextVariant = null;
+        _longerVariantText = null;
+        _longerVariantHits = 0;
         _emptyHits = 0;
     }
 
@@ -62,10 +66,14 @@ internal sealed class SubtitleTracker
             // Foreign-script OCR garbage is inconclusive for an already active subtitle,
             // but it must break an unconfirmed candidate so distant hits cannot combine.
             _candidate = null;
+            _longerVariantText = null;
+            _longerVariantHits = 0;
             return;
         }
         if (_active is not null && _exactFrameTiming && IsStrictSubtext(_active.Text, text))
         {
+            _longerVariantText = null;
+            _longerVariantHits = 0;
             ObserveSubtextVariant(at, frameDuration, text, result.Confidence);
             return;
         }
@@ -85,14 +93,47 @@ internal sealed class SubtitleTracker
         {
             _emptyHits = 0;
             _candidate = null;
+            var currentText = _active.Text;
+            var resolvedText = PreferText(currentText, _active.Confidence, text, result.Confidence);
+            if (resolvedText == currentText
+                && text.EnumerateRunes().Count() > currentText.EnumerateRunes().Count()
+                && result.Confidence >= Math.Max(.45, _lowConfidence - .20)
+                && text.Contains(currentText, StringComparison.Ordinal))
+            {
+                if (string.Equals(_longerVariantText, text, StringComparison.Ordinal))
+                {
+                    _longerVariantHits++;
+                }
+                else
+                {
+                    _longerVariantText = text;
+                    _longerVariantHits = 1;
+                }
+                // A single longer read can be a hallucinated edge glyph. Two
+                // consecutive compatible reads recover a glyph Paddle omitted
+                // from an otherwise high-confidence active caption.
+                if (_longerVariantHits >= 2)
+                {
+                    resolvedText = _longerVariantText ?? text;
+                    _longerVariantText = null;
+                    _longerVariantHits = 0;
+                }
+            }
+            else
+            {
+                _longerVariantText = null;
+                _longerVariantHits = 0;
+            }
             _active = _active with
             {
                 End = Math.Max(_active.End, at + ActiveFrameEnd(frameDuration)),
-                Text = PreferText(_active.Text, _active.Confidence, text, result.Confidence),
+                Text = resolvedText,
                 Confidence = Math.Max(_active.Confidence, result.Confidence),
             };
             return;
         }
+        _longerVariantText = null;
+        _longerVariantHits = 0;
         _emptyHits = 0;
         var required = text.EnumerateRunes().Count() <= 1 || result.Confidence < _lowConfidence ? 3 : 2;
         if (_candidate is null || at - _candidate.Last > _candidateGap || Similarity(_candidate.Text, text) < 0.80)
@@ -120,11 +161,15 @@ internal sealed class SubtitleTracker
             CommitActive(Math.Max(activeEnd, _active.Start + MinimumCueDuration(_lastFrameDuration)));
         }
         _subtextVariant = null;
+        _longerVariantText = null;
+        _longerVariantHits = 0;
     }
 
     private void ObserveEmpty(double at, double frameDuration)
     {
         _candidate = null;
+        _longerVariantText = null;
+        _longerVariantHits = 0;
         if (_active is null)
         {
             _emptyHits = 0;
@@ -185,6 +230,8 @@ internal sealed class SubtitleTracker
             });
         }
         _active = null;
+        _longerVariantText = null;
+        _longerVariantHits = 0;
     }
 
     private double EstimateBoundary(double sampledAt, double frameDuration) => _exactFrameTiming
