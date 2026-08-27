@@ -220,19 +220,39 @@ internal static class OcrTrackerModeRegression
             || !sampledFilter.Contains("fps=2.5", StringComparison.Ordinal) || !sampledFilter.Contains("showinfo", StringComparison.Ordinal))
             throw new InvalidOperationException("sampled OCR still synthesizes timing instead of preserving filtered-frame PTS");
 
+        var buildSegments = checkpointType.GetMethod("BuildSegments", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing OCR lane segment builder");
+        var longSegments = ((System.Collections.IEnumerable)(buildSegments.Invoke(null, [29170d, 4, 16d])
+            ?? throw new InvalidOperationException("8-hour OCR lane segments unavailable"))).Cast<object>().ToArray();
+        if (longSegments.Length != 4)
+            throw new InvalidOperationException("8-hour OCR did not build four lane segments");
+        var lane1CoreStart = (double)(longSegments[1].GetType().GetProperty("CoreStart")?.GetValue(longSegments[1])
+            ?? throw new InvalidOperationException("missing lane 2 core start"));
+        var lane2CoreStart = (double)(longSegments[2].GetType().GetProperty("CoreStart")?.GetValue(longSegments[2])
+            ?? throw new InvalidOperationException("missing lane 3 core start"));
+        var lane3CoreStart = (double)(longSegments[3].GetType().GetProperty("CoreStart")?.GetValue(longSegments[3])
+            ?? throw new InvalidOperationException("missing lane 4 core start"));
+        var lane3CoreEnd = (double)(longSegments[3].GetType().GetProperty("CoreEnd")?.GetValue(longSegments[3])
+            ?? throw new InvalidOperationException("missing lane 4 core end"));
+        if (Math.Abs(lane1CoreStart - 7292.5d) > .000001
+            || Math.Abs(lane2CoreStart - 14585d) > .000001
+            || Math.Abs(lane3CoreStart - 21877.5d) > .000001
+            || Math.Abs(lane3CoreEnd - 29170d) > .000001)
+            throw new InvalidOperationException("8-hour OCR lane ownership no longer spans the full source duration");
+
         var timestampReaderType = scannerType.GetNestedType("FrameTimestampReader", BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("missing every-frame PTS reader");
         var timestampReaderConstructor = timestampReaderType.GetConstructor(
             BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
             binder: null,
-            types: [typeof(StreamReader)],
+            types: [typeof(StreamReader), typeof(double)],
             modifiers: null)
-            ?? throw new InvalidOperationException("missing every-frame PTS reader constructor");
+            ?? throw new InvalidOperationException("missing lane-origin-aware PTS reader constructor");
         var readTimestamp = timestampReaderType.GetMethod("ReadAsync", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("missing every-frame PTS read method");
         using var stderr = new StreamReader(new MemoryStream(Encoding.UTF8.GetBytes(
             "[Parsed_showinfo_0 @ 000000] n:   0 pts: 953600 pts_time:59.6 duration:    533 duration_time:0.0333125 fmt:yuv420p\n")));
-        var timestampReader = timestampReaderConstructor.Invoke([stderr]);
+        var timestampReader = timestampReaderConstructor.Invoke([stderr, 59.6d]);
         var timestampTask = (Task)(readTimestamp.Invoke(timestampReader, [CancellationToken.None])
             ?? throw new InvalidOperationException("every-frame PTS read did not return a task"));
         timestampTask.GetAwaiter().GetResult();
@@ -243,11 +263,11 @@ internal static class OcrTrackerModeRegression
         var duration = (double)(timestamp.GetType().GetProperty("Duration")?.GetValue(timestamp)
             ?? throw new InvalidOperationException("PTS reader dropped frame duration"));
         if (Math.Abs(pts - 59.6) > .000001 || Math.Abs(duration - .0333125) > .000001)
-            throw new InvalidOperationException("every-frame PTS reader changed source frame timing");
+            throw new InvalidOperationException("every-frame PTS reader changed source-global frame timing");
 
         using var sampledStderr = new StreamReader(new MemoryStream(Encoding.UTF8.GetBytes(
             "[Parsed_showinfo_1 @ 000000] n:   0 pts: 2500 pts_time:1000 duration:      1 duration_time:0.4 fmt:yuv420p\n")));
-        var sampledTimestampReader = timestampReaderConstructor.Invoke([sampledStderr]);
+        var sampledTimestampReader = timestampReaderConstructor.Invoke([sampledStderr, 1000.13d]);
         var sampledTimestampTask = (Task)(readTimestamp.Invoke(sampledTimestampReader, [CancellationToken.None])
             ?? throw new InvalidOperationException("sampled PTS read did not return a task"));
         sampledTimestampTask.GetAwaiter().GetResult();
@@ -256,7 +276,55 @@ internal static class OcrTrackerModeRegression
         var sampledPts = (double)(sampledTimestamp.GetType().GetProperty("PresentationTime")?.GetValue(sampledTimestamp)
             ?? throw new InvalidOperationException("sampled PTS reader dropped presentation timestamp"));
         if (Math.Abs(sampledPts - 1000d) > .000001)
-            throw new InvalidOperationException("sampled OCR did not retain the source-global PTS after seek");
+            throw new InvalidOperationException("sampled OCR changed an already source-global PTS after seek");
+
+        var secondLaneScanStart = lane1CoreStart - 16d;
+        using var relativeStderr = new StreamReader(new MemoryStream(Encoding.UTF8.GetBytes(
+            "[Parsed_showinfo_1 @ 000000] n:   0 pts: 41 pts_time:16.4 duration:      1 duration_time:0.4 fmt:yuv420p\n" +
+            "[Parsed_showinfo_1 @ 000000] n:   1 pts: 42 pts_time:16.8 duration:      1 duration_time:0.4 fmt:yuv420p\n")));
+        var relativeTimestampReader = timestampReaderConstructor.Invoke([relativeStderr, secondLaneScanStart]);
+        var relativeTimestampTask1 = (Task)(readTimestamp.Invoke(relativeTimestampReader, [CancellationToken.None])
+            ?? throw new InvalidOperationException("relative lane PTS read did not return a task"));
+        relativeTimestampTask1.GetAwaiter().GetResult();
+        var relativeTimestamp1 = relativeTimestampTask1.GetType().GetProperty("Result")?.GetValue(relativeTimestampTask1)
+            ?? throw new InvalidOperationException("relative lane PTS reader did not return a frame");
+        var relativePts1 = (double)(relativeTimestamp1.GetType().GetProperty("PresentationTime")?.GetValue(relativeTimestamp1)
+            ?? throw new InvalidOperationException("relative lane PTS reader dropped presentation timestamp"));
+        var relativeTimestampTask2 = (Task)(readTimestamp.Invoke(relativeTimestampReader, [CancellationToken.None])
+            ?? throw new InvalidOperationException("second relative lane PTS read did not return a task"));
+        relativeTimestampTask2.GetAwaiter().GetResult();
+        var relativeTimestamp2 = relativeTimestampTask2.GetType().GetProperty("Result")?.GetValue(relativeTimestampTask2)
+            ?? throw new InvalidOperationException("second relative lane PTS reader did not return a frame");
+        var relativePts2 = (double)(relativeTimestamp2.GetType().GetProperty("PresentationTime")?.GetValue(relativeTimestamp2)
+            ?? throw new InvalidOperationException("second relative lane PTS reader dropped presentation timestamp"));
+        if (Math.Abs(relativePts1 - 7292.9d) > .000001 || Math.Abs(relativePts2 - 7293.3d) > .000001)
+            throw new InvalidOperationException("seek-relative lane PTS was not restored to the source-global 8-hour timeline");
+
+        var laneCheckpointType = assembly.GetType("BiliSubStudio.Core.Ocr.OcrLaneCheckpoint")
+            ?? throw new InvalidOperationException("missing OCR lane checkpoint type");
+        var laneArray = Array.CreateInstance(laneCheckpointType, 4);
+        var laneCueStarts = new[] { 600d, 7892.5d, 15185d, 28800d };
+        for (var index = 0; index < 4; index++)
+        {
+            var lane = Activator.CreateInstance(
+                laneCheckpointType,
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+                binder: null,
+                args: [longSegments[index], (double)(longSegments[index].GetType().GetProperty("CoreEnd")?.GetValue(longSegments[index])
+                    ?? throw new InvalidOperationException("missing lane core end")),
+                    new List<OcrCue> { new(laneCueStarts[index], laneCueStarts[index] + 1d, $"第{index + 1}段字幕", .99d) },
+                    null, 1, 1, true],
+                culture: null)
+                ?? throw new InvalidOperationException("could not create synthetic OCR lane checkpoint");
+            laneArray.SetValue(lane, index);
+        }
+        var reconcile = scannerType.GetMethod("Reconcile", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing OCR lane reconciler");
+        object?[] reconcileArgs = [laneArray, 0];
+        var longMerged = (IReadOnlyList<OcrCue>)(reconcile.Invoke(null, reconcileArgs)
+            ?? throw new InvalidOperationException("8-hour OCR lane reconcile returned null"));
+        if (longMerged.Count != 4 || Math.Abs(longMerged[^1].Start - 28800d) > .000001)
+            throw new InvalidOperationException("8-hour OCR reconcile dropped cues from lanes after the first two-hour segment");
 
         var similarity = scannerType.GetMethod("Similarity", BindingFlags.Static | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("missing OcrScanner.Similarity");

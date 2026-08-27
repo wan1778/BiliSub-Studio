@@ -125,7 +125,7 @@ public sealed class OcrScanner
             throw new InvalidDataException($"OCR checkpoint yêu cầu {selected} lane nhưng worker pool đang có {configuredWorkers}.");
         job.Log(saved is null
             ? $"OCR Commit: benchmark xong, khóa {selected} pipeline = {selected} FFmpeg lane + {configuredWorkers} Python worker ({_ocr.Status.WorkerKinds})."
-            : $"Resume checkpoint schema 5: giữ và kiểm tra lại {selected} pipeline = {selected} FFmpeg lane + {configuredWorkers} Python worker ({_ocr.Status.WorkerKinds}).");
+            : $"Resume checkpoint schema 6: giữ và kiểm tra lại {selected} pipeline = {selected} FFmpeg lane + {configuredWorkers} Python worker ({_ocr.Status.WorkerKinds}).");
         var decoder = await ProbeNvdecAsync(ffmpeg, source, request.Region, mode, processes, token) ? "nvdec" : "software";
         job.Log(decoder == "nvdec" ? "Decoder: NVIDIA NVDEC." : "Decoder: software fallback.");
 
@@ -452,11 +452,10 @@ public sealed class OcrScanner
         process.Start();
         using var ownership = processes.Track(process);
         using var registration = cancellationToken.Register(() => Kill(process));
-        // Both exact-frame and sampled modes must use FFmpeg's output PTS. The
-        // fps filter can select a source frame after a non-frame-aligned seek;
-        // synthesizing start + frameIndex/fps then moves cue time and causes a
-        // resumed lane to seek from a fabricated checkpoint value.
-        var timestamps = new FrameTimestampReader(process.StandardError);
+        // FFmpeg can expose either source-global PTS or seek-relative PTS after
+        // an input -ss. Normalize that domain here so every lane reaches the
+        // tracker, checkpoint and reconciler on the same absolute video clock.
+        var timestamps = new FrameTimestampReader(process.StandardError, startAt);
         var errorTask = timestamps.Completion;
         var reader = new JpegStreamReader(process.StandardOutput.BaseStream);
         var frames = saved.Frames;
@@ -772,7 +771,7 @@ public sealed class OcrScanner
         });
         private readonly StringBuilder _diagnostic = new();
 
-        public FrameTimestampReader(StreamReader standardError) => Completion = PumpAsync(standardError);
+        public FrameTimestampReader(StreamReader standardError, double startAt) => Completion = PumpAsync(standardError, startAt);
 
         public Task<string> Completion { get; }
 
@@ -786,9 +785,10 @@ public sealed class OcrScanner
             }
         }
 
-        private async Task<string> PumpAsync(StreamReader standardError)
+        private async Task<string> PumpAsync(StreamReader standardError, double startAt)
         {
             Exception? failure = null;
+            double? timestampOffset = null;
             try
             {
                 while (await standardError.ReadLineAsync() is { } line)
@@ -800,7 +800,16 @@ public sealed class OcrScanner
                         || !double.TryParse(match.Groups["duration"].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var duration)
                         || double.IsNaN(pts) || double.IsInfinity(pts) || duration <= 0 || double.IsNaN(duration) || double.IsInfinity(duration))
                         throw new InvalidDataException("FFmpeg trả PTS frame OCR không hợp lệ.");
-                    await _timestamps.Writer.WriteAsync(new FrameTiming(pts, duration));
+                    if (timestampOffset is null)
+                    {
+                        var tolerance = Math.Max(.5, duration * 2);
+                        var relativeDistance = Math.Abs(pts);
+                        var absoluteDistance = Math.Abs(pts - startAt);
+                        timestampOffset = startAt > tolerance && relativeDistance + tolerance < absoluteDistance
+                            ? startAt
+                            : 0d;
+                    }
+                    await _timestamps.Writer.WriteAsync(new FrameTiming(pts + timestampOffset.Value, duration));
                 }
             }
             catch (Exception error)

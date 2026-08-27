@@ -12,9 +12,10 @@ internal sealed record OcrParallelCheckpoint(int Schema, string Key, int Selecte
 
 internal sealed class OcrCheckpointStore
 {
-    // Accurate scan semantics changed from sampled frames to every decoded frame.
-    // Never resume a checkpoint produced by the old sampled implementation.
-    private const int Schema = 5;
+    // Lane PTS normalization changed: seek-relative FFmpeg timestamps are now
+    // mapped back to the source-global video clock before tracking/checkpointing.
+    // Never resume a checkpoint produced by the old timestamp domain.
+    private const int Schema = 6;
     private readonly AppPaths _paths;
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -43,7 +44,7 @@ internal sealed class OcrCheckpointStore
     public async Task SaveAsync(OcrScanRequest request, OcrParallelCheckpoint checkpoint, CancellationToken cancellationToken)
     {
         var key = await KeyAsync(request, Schema, cancellationToken);
-        if (checkpoint.Schema != Schema || checkpoint.Key != key) throw new InvalidDataException("Checkpoint OCR schema 5 không hợp lệ.");
+        if (checkpoint.Schema != Schema || checkpoint.Key != key) throw new InvalidDataException("Checkpoint OCR schema 6 không hợp lệ.");
         Directory.CreateDirectory(DirectoryPath);
         var path = Path.Combine(DirectoryPath, key + ".json");
         var temporary = path + ".tmp";
@@ -80,7 +81,7 @@ internal sealed class OcrCheckpointStore
 
     public async Task RemoveAsync(OcrScanRequest request, CancellationToken cancellationToken)
     {
-        foreach (var schema in new[] { 5, 4, 3 })
+        foreach (var schema in new[] { 6, 5, 4, 3 })
         {
             var key = await KeyAsync(request, schema, cancellationToken);
             var path = Path.Combine(DirectoryPath, key + ".json");
