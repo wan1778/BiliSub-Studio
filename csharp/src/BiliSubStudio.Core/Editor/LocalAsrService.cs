@@ -235,7 +235,7 @@ internal sealed class LocalAsrService : IDisposable
     {
         var values = new List<string>
         {
-            "-I", runtime.Worker,
+            "-I", "-X", "utf8", runtime.Worker,
             "--model", runtime.ModelDirectory,
             "--audio", audio,
             "--device", selection.Device,

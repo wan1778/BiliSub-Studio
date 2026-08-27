@@ -167,5 +167,12 @@ require('choices=("cpu", "cuda")' in worker,
         "VOICE-01 worker execution devices must remain local CPU/CUDA only")
 require("emit({\"event\": \"ready\"" in worker,
         "VOICE-01 worker must emit ready after the local model is initialized")
+require("ensure_ascii=False" in worker,
+        "ASR-UTF8-01 worker must preserve Chinese Unicode in its JSON output")
+
+worker_arguments = local_asr.split("private static string[] WorkerArguments", 1)[1].split(
+    "private async Task ExtractAudioAsync", 1)[0]
+require('"-I", "-X", "utf8", runtime.Worker,' in worker_arguments,
+        "ASR-UTF8-01 must force UTF-8 stdout while retaining isolated Python mode")
 
 print("PASS: VOICE-01 Start Whisper/ASR contract")

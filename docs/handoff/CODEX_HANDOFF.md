@@ -1,11 +1,11 @@
 # Codex handoff — BiliSub Studio
 
-- Current main/base SHA: `48817ba0cac72f76434ea326b621b010261df7a6`.
+- Current main/base SHA: `ed2493167fc44ffda8d4f7320d8be58682316dbc`.
 - Current branch: `main`.
 - PR: none.
-- Last completed task: `VOICE-UX-01` — one create-voice action automatically acquires valid timing and then creates Ngọc Huyền TTS.
+- Last completed task: `ASR-UTF8-01` — force UTF-8 stdout for isolated local Whisper worker.
 - Task in progress: none.
-- Exact next task: field-test `VOICE-UX-01` in the Windows Editor with an imported fully translated SRT: click one Create voice action with no timing cache, cancel during timing, then retry and preview the resulting track. Resume the remaining OCR field matrix afterwards.
+- Exact next task: field-test the merged `VOICE-UX-01` + `ASR-UTF8-01` in the Windows Editor with an imported fully translated SRT: click one Create voice action with no timing cache, cancel during timing, retry, then preview the resulting track. Resume the remaining OCR field matrix afterwards.
 
 ## Root cause
 
@@ -14,6 +14,14 @@ Whisper timing, then return to start TTS. TTS itself already fits each generated
 Ngọc Huyền clip to the Whisper word/pause windows, but the UI prevented it from
 acquiring that prerequisite automatically. It also did not explicitly show the
 single licensed local reading model available to the product.
+
+The local ASR worker runs Python with `-I` for isolation. On Windows that mode
+ignores `PYTHONIOENCODING`, so a Chinese Whisper segment was serialized with the
+active cp1252 console encoding and failed with `UnicodeEncodeError`. This was
+reproduced against the supplied video. The installed log's historical matching
+failure is `ASR local chưa hoàn chỉnh sau khi cài` from build 4.0.34; no
+`editor-asr` job is recorded for the later 4.0.48 build, but its worker argument
+path has the same UTF-8 defect.
 
 The control labelled `Chính xác` was only a 4 fps sampling mode. Its timestamps
 were synthesized as `start + frameIndex / fps`, so it could skip short subtitles
@@ -95,6 +103,9 @@ and another left/top label. Normal dialogue was centered in the lower band.
 - The separate `Phân tích word timing` button and its event owner were removed.
   Cancellation still owns the active ASR or TTS job, and no event handler calls
   another event handler.
+- `ASR-UTF8-01` retains isolated Python mode and adds `-X utf8` before the ASR
+  worker path. This makes its JSON stdout UTF-8 even when the Windows console
+  defaults to cp1252; no model/runtime/GPU policy changed.
 
 - `accurate` now means every decoded video frame; `balanced` remains 2.5 fps and
   `fast` remains 1.5 fps.
@@ -181,6 +192,7 @@ and another left/top label. Normal dialogue was centered in the lower band.
 - `csharp/src/BiliSubStudio.App/Pages/EditorPage.xaml.cs`
 - `csharp/scripts/verify_editor_voice_start_contract.py`
 - `csharp/scripts/verify_editor_voice_restart_contract.py`
+- `csharp/src/BiliSubStudio.Core/Editor/LocalAsrService.cs`
 - `csharp/scripts/validate_csharp_migration.py`
 - `docs/engineering/EDITOR_EVENT_MAP.md`
 - `csharp/Directory.Build.props`
@@ -298,6 +310,12 @@ and another left/top label. Normal dialogue was centered in the lower band.
   PASS; Core contract tests 71/71; WinUI Release build PASS with 0 warnings and
   0 errors. This is not a Windows TTS functional PASS: no live Whisper/TTS run,
   cancellation, retry, Preview or Export playback was performed in this task.
+- ASR-UTF8-01 source/contract/build PASS: Voice ASR contracts PASS, Core
+  contracts 71/71, WinUI Release build PASS with 0 warnings / 0 errors and
+  migration static contract PASS. Runtime probe on six seconds of the supplied
+  video with `-I -X utf8`: PASS — exit 0, ready 1, Chinese segments 4, complete
+  1. A full Editor UI ASR/TTS run with the newly compiled application has not
+  been performed; source media was not overwritten.
 
 ## Constraints to preserve
 
