@@ -1,8 +1,8 @@
 {
-  "version": "4.0.0-beta.66-csharp-p5",
+  "version": "4.0.0-beta.67-csharp-p5",
   "notes": [
-    "OCR Pause/Resume giải phóng tài nguyên khi tạm dừng và khôi phục đúng số lane từ checkpoint khi tiếp tục, không chạy lại Auto benchmark.",
-    "Trong lúc quét OCR, danh sách phụ đề cập nhật trực tiếp các câu đã được tracker xác nhận kèm mốc thời gian, không cần tạm dừng mới xem được chữ.",
-    "Giữ nguyên các sửa lỗi OCR trước đó về timeline video dài nhiều lane và độ ổn định nhận chữ."
+    "Khung Phụ đề OCR đã quét được tách thành danh sách có thanh cuộn, giữ toàn bộ cue đã nhận để xem lại và hiển thị rõ mốc bắt đầu --> kết thúc theo định dạng thời gian SRT.",
+    "OCR Auto giữ cơ chế đo VRAM thực tế theo từng topology, chừa reserve trước probe và dùng margin an toàn sau khi đã học mức VRAM/GPU worker; regression khóa trường hợp 8 worker an toàn và 16 worker thiếu headroom.",
+    "Giữ nguyên các sửa lỗi OCR trước đó về timeline video dài nhiều lane, Pause/Resume và cleanup tiến trình; bản public mới được tạo riêng vì 4.0.52 đã là release bất biến."
   ]
 }
