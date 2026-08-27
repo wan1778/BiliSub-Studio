@@ -26,8 +26,8 @@ internal static class OcrHardwarePolicyRegression
             ?? throw new InvalidOperationException("missing OCR live resource policy");
         var resourcePolicy = resourcePolicyType.GetMethod(
             "Evaluate",
-            BindingFlags.Static | BindingFlags.NonPublic)
-            ?? throw new InvalidOperationException("missing OCR live resource evaluator");
+            BindingFlags.Static | BindingFlags.Public)
+            ?? throw new InvalidOperationException("missing OCR measured resource evaluator");
 
         static long GiB(double value) => checked((long)(value * 1024 * 1024 * 1024));
         static long MiB(double value) => checked((long)(value * 1024 * 1024));
@@ -36,7 +36,7 @@ internal static class OcrHardwarePolicyRegression
         int SegmentLanes(HardwareSnapshot hardware) => (int)(segmentPolicy.Invoke(null, [hardware])
             ?? throw new InvalidOperationException("OCR segment-lane policy returned null"));
         int DeviceWorkers(HardwareSnapshot hardware, string mode) => (int)(workerPolicy.Invoke(null, [hardware, mode])
-            ?? throw new InvalidOperationException("OCR device worker policy returned null"));
+            ?? throw new InvalidOperationException("device-aware OCR worker policy returned null"));
         bool ResourceAllowed(HardwareSnapshot hardware, double freeVramGiB, int currentWorkers, int candidate, double observedVramMiB)
         {
             var live = new HardwareResourceSnapshot(GiB(32), GiB(10), true, GiB(4), GiB(freeVramGiB));

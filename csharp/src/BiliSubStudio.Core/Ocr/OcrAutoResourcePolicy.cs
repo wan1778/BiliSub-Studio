@@ -13,14 +13,25 @@ internal static class OcrAutoResourcePolicy
     private const double VramGrowthSafetyFactor = 1.25;
     private const double MinimumThroughputGain = 0.10;
 
+    // Keep the reviewed five-argument evaluator stable for existing contracts and
+    // non-measured callers. Auto itself uses the public overload below so the
+    // machine-measured VRAM slope remains part of Predict -> Probe -> Commit.
     internal static OcrResourceDecision Evaluate(
         HardwareSnapshot hardware,
         HardwareResourceSnapshot live,
         string activeMode,
         int currentWorkers,
+        int candidate) =>
+        Evaluate(hardware, live, activeMode, currentWorkers, candidate, 0, requireMeasuredVram: false);
+
+    public static OcrResourceDecision Evaluate(
+        HardwareSnapshot hardware,
+        HardwareResourceSnapshot live,
+        string activeMode,
+        int currentWorkers,
         int candidate,
-        long observedVramPerGpuWorkerBytes = 0,
-        bool requireMeasuredVram = false)
+        long observedVramPerGpuWorkerBytes,
+        bool requireMeasuredVram)
     {
         if (candidate is < 1 or > 16) throw new ArgumentOutOfRangeException(nameof(candidate));
         currentWorkers = Math.Clamp(currentWorkers, 0, candidate);
@@ -88,6 +99,19 @@ internal static class OcrAutoResourcePolicy
                             live);
                     }
                 }
+                else if (addedGpu > 0)
+                {
+                    // Before the first machine-specific delta exists, do not invent a
+                    // per-worker VRAM constant. Require one additional reserve block so
+                    // the real topology can be probed without running directly at the cliff.
+                    var unmeasuredFloor = Math.Min(totalVram, checked(vramReserve * 2));
+                    if (live.AvailableVramBytes < unmeasuredFloor)
+                    {
+                        return Reject(
+                            $"VRAM trống {FormatBytes(live.AvailableVramBytes)} quá sát reserve {FormatBytes(vramReserve)} để thử thêm GPU worker khi chưa có delta thực đo.",
+                            live);
+                    }
+                }
             }
             else if (requireMeasuredVram && addedGpu > 0)
             {
@@ -104,7 +128,7 @@ internal static class OcrAutoResourcePolicy
         var measurement = target.Gpu > 0 && live.VramTelemetryAvailable
             ? observedVramPerGpuWorkerBytes > 0
                 ? $" · VRAM thực đo ~{FormatBytes(observedVramPerGpuWorkerBytes)}/GPU worker + {VramGrowthSafetyFactor:0.00}x margin"
-                : " · VRAM chưa có delta thực đo; cho probe topology thật rồi kiểm tra reserve sau probe"
+                : " · VRAM chưa có delta thực đo; giữ thêm một reserve block trước probe topology thật"
             : string.Empty;
         return new OcrResourceDecision(
             true,
