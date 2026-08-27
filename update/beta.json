@@ -1,13 +1,13 @@
 {
-  "version": "4.0.0-beta.66-csharp-p5",
+  "version": "4.0.0-beta.67-csharp-p5",
   "channel_ready": true,
-  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.52/BiliSubStudio_4.0.52_Windows-x64-portable.zip",
-  "sha256": "661a5716ba2d3041f57a6e67514f96d7dcae1f6101c43ef6e59f0288eb67e942",
-  "size": 94806200,
+  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.53/BiliSubStudio_4.0.53_Windows-x64-portable.zip",
+  "sha256": "b4681d4a84ae6265e370fbb43b0451fd34d4e86cc2c335943daf6578cb0ff9f0",
+  "size": 94808631,
   "payload_kind": "winui3-portable-zip",
   "notes": [
-    "OCR Pause/Resume giải phóng tài nguyên khi tạm dừng và khôi phục đúng số lane từ checkpoint khi tiếp tục, không chạy lại Auto benchmark.",
-    "Trong lúc quét OCR, danh sách phụ đề cập nhật trực tiếp các câu đã được tracker xác nhận kèm mốc thời gian, không cần tạm dừng mới xem được chữ.",
-    "Giữ nguyên các sửa lỗi OCR trước đó về timeline video dài nhiều lane và độ ổn định nhận chữ."
+    "Khung Phụ đề OCR đã quét được tách thành danh sách có thanh cuộn, giữ toàn bộ cue đã nhận để xem lại và hiển thị rõ mốc bắt đầu --> kết thúc theo định dạng thời gian SRT.",
+    "OCR Auto giữ cơ chế đo VRAM thực tế theo từng topology, chừa reserve trước probe và dùng margin an toàn sau khi đã học mức VRAM/GPU worker; regression khóa trường hợp 8 worker an toàn và 16 worker thiếu headroom.",
+    "Giữ nguyên các sửa lỗi OCR trước đó về timeline video dài nhiều lane, Pause/Resume và cleanup tiến trình; bản public mới được tạo riêng vì 4.0.52 đã là release bất biến."
   ]
 }
