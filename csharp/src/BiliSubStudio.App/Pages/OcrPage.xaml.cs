@@ -5,6 +5,7 @@ using BiliSubStudio.Core.Ocr;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
+using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Windows.Foundation;
 using Windows.Media.Core;
@@ -18,6 +19,7 @@ public sealed partial class OcrPage : Page
 {
     private readonly BiliSubApplication _application;
     private readonly IFilePickerService _picker;
+    private readonly TextBlock _cueCountText;
     private string? _path;
     private MediaPreviewInfo? _media;
     private string? _jobId;
@@ -40,6 +42,59 @@ public sealed partial class OcrPage : Page
         _application = application;
         _picker = picker;
         InitializeComponent();
+
+        _cueCountText = new TextBlock
+        {
+            Text = "0 câu",
+            FontSize = 11,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        if (CueList.Parent is Grid footerGrid)
+        {
+            footerGrid.Children.Remove(CueList);
+
+            var cueHeader = new Grid();
+            cueHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            cueHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            cueHeader.Children.Add(new TextBlock
+            {
+                Text = "Phụ đề OCR đã quét",
+                FontSize = 12,
+                VerticalAlignment = VerticalAlignment.Center,
+            });
+            Grid.SetColumn(_cueCountText, 1);
+            cueHeader.Children.Add(_cueCountText);
+
+            var cueGrid = new Grid { RowSpacing = 8 };
+            cueGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            cueGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+            cueGrid.Children.Add(cueHeader);
+
+            Grid.SetColumn(CueList, 0);
+            Grid.SetRow(CueList, 1);
+            CueList.MinHeight = 0;
+            CueList.Padding = new Thickness(0);
+            CueList.VerticalAlignment = VerticalAlignment.Stretch;
+            ScrollViewer.SetVerticalScrollBarVisibility(CueList, ScrollBarVisibility.Auto);
+            ScrollViewer.SetHorizontalScrollBarVisibility(CueList, ScrollBarVisibility.Disabled);
+            cueGrid.Children.Add(CueList);
+
+            var cueFrame = new Border
+            {
+                Height = 260,
+                Padding = new Thickness(10),
+                Background = (Brush)Application.Current.Resources["RaisedSurfaceBrush"],
+                BorderBrush = (Brush)Application.Current.Resources["StrongBorderBrush"],
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(8),
+                Child = cueGrid,
+            };
+            AutomationProperties.SetName(cueFrame, "Khung phụ đề OCR đã quét");
+            Grid.SetColumn(cueFrame, 1);
+            footerGrid.Children.Add(cueFrame);
+        }
+
         ApplyConfiguration();
         Unloaded += (_, _) => _player?.Pause();
     }
@@ -79,6 +134,7 @@ public sealed partial class OcrPage : Page
             _cues = [];
             _visibleCues = [];
             CueList.Items.Clear();
+            _cueCountText.Text = "0 câu";
             CancelButton.IsEnabled = false;
             ScanButton.Content = "Quét từ đầu";
             RestartButton.Visibility = Visibility.Collapsed;
@@ -264,6 +320,7 @@ public sealed partial class OcrPage : Page
         _cues = [];
         _visibleCues = [];
         CueList.Items.Clear();
+        _cueCountText.Text = "0 câu";
         ExportButton.IsEnabled = false;
         Progress.Value = 0;
         TelemetryText.Text = "Đang chờ kết quả OCR...";
@@ -293,7 +350,16 @@ public sealed partial class OcrPage : Page
             if (snapshot.Result is OcrScanResult result)
             {
                 latestResult = result;
-                _cues = result.Cues;
+                var authoritative = snapshot.Done
+                    && !string.Equals(snapshot.Status, "cancelled", StringComparison.OrdinalIgnoreCase)
+                    && string.IsNullOrWhiteSpace(snapshot.Error);
+                _cues = authoritative
+                    ? result.Cues.OrderBy(cue => cue.Start).ToArray()
+                    : _cues.Concat(result.Cues)
+                        .GroupBy(cue => Math.Round(cue.Start, 3))
+                        .Select(group => group.Last())
+                        .OrderBy(cue => cue.Start)
+                        .ToArray();
                 RenderCues();
                 TelemetryText.Text = $"{result.ParallelismSelected} FFmpeg lane · {result.WorkerCount} worker ({result.WorkerKinds}) · {result.CompletedLanes}/{result.ParallelismSelected} lane xong · {result.Frames} frames · {result.OcrImages} OCR · {result.RealtimeSpeed:0.00}× · frontier {FormatClock(result.SafeFrontierSeconds)}";
             }
@@ -441,6 +507,7 @@ public sealed partial class OcrPage : Page
         _cues = [];
         _visibleCues = [];
         CueList.Items.Clear();
+        _cueCountText.Text = "0 câu";
         Progress.Value = 0;
         TelemetryText.Text = "Chưa có telemetry.";
         OcrResultText.Text = string.Empty;
@@ -487,9 +554,26 @@ public sealed partial class OcrPage : Page
 
     private void RenderCues()
     {
-        _visibleCues = _cues.TakeLast(120).ToArray();
-        CueList.Items.Clear();
-        foreach (var cue in _visibleCues) CueList.Items.Add($"{FormatClock(cue.Start)}  {cue.Text}");
+        _visibleCues = _cues.OrderBy(cue => cue.Start).ToArray();
+        for (var index = 0; index < _visibleCues.Count; index++)
+        {
+            var cue = _visibleCues[index];
+            var start = TimeSpan.FromSeconds(Math.Max(0, cue.Start));
+            var end = TimeSpan.FromSeconds(Math.Max(cue.Start, cue.End));
+            var row = $"{index + 1}\n{start.ToString(@"hh\:mm\:ss\,fff")} --> {end.ToString(@"hh\:mm\:ss\,fff")}\n{cue.Text}";
+            if (index < CueList.Items.Count)
+            {
+                if (!string.Equals(CueList.Items[index]?.ToString(), row, StringComparison.Ordinal))
+                    CueList.Items[index] = row;
+            }
+            else
+            {
+                CueList.Items.Add(row);
+            }
+        }
+        while (CueList.Items.Count > _visibleCues.Count)
+            CueList.Items.RemoveAt(CueList.Items.Count - 1);
+        _cueCountText.Text = $"{_visibleCues.Count} câu";
         SyncCueSelection(Timeline.Value);
     }
 
