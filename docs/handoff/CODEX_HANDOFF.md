@@ -1,10 +1,10 @@
 # Codex handoff — BiliSub Studio
 
-- Current main/base SHA: `9d390a4fb975dd091c4e98e9bccdc98e7a3562b9`.
+- Current main/base SHA: `223536417ad73fa2f0c304264c22ad5fabf6ae58`.
 - Current branch: `main`.
 - PR: none.
 - Last completed task: `OCR-AUTO-FALLBACK-01` — probe intermediate OCR worker topologies after a failed Auto ladder jump.
-- Task in progress: release preparation for the bundled Voice, ASR UTF-8 and OCR Auto update.
+- Task in progress: publishing `4.0.0-beta.64-csharp-p5` as public Windows prerelease `4.0.50`.
 - Exact next task: after the Windows release gate passes, field-test the merged `VOICE-UX-01` + `ASR-UTF8-01` in the Windows Editor with an imported fully translated SRT: click one Create voice action with no timing cache, cancel during timing, retry, then preview the resulting track. Also test OCR Auto on the 1.5 GB-free-VRAM machine and confirm a failed 8-worker probe can commit 5, 6 or 7 when its resource and throughput gates pass.
 
 ## Root cause
@@ -349,6 +349,14 @@ and another left/top label. Normal dialogue was centered in the lower band.
   8 then 7 failing and proves the selector restores 4 before choosing viable
   6. No live 5/6/7-worker Windows OCR scan or fresh packaged build has been
   field-tested yet.
+- Release preparation: `4.0.0-beta.64-csharp-p5` / public `4.0.50` carries
+  exactly the already committed Voice one-action UX, ASR UTF-8 worker output and
+  OCR Auto intermediate topology fallback. `verify.ps1` rebuilt the self-contained
+  beta-64 WinUI publish and its real startup/layout smoke passed. Local installer
+  packaging is blocked only because this machine has no Inno Setup 7 `ISCC.exe`;
+  the GitHub Windows workflow installs and verifies that compiler before packaging.
+  Its final CI/package/release status is pending that workflow; no source media is
+  changed.
 
 ## Constraints to preserve
 

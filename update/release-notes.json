@@ -1,7 +1,8 @@
 {
-  "version": "4.0.0-beta.63-csharp-p5",
+  "version": "4.0.0-beta.64-csharp-p5",
   "notes": [
-    "OCR Trung giữ bản đầy đủ khi các lane trùng nhau; lọc overlay trước khi chọn ảnh tăng rõ nét và chỉ thử lại frame trống khi cue đang chạy.",
-    "Balanced/Fast dùng PTS thật từ FFmpeg sau khi lấy mẫu và Resume dùng lại PTS đó, giảm lệch time sau seek hoặc tạm dừng."
+    "Voice Việt local dùng một nút Tạo voice và tự canh timecode: tự chạy Whisper khi chưa có timing hợp lệ, sau đó tạo giọng Ngọc Huyền.",
+    "ASR local xuất JSON UTF-8 ổn định cho chữ Trung trên Windows, không còn lỗi UnicodeEncodeError khi chạy worker isolated.",
+    "OCR Auto vẫn quét đúng chế độ đã chọn nhưng sau khi mốc 8 worker không đủ VRAM/throughput sẽ thử 7, 6, 5 thay vì dừng ngay ở 4."
   ]
 }
