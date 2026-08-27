@@ -34,14 +34,14 @@ public sealed class OcrScanner
         await _ocr.ConfigureDeviceAsync(device, cancellationToken);
         await _ocr.EnsureAsync(cancellationToken);
         var jpeg = await CaptureFrameAsync(path, at, region, enhanced: false, cancellationToken, processes);
-        var result = await _ocr.RunAsync(Convert.ToBase64String(jpeg), cancellationToken);
-        if (result.Ok && result.Confidence < 0.68)
+        var result = FilterOffBaselineOverlayLines(await _ocr.RunAsync(Convert.ToBase64String(jpeg), cancellationToken), region);
+        if (NeedsEnhancedRecognition(result, .68))
         {
             var enhanced = await CaptureFrameAsync(path, at, region, enhanced: true, cancellationToken, processes);
-            var alternate = await _ocr.RunAsync(Convert.ToBase64String(enhanced), cancellationToken);
+            var alternate = FilterOffBaselineOverlayLines(await _ocr.RunAsync(Convert.ToBase64String(enhanced), cancellationToken), region);
             if (alternate.Ok && alternate.Confidence > result.Confidence) result = alternate;
         }
-        return FilterOffBaselineOverlayLines(result, region);
+        return result;
     }
 
     public async Task<OcrScanResult> RunAsync(AppJob job, OcrScanRequest request, OcrScanStartMode startMode)
@@ -479,7 +479,7 @@ public sealed class OcrScanner
                 OcrResult result;
                 try
                 {
-                    result = await _ocr.RunAsync(Convert.ToBase64String(jpeg), cancellationToken);
+                    result = FilterOffBaselineOverlayLines(await _ocr.RunAsync(Convert.ToBase64String(jpeg), cancellationToken), request.Region);
                 }
                 catch (OperationCanceledException) { throw; }
                 catch (Exception error)
@@ -488,12 +488,12 @@ public sealed class OcrScanner
                 }
                 if (!result.Ok)
                     throw new OcrRecognitionException(result.Error ?? "OCR worker trả kết quả lỗi.");
-                if (result.Detected && result.Confidence < Math.Max(.78, mode.LowConfidence + .10))
+                if (NeedsEnhancedRecognition(result, Math.Max(.78, mode.LowConfidence + .10)))
                 {
                     try
                     {
                         var enhanced = await CaptureFrameWithFfmpegAsync(ffmpeg, source, at, request.Region, enhanced: true, processes, cancellationToken);
-                        var alternate = await _ocr.RunAsync(Convert.ToBase64String(enhanced), cancellationToken);
+                        var alternate = FilterOffBaselineOverlayLines(await _ocr.RunAsync(Convert.ToBase64String(enhanced), cancellationToken), request.Region);
                         if (alternate.Ok && PreferRecognition(alternate, result)) result = alternate;
                     }
                     catch (OperationCanceledException) { throw; }
@@ -504,7 +504,7 @@ public sealed class OcrScanner
                         job.Log($"OCR frame {at:0.000}s: enhanced retry skipped ({Compact(error.Message)}).");
                     }
                 }
-                tracker.Observe(at, timing.Duration, FilterOffBaselineOverlayLines(result, request.Region));
+                tracker.Observe(at, timing.Duration, result);
                 onProgress(at, frames, images);
                 if (job.IsPauseRequested && tracker.CanCheckpoint)
                 {
@@ -692,6 +692,9 @@ public sealed class OcrScanner
         return candidate.Confidence > current.Confidence + .01
             || candidateRunes > currentRunes && candidate.Confidence >= current.Confidence - .08;
     }
+
+    private static bool NeedsEnhancedRecognition(OcrResult result, double threshold) =>
+        result.Ok && result.Detected && result.Confidence < threshold;
 
     private static OcrResult FilterOffBaselineOverlayLines(OcrResult result, OcrRegion region)
     {

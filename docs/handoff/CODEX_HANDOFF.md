@@ -1,11 +1,11 @@
 # Codex handoff — BiliSub Studio
 
-- Current main/base SHA: `14b8b2c9cf2e2e0fb2e5c832329cc4a57bfd615f`.
+- Current main/base SHA: `6227706773429d63386a31f6a5af546a1ff98796`.
 - Current branch: `main`.
 - PR: none.
-- Last completed task: `OCR-TEXT-03` — preserve a fuller compatible OCR text when overlapping lanes reconcile.
+- Last completed task: `OCR-TEXT-04` — filter overlays before enhanced OCR selection in both frame test and full scan.
 - Task in progress: none.
-- Exact next task: `OCR-TEXT-04` — filter non-subtitle overlay text before deciding whether enhanced OCR is warranted.
+- Exact next task: `OCR-TEXT-05` — recover from a blank OCR read only while an active cue has suitable evidence.
 
 ## Root cause
 
@@ -53,6 +53,11 @@ because it may instead be an edge-glyph hallucination.
 `OCR-TEXT-03` reproduced an independent lane-boundary loss: `Reconcile()`
 merged time and confidence but retained the text from whichever OCR lane happened
 to be enumerated first. Therefore a real fuller compatible cue could be lost.
+
+`OCR-TEXT-04` found a decision-order defect: the initial OCR confidence was
+evaluated before the known non-subtitle overlay filter. A high-confidence overlay
+could therefore affect whether the lower-confidence dialogue received an
+enhanced recognition pass.
 
 That same scan showed three non-dialogue lower-ROI false positives with the
 same geometry: a persistent left/top branding overlay, a stylized scene title,
@@ -108,6 +113,9 @@ and another left/top label. Normal dialogue was centered in the lower band.
 - `OCR-TEXT-03` keeps the normal overlap and similarity gates, but selects the
   longer string only when it is a strict textual superset of the existing OCR
   cue. It never synthesizes a string from two similar readings.
+- `OCR-TEXT-04` applies the existing overlay filter to both normal and enhanced
+  reads before the shared enhanced-pass decision/preference logic. It preserves
+  the reviewed geometry rules, thresholds, preprocessing, tracker and FFmpeg.
 
 ## Files changed
 
@@ -125,6 +133,7 @@ and another left/top label. Normal dialogue was centered in the lower band.
 - `csharp/tests/BiliSubStudio.Core.ContractTests/ChineseOcrFullwidthRegression.cs`
 - `csharp/tests/BiliSubStudio.Core.ContractTests/OcrTrackerFullerTextRegression.cs`
 - `csharp/tests/BiliSubStudio.Core.ContractTests/OcrLaneReconcileFullerTextRegression.cs`
+- `csharp/tests/BiliSubStudio.Core.ContractTests/OcrEnhancedFilterOrderRegression.cs`
 - `docs/migration/CSHARP_CODE_MAP.generated.md`
 - `docs/handoff/CODEX_HANDOFF.md`
 
@@ -203,6 +212,11 @@ and another left/top label. Normal dialogue was centered in the lower band.
   lane orders, a different-meaning near-match, and equivalent raw-lane output
   after a simulated resume. No Windows video field test has been run for this
   reconciliation-only change.
+- OCR-TEXT-04 targeted verification: PASS — scanner and Paddle worker contract
+  scripts, then Core contract tests 71/71. The regression confirms a filtered
+  overlay cannot request or win enhanced OCR, while retained low-confidence
+  dialogue does request it. No Windows video field test has been run after the
+  new decision ordering.
 - No version bump, release, PR, merge, or source-media overwrite was performed.
 
 ## Constraints to preserve
