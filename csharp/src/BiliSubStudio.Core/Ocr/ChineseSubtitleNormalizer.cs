@@ -8,6 +8,21 @@ public static partial class ChineseSubtitleNormalizer
     public static bool TryNormalize(string? input, out string output)
     {
         var text = string.Join(" ", (input ?? string.Empty).Replace('\r', ' ').Replace('\n', ' ').Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+
+        // Paddle/overlays can emit Latin brand/acronym text using fullwidth Unicode
+        // letters. Fold only those two alphabet ranges so the existing mixed-Chinese
+        // and standalone-Latin policies see the same text as halfwidth OCR. Do not
+        // apply NFKC here: Chinese fullwidth punctuation and numbers are presentation
+        // data and must remain untouched.
+        var folded = new StringBuilder(text.Length);
+        foreach (var rune in text.EnumerateRunes())
+        {
+            var value = rune.Value;
+            if (value is >= 0xFF21 and <= 0xFF3A) value = 'A' + (value - 0xFF21);
+            else if (value is >= 0xFF41 and <= 0xFF5A) value = 'a' + (value - 0xFF41);
+            folded.Append(new Rune(value).ToString());
+        }
+        text = folded.ToString();
         text = RepeatedPunctuation().Replace(text, "$1");
 
         var hanCount = 0;
