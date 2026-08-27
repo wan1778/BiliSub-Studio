@@ -302,11 +302,17 @@ public sealed class OcrScanner
 
         var lastStable = 0;
         var lastThroughput = 0d;
-        job.Log("Auto Benchmark Predict → Probe → Commit: xét CPU/RAM/VRAM theo mốc 1 → 2 → 4 → 8 → 16; nếu một mốc không đạt, thử lùi các mức giữa trước khi khóa topology. Mỗi mức chỉ PASS khi đủ đúng N pipeline thật và throughput tăng ít nhất 10%.");
+        long observedVramPerGpuWorkerBytes = 0;
+        job.Log("Auto Benchmark Predict → Probe → Commit: xét CPU/RAM/VRAM theo mốc 1 → 2 → 4 → 8 → 16; VRAM tăng thêm được học từ delta thực tế của chính máy sau mỗi topology PASS, không dùng định mức cố định theo worker. Nếu một mốc không đạt, thử lùi các mức giữa trước khi khóa topology. Mỗi mức chỉ PASS khi đủ đúng N pipeline thật, còn reserve sau probe và throughput tăng ít nhất 10%.");
         var selected = await OcrTopologyBenchmark.SelectAsync(
             async (level, token) =>
             {
-                var preflight = EnsureResourceHeadroom(job, level, isManual: false, lastStable: lastStable);
+                var beforeWorkers = _ocr.Status.Workers;
+                var beforeResources = _hardware.ResourceSnapshot();
+                var preflight = EnsureResourceHeadroom(
+                    job, level, isManual: false, lastStable: lastStable,
+                    observedVramPerGpuWorkerBytes: observedVramPerGpuWorkerBytes,
+                    resources: beforeResources, requireMeasuredVram: true);
                 job.Set("benchmark", -1, $"OCR Auto Benchmark {level}/16: tài nguyên đạt ngưỡng; đang tạo đúng {level} Python worker...");
                 var probe = await ProbeTopologyLevelAsync(ffmpeg, request, level, processes, actual =>
                 {
@@ -315,6 +321,27 @@ public sealed class OcrScanner
                         level, lastStable, 16, actual, _ocr.Status.WorkerKinds,
                         $"đang chạy đủ {actual} FFmpeg + OCR pipeline", OcrAutoResourcePolicy.FormatSnapshot(resources)));
                 }, token);
+
+                var afterResources = _hardware.ResourceSnapshot();
+                var addedWorkers = Math.Max(0, level - beforeWorkers);
+                if (addedWorkers > 0
+                    && beforeResources.VramTelemetryAvailable
+                    && afterResources.VramTelemetryAvailable)
+                {
+                    var consumedVram = Math.Max(0, beforeResources.AvailableVramBytes - afterResources.AvailableVramBytes);
+                    if (consumedVram > 0)
+                    {
+                        var measuredPerWorker = consumedVram / addedWorkers;
+                        observedVramPerGpuWorkerBytes = Math.Max(observedVramPerGpuWorkerBytes, measuredPerWorker);
+                        job.Log($"Auto VRAM learn {beforeWorkers}→{level}: delta thực tế ~{consumedVram / 1024d / 1024d:0} MiB · giữ dự toán ~{observedVramPerGpuWorkerBytes / 1024d / 1024d:0} MiB/GPU worker trước margin.");
+                    }
+                }
+
+                EnsureResourceHeadroom(
+                    job, level, isManual: false, lastStable: lastStable,
+                    observedVramPerGpuWorkerBytes: observedVramPerGpuWorkerBytes,
+                    resources: afterResources, requireMeasuredVram: true, postProbe: true);
+
                 if (!OcrAutoResourcePolicy.HasUsefulThroughputGain(lastThroughput, probe.Throughput))
                 {
                     var gain = lastThroughput <= 0 ? 0 : (probe.Throughput / lastThroughput - 1) * 100;
@@ -323,11 +350,10 @@ public sealed class OcrScanner
                 }
                 lastStable = level;
                 lastThroughput = probe.Throughput;
-                var after = _hardware.ResourceSnapshot();
                 job.SetResult(new OcrBenchmarkTelemetry(
                     level, lastStable, 16, _ocr.Status.Workers, _ocr.Status.WorkerKinds,
-                    $"PASS · {probe.Throughput:0.00} mẫu/s", OcrAutoResourcePolicy.FormatSnapshot(after)));
-                job.Log($"Auto Benchmark {level}: đủ {level} Python worker + {level} FFmpeg pipeline PASS · {probe.Throughput:0.00} mẫu/s · {preflight.Summary}.");
+                    $"PASS · {probe.Throughput:0.00} mẫu/s", OcrAutoResourcePolicy.FormatSnapshot(afterResources)));
+                job.Log($"Auto Benchmark {level}: đủ {level} Python worker + {level} FFmpeg pipeline PASS · {probe.Throughput:0.00} mẫu/s · preflight {preflight.Summary} · sau probe {OcrAutoResourcePolicy.FormatSnapshot(afterResources)}.");
             },
             async (best, token) =>
             {
@@ -347,19 +373,29 @@ public sealed class OcrScanner
         return selected;
     }
 
-    private OcrResourceDecision EnsureResourceHeadroom(AppJob job, int candidate, bool isManual, int lastStable)
+    private OcrResourceDecision EnsureResourceHeadroom(
+        AppJob job,
+        int candidate,
+        bool isManual,
+        int lastStable,
+        long observedVramPerGpuWorkerBytes = 0,
+        HardwareResourceSnapshot? resources = null,
+        bool requireMeasuredVram = false,
+        bool postProbe = false)
     {
         var hardware = _hardware.Snapshot();
-        var resources = _hardware.ResourceSnapshot();
+        var live = resources ?? _hardware.ResourceSnapshot();
         var decision = OcrAutoResourcePolicy.Evaluate(
-            hardware, resources, _ocr.Status.ActiveMode, _ocr.Status.Workers, candidate);
+            hardware, live, _ocr.Status.ActiveMode, _ocr.Status.Workers, candidate,
+            observedVramPerGpuWorkerBytes, requireMeasuredVram);
         var stable = isManual ? 0 : lastStable;
+        var phase = postProbe ? "commit check" : "preflight";
         job.SetResult(new OcrBenchmarkTelemetry(
             candidate, stable, 16, _ocr.Status.Workers, _ocr.Status.WorkerKinds,
-            decision.Allowed ? $"preflight PASS; chuẩn bị tạo {candidate}" : "preflight STOP: " + decision.Reason,
+            decision.Allowed ? $"{phase} PASS; {(postProbe ? "reserve thực tế còn an toàn" : $"chuẩn bị tạo {candidate}")}" : $"{phase} STOP: " + decision.Reason,
             decision.Summary));
         if (!decision.Allowed) throw new InvalidOperationException(decision.Reason);
-        job.Log($"Resource preflight {candidate}: PASS · {decision.Summary}.");
+        job.Log($"Resource {phase} {candidate}: PASS · {decision.Summary}.");
         return decision;
     }
 

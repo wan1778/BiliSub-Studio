@@ -10,7 +10,7 @@ internal static class OcrAutoResourcePolicy
     private const long Gib = 1024L * Mib;
     private const long GpuWorkerRamBytes = 384L * Mib;
     private const long CpuWorkerRamBytes = 768L * Mib;
-    private const long GpuWorkerVramBytes = 384L * Mib;
+    private const double VramGrowthSafetyFactor = 1.25;
     private const double MinimumThroughputGain = 0.10;
 
     internal static OcrResourceDecision Evaluate(
@@ -18,10 +18,13 @@ internal static class OcrAutoResourcePolicy
         HardwareResourceSnapshot live,
         string activeMode,
         int currentWorkers,
-        int candidate)
+        int candidate,
+        long observedVramPerGpuWorkerBytes = 0,
+        bool requireMeasuredVram = false)
     {
         if (candidate is < 1 or > 16) throw new ArgumentOutOfRangeException(nameof(candidate));
         currentWorkers = Math.Clamp(currentWorkers, 0, candidate);
+        observedVramPerGpuWorkerBytes = Math.Max(0, observedVramPerGpuWorkerBytes);
         var mode = NormalizeMode(activeMode, hardware.NvidiaDetected);
         var current = WorkerKinds(mode, currentWorkers);
         var target = WorkerKinds(mode, candidate);
@@ -59,30 +62,54 @@ internal static class OcrAutoResourcePolicy
         {
             var totalVram = live.TotalVramBytes > 0 ? live.TotalVramBytes : hardware.VramBytes;
             var vramReserve = Math.Max(512L * Mib, checked((long)(totalVram * 0.15)));
-            var targetVram = checked(target.Gpu * GpuWorkerVramBytes);
             if (totalVram <= 0)
             {
                 return Reject("Không đọc được dung lượng VRAM cho topology GPU; Auto không được tăng mù.", live);
             }
-            if (totalVram < vramReserve + targetVram)
+
+            if (live.VramTelemetryAvailable)
             {
-                return Reject(
-                    $"VRAM tổng {FormatBytes(totalVram)} không đủ ngưỡng an toàn cho {target.Gpu} GPU worker; cần giữ reserve {FormatBytes(vramReserve)}.",
-                    live);
+                if (live.AvailableVramBytes < vramReserve)
+                {
+                    return Reject(
+                        $"VRAM trống {FormatBytes(live.AvailableVramBytes)} đã thấp hơn reserve an toàn {FormatBytes(vramReserve)}.",
+                        live);
+                }
+
+                if (addedGpu > 0 && observedVramPerGpuWorkerBytes > 0)
+                {
+                    var projectedVram = checked((long)Math.Ceiling(
+                        observedVramPerGpuWorkerBytes * (double)addedGpu * VramGrowthSafetyFactor));
+                    if (live.AvailableVramBytes < vramReserve + projectedVram)
+                    {
+                        return Reject(
+                            $"VRAM trống {FormatBytes(live.AvailableVramBytes)} không đủ cho dự toán thực đo thêm {addedGpu} GPU worker "
+                            + $"(~{FormatBytes(projectedVram)}, đã cộng {VramGrowthSafetyFactor:0.00}x margin) và reserve {FormatBytes(vramReserve)}.",
+                            live);
+                    }
+                }
             }
-            var addedVram = checked(addedGpu * GpuWorkerVramBytes);
-            if (live.VramTelemetryAvailable && live.AvailableVramBytes < vramReserve + addedVram)
+            else if (requireMeasuredVram && addedGpu > 0)
             {
-                return Reject(
-                    $"VRAM trống {FormatBytes(live.AvailableVramBytes)} không đủ để thêm {addedGpu} GPU worker và vẫn giữ reserve {FormatBytes(vramReserve)}.",
-                    live);
+                var conservativeLimit = HardwareService.RecommendedOcrWorkers(hardware, mode);
+                if (candidate > conservativeLimit)
+                {
+                    return Reject(
+                        $"Không đọc được VRAM trống để học mức dùng thực tế; Auto chỉ cho thử tới {conservativeLimit} worker theo hardware fallback thay vì tăng mù lên {candidate}.",
+                        live);
+                }
             }
         }
 
+        var measurement = target.Gpu > 0 && live.VramTelemetryAvailable
+            ? observedVramPerGpuWorkerBytes > 0
+                ? $" · VRAM thực đo ~{FormatBytes(observedVramPerGpuWorkerBytes)}/GPU worker + {VramGrowthSafetyFactor:0.00}x margin"
+                : " · VRAM chưa có delta thực đo; cho probe topology thật rồi kiểm tra reserve sau probe"
+            : string.Empty;
         return new OcrResourceDecision(
             true,
-            $"RAM/VRAM/CPU đủ headroom để thử đúng {candidate} pipeline.",
-            FormatSnapshot(live));
+            $"RAM/VRAM/CPU đủ headroom để thử đúng {candidate} pipeline.{measurement}",
+            FormatSnapshot(live) + measurement);
     }
 
     internal static bool HasUsefulThroughputGain(double previous, double current) =>

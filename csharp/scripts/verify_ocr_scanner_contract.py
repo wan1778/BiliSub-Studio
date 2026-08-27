@@ -69,10 +69,15 @@ def main() -> int:
             "OCR Auto does not execute Predict -> Probe -> throughput Commit across the base ladder and fallbacks")
     require("GlobalMemoryStatusEx" in hardware and "nvmlDeviceGetMemoryInfo" in hardware,
             "OCR Auto cannot read live Windows RAM and NVIDIA VRAM headroom")
-    require("GpuWorkerRamBytes" in resource_policy and "GpuWorkerVramBytes" in resource_policy and
+    require("GpuWorkerRamBytes" in resource_policy and "GpuWorkerVramBytes" not in resource_policy and
+            "observedVramPerGpuWorkerBytes" in resource_policy and "VramGrowthSafetyFactor = 1.25" in resource_policy and
             "ramReserve" in resource_policy and "vramReserve" in resource_policy and
             "MinimumThroughputGain = 0.10" in resource_policy,
-            "OCR Auto resource policy is missing reviewed RAM/VRAM reserves or throughput threshold")
+            "OCR Auto resource policy is not using machine-measured VRAM growth with reviewed reserve/throughput safety")
+    require("beforeResources" in selector and "afterResources" in selector and
+            "observedVramPerGpuWorkerBytes" in selector and "postProbe: true" in selector and
+            "beforeResources.AvailableVramBytes - afterResources.AvailableVramBytes" in selector,
+            "OCR Auto does not learn machine-specific VRAM growth and re-check actual reserve after a real topology probe")
     require("Math.Min(explicitValue" not in selector and
             "ProbeTopologyLevelAsync(ffmpeg, request, explicitValue" in selector,
             "manual OCR topology is still silently downgraded instead of probing the exact request")
@@ -152,7 +157,7 @@ def main() -> int:
     require("Where(x => x.Start <= media + 0.001)" in checkpoint,
             "paused checkpoint cues are not restricted to the contiguous safe frontier")
 
-    print("PASS OCR Predict/Probe/Commit base 1/2/4/8/16 plus descending fallbacks, RAM/VRAM/throughput gate, exact topology, live tracker cue stream, owned-process cleanup, transactional cancel, safe-frontier and NVDEC contracts")
+    print("PASS OCR Predict/Probe/Commit base 1/2/4/8/16 plus descending fallbacks, machine-measured VRAM growth/reserve/throughput gate, exact topology, live tracker cue stream, owned-process cleanup, transactional cancel, safe-frontier and NVDEC contracts")
     return 0
 
 

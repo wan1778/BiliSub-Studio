@@ -22,14 +22,30 @@ internal static class OcrHardwarePolicyRegression
             "RecommendedOcrWorkers",
             BindingFlags.Static | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("missing device-aware OCR worker policy");
+        var resourcePolicyType = typeof(HardwareService).Assembly.GetType("BiliSubStudio.Core.Ocr.OcrAutoResourcePolicy")
+            ?? throw new InvalidOperationException("missing OCR live resource policy");
+        var resourcePolicy = resourcePolicyType.GetMethod(
+            "Evaluate",
+            BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing OCR live resource evaluator");
 
         static long GiB(double value) => checked((long)(value * 1024 * 1024 * 1024));
+        static long MiB(double value) => checked((long)(value * 1024 * 1024));
         int GpuWorkers(double gib) => (int)(gpuPolicy.Invoke(null, [GiB(gib)])
             ?? throw new InvalidOperationException("OCR GPU worker policy returned null"));
         int SegmentLanes(HardwareSnapshot hardware) => (int)(segmentPolicy.Invoke(null, [hardware])
             ?? throw new InvalidOperationException("OCR segment-lane policy returned null"));
         int DeviceWorkers(HardwareSnapshot hardware, string mode) => (int)(workerPolicy.Invoke(null, [hardware, mode])
             ?? throw new InvalidOperationException("OCR device worker policy returned null"));
+        bool ResourceAllowed(HardwareSnapshot hardware, double freeVramGiB, int currentWorkers, int candidate, double observedVramMiB)
+        {
+            var live = new HardwareResourceSnapshot(GiB(32), GiB(10), true, GiB(4), GiB(freeVramGiB));
+            var decision = resourcePolicy.Invoke(null,
+                [hardware, live, "gpu", currentWorkers, candidate, MiB(observedVramMiB), true])
+                ?? throw new InvalidOperationException("OCR live resource policy returned null");
+            return (bool)(decision.GetType().GetProperty("Allowed")?.GetValue(decision)
+                ?? throw new InvalidOperationException("OCR live resource decision lost Allowed"));
+        }
 
         if (GpuWorkers(3) != 1 || GpuWorkers(6) != 2 || GpuWorkers(12) != 4 || GpuWorkers(24) != 8 || GpuWorkers(48) != 16)
             throw new InvalidOperationException("OCR GPU worker policy drifted from reviewed safety thresholds");
@@ -55,5 +71,13 @@ internal static class OcrHardwarePolicyRegression
         var noGpu = new HardwareSnapshot("fixture", 32, GiB(32), false, string.Empty, string.Empty, 0);
         if (SegmentLanes(noGpu) != 8 || DeviceWorkers(noGpu, "cpu") != 2 || DeviceWorkers(noGpu, "auto") != 2)
             throw new InvalidOperationException("no-GPU segment/worker policies are no longer independent");
+
+        var measured4Gb = new HardwareSnapshot("fixture", 32, GiB(32), true, "4 GB measured fixture", "CUDA 12.8", GiB(4));
+        if (!ResourceAllowed(measured4Gb, 2.0, 4, 8, 256))
+            throw new InvalidOperationException("measured ~256 MiB GPU workers are still blocked from a real 4->8 topology probe by the old fixed VRAM estimate");
+        if (ResourceAllowed(measured4Gb, 2.0, 4, 8, 400))
+            throw new InvalidOperationException("measured VRAM growth no longer protects reserve when the machine-specific slope is too large");
+        if (ResourceAllowed(measured4Gb, 0.5, 8, 8, 256))
+            throw new InvalidOperationException("post-probe VRAM reserve gate accepted an already overcommitted 4 GB GPU");
     }
 }
