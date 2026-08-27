@@ -50,49 +50,61 @@ worker = read(ASR_WORKER)
 app_project = read(APP_PROJECT)
 event_map = read(EVENT_MAP)
 
-# VOICE-01 — Start Whisper/ASR. One click creates exactly one cleanup-aware ASR job,
-# hands a validated source request to the local Whisper service, and immediately moves
-# the Editor into its busy state without running transcription synchronously on the UI thread.
-create_button = named_xaml_control("CreateAsrButton")
-require(create_button.get("Click") == "CreateAsr_Click",
-        "VOICE-01 Whisper start button must keep one reviewed Click handler")
-require(create_button.get("IsEnabled") in ("False", "false"),
-        "VOICE-01 Whisper start button must default disabled before a video/project is ready")
-require(editor_main.count("private async void CreateAsr_Click(") == 1,
-        "VOICE-01 Whisper start handler must have exactly one implementation")
-require("| `CreateAsrButton` | XAML | `CreateAsr_Click` | 1 |" in event_map,
-        "VOICE-01 event map must keep exactly one CreateAsrButton binding")
+# VOICE-01 — One user action creates voice. Whisper timing is an internal,
+# cleanup-aware prerequisite only when the valid timing cache is absent.
+generate_button = named_xaml_control("GenerateTtsButton")
+require(generate_button.get("Click") == "GenerateTts_Click",
+        "VOICE-01 voice creation must have exactly one XAML Click owner")
+require(generate_button.get("IsEnabled") in ("False", "false"),
+        "VOICE-01 voice creation must default disabled before subtitle/video state is ready")
+voice_model = named_xaml_control("VoiceModelBox")
+require(voice_model.get("SelectedIndex") == "0",
+        "VOICE-01 must show the default supported local reading model")
+require("ngoc-huyen" in editor_xaml and "Ngọc Huyền" in editor_xaml,
+        "VOICE-01 must identify Ngọc Huyền as the supported local reading model")
+require("CreateAsrButton" not in editor_xaml and "CreateAsr_Click" not in editor_main,
+        "VOICE-01 must not expose a separate manual analysis action")
+require("| `CreateAsrButton` |" not in event_map
+        and "GenerateTts_Click\n  -> EnsureVoiceTimingAsync" in event_map,
+        "VOICE-01 event map must describe the single voice entry point")
 
-handler = editor_main.split("private async void CreateAsr_Click(", 1)[1].split(
+ensure_timing = editor_main.split("private async Task<bool> EnsureVoiceTimingAsync()", 1)[1].split(
     "private async Task PollAsrJobAsync()", 1)[0]
-require("if (_asrJobId is not null || _project is null || _media is null || string.IsNullOrWhiteSpace(_path)) return;" in handler,
-        "VOICE-01 UI start must reject double-start and missing project/media/source")
-require("_asrJobId = _application.StartEditorAsr(new EditorAsrRequest(_project.Id, _path, _media.Duration));" in handler,
-        "VOICE-01 UI start must pass project id, exact source path and media duration to ASR")
-require("VoiceProgress.Value = 0;" in handler,
-        "VOICE-01 starting Whisper must reset Voice progress before polling")
-require("AsrStatusText.Text = \"Đang benchmark Whisper local rồi phân tích word timing, khoảng lặng và chất giọng Nam/Nữ.\";" in handler,
-        "VOICE-01 starting Whisper must expose the reviewed local benchmark/start status")
-require("VoiceStatusText.Text = AsrStatusText.Text;" in handler,
-        "VOICE-01 Voice details must mirror the initial ASR start status")
-require(handler.index("_asrJobId = _application.StartEditorAsr")
-        < handler.index("RefreshEditorActions();")
-        < handler.index("await PollAsrJobAsync();"),
-        "VOICE-01 UI must own the returned job id before locking controls and polling")
-require("catch (Exception error)" in handler
-        and "_asrJobId = null;" in handler
-        and "AsrStatusText.Text = error.Message;" in handler
-        and handler.rfind("RefreshEditorActions();") > handler.index("catch (Exception error)"),
-        "VOICE-01 synchronous start failure must release the UI job owner and refresh controls")
+require('if (_project?.Speech is { Status: "complete" }) return true;' in ensure_timing,
+        "VOICE-01 valid cached timing must be reused without a second analysis")
+require("if (_asrJobId is not null || _project is null || _media is null || string.IsNullOrWhiteSpace(_path)) return false;" in ensure_timing,
+        "VOICE-01 automatic timing must reject overlapping or incomplete editor state")
+require("_asrJobId = _application.StartEditorAsr(new EditorAsrRequest(_project.Id, _path, _media.Duration));" in ensure_timing,
+        "VOICE-01 automatic timing must pass project id, exact source path and media duration to ASR")
+require("VoiceProgress.Value = 0;" in ensure_timing and "await PollAsrJobAsync();" in ensure_timing,
+        "VOICE-01 automatic timing must reset progress and wait for its owned job")
+require(ensure_timing.index("_asrJobId = _application.StartEditorAsr")
+        < ensure_timing.index("RefreshEditorActions();")
+        < ensure_timing.index("await PollAsrJobAsync();"),
+        "VOICE-01 timing job id must lock controls before polling")
+
+generate_handler = editor_main.split("private async void GenerateTts_Click", 1)[1].split(
+    "private async Task PollTtsJobAsync()", 1)[0]
+require('if (!string.Equals(SelectedVoiceModel(), "ngoc-huyen", StringComparison.Ordinal))' in generate_handler,
+        "VOICE-01 must reject a missing/unsupported reading model before generation")
+require("if (!await EnsureVoiceTimingAsync())" in generate_handler,
+        "VOICE-01 the create-voice entry point must automatically acquire timing")
+require("_ttsJobId = _application.StartEditorTts(new EditorTtsRequest(" in generate_handler,
+        "VOICE-01 the same entry point must start TTS after timing is ready")
+require(generate_handler.index("await EnsureVoiceTimingAsync()")
+        < generate_handler.index("_ttsJobId = _application.StartEditorTts"),
+        "VOICE-01 must never start TTS before automatic timing completes")
 
 refresh_actions = editor_main.split("private void RefreshEditorActions()", 1)[1].split(
     "private static string FormatClock", 1)[0]
 require("var editable = idle && hasMedia && !_playback.IsPreviewMode;" in refresh_actions,
-        "VOICE-01 ASR start availability must require an idle editable media source")
-require("CreateAsrButton.IsEnabled = editable;" in refresh_actions,
-        "VOICE-01 ASR start button must follow Editor editability")
+        "VOICE-01 create-voice availability must require an idle editable media source")
+require("VoiceModelBox.IsEnabled = editable;" in refresh_actions,
+        "VOICE-01 reading-model selection must follow Editor editability")
+require("GenerateTtsButton.IsEnabled = editable && !_subtitleManualDirty && subtitleReady;" in refresh_actions,
+        "VOICE-01 create-voice must no longer require a prior manual ASR click")
 require("CancelVoiceButton.IsEnabled = _asrJobId is not null || _ttsJobId is not null;" in refresh_actions,
-        "VOICE-01 acquiring an ASR job id must expose the Voice cancel path")
+        "VOICE-01 automatic timing must expose the Voice cancel path")
 
 busy_decl = "private bool EditorBusy => _jobId is not null || _translationJobId is not null || _asrJobId is not null || _ttsJobId is not null || _playback.IsRendering;"
 require(busy_decl in editor_main,

@@ -39,16 +39,16 @@ installer = read(ASR_INSTALLER)
 # editor-asr job may start. Durable ASR/model checkpoints may be reused only when they
 # still match the exact source/model identity.
 
-create_handler = editor_main.split("private async void CreateAsr_Click(", 1)[1].split(
+create_handler = editor_main.split("private async Task<bool> EnsureVoiceTimingAsync()", 1)[1].split(
     "private async Task PollAsrJobAsync()", 1)[0]
-require("if (_asrJobId is not null || _project is null || _media is null || string.IsNullOrWhiteSpace(_path)) return;" in create_handler,
+require("if (_asrJobId is not null || _project is null || _media is null || string.IsNullOrWhiteSpace(_path)) return false;" in create_handler,
         "VOICE-03 restart must be blocked only while a live ASR owner still exists or source state is missing")
 require("_asrJobId = _application.StartEditorAsr(new EditorAsrRequest(_project.Id, _path, _media.Duration));" in create_handler,
         "VOICE-03 every restart must create a fresh application ASR job from the current exact project/source")
 require("VoiceProgress.Value = 0;" in create_handler,
         "VOICE-03 restart must reset visible progress for the new job")
-require("VoiceStatusText.Text = AsrStatusText.Text;" in create_handler,
-        "VOICE-03 restart must replace stale cancel text with the new ASR start state")
+require("VoiceStatusText.Text = status;" in create_handler,
+        "VOICE-03 restart must replace stale cancel text with the automatic timing start state")
 
 poll = editor_main.split("private async Task PollAsrJobAsync()", 1)[1].split(
     "private async void GenerateTts_Click", 1)[0]
@@ -63,8 +63,8 @@ refresh = editor_main.split("private void RefreshEditorActions()", 1)[1].split(
     "private static string FormatClock", 1)[0]
 require("var idle = !EditorBusy;" in refresh and "var editable = idle && hasMedia && !_playback.IsPreviewMode;" in refresh,
         "VOICE-03 restart availability must derive from current live ownership")
-require("CreateAsrButton.IsEnabled = editable;" in refresh,
-        "VOICE-03 Start Whisper must re-enable when cancel cleanup releases EditorBusy")
+require("GenerateTtsButton.IsEnabled = editable && !_subtitleManualDirty && subtitleReady;" in refresh,
+        "VOICE-03 Create voice must re-enable when cancel cleanup releases EditorBusy")
 require("CancelVoiceButton.IsEnabled = _asrJobId is not null || _ttsJobId is not null;" in refresh,
         "VOICE-03 cancel control must disappear after the cancelled ASR owner is released")
 

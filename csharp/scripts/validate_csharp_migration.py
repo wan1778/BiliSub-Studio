@@ -780,7 +780,7 @@ require("ImportSrtButton.IsEnabled = idle && hasMedia" not in editor,
 require("PrepareAiButton.IsEnabled = idle && hasMedia" not in editor,
         "Editor AI preparation regressed to requiring a selected video")
 for marker in (
-    "CreateAsrButton", "CreateAsr_Click", "CreateAsrButton.IsEnabled = editable;", "PollAsrJobAsync",
+    "VoiceModelBox", "EnsureVoiceTimingAsync", "PollAsrJobAsync",
     "GenerateTtsButton", "GenerateTts_Click", "KaraokeToggle", "SaveKaraokeAssButton",
     "EditorSpeechProject", "EditorTtsProject",
 ):

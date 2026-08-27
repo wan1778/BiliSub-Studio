@@ -80,7 +80,6 @@ The important guard is `_editorCoreInitialized`: repeated `Loaded` events do not
 | `UndoButton` | XAML | `Undo_Click` | 1 |
 | `RedoButton` | XAML | `Redo_Click` | 1 |
 | `RemoveRegionButton` | XAML | `RemoveRegion_Click` | 1 |
-| `CreateAsrButton` | XAML | `CreateAsr_Click` | 1 |
 | `GenerateTtsButton` | XAML | `GenerateTts_Click` | 1 |
 | `CancelVoiceButton` | XAML | `CancelVoice_Click` | 1 |
 | `RenderButton` | XAML | `Render_Click` | 1 |
@@ -217,8 +216,13 @@ This remains separate from AUDIO-01 monitor mute/volume.
 ### Voice
 
 ```text
-CreateAsrButton / GenerateTtsButton / CancelVoiceButton
+GenerateTtsButton / CancelVoiceButton
   -> one XAML Click handler each
+
+GenerateTts_Click
+  -> EnsureVoiceTimingAsync
+  -> one app-owned Whisper job only when valid timing is not already cached
+  -> one app-owned TTS job using the selected supported local voice model
 
 KaraokeToggle / CurrentCueVoiceBox
   -> one XAML state-change handler each

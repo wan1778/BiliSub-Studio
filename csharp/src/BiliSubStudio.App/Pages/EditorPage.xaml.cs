@@ -93,8 +93,10 @@ public sealed partial class EditorPage : Page
     {
         if (!ImportSrtButton.IsEnabled || !PrepareAiButton.IsEnabled)
             throw new InvalidOperationException("Editor phải cho phép chọn SRT và chuẩn bị AI trước khi chọn video.");
-        if (CreateAsrButton.IsEnabled)
-            throw new InvalidOperationException("Editor không được cho chạy ASR khi chưa có video nguồn.");
+        if (GenerateTtsButton.IsEnabled)
+            throw new InvalidOperationException("Editor không được cho tạo voice khi chưa có video nguồn.");
+        if (!string.Equals(SelectedVoiceModel(), "ngoc-huyen", StringComparison.Ordinal))
+            throw new InvalidOperationException("Editor phải mặc định chọn model voice Ngọc Huyền local.");
         if (!string.Equals(PlayerPlayPauseButton.Content?.ToString(), "▶", StringComparison.Ordinal))
             throw new InvalidOperationException("Editor preview phải có đúng một nút Play/Pause do playback controller sở hữu.");
         if (PreviewPlayer.AreTransportControlsEnabled)
@@ -557,6 +559,9 @@ public sealed partial class EditorPage : Page
     private EditorTranslationModelMode SelectedTranslationModelMode() =>
         TranslationFastModeToggle.IsOn ? EditorTranslationModelMode.Fast : EditorTranslationModelMode.Quality;
 
+    private string SelectedVoiceModel() =>
+        (VoiceModelBox.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? string.Empty;
+
     private void TranslationFastMode_Toggled(object sender, RoutedEventArgs e)
     {
         if (!IsLoaded) return;
@@ -586,23 +591,28 @@ public sealed partial class EditorPage : Page
         }
     }
 
-    private async void CreateAsr_Click(object sender, RoutedEventArgs e)
+    private async Task<bool> EnsureVoiceTimingAsync()
     {
-        if (_asrJobId is not null || _project is null || _media is null || string.IsNullOrWhiteSpace(_path)) return;
+        if (_project?.Speech is { Status: "complete" }) return true;
+        if (_asrJobId is not null || _project is null || _media is null || string.IsNullOrWhiteSpace(_path)) return false;
         try
         {
             _asrJobId = _application.StartEditorAsr(new EditorAsrRequest(_project.Id, _path, _media.Duration));
             VoiceProgress.Value = 0;
-            AsrStatusText.Text = "Đang benchmark Whisper local rồi phân tích word timing và khoảng lặng.";
-            VoiceStatusText.Text = AsrStatusText.Text;
+            const string status = "Đang tự lấy word timing và khoảng lặng để canh voice...";
+            AsrStatusText.Text = status;
+            VoiceStatusText.Text = status;
             RefreshEditorActions();
             await PollAsrJobAsync();
+            return _project?.Speech is { Status: "complete" };
         }
         catch (Exception error)
         {
             _asrJobId = null;
             AsrStatusText.Text = error.Message;
+            VoiceStatusText.Text = error.Message;
             RefreshEditorActions();
+            return false;
         }
     }
 
@@ -646,7 +656,7 @@ public sealed partial class EditorPage : Page
                     await RefreshSpeechTimingForSubtitleAsync();
                     UpdateSubtitleSummary();
                     AsrStatusText.Text = $"Whisper timing hoàn tất · {result.WordCount} từ · {result.Device.ToUpperInvariant()}/{result.ComputeType} · benchmark {result.ProbeRealtimeFactor:0.00}×.";
-                    VoiceStatusText.Text = "Đã có word timing cho video. Có thể Vietsub rồi tạo voice Ngọc Huyền local.";
+                    VoiceStatusText.Text = "Đã có word timing. Đang tiếp tục tạo voice Ngọc Huyền và canh theo timecode...";
                     RenderOverlays();
                     await SaveProjectNowAsync();
                 }
@@ -666,23 +676,44 @@ public sealed partial class EditorPage : Page
             VoiceStatusText.Text = "SRT nguồn đã thay đổi ngoài ứng dụng; hãy chọn lại SRT trước khi tạo voice.";
             return;
         }
-        if (_project.Speech is not { Status: "complete" } speech)
-        {
-            VoiceStatusText.Text = "Hãy chạy Phân tích word timing trước khi tạo voice.";
-            return;
-        }
         if (_subtitleSource.Cues.Any(x => string.IsNullOrWhiteSpace(x.VietnameseText)))
         {
             VoiceStatusText.Text = "Hãy Vietsub đầy đủ trước khi tạo voice Việt.";
             return;
         }
+        if (!string.Equals(SelectedVoiceModel(), "ngoc-huyen", StringComparison.Ordinal))
+        {
+            VoiceStatusText.Text = "Hãy chọn model đọc Ngọc Huyền local trước khi tạo voice.";
+            return;
+        }
         try
         {
+            if (!await EnsureVoiceTimingAsync())
+            {
+                if (string.IsNullOrWhiteSpace(VoiceStatusText.Text))
+                    VoiceStatusText.Text = "Không thể lấy word timing để tạo voice.";
+                return;
+            }
+            var speech = _project?.Speech;
+            if (speech is not { Status: "complete" })
+            {
+                VoiceStatusText.Text = "Word timing chưa hoàn tất nên voice chưa được tạo.";
+                return;
+            }
+            var project = _project;
+            var media = _media;
+            var subtitle = _subtitleSource;
+            var path = _path;
+            if (project is null || media is null || subtitle is null || string.IsNullOrWhiteSpace(path))
+            {
+                VoiceStatusText.Text = "Video hoặc SRT đã thay đổi khi đang chuẩn bị voice; hãy tạo lại.";
+                return;
+            }
             _ttsJobId = _application.StartEditorTts(new EditorTtsRequest(
-                _project.Id,
-                _path,
-                _media.Duration,
-                _subtitleSource,
+                project.Id,
+                path,
+                media.Duration,
+                subtitle,
                 speech.AnalysisPath,
                 speech.AnalysisSha256));
             VoiceProgress.Value = 0;
@@ -2066,7 +2097,6 @@ public sealed partial class EditorPage : Page
             : _project is null
                 ? "Chọn video trước"
                 : "Nạp SRT Việt đã dịch";
-        CreateAsrButton.IsEnabled = editable;
         PrepareAiButton.IsEnabled = idle && !_playback.IsPreviewMode;
         TranslationFastModeToggle.IsEnabled = idle && !_playback.IsPreviewMode;
         var aiReady = false;
@@ -2083,7 +2113,8 @@ public sealed partial class EditorPage : Page
         PreviewMuteToggle.IsEnabled = PreviewVolumeSlider.IsEnabled = idle && hasMedia;
         SourceAudioModeBox.IsEnabled = editable;
         SourceAudioGainSlider.IsEnabled = editable && _audioSettings.SourceMode == "duck";
-        GenerateTtsButton.IsEnabled = editable && !_subtitleManualDirty && subtitleReady && _project?.Speech is { Status: "complete" };
+        VoiceModelBox.IsEnabled = editable;
+        GenerateTtsButton.IsEnabled = editable && !_subtitleManualDirty && subtitleReady;
         CancelVoiceButton.IsEnabled = _asrJobId is not null || _ttsJobId is not null;
         KaraokeToggle.IsEnabled = idle && !_playback.IsPreviewMode && _subtitleSource is not null;
         RefreshImageControls();

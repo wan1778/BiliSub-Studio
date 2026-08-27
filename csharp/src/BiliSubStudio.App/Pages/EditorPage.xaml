@@ -225,13 +225,15 @@
 
                             <StackPanel x:Name="VoiceInspectorPanel" Spacing="10" Visibility="Collapsed">
                                 <TextBlock FontSize="14" FontWeight="SemiBold" Text="Voice" />
-                                <TextBlock Style="{StaticResource MutedTextStyle}" Text="Whisper chỉ lấy word timing và khoảng lặng để tự canh voice theo từng timecode." TextWrapping="Wrap" />
-                                <Button x:Name="CreateAsrButton" Click="CreateAsr_Click" Content="Phân tích word timing" IsEnabled="False" />
-                                <Button x:Name="GenerateTtsButton" Click="GenerateTts_Click" Content="Tạo voice Ngọc Huyền local" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />
+                                <TextBlock Style="{StaticResource MutedTextStyle}" Text="Chọn giọng đọc rồi tạo voice. Ứng dụng tự lấy word timing và khoảng lặng khi cần để canh từng timecode." TextWrapping="Wrap" />
+                                <ComboBox x:Name="VoiceModelBox" Header="Giọng đọc" SelectedIndex="0">
+                                    <ComboBoxItem Tag="ngoc-huyen" Content="Ngọc Huyền · tiếng Việt local" />
+                                </ComboBox>
+                                <Button x:Name="GenerateTtsButton" Click="GenerateTts_Click" Content="Tạo voice và tự canh timecode" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />
                                 <ToggleSwitch x:Name="KaraokeToggle" Header="Caption theo từng từ" IsOn="True" Toggled="Karaoke_Toggled" />
                                 <ProgressBar x:Name="VoiceProgress" Minimum="0" Maximum="100" />
-                                <TextBlock x:Name="VoiceStatusText" Style="{StaticResource MutedTextStyle}" Text="Chưa phân tích nhịp thoại." TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
-                                <Button x:Name="CancelVoiceButton" Click="CancelVoice_Click" Content="Hủy phân tích / voice" IsEnabled="False" Style="{StaticResource DangerButtonStyle}" />
+                                <TextBlock x:Name="VoiceStatusText" Style="{StaticResource MutedTextStyle}" Text="Chọn giọng rồi tạo voice. Word timing sẽ tự chạy khi chưa có cache hợp lệ." TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
+                                <Button x:Name="CancelVoiceButton" Click="CancelVoice_Click" Content="Hủy tạo voice" IsEnabled="False" Style="{StaticResource DangerButtonStyle}" />
                             </StackPanel>
 
                             <StackPanel x:Name="ImageInspectorPanel" Spacing="10" Visibility="Collapsed">

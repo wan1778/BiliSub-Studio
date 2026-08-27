@@ -1,13 +1,19 @@
 # Codex handoff — BiliSub Studio
 
-- Current main/base SHA: `52fa30238e06f1b9a6740c203cbd15d678179ac9`.
+- Current main/base SHA: `48817ba0cac72f76434ea326b621b010261df7a6`.
 - Current branch: `main`.
 - PR: none.
-- Last completed task: `OCR-TIME-02` — preserve FFmpeg PTS for sampled OCR and resume checkpoints; published as beta `4.0.49`.
+- Last completed task: `VOICE-UX-01` — one create-voice action automatically acquires valid timing and then creates Ngọc Huyền TTS.
 - Task in progress: none.
-- Exact next task: run the remaining Windows OCR field matrix (CFR/VFR, seek, one/four lanes and Resume) before any OCR UI or quality-policy task.
+- Exact next task: field-test `VOICE-UX-01` in the Windows Editor with an imported fully translated SRT: click one Create voice action with no timing cache, cancel during timing, then retry and preview the resulting track. Resume the remaining OCR field matrix afterwards.
 
 ## Root cause
+
+The Voice inspector exposed two sequential actions: the user had to first start
+Whisper timing, then return to start TTS. TTS itself already fits each generated
+Ngọc Huyền clip to the Whisper word/pause windows, but the UI prevented it from
+acquiring that prerequisite automatically. It also did not explicitly show the
+single licensed local reading model available to the product.
 
 The control labelled `Chính xác` was only a 4 fps sampling mode. Its timestamps
 were synthesized as `start + frameIndex / fps`, so it could skip short subtitles
@@ -80,6 +86,15 @@ same geometry: a persistent left/top branding overlay, a stylized scene title,
 and another left/top label. Normal dialogue was centered in the lower band.
 
 ## Changes made
+
+- Voice now presents the supported reading model explicitly: `Ngọc Huyền · tiếng
+  Việt local`. It is a real pinned local model, not a placeholder selection.
+- `Tạo voice và tự canh timecode` is the only user entry point. It reuses a valid
+  saved Whisper timing document, or creates one cleanup-aware ASR job itself,
+  waits for it to finish, then starts the existing TTS job.
+- The separate `Phân tích word timing` button and its event owner were removed.
+  Cancellation still owns the active ASR or TTS job, and no event handler calls
+  another event handler.
 
 - `accurate` now means every decoded video frame; `balanced` remains 2.5 fps and
   `fast` remains 1.5 fps.
@@ -162,6 +177,12 @@ and another left/top label. Normal dialogue was centered in the lower band.
 - `csharp/tests/BiliSubStudio.Core.ContractTests/OcrActiveCueBlankRecoveryRegression.cs`
 - `csharp/tests/BiliSubStudio.Core.ContractTests/OcrSampledOneRuneRegression.cs`
 - `csharp/tests/BiliSubStudio.Core.ContractTests/OcrTrackerModeRegression.cs`
+- `csharp/src/BiliSubStudio.App/Pages/EditorPage.xaml`
+- `csharp/src/BiliSubStudio.App/Pages/EditorPage.xaml.cs`
+- `csharp/scripts/verify_editor_voice_start_contract.py`
+- `csharp/scripts/verify_editor_voice_restart_contract.py`
+- `csharp/scripts/validate_csharp_migration.py`
+- `docs/engineering/EDITOR_EVENT_MAP.md`
 - `csharp/Directory.Build.props`
 - `update/release-notes.json`
 - `update/beta.json`
@@ -273,6 +294,10 @@ and another left/top label. Normal dialogue was centered in the lower band.
 - Not a functional OCR-quality PASS: Windows CI proves build/package/smoke only.
   The full new PTS path still needs the remaining supplied-video field matrix:
   CFR/VFR, seek, one/four lanes, and Pause/Resume.
+- VOICE-UX-01 source/contract/build PASS: Voice start and cancel/retry contracts
+  PASS; Core contract tests 71/71; WinUI Release build PASS with 0 warnings and
+  0 errors. This is not a Windows TTS functional PASS: no live Whisper/TTS run,
+  cancellation, retry, Preview or Export playback was performed in this task.
 
 ## Constraints to preserve
 
