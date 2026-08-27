@@ -1,9 +1,9 @@
 # Codex handoff — BiliSub Studio
 
-- Current main/base SHA: `ed2493167fc44ffda8d4f7320d8be58682316dbc`.
+- Current main/base SHA: `ba45e2cf0efd7d68ef5e4e346c5c509fca1b6f92`.
 - Current branch: `main`.
 - PR: none.
-- Last completed task: `ASR-UTF8-01` — force UTF-8 stdout for isolated local Whisper worker.
+- Last completed task: `CI-MAP-01` — regenerate the required C# code map after Voice source changes.
 - Task in progress: none.
 - Exact next task: field-test the merged `VOICE-UX-01` + `ASR-UTF8-01` in the Windows Editor with an imported fully translated SRT: click one Create voice action with no timing cache, cancel during timing, retry, then preview the resulting track. Resume the remaining OCR field matrix afterwards.
 
@@ -22,6 +22,12 @@ reproduced against the supplied video. The installed log's historical matching
 failure is `ASR local chưa hoàn chỉnh sau khi cài` from build 4.0.34; no
 `editor-asr` job is recorded for the later 4.0.48 build, but its worker argument
 path has the same UTF-8 defect.
+
+GitHub Actions runs #499 and #500 failed before the WinUI compile/package gate
+because `docs/migration/CSHARP_CODE_MAP.generated.md` still described the retired
+`CreateAsr_Click` method. `verify.ps1` intentionally rejects a stale generated
+code map, so the red X was an enforceable documentation-derived contract failure,
+not a compiler or ASR model failure.
 
 The control labelled `Chính xác` was only a 4 fps sampling mode. Its timestamps
 were synthesized as `start + frameIndex / fps`, so it could skip short subtitles
@@ -106,6 +112,9 @@ and another left/top label. Normal dialogue was centered in the lower band.
 - `ASR-UTF8-01` retains isolated Python mode and adds `-X utf8` before the ASR
   worker path. This makes its JSON stdout UTF-8 even when the Windows console
   defaults to cp1252; no model/runtime/GPU policy changed.
+- `CI-MAP-01` regenerates `CSHARP_CODE_MAP.generated.md` with the actual Voice
+  owner methods (`SelectedVoiceModel` and `EnsureVoiceTimingAsync`) and removes
+  the retired `CreateAsr_Click` entry.
 
 - `accurate` now means every decoded video frame; `balanced` remains 2.5 fps and
   `fast` remains 1.5 fps.
@@ -195,6 +204,7 @@ and another left/top label. Normal dialogue was centered in the lower band.
 - `csharp/src/BiliSubStudio.Core/Editor/LocalAsrService.cs`
 - `csharp/scripts/validate_csharp_migration.py`
 - `docs/engineering/EDITOR_EVENT_MAP.md`
+- `docs/migration/CSHARP_CODE_MAP.generated.md`
 - `csharp/Directory.Build.props`
 - `update/release-notes.json`
 - `update/beta.json`
@@ -316,6 +326,10 @@ and another left/top label. Normal dialogue was centered in the lower band.
   video with `-I -X utf8`: PASS — exit 0, ready 1, Chinese segments 4, complete
   1. A full Editor UI ASR/TTS run with the newly compiled application has not
   been performed; source media was not overwritten.
+- CI-MAP-01 local verification: PASS — generator wrote the expected map and
+  `verify.ps1` advanced through the generated-map gate. GitHub Actions #499 and
+  #500 remain historical failures; the next pushed commit must be checked for a
+  passing Windows workflow before calling CI PASS.
 
 ## Constraints to preserve
 
