@@ -212,6 +212,14 @@ internal static class OcrTrackerModeRegression
             || !filter.Contains("showinfo", StringComparison.Ordinal) || filter.Contains("fps=", StringComparison.Ordinal))
             throw new InvalidOperationException("accurate OCR is still sampled instead of preserving every frame PTS");
 
+        var balancedMode = modeFor.Invoke(null, ["balanced", 1d])
+            ?? throw new InvalidOperationException("balanced OCR mode unavailable");
+        var sampledArgs = (IReadOnlyList<string>)(buildLane.Invoke(null, ["source.mp4", new OcrRegion(.05, .65, .90, .29), balancedMode, 1000.13d, 1002d, false])
+            ?? throw new InvalidOperationException("sampled OCR FFmpeg arguments unavailable"));
+        if (!sampledArgs.Contains("-copyts") || !sampledArgs.Contains("info") || sampledArgs.SkipWhile(x => x != "-vf").Skip(1).FirstOrDefault() is not { } sampledFilter
+            || !sampledFilter.Contains("fps=2.5", StringComparison.Ordinal) || !sampledFilter.Contains("showinfo", StringComparison.Ordinal))
+            throw new InvalidOperationException("sampled OCR still synthesizes timing instead of preserving filtered-frame PTS");
+
         var timestampReaderType = scannerType.GetNestedType("FrameTimestampReader", BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("missing every-frame PTS reader");
         var timestampReaderConstructor = timestampReaderType.GetConstructor(
@@ -236,6 +244,19 @@ internal static class OcrTrackerModeRegression
             ?? throw new InvalidOperationException("PTS reader dropped frame duration"));
         if (Math.Abs(pts - 59.6) > .000001 || Math.Abs(duration - .0333125) > .000001)
             throw new InvalidOperationException("every-frame PTS reader changed source frame timing");
+
+        using var sampledStderr = new StreamReader(new MemoryStream(Encoding.UTF8.GetBytes(
+            "[Parsed_showinfo_1 @ 000000] n:   0 pts: 2500 pts_time:1000 duration:      1 duration_time:0.4 fmt:yuv420p\n")));
+        var sampledTimestampReader = timestampReaderConstructor.Invoke([sampledStderr]);
+        var sampledTimestampTask = (Task)(readTimestamp.Invoke(sampledTimestampReader, [CancellationToken.None])
+            ?? throw new InvalidOperationException("sampled PTS read did not return a task"));
+        sampledTimestampTask.GetAwaiter().GetResult();
+        var sampledTimestamp = sampledTimestampTask.GetType().GetProperty("Result")?.GetValue(sampledTimestampTask)
+            ?? throw new InvalidOperationException("sampled PTS reader did not return a frame");
+        var sampledPts = (double)(sampledTimestamp.GetType().GetProperty("PresentationTime")?.GetValue(sampledTimestamp)
+            ?? throw new InvalidOperationException("sampled PTS reader dropped presentation timestamp"));
+        if (Math.Abs(sampledPts - 1000d) > .000001)
+            throw new InvalidOperationException("sampled OCR did not retain the source-global PTS after seek");
 
         var similarity = scannerType.GetMethod("Similarity", BindingFlags.Static | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("missing OcrScanner.Similarity");

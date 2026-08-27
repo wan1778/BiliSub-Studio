@@ -43,8 +43,8 @@ def main() -> int:
     require(set_result >= 0 and pause_complete >= 0 and set_result < pause_complete,
             "paused job can become terminal before OcrScanResult is published")
 
-    require('$"hwdownload,format=nv12|p010le|p016le,fps={fps},{crop}"' in scanner,
-            "NVDEC filter does not download hardware frames before software fps/crop filters")
+    require('$"hwdownload,format=nv12|p010le|p016le,fps={fps},{crop},showinfo"' in scanner,
+            "NVDEC filter does not preserve sampled-frame PTS after software fps/crop filters")
 
     similarity_start = scanner.find("private static double Similarity")
     require(similarity_start >= 0, "missing OCR lane similarity function")

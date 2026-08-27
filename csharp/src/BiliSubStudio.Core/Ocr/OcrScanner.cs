@@ -452,12 +452,15 @@ public sealed class OcrScanner
         process.Start();
         using var ownership = processes.Track(process);
         using var registration = cancellationToken.Register(() => Kill(process));
-        var timestamps = mode.EveryFrame ? new FrameTimestampReader(process.StandardError) : null;
-        var errorTask = timestamps is null ? process.StandardError.ReadToEndAsync(cancellationToken) : timestamps.Completion;
+        // Both exact-frame and sampled modes must use FFmpeg's output PTS. The
+        // fps filter can select a source frame after a non-frame-aligned seek;
+        // synthesizing start + frameIndex/fps then moves cue time and causes a
+        // resumed lane to seek from a fabricated checkpoint value.
+        var timestamps = new FrameTimestampReader(process.StandardError);
+        var errorTask = timestamps.Completion;
         var reader = new JpegStreamReader(process.StandardOutput.BaseStream);
         var frames = saved.Frames;
         var images = saved.OcrImages;
-        var frameIndex = 0;
         var mediaSeconds = startAt;
         var paused = false;
         var stoppedAtBoundary = false;
@@ -465,17 +468,12 @@ public sealed class OcrScanner
         {
             while (await reader.ReadAsync(cancellationToken) is { } jpeg)
             {
-                var timing = timestamps is null
-                    ? new FrameTiming(startAt + frameIndex / mode.Fps, 1 / mode.Fps)
-                    : await timestamps.ReadAsync(cancellationToken);
+                var timing = await timestamps.ReadAsync(cancellationToken);
                 var at = timing.PresentationTime;
                 if (at > segment.ScanEnd + 0.001) { stoppedAtBoundary = true; break; }
-                frameIndex++;
                 frames++;
                 images++;
-                mediaSeconds = mode.EveryFrame
-                    ? Math.Min(segment.ScanEnd, at + timing.Duration)
-                    : at;
+                mediaSeconds = Math.Min(segment.ScanEnd, at + timing.Duration);
                 OcrResult result;
                 try
                 {
@@ -524,7 +522,7 @@ public sealed class OcrScanner
         if (!paused && !stoppedAtBoundary && process.ExitCode != 0) throw new InvalidOperationException(Compact(stderr));
         if (!paused)
         {
-            tracker.Finish(mode.EveryFrame ? mediaSeconds : segment.ScanEnd);
+            tracker.Finish(mediaSeconds);
             mediaSeconds = segment.CoreEnd;
         }
         return saved with
@@ -641,22 +639,21 @@ public sealed class OcrScanner
 
     private static IReadOnlyList<string> BuildLaneArguments(string source, OcrRegion region, OcrScanMode mode, double start, double end, bool nvdec)
     {
-        var args = new List<string> { "-hide_banner", "-loglevel", mode.EveryFrame ? "info" : "error", "-nostdin" };
+        var args = new List<string> { "-hide_banner", "-loglevel", "info", "-nostdin" };
         if (nvdec) args.AddRange(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda", "-hwaccel_device", "0"]);
         if (start > 0) args.AddRange(["-ss", start.ToString("0.######", CultureInfo.InvariantCulture)]);
-        if (mode.EveryFrame) args.Add("-copyts");
+        args.Add("-copyts");
         args.AddRange(["-i", source]);
         if (end > start) args.AddRange(["-t", (end - start).ToString("0.######", CultureInfo.InvariantCulture)]);
         var crop = string.Format(CultureInfo.InvariantCulture,
             "crop=iw*{0}:ih*{1}:iw*{2}:ih*{3},scale=1280:320:force_original_aspect_ratio=decrease:flags=fast_bilinear,pad=1280:320:(ow-iw)/2:(oh-ih)/2:black",
             region.Width, region.Height, region.X, region.Y);
         var fps = mode.Fps.ToString("0.######", CultureInfo.InvariantCulture);
-        var timing = mode.EveryFrame ? ",showinfo" : string.Empty;
         var filter = nvdec
             ? mode.EveryFrame
-                ? $"hwdownload,format=nv12|p010le|p016le,{crop}{timing}"
-                : $"hwdownload,format=nv12|p010le|p016le,fps={fps},{crop}"
-            : mode.EveryFrame ? $"{crop}{timing}" : $"fps={fps},{crop}";
+                ? $"hwdownload,format=nv12|p010le|p016le,{crop},showinfo"
+                : $"hwdownload,format=nv12|p010le|p016le,fps={fps},{crop},showinfo"
+            : mode.EveryFrame ? $"{crop},showinfo" : $"fps={fps},{crop},showinfo";
         args.AddRange(["-map", "0:v:0", "-an", "-sn", "-dn", "-vf", filter, "-q:v", "4", "-c:v", "mjpeg", "-f", "image2pipe", "pipe:1"]);
         return args;
     }

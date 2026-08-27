@@ -1,11 +1,11 @@
 # Codex handoff — BiliSub Studio
 
-- Current main/base SHA: `ed5581fea676ef0a497cd5e0af7a4467301e4f32`.
+- Current main/base SHA: `93d75c3e197f48dbb31b962562ba783921fc373c`.
 - Current branch: `main`.
 - PR: none.
-- Last completed task: `OCR-TEXT-06` — confirm high-confidence sampled one-rune captions after two hits.
+- Last completed task: `OCR-TIME-02` — preserve FFmpeg PTS for sampled OCR and resume checkpoints.
 - Task in progress: none.
-- Exact next task: `OCR-TIME-01` — reproduce or disprove sampled timestamp drift across the defined CFR/VFR, seek, lane and resume cases.
+- Exact next task: run the remaining Windows OCR field matrix (CFR/VFR, seek, one/four lanes and Resume) before any OCR UI or quality-policy task.
 
 ## Root cause
 
