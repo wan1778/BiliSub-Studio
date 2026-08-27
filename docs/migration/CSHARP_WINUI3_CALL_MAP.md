@@ -225,7 +225,7 @@ OCRPage.Scan
   -> HardwareService.BenchmarkAsync
        -> baseline CPU/RAM throughput telemetry
   -> OcrTopologyBenchmark.SelectAsync
-       -> exact ladder 1 -> 2 -> 4 -> 8 -> 16
+       -> base ladder 1 -> 2 -> 4 -> 8 -> 16; on a failed jump, restore the last PASS topology then test descending intermediate levels
   -> OcrAutoResourcePolicy.Evaluate(N)
        -> HardwareService.ResourceSnapshot
        -> Windows GlobalMemoryStatusEx: live physical RAM

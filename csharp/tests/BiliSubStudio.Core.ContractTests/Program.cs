@@ -1880,21 +1880,21 @@ internal static class Program
 
         var attempted = new List<int>();
         var restored = new List<int>();
-        var rejectedLevel = 0;
-        var rejectedBest = 0;
+        var rejected = new List<(int Failed, int Best)>();
         var selected = await InvokeAsync(
             select,
             (level, _) =>
             {
                 attempted.Add(level);
-                return level == 8
+                return level is 8 or 7
                     ? Task.FromException(new InvalidOperationException("fixture OOM"))
                     : Task.CompletedTask;
             },
             (level, _) => { restored.Add(level); return Task.CompletedTask; },
-            (failed, best, _) => { rejectedLevel = failed; rejectedBest = best; });
-        if (selected != 4 || !attempted.SequenceEqual([1, 2, 4, 8]) || !restored.SequenceEqual([4]) || rejectedLevel != 8 || rejectedBest != 4)
-            throw new InvalidOperationException("OCR Auto did not stop at failed level 8 and restore stable level 4");
+            (failed, best, _) => rejected.Add((failed, best)));
+        if (selected != 6 || !attempted.SequenceEqual([1, 2, 4, 8, 7, 6]) || !restored.SequenceEqual([4, 4]) ||
+            !rejected.SequenceEqual([(8, 4), (7, 4)]))
+            throw new InvalidOperationException("OCR Auto did not restore 4 and select the highest viable fallback below failed level 8");
 
         attempted.Clear();
         restored.Clear();

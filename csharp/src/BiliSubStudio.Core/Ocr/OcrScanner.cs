@@ -258,7 +258,7 @@ public sealed class OcrScanner
 
         var lastStable = 0;
         var lastThroughput = 0d;
-        job.Log("Auto Benchmark Predict → Probe → Commit: xét CPU/RAM/VRAM trước từng bậc 1 → 2 → 4 → 8 → 16, rồi chỉ PASS khi đủ đúng N pipeline thật và throughput tăng ít nhất 10%.");
+        job.Log("Auto Benchmark Predict → Probe → Commit: xét CPU/RAM/VRAM theo mốc 1 → 2 → 4 → 8 → 16; nếu một mốc không đạt, thử lùi các mức giữa trước khi khóa topology. Mỗi mức chỉ PASS khi đủ đúng N pipeline thật và throughput tăng ít nhất 10%.");
         var selected = await OcrTopologyBenchmark.SelectAsync(
             async (level, token) =>
             {
@@ -297,7 +297,7 @@ public sealed class OcrScanner
                     "đã quay về mức PASS an toàn", OcrAutoResourcePolicy.FormatSnapshot(resources)));
             },
             (failed, best, error) =>
-                job.Warn($"Auto Benchmark {failed} FAIL: {Compact(error.Message)} · đã quay về {best} pipeline ổn định."),
+                job.Warn($"Auto Benchmark {failed} FAIL: {Compact(error.Message)} · đã quay về {best} pipeline ổn định trước khi xét mức thấp hơn."),
             cancellationToken);
         job.Set("benchmark", 1.5, $"Benchmark hoàn tất · khóa {selected} pipeline; chuẩn bị bắt đầu quét...");
         return selected;

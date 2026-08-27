@@ -1,11 +1,11 @@
 # Codex handoff — BiliSub Studio
 
-- Current main/base SHA: `ba45e2cf0efd7d68ef5e4e346c5c509fca1b6f92`.
+- Current main/base SHA: `9d390a4fb975dd091c4e98e9bccdc98e7a3562b9`.
 - Current branch: `main`.
 - PR: none.
-- Last completed task: `CI-MAP-01` — regenerate the required C# code map after Voice source changes.
-- Task in progress: none.
-- Exact next task: field-test the merged `VOICE-UX-01` + `ASR-UTF8-01` in the Windows Editor with an imported fully translated SRT: click one Create voice action with no timing cache, cancel during timing, retry, then preview the resulting track. Resume the remaining OCR field matrix afterwards.
+- Last completed task: `OCR-AUTO-FALLBACK-01` — probe intermediate OCR worker topologies after a failed Auto ladder jump.
+- Task in progress: release preparation for the bundled Voice, ASR UTF-8 and OCR Auto update.
+- Exact next task: after the Windows release gate passes, field-test the merged `VOICE-UX-01` + `ASR-UTF8-01` in the Windows Editor with an imported fully translated SRT: click one Create voice action with no timing cache, cancel during timing, retry, then preview the resulting track. Also test OCR Auto on the 1.5 GB-free-VRAM machine and confirm a failed 8-worker probe can commit 5, 6 or 7 when its resource and throughput gates pass.
 
 ## Root cause
 
@@ -115,6 +115,12 @@ and another left/top label. Normal dialogue was centered in the lower band.
 - `CI-MAP-01` regenerates `CSHARP_CODE_MAP.generated.md` with the actual Voice
   owner methods (`SelectedVoiceModel` and `EnsureVoiceTimingAsync`) and removes
   the retired `CreateAsr_Click` entry.
+- `OCR-AUTO-FALLBACK-01` keeps the fast base ladder `1 → 2 → 4 → 8 → 16`, but
+  after a failed higher level it restores the last PASS worker pool and probes
+  descending intermediate levels. For example, a rejected 8-worker topology
+  now tests 7, then 6, then 5; the first resource-safe topology with at least
+  10% throughput gain commits. This changes no OCR model, ROI, frame sampling
+  policy, source PTS path or manual topology behavior.
 
 - `accurate` now means every decoded video frame; `balanced` remains 2.5 fps and
   `fast` remains 1.5 fps.
@@ -210,6 +216,13 @@ and another left/top label. Normal dialogue was centered in the lower band.
 - `update/beta.json`
 - `docs/migration/CSHARP_CODE_MAP.generated.md`
 - `docs/handoff/CODEX_HANDOFF.md`
+- `csharp/src/BiliSubStudio.Core/Ocr/OcrTopologyBenchmark.cs`
+- `csharp/src/BiliSubStudio.Core/Ocr/OcrScanner.cs`
+- `csharp/tests/BiliSubStudio.Core.ContractTests/Program.cs`
+- `csharp/scripts/verify_ocr_scanner_contract.py`
+- `csharp/src/BiliSubStudio.App/Pages/HardwarePage.xaml`
+- `docs/migration/CSHARP_WINUI3_CALL_MAP.md`
+- `docs/migration/WINDOWS_FIELD_CHECKLIST_CSHARP_P5.md`
 
 ## Tests and status
 
@@ -330,6 +343,12 @@ and another left/top label. Normal dialogue was centered in the lower band.
   `verify.ps1` advanced through the generated-map gate. GitHub Actions #499 and
   #500 remain historical failures; the next pushed commit must be checked for a
   passing Windows workflow before calling CI PASS.
+- OCR-AUTO-FALLBACK-01 targeted verification: PASS — OCR scanner static
+  contract, Voice start/reopen contracts, Core contracts 71/71 and WinUI
+  Release solution build with 0 warnings / 0 errors. The regression simulates
+  8 then 7 failing and proves the selector restores 4 before choosing viable
+  6. No live 5/6/7-worker Windows OCR scan or fresh packaged build has been
+  field-tested yet.
 
 ## Constraints to preserve
 

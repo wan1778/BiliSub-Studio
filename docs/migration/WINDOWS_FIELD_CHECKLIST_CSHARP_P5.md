@@ -118,13 +118,13 @@ Any replacement candidate must have a different SHA-256 and must preserve the 37
 
 - [ ] H.264/HEVC plus fallback preview, play/pause/mute/seek/fullscreen.
 - [ ] OCR ROI strict validation; invalid ROI disables Test/Start and is never silently clamped.
-- [ ] OCR Auto visibly evaluates the exact ladder 1 → 2 → 4 → 8 → 16 before real scan progress begins; an unsafe next level stops at resource preflight, while manual 1/2/4/8/16 either probes the exact request or reports the safety rejection.
+- [ ] OCR Auto visibly evaluates the base ladder 1 → 2 → 4 → 8 → 16 before real scan progress begins. If a higher base level is unsafe or not useful, it restores the last PASS topology then tests the descending intermediate levels; manual 1/2/4/8/16 either probes the exact request or reports the safety rejection.
 - [ ] CPU/GPU/RAM/VRAM and lane/decoder/timing telemetry update while scanning.
 - [ ] Auto topology evaluates actual machine/video capability before raising lanes/batch; UI must not remain `measuring` while CPU/GPU/RAM have fallen idle and the benchmark has hung.
 - [ ] Auto reads live physical RAM and NVIDIA VRAM before expansion, preserves the documented reserves, and never allocates an unsafe candidate. If candidate N passes preflight, it must create exactly N Python workers and run repeated N-way FFmpeg + OCR rounds on distinct real frames.
 - [ ] Candidate N advances only when the exact N-worker topology stays alive and timed throughput is at least 10% above the previous PASS level; otherwise Auto restores the previous PASS level.
-- [ ] If 1/2/4 PASS and 8 fails/OOM/times out, telemetry reports the 8 failure, Core restores exactly 4 workers, commits 4 lanes and only then starts the scan; level 16 is not attempted after the first failed level.
-- [ ] If 1/2/4/8 all PASS, Auto must evaluate 16. If 16 fails RAM/VRAM preflight, lacks 10% throughput gain, errors/OOM/times out, it restores and commits 8; only a safe, exact and useful 16 may commit 16.
+- [ ] If 1/2/4 PASS and 8 fails/OOM/times out, telemetry reports the 8 failure, Core restores exactly 4 workers, then tests 7 → 6 → 5. It commits the first exact, safe and useful fallback; if all fail, it commits 4. Level 16 is not attempted after the failed base level.
+- [ ] If 1/2/4/8 all PASS, Auto must evaluate 16. If 16 fails RAM/VRAM preflight, lacks 10% throughput gain, errors/OOM/times out, it restores 8 then tests 15 → 14 → 13 → 12 → 11 → 10 → 9. Only a safe, exact and useful topology may commit.
 - [ ] A committed four-lane scan shows four concurrent FFmpeg segment processes and four Python worker processes in Task Manager; telemetry reports `4 FFmpeg lane · 4 worker`.
 - [ ] Pause reaches safe schema-4 checkpoint; active lanes become zero; Resume preserves topology and progress.
 - [ ] During Running and Pausing, Cancel remains enabled. It shows cleanup in progress and does not publish terminal Cancelled until the owned FFmpeg process group and Python worker pool both report zero and checkpoint deletion is verified.

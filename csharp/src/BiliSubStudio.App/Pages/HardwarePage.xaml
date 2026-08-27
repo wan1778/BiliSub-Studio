@@ -77,7 +77,7 @@
                     <Border Grid.Column="1" Padding="14" Background="{ThemeResource WarningSoftBrush}" BorderBrush="{ThemeResource WarningBrush}" BorderThickness="1" CornerRadius="10">
                         <StackPanel Spacing="6">
                             <TextBlock FontSize="12" FontWeight="SemiBold" Foreground="{ThemeResource WarningBrush}" Text="Quy tắc OCR Auto" />
-                            <TextBlock FontSize="11" Foreground="{ThemeResource WarningBrush}" TextWrapping="Wrap" Text="Benchmark chỉ là tín hiệu. Probe video thật phải xác nhận CPU/GPU/RAM ổn định trước khi tăng topology 1 → 2 → 4 → 8 → 16." />
+                            <TextBlock FontSize="11" Foreground="{ThemeResource WarningBrush}" TextWrapping="Wrap" Text="Benchmark chỉ là tín hiệu. Auto thử mốc 1 → 2 → 4 → 8 → 16; nếu mốc cao không đạt, nó quay về mức PASS rồi thử các mức giữa trước khi khóa topology." />
                         </StackPanel>
                     </Border>
                 </Grid>

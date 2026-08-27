@@ -31,6 +31,31 @@ internal static class OcrTopologyBenchmark
                 if (best == 0) throw;
                 await restore(best, cancellationToken);
                 rejected(level, best, error);
+
+                // The exponential ladder finds the useful range quickly, but a
+                // failed jump from (for example) four to eight workers must not
+                // discard viable 5/6/7-worker topologies. Restore the known
+                // stable pool before every descending fallback attempt so a
+                // failed throughput probe cannot leak its larger pool into the
+                // next resource calculation.
+                foreach (var fallback in Enumerable.Range(best + 1, level - best - 1).Reverse())
+                {
+                    try
+                    {
+                        await probe(fallback, cancellationToken);
+                        return fallback;
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch (Exception fallbackError)
+                    {
+                        await restore(best, cancellationToken);
+                        rejected(fallback, best, fallbackError);
+                    }
+                }
+
                 return best;
             }
         }

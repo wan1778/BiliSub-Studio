@@ -53,11 +53,12 @@ def main() -> int:
             "OCR boundary similarity is not order-sensitive Levenshtein")
 
     require("Levels { get; } = [1, 2, 4, 8, 16]" in topology,
-            "OCR Auto benchmark ladder is not exactly 1/2/4/8/16")
+            "OCR Auto base benchmark ladder is not exactly 1/2/4/8/16")
     require("await restore(best, cancellationToken);" in topology and
             "rejected(level, best, error);" in topology and
-            "return best;" in topology,
-            "failed OCR Auto level does not restore and retain the last PASS topology")
+            "Enumerable.Range(best + 1, level - best - 1).Reverse()" in topology and
+            "return fallback;" in topology,
+            "failed OCR Auto level does not restore then probe descending intermediate topologies")
     select_start = scanner.find("private async Task<int> SelectParallelismAsync")
     probe_start = scanner.find("private async Task<OcrTopologyProbe> ProbeTopologyLevelAsync")
     require(select_start >= 0 and probe_start > select_start, "missing full OCR topology benchmark selector/probe")
@@ -65,7 +66,7 @@ def main() -> int:
     probe = scanner[probe_start:scanner.find("private static void PublishTelemetry", probe_start)]
     require("OcrTopologyBenchmark.SelectAsync" in selector and "EnsureResourceHeadroom" in selector and
             "HasUsefulThroughputGain" in selector,
-            "OCR Auto does not execute Predict -> Probe -> throughput Commit across the fixed ladder")
+            "OCR Auto does not execute Predict -> Probe -> throughput Commit across the base ladder and fallbacks")
     require("GlobalMemoryStatusEx" in hardware and "nvmlDeviceGetMemoryInfo" in hardware,
             "OCR Auto cannot read live Windows RAM and NVIDIA VRAM headroom")
     require("GpuWorkerRamBytes" in resource_policy and "GpuWorkerVramBytes" in resource_policy and
@@ -136,7 +137,7 @@ def main() -> int:
     require("Where(x => x.Start <= media + 0.001)" in checkpoint,
             "paused checkpoint cues are not restricted to the contiguous safe frontier")
 
-    print("PASS OCR Predict/Probe/Commit 1/2/4/8/16 benchmark, RAM/VRAM/throughput gate, exact topology, owned-process cleanup, transactional cancel, safe-frontier and NVDEC contracts")
+    print("PASS OCR Predict/Probe/Commit base 1/2/4/8/16 plus descending fallbacks, RAM/VRAM/throughput gate, exact topology, owned-process cleanup, transactional cancel, safe-frontier and NVDEC contracts")
     return 0
 
 
