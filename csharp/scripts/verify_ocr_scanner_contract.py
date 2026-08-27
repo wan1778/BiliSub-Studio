@@ -102,6 +102,21 @@ def main() -> int:
     require("var overlap = Math.Max(scanMode.Guard, scanMode.ActiveGuard);" in checkpoint,
             "scan mode guard is not applied to lane overlap")
 
+    live_publish_start = scanner.find("private static void PublishTelemetry")
+    live_publish_end = scanner.find("private async Task<OcrLaneCheckpoint> RunLaneWithFallbackAsync", live_publish_start)
+    live_publish = scanner[live_publish_start:live_publish_end]
+    live_lane_start = scanner.find("private async Task<OcrLaneCheckpoint> RunLaneAsync")
+    live_lane_end = scanner.find("private static IReadOnlyList<OcrCue> Reconcile", live_lane_start)
+    live_lane = scanner[live_lane_start:live_lane_end]
+    require("liveCommitted" in scanner and "liveActive" in scanner and
+            "recentCues" in live_publish and "new OcrScanResult(" in live_publish,
+            "running OCR does not publish a bounded live cue snapshot through AppJob.Result")
+    require("publishedCueCount" in live_lane and "tracker.Cues.Skip(publishedCueCount)" in live_lane and
+            "tracker.Active" in live_lane and "onProgress(at, frames, images, committedCues, tracker.Active)" in live_lane,
+            "tracker-confirmed committed/active OCR text is not streamed while scanning")
+    require("snapshot.Result is OcrScanResult result" in page and "_cues = result.Cues;" in page and "RenderCues();" in page,
+            "OCR page does not render live OcrScanResult cue snapshots with their timestamp")
+
     require("private OcrScanRequest? _checkpointRequest;" in page and
             "private OcrScanRequest? _activeRequest;" in page,
             "OCR page does not retain the exact request owning a paused checkpoint")
@@ -137,7 +152,7 @@ def main() -> int:
     require("Where(x => x.Start <= media + 0.001)" in checkpoint,
             "paused checkpoint cues are not restricted to the contiguous safe frontier")
 
-    print("PASS OCR Predict/Probe/Commit base 1/2/4/8/16 plus descending fallbacks, RAM/VRAM/throughput gate, exact topology, owned-process cleanup, transactional cancel, safe-frontier and NVDEC contracts")
+    print("PASS OCR Predict/Probe/Commit base 1/2/4/8/16 plus descending fallbacks, RAM/VRAM/throughput gate, exact topology, live tracker cue stream, owned-process cleanup, transactional cancel, safe-frontier and NVDEC contracts")
     return 0
 
 

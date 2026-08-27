@@ -136,6 +136,23 @@ public sealed class OcrScanner
         var frameProgress = checkpoint.Lanes.Select(x => x.Frames).ToArray();
         var imageProgress = checkpoint.Lanes.Select(x => x.OcrImages).ToArray();
         var completed = checkpoint.Lanes.Select(x => x.Completed).ToArray();
+        var liveCommitted = checkpoint.Lanes
+            .SelectMany(lane => lane.Cues.Where(cue =>
+                cue.Start >= lane.Segment.CoreStart
+                && (lane.Segment.Index == checkpoint.Lanes.Count - 1
+                    ? cue.Start <= lane.Segment.CoreEnd
+                    : cue.Start < lane.Segment.CoreEnd)))
+            .OrderBy(cue => cue.Start)
+            .TakeLast(120)
+            .ToList();
+        var liveActive = checkpoint.Lanes.Select(lane =>
+        {
+            var active = lane.Active;
+            if (active is null || active.Start < lane.Segment.CoreStart) return null;
+            var isLast = lane.Segment.Index == checkpoint.Lanes.Count - 1;
+            return isLast ? active.Start <= lane.Segment.CoreEnd ? active : null
+                : active.Start < lane.Segment.CoreEnd ? active : null;
+        }).ToArray();
         var progressGate = new object();
         Exception? laneFailure = null;
         using var laneCancellation = CancellationTokenSource.CreateLinkedTokenSource(token);
@@ -146,14 +163,32 @@ public sealed class OcrScanner
             {
                 outcome = await RunLaneWithFallbackAsync(
                     ffmpeg, source, request, mode, lane, decoder,
-                    (at, frames, images) =>
+                    (at, frames, images, committedCues, activeCue) =>
                     {
                         lock (progressGate)
                         {
                             progress[lane.Segment.Index] = at;
                             frameProgress[lane.Segment.Index] = frames;
                             imageProgress[lane.Segment.Index] = images;
-                            PublishTelemetry(job, checkpoint.Lanes, progress, frameProgress, imageProgress, completed, configuredWorkers, configuredWorkerKinds, request.Duration);
+                            var isLast = lane.Segment.Index == checkpoint.Lanes.Count - 1;
+                            foreach (var cue in committedCues)
+                            {
+                                if (cue.Start < lane.Segment.CoreStart
+                                    || (!isLast && cue.Start >= lane.Segment.CoreEnd)
+                                    || (isLast && cue.Start > lane.Segment.CoreEnd)) continue;
+                                liveCommitted.Add(cue);
+                            }
+                            if (liveCommitted.Count > 120)
+                                liveCommitted.RemoveRange(0, liveCommitted.Count - 120);
+                            liveActive[lane.Segment.Index] = activeCue is not null
+                                && activeCue.Start >= lane.Segment.CoreStart
+                                && (isLast ? activeCue.Start <= lane.Segment.CoreEnd : activeCue.Start < lane.Segment.CoreEnd)
+                                    ? activeCue
+                                    : null;
+                            PublishTelemetry(
+                                job, checkpoint.Lanes, progress, frameProgress, imageProgress, completed,
+                                configuredWorkers, configuredWorkerKinds, request.Duration, liveCommitted, liveActive,
+                                started.Elapsed.TotalSeconds);
                         }
                     }, job, processes, laneCancellation.Token);
                 return outcome;
@@ -176,7 +211,10 @@ public sealed class OcrScanner
                         imageProgress[lane.Segment.Index] = outcome.OcrImages;
                         completed[lane.Segment.Index] = outcome.Completed;
                     }
-                    PublishTelemetry(job, checkpoint.Lanes, progress, frameProgress, imageProgress, completed, configuredWorkers, configuredWorkerKinds, request.Duration);
+                    PublishTelemetry(
+                        job, checkpoint.Lanes, progress, frameProgress, imageProgress, completed,
+                        configuredWorkers, configuredWorkerKinds, request.Duration, liveCommitted, liveActive,
+                        started.Elapsed.TotalSeconds);
                 }
             }
         }
@@ -380,7 +418,10 @@ public sealed class OcrScanner
         IReadOnlyList<bool> completed,
         int workers,
         string workerKinds,
-        double duration)
+        double duration,
+        IReadOnlyList<OcrCue> liveCommitted,
+        IReadOnlyList<OcrCue?> liveActive,
+        double elapsedSeconds)
     {
         var unique = lanes.Sum(x =>
             Math.Max(0, Math.Min(x.Segment.CoreEnd, progress[x.Segment.Index]) - x.Segment.CoreStart));
@@ -397,10 +438,15 @@ public sealed class OcrScanner
         }
         var completedCount = completed.Count(x => x);
         var active = Math.Max(0, lanes.Count - completedCount);
+        var recentCues = liveCommitted
+            .Concat(liveActive.Where(cue => cue is not null).Select(cue => cue!))
+            .TakeLast(120)
+            .ToArray();
         job.Set("scanning", percent, $"Đang quét OCR · {lanes.Count} FFmpeg lane · {workers} worker · {percent:0.0}%");
-        job.SetResult(new OcrScanTelemetry(
-            lanes.Count, active, completedCount, workers, workerKinds, percent, frontier,
-            frames.Sum(), images.Sum()));
+        job.SetResult(new OcrScanResult(
+            recentCues, frames.Sum(), images.Sum(), unique, elapsedSeconds,
+            elapsedSeconds > 0 ? unique / elapsedSeconds : 0,
+            lanes.Count, completedCount, 0, "live", workers, workerKinds, frontier, recentCues.Length, false));
     }
 
     private async Task<OcrLaneCheckpoint> RunLaneWithFallbackAsync(
@@ -410,7 +456,7 @@ public sealed class OcrScanner
         OcrScanMode mode,
         OcrLaneCheckpoint lane,
         string decoder,
-        Action<double, int, int> onProgress,
+        Action<double, int, int, IReadOnlyList<OcrCue>, OcrCue?> onProgress,
         AppJob job,
         OwnedProcessGroup processes,
         CancellationToken cancellationToken)
@@ -435,7 +481,7 @@ public sealed class OcrScanner
         OcrScanMode mode,
         OcrLaneCheckpoint saved,
         bool nvdec,
-        Action<double, int, int> onProgress,
+        Action<double, int, int, IReadOnlyList<OcrCue>, OcrCue?> onProgress,
         AppJob job,
         OwnedProcessGroup processes,
         CancellationToken cancellationToken)
@@ -444,6 +490,7 @@ public sealed class OcrScanner
         var startAt = Math.Clamp(saved.MediaSeconds, segment.ScanStart, segment.ScanEnd);
         var tracker = new SubtitleTracker(mode.Fps, mode.LowConfidence, exactFrameTiming: mode.EveryFrame);
         tracker.Restore(saved.Cues, saved.Active);
+        var publishedCueCount = tracker.Cues.Count;
         var args = BuildLaneArguments(source, request.Region, mode, startAt, segment.ScanEnd, nvdec);
         var start = new ProcessStartInfo(ffmpeg)
         {
@@ -509,7 +556,11 @@ public sealed class OcrScanner
                     }
                 }
                 tracker.Observe(at, timing.Duration, result);
-                onProgress(at, frames, images);
+                var committedCues = tracker.Cues.Count > publishedCueCount
+                    ? tracker.Cues.Skip(publishedCueCount).ToArray()
+                    : Array.Empty<OcrCue>();
+                publishedCueCount = tracker.Cues.Count;
+                onProgress(at, frames, images, committedCues, tracker.Active);
                 if (job.IsPauseRequested && tracker.CanCheckpoint)
                 {
                     paused = true;
@@ -528,6 +579,11 @@ public sealed class OcrScanner
         if (!paused)
         {
             tracker.Finish(mediaSeconds);
+            var finalCommitted = tracker.Cues.Count > publishedCueCount
+                ? tracker.Cues.Skip(publishedCueCount).ToArray()
+                : Array.Empty<OcrCue>();
+            publishedCueCount = tracker.Cues.Count;
+            onProgress(mediaSeconds, frames, images, finalCommitted, tracker.Active);
             mediaSeconds = segment.CoreEnd;
         }
         return saved with
