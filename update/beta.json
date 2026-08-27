@@ -1,12 +1,13 @@
 {
-  "version": "4.0.0-beta.63-csharp-p5",
+  "version": "4.0.0-beta.64-csharp-p5",
   "channel_ready": true,
-  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.49/BiliSubStudio_4.0.49_Windows-x64-portable.zip",
-  "sha256": "6c4e3d58a0f6281d3dfe50bc7319de3c717578d0f57e6e0c06a94d489f2918b4",
-  "size": 94803293,
+  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.50/BiliSubStudio_4.0.50_Windows-x64-portable.zip",
+  "sha256": "414719d0c76749f8bcd8f27e31508e720a9f490256c4b92b49310188d09ec314",
+  "size": 94804377,
   "payload_kind": "winui3-portable-zip",
   "notes": [
-    "OCR Trung giữ bản đầy đủ khi các lane trùng nhau; lọc overlay trước khi chọn ảnh tăng rõ nét và chỉ thử lại frame trống khi cue đang chạy.",
-    "Balanced/Fast dùng PTS thật từ FFmpeg sau khi lấy mẫu và Resume dùng lại PTS đó, giảm lệch time sau seek hoặc tạm dừng."
+    "Voice Việt local dùng một nút Tạo voice và tự canh timecode: tự chạy Whisper khi chưa có timing hợp lệ, sau đó tạo giọng Ngọc Huyền.",
+    "ASR local xuất JSON UTF-8 ổn định cho chữ Trung trên Windows, không còn lỗi UnicodeEncodeError khi chạy worker isolated.",
+    "OCR Auto vẫn quét đúng chế độ đã chọn nhưng sau khi mốc 8 worker không đủ VRAM/throughput sẽ thử 7, 6, 5 thay vì dừng ngay ở 4."
   ]
 }
