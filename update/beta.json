@@ -1,13 +1,13 @@
 {
-  "version": "4.0.0-beta.65-csharp-p5",
+  "version": "4.0.0-beta.66-csharp-p5",
   "channel_ready": true,
-  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.51/BiliSubStudio_4.0.51_Windows-x64-portable.zip",
-  "sha256": "5ecf0f0c8ab7b6d3ad360a384650f6f6a8e8444afe308542cb8c6a8e1f08dc9c",
-  "size": 94804721,
+  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.52/BiliSubStudio_4.0.52_Windows-x64-portable.zip",
+  "sha256": "661a5716ba2d3041f57a6e67514f96d7dcae1f6101c43ef6e59f0288eb67e942",
+  "size": 94806200,
   "payload_kind": "winui3-portable-zip",
   "notes": [
-    "OCR video dài giữ timeline đầy đủ khi quét nhiều lane: timestamp tương đối sau seek được quy về mốc tuyệt đối trước tracker/checkpoint, tránh SRT chỉ còn lane đầu khoảng 2 giờ trên video hơn 8 giờ.",
-    "Checkpoint OCR chuyển sang schema 6 để không tiếp tục dữ liệu cũ có timestamp lane sai; quét mới và Resume dùng cùng một timeline video.",
-    "Regression 08:06:10 với 4 lane khóa các mốc 0h/2h/4h/6h+ và xác nhận cue cuối vẫn được giữ gần cuối video."
+    "OCR Pause/Resume giải phóng tài nguyên khi tạm dừng và khôi phục đúng số lane từ checkpoint khi tiếp tục, không chạy lại Auto benchmark.",
+    "Trong lúc quét OCR, danh sách phụ đề cập nhật trực tiếp các câu đã được tracker xác nhận kèm mốc thời gian, không cần tạm dừng mới xem được chữ.",
+    "Giữ nguyên các sửa lỗi OCR trước đó về timeline video dài nhiều lane và độ ổn định nhận chữ."
   ]
 }
