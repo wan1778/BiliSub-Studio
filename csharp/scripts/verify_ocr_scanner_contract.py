@@ -119,8 +119,14 @@ def main() -> int:
     require("publishedCueCount" in live_lane and "tracker.Cues.Skip(publishedCueCount)" in live_lane and
             "tracker.Active" in live_lane and "onProgress(at, frames, images, committedCues, tracker.Active)" in live_lane,
             "tracker-confirmed committed/active OCR text is not streamed while scanning")
-    require("snapshot.Result is OcrScanResult result" in page and "_cues = result.Cues;" in page and "RenderCues();" in page,
-            "OCR page does not render live OcrScanResult cue snapshots with their timestamp")
+    require("snapshot.Result is OcrScanResult result" in page and
+            "GroupBy(cue => Math.Round(cue.Start, 3))" in page and "RenderCues();" in page,
+            "OCR page does not accumulate live OcrScanResult cue snapshots into visible history")
+    require("TakeLast(120)" not in page and
+            "ScrollViewer.SetVerticalScrollBarVisibility(CueList, ScrollBarVisibility.Auto)" in page and
+            'Text = "Phụ đề OCR đã quét"' in page and
+            'ToString(@"hh\\:mm\\:ss\\,fff")' in page and '" --> "' in page,
+            "OCR page does not retain a full scrollable SRT-style start/end subtitle history")
 
     require("private OcrScanRequest? _checkpointRequest;" in page and
             "private OcrScanRequest? _activeRequest;" in page,
@@ -157,7 +163,7 @@ def main() -> int:
     require("Where(x => x.Start <= media + 0.001)" in checkpoint,
             "paused checkpoint cues are not restricted to the contiguous safe frontier")
 
-    print("PASS OCR Predict/Probe/Commit base 1/2/4/8/16 plus descending fallbacks, machine-measured VRAM growth/reserve/throughput gate, exact topology, live tracker cue stream, owned-process cleanup, transactional cancel, safe-frontier and NVDEC contracts")
+    print("PASS OCR Predict/Probe/Commit base 1/2/4/8/16 plus descending fallbacks, machine-measured VRAM growth/reserve/throughput gate, full scrollable SRT-style live cue history, exact topology, live tracker cue stream, owned-process cleanup, transactional cancel, safe-frontier and NVDEC contracts")
     return 0
 
 
