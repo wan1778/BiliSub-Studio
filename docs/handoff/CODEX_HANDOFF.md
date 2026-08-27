@@ -1,11 +1,11 @@
 # Codex handoff — BiliSub Studio
 
-- Current main/base SHA: `6cfa1b8283f73fe43fc165271fdfd8424d261677`.
+- Current main/base SHA: `14b8b2c9cf2e2e0fb2e5c832329cc4a57bfd615f`.
 - Current branch: `main`.
 - PR: none.
-- Last completed task: `OCR-TEXT-02` — recover a stable missing OCR glyph only after consecutive compatible fuller reads.
+- Last completed task: `OCR-TEXT-03` — preserve a fuller compatible OCR text when overlapping lanes reconcile.
 - Task in progress: none.
-- Exact next task: `OCR-TEXT-03` — audit whether reconciliation can still discard a fuller compatible reading from another OCR lane; make no model or threshold change unless that concrete regression is reproduced.
+- Exact next task: `OCR-TEXT-04` — filter non-subtitle overlay text before deciding whether enhanced OCR is warranted.
 
 ## Root cause
 
@@ -49,6 +49,10 @@ letters (for example `ＶＩＰ`) was rejected or preserved in a less useful for
 keep an OCR omission forever when the fuller compatible reading arrived on later
 frames at lower confidence. A single longer reading is not safe enough to trust,
 because it may instead be an edge-glyph hallucination.
+
+`OCR-TEXT-03` reproduced an independent lane-boundary loss: `Reconcile()`
+merged time and confidence but retained the text from whichever OCR lane happened
+to be enumerated first. Therefore a real fuller compatible cue could be lost.
 
 That same scan showed three non-dialogue lower-ROI false positives with the
 same geometry: a persistent left/top branding overlay, a stylized scene title,
@@ -101,6 +105,9 @@ and another left/top label. Normal dialogue was centered in the lower band.
 - `OCR-TEXT-02` records a compatible longer active-text variant and promotes it
   only after two consecutive reads. Checkpointing waits while that evidence is
   unresolved, preventing an inconsistent resume snapshot.
+- `OCR-TEXT-03` keeps the normal overlap and similarity gates, but selects the
+  longer string only when it is a strict textual superset of the existing OCR
+  cue. It never synthesizes a string from two similar readings.
 
 ## Files changed
 
@@ -117,6 +124,8 @@ and another left/top label. Normal dialogue was centered in the lower band.
 - `csharp/src/BiliSubStudio.Core/Ocr/SubtitleTracker.cs`
 - `csharp/tests/BiliSubStudio.Core.ContractTests/ChineseOcrFullwidthRegression.cs`
 - `csharp/tests/BiliSubStudio.Core.ContractTests/OcrTrackerFullerTextRegression.cs`
+- `csharp/tests/BiliSubStudio.Core.ContractTests/OcrLaneReconcileFullerTextRegression.cs`
+- `docs/migration/CSHARP_CODE_MAP.generated.md`
 - `docs/handoff/CODEX_HANDOFF.md`
 
 ## Tests and status
@@ -189,6 +198,11 @@ and another left/top label. Normal dialogue was centered in the lower band.
   received a new full Windows OCR field run on the supplied video after these
   two text-specific commits; this remains required before claiming functional
   OCR-quality PASS or making a release.
+- OCR-TEXT-03 targeted verification: PASS — scanner and Paddle worker contract
+  scripts, then Core contract tests 71/71. The new regression verifies both
+  lane orders, a different-meaning near-match, and equivalent raw-lane output
+  after a simulated resume. No Windows video field test has been run for this
+  reconciliation-only change.
 - No version bump, release, PR, merge, or source-media overwrite was performed.
 
 ## Constraints to preserve

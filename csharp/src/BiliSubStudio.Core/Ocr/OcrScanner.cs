@@ -556,13 +556,29 @@ public sealed class OcrScanner
         {
             if (output.Count > 0 && cue.Start <= output[^1].End + 0.25 && Similarity(output[^1].Text, cue.Text) >= 0.82)
             {
-                output[^1] = output[^1] with { End = Math.Max(output[^1].End, cue.End), Confidence = Math.Max(output[^1].Confidence, cue.Confidence) };
+                var previous = output[^1];
+                output[^1] = previous with
+                {
+                    Text = PreferReconciledText(previous.Text, cue.Text),
+                    End = Math.Max(previous.End, cue.End),
+                    Confidence = Math.Max(previous.Confidence, cue.Confidence),
+                };
                 merges++;
             }
             else output.Add(cue);
         }
         return output;
     }
+
+    private static string PreferReconciledText(string current, string candidate) =>
+        IsStrictSuperset(candidate, current) ? candidate : current;
+
+    // Lane overlap can contain the same rendered caption with an omitted edge
+    // glyph in one lane. Pick only a fuller OCR result that actually occurred;
+    // never synthesize text from two merely similar readings.
+    private static bool IsStrictSuperset(string candidate, string current) =>
+        candidate.EnumerateRunes().Count() > current.EnumerateRunes().Count()
+        && candidate.Contains(current, StringComparison.Ordinal);
 
     private async Task<byte[]> CaptureFrameAsync(
         string path,
