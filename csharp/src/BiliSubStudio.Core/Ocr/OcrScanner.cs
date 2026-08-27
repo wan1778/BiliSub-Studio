@@ -488,7 +488,8 @@ public sealed class OcrScanner
                 }
                 if (!result.Ok)
                     throw new OcrRecognitionException(result.Error ?? "OCR worker trả kết quả lỗi.");
-                if (NeedsEnhancedRecognition(result, Math.Max(.78, mode.LowConfidence + .10)))
+                if (NeedsEnhancedRecognition(result, Math.Max(.78, mode.LowConfidence + .10))
+                    || NeedsActiveCueBlankRecovery(result, tracker.Active is not null))
                 {
                     try
                     {
@@ -695,6 +696,9 @@ public sealed class OcrScanner
 
     private static bool NeedsEnhancedRecognition(OcrResult result, double threshold) =>
         result.Ok && result.Detected && result.Confidence < threshold;
+
+    private static bool NeedsActiveCueBlankRecovery(OcrResult result, bool hasActiveCue) =>
+        hasActiveCue && result.Ok && !result.Detected;
 
     private static OcrResult FilterOffBaselineOverlayLines(OcrResult result, OcrRegion region)
     {
