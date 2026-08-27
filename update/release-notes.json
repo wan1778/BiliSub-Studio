@@ -1,8 +1,8 @@
 {
-  "version": "4.0.0-beta.65-csharp-p5",
+  "version": "4.0.0-beta.66-csharp-p5",
   "notes": [
-    "OCR video dài giữ timeline đầy đủ khi quét nhiều lane: timestamp tương đối sau seek được quy về mốc tuyệt đối trước tracker/checkpoint, tránh SRT chỉ còn lane đầu khoảng 2 giờ trên video hơn 8 giờ.",
-    "Checkpoint OCR chuyển sang schema 6 để không tiếp tục dữ liệu cũ có timestamp lane sai; quét mới và Resume dùng cùng một timeline video.",
-    "Regression 08:06:10 với 4 lane khóa các mốc 0h/2h/4h/6h+ và xác nhận cue cuối vẫn được giữ gần cuối video."
+    "OCR Pause/Resume giải phóng tài nguyên khi tạm dừng và khôi phục đúng số lane từ checkpoint khi tiếp tục, không chạy lại Auto benchmark.",
+    "Trong lúc quét OCR, danh sách phụ đề cập nhật trực tiếp các câu đã được tracker xác nhận kèm mốc thời gian, không cần tạm dừng mới xem được chữ.",
+    "Giữ nguyên các sửa lỗi OCR trước đó về timeline video dài nhiều lane và độ ổn định nhận chữ."
   ]
 }
