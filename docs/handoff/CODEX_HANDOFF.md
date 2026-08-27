@@ -1,11 +1,11 @@
 # Codex handoff — BiliSub Studio
 
-- Current main/base SHA: `4ce838c70aaf010803238ab18758eb6b5053881c`.
+- Current main/base SHA: `6cfa1b8283f73fe43fc165271fdfd8424d261677`.
 - Current branch: `main`.
 - PR: none.
-- Last completed task: `OCR-OVERLAY-02` — reject observed left/top scene and branding overlays from the default lower subtitle ROI without discarding a user-selected upper ROI.
+- Last completed task: `OCR-TEXT-02` — recover a stable missing OCR glyph only after consecutive compatible fuller reads.
 - Task in progress: none.
-- Exact next task: resume the current Release WinUI OCR user-flow gate, then separately audit residual visual-text recognition errors before claiming broader OCR quality PASS.
+- Exact next task: `OCR-TEXT-03` — audit whether reconciliation can still discard a fuller compatible reading from another OCR lane; make no model or threshold change unless that concrete regression is reproduced.
 
 ## Root cause
 
@@ -42,6 +42,13 @@ The post-runtime-fix 300-second Accurate scan found a second temporal
 fragmentation issue: Paddle alternated `?` and `？` for one unchanged on-screen
 caption. The tracker treated the punctuation glyphs as different text and
 emitted adjacent 100-ms cues.
+
+`OCR-TEXT-01` then showed that valid Chinese text containing fullwidth Latin
+letters (for example `ＶＩＰ`) was rejected or preserved in a less useful form.
+`OCR-TEXT-02` addressed a different defect: a high-confidence active cue could
+keep an OCR omission forever when the fuller compatible reading arrived on later
+frames at lower confidence. A single longer reading is not safe enough to trust,
+because it may instead be an edge-glyph hallucination.
 
 That same scan showed three non-dialogue lower-ROI false positives with the
 same geometry: a persistent left/top branding overlay, a stylized scene title,
@@ -89,6 +96,11 @@ and another left/top label. Normal dialogue was centered in the lower band.
   resumed under the new every-frame semantics.
 - Added contract coverage for every-frame argument construction, PTS parsing,
   exact one-rune cue timing, and retained prior sampled-mode behavior.
+- `OCR-TEXT-01` folds only fullwidth Latin letters inside otherwise valid
+  Chinese OCR text; it does not alter fullwidth digits or Chinese punctuation.
+- `OCR-TEXT-02` records a compatible longer active-text variant and promotes it
+  only after two consecutive reads. Checkpointing waits while that evidence is
+  unresolved, preventing an inconsistent resume snapshot.
 
 ## Files changed
 
@@ -101,6 +113,10 @@ and another left/top label. Normal dialogue was centered in the lower band.
 - `csharp/tests/BiliSubStudio.Core.ContractTests/OcrTrackerModeRegression.cs`
 - `csharp/tests/BiliSubStudio.Core.ContractTests/OcrOverlayFilterRegression.cs`
 - `csharp/tests/BiliSubStudio.Core.ContractTests/OcrRuntimePathRegression.cs`
+- `csharp/src/BiliSubStudio.Core/Ocr/ChineseSubtitleNormalizer.cs`
+- `csharp/src/BiliSubStudio.Core/Ocr/SubtitleTracker.cs`
+- `csharp/tests/BiliSubStudio.Core.ContractTests/ChineseOcrFullwidthRegression.cs`
+- `csharp/tests/BiliSubStudio.Core.ContractTests/OcrTrackerFullerTextRegression.cs`
 - `docs/handoff/CODEX_HANDOFF.md`
 
 ## Tests and status
@@ -163,6 +179,16 @@ and another left/top label. Normal dialogue was centered in the lower band.
   `Test frame` field-test remains desirable.
   Full-video OCR accuracy remains untested. No release may be made from this
   bounded field evidence alone.
+- Post-sync targeted verification at `6cfa1b8`: PASS —
+  `python csharp/scripts/verify_ocr_scanner_contract.py`.
+- Post-sync targeted verification at `6cfa1b8`: PASS —
+  `python csharp/scripts/verify_ocr_worker_contract.py`.
+- Post-sync targeted verification at `6cfa1b8`: PASS —
+  `dotnet run --project csharp/tests/BiliSubStudio.Core.ContractTests/BiliSubStudio.Core.ContractTests.csproj --no-restore`, 71/71.
+- `OCR-TEXT-01` and `OCR-TEXT-02` are source/contract PASS. They have not yet
+  received a new full Windows OCR field run on the supplied video after these
+  two text-specific commits; this remains required before claiming functional
+  OCR-quality PASS or making a release.
 - No version bump, release, PR, merge, or source-media overwrite was performed.
 
 ## Constraints to preserve
