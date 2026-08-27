@@ -96,8 +96,8 @@ def main() -> int:
     require("benchmark xong, khóa {selected} pipeline" in scanner and
             "{selected} FFmpeg lane + {configuredWorkers} Python worker" in scanner,
             "scanner commit log does not expose the benchmark-selected full topology")
-    require("new SubtitleTracker(mode.Fps, mode.LowConfidence)" in scanner,
-            "scan mode low-confidence threshold is not applied to subtitle tracking")
+    require("new SubtitleTracker(mode.Fps, mode.LowConfidence, exactFrameTiming: mode.EveryFrame)" in scanner,
+            "scan mode low-confidence threshold or exact-frame timing policy is not applied to subtitle tracking")
     require("var overlap = Math.Max(scanMode.Guard, scanMode.ActiveGuard);" in checkpoint,
             "scan mode guard is not applied to lane overlap")
 
