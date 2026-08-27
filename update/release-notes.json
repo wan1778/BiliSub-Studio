@@ -1,8 +1,8 @@
 {
-  "version": "4.0.0-beta.64-csharp-p5",
+  "version": "4.0.0-beta.65-csharp-p5",
   "notes": [
-    "Voice Việt local dùng một nút Tạo voice và tự canh timecode: tự chạy Whisper khi chưa có timing hợp lệ, sau đó tạo giọng Ngọc Huyền.",
-    "ASR local xuất JSON UTF-8 ổn định cho chữ Trung trên Windows, không còn lỗi UnicodeEncodeError khi chạy worker isolated.",
-    "OCR Auto vẫn quét đúng chế độ đã chọn nhưng sau khi mốc 8 worker không đủ VRAM/throughput sẽ thử 7, 6, 5 thay vì dừng ngay ở 4."
+    "OCR video dài giữ timeline đầy đủ khi quét nhiều lane: timestamp tương đối sau seek được quy về mốc tuyệt đối trước tracker/checkpoint, tránh SRT chỉ còn lane đầu khoảng 2 giờ trên video hơn 8 giờ.",
+    "Checkpoint OCR chuyển sang schema 6 để không tiếp tục dữ liệu cũ có timestamp lane sai; quét mới và Resume dùng cùng một timeline video.",
+    "Regression 08:06:10 với 4 lane khóa các mốc 0h/2h/4h/6h+ và xác nhận cue cuối vẫn được giữ gần cuối video."
   ]
 }
