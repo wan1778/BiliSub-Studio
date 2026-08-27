@@ -135,7 +135,9 @@ internal sealed class SubtitleTracker
         _longerVariantText = null;
         _longerVariantHits = 0;
         _emptyHits = 0;
-        var required = text.EnumerateRunes().Count() <= 1 || result.Confidence < _lowConfidence ? 3 : 2;
+        var required = result.Confidence < _lowConfidence || (_exactFrameTiming && text.EnumerateRunes().Count() <= 1)
+            ? 3
+            : 2;
         if (_candidate is null || at - _candidate.Last > _candidateGap || Similarity(_candidate.Text, text) < 0.80)
         {
             _candidate = new Candidate(text, EstimateBoundary(at, frameDuration), at, result.Confidence, 1, required);

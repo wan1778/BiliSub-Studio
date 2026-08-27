@@ -1,11 +1,11 @@
 # Codex handoff — BiliSub Studio
 
-- Current main/base SHA: `3838bef4a50c7ecb204ae42475ed27d0c31b86b3`.
+- Current main/base SHA: `ed5581fea676ef0a497cd5e0af7a4467301e4f32`.
 - Current branch: `main`.
 - PR: none.
-- Last completed task: `OCR-TEXT-05` — retry a blank result only when an active cue makes it suspicious.
+- Last completed task: `OCR-TEXT-06` — confirm high-confidence sampled one-rune captions after two hits.
 - Task in progress: none.
-- Exact next task: `OCR-TEXT-06` — retain a valid sampled-mode one-rune subtitle without treating ordinary OCR noise as dialogue.
+- Exact next task: `OCR-TIME-01` — reproduce or disprove sampled timestamp drift across the defined CFR/VFR, seek, lane and resume cases.
 
 ## Root cause
 
@@ -64,6 +64,11 @@ read. Two adjacent misses could close an active cue even though an enhanced
 read of the same frame could still recover its text. Retrying every blank would
 double work during long background sections, so only an active cue is evidence
 enough to make a blank suspicious.
+
+`OCR-TEXT-06` found that the tracker required three observations for every
+one-rune candidate, including the 2.5 fps and 1.5 fps sampled modes. That was
+appropriate for every-frame Accurate OCR but unnecessarily rejected a stable,
+high-confidence one-rune subtitle in sampled scans.
 
 That same scan showed three non-dialogue lower-ROI false positives with the
 same geometry: a persistent left/top branding overlay, a stylized scene title,
@@ -125,6 +130,9 @@ and another left/top label. Normal dialogue was centered in the lower band.
 - `OCR-TEXT-05` requests one enhanced pass for a successful but undetected OCR
   read only while the lane tracker has an active cue. Detected low-confidence
   reads keep the pre-existing retry path; worker failures are not retried.
+- `OCR-TEXT-06` keeps three hits for Accurate one-rune and every low-confidence
+  candidate, but accepts a sampled high-confidence one-rune candidate on two
+  compatible hits. Overlay filtering remains upstream and unchanged.
 
 ## Files changed
 
@@ -144,6 +152,7 @@ and another left/top label. Normal dialogue was centered in the lower band.
 - `csharp/tests/BiliSubStudio.Core.ContractTests/OcrLaneReconcileFullerTextRegression.cs`
 - `csharp/tests/BiliSubStudio.Core.ContractTests/OcrEnhancedFilterOrderRegression.cs`
 - `csharp/tests/BiliSubStudio.Core.ContractTests/OcrActiveCueBlankRecoveryRegression.cs`
+- `csharp/tests/BiliSubStudio.Core.ContractTests/OcrSampledOneRuneRegression.cs`
 - `docs/migration/CSHARP_CODE_MAP.generated.md`
 - `docs/handoff/CODEX_HANDOFF.md`
 
@@ -232,6 +241,10 @@ and another left/top label. Normal dialogue was centered in the lower band.
   blank retry, active-cue blank retry, worker-error exclusion, and active-cue
   continuity after a recovered frame. No Windows video field test has been run
   after this narrowly scoped blank-recovery change.
+- OCR-TEXT-06 targeted verification: PASS — scanner and Paddle worker contract
+  scripts, then Core contract tests 71/71. The regression pins the high and low
+  sampled one-rune cases and unchanged Accurate three-source-frame behavior.
+  No Windows video field test has been run for the sampled-mode adjustment.
 - No version bump, release, PR, merge, or source-media overwrite was performed.
 
 ## Constraints to preserve
