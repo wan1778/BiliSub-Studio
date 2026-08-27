@@ -1,9 +1,9 @@
 # Codex handoff — BiliSub Studio
 
-- Current main/base SHA: `93d75c3e197f48dbb31b962562ba783921fc373c`.
+- Current main/base SHA: `52fa30238e06f1b9a6740c203cbd15d678179ac9`.
 - Current branch: `main`.
 - PR: none.
-- Last completed task: `OCR-TIME-02` — preserve FFmpeg PTS for sampled OCR and resume checkpoints.
+- Last completed task: `OCR-TIME-02` — preserve FFmpeg PTS for sampled OCR and resume checkpoints; published as beta `4.0.49`.
 - Task in progress: none.
 - Exact next task: run the remaining Windows OCR field matrix (CFR/VFR, seek, one/four lanes and Resume) before any OCR UI or quality-policy task.
 
@@ -70,6 +70,11 @@ one-rune candidate, including the 2.5 fps and 1.5 fps sampled modes. That was
 appropriate for every-frame Accurate OCR but unnecessarily rejected a stable,
 high-confidence one-rune subtitle in sampled scans.
 
+`OCR-TIME-02` found that the sampled Balanced/Fast path still synthesised each
+timestamp as `startAt + frameIndex / fps`. A resumed scan then used that inferred
+value as a new FFmpeg `-ss` seek. This is inaccurate for a non-keyframe seek or
+VFR source and can compound timing error over repeated resumes.
+
 That same scan showed three non-dialogue lower-ROI false positives with the
 same geometry: a persistent left/top branding overlay, a stylized scene title,
 and another left/top label. Normal dialogue was centered in the lower band.
@@ -133,6 +138,9 @@ and another left/top label. Normal dialogue was centered in the lower band.
 - `OCR-TEXT-06` keeps three hits for Accurate one-rune and every low-confidence
   candidate, but accepts a sampled high-confidence one-rune candidate on two
   compatible hits. Overlay filtering remains upstream and unchanged.
+- `OCR-TIME-02` enables FFmpeg `-copyts` and reads ordered `showinfo` PTS after
+  the sampled `fps` filter. Balanced/Fast cue boundaries and resume checkpoints
+  now use those real source timestamps instead of synthetic frame-count timing.
 
 ## Files changed
 
@@ -153,6 +161,10 @@ and another left/top label. Normal dialogue was centered in the lower band.
 - `csharp/tests/BiliSubStudio.Core.ContractTests/OcrEnhancedFilterOrderRegression.cs`
 - `csharp/tests/BiliSubStudio.Core.ContractTests/OcrActiveCueBlankRecoveryRegression.cs`
 - `csharp/tests/BiliSubStudio.Core.ContractTests/OcrSampledOneRuneRegression.cs`
+- `csharp/tests/BiliSubStudio.Core.ContractTests/OcrTrackerModeRegression.cs`
+- `csharp/Directory.Build.props`
+- `update/release-notes.json`
+- `update/beta.json`
 - `docs/migration/CSHARP_CODE_MAP.generated.md`
 - `docs/handoff/CODEX_HANDOFF.md`
 
@@ -245,7 +257,22 @@ and another left/top label. Normal dialogue was centered in the lower band.
   scripts, then Core contract tests 71/71. The regression pins the high and low
   sampled one-rune cases and unchanged Accurate three-source-frame behavior.
   No Windows video field test has been run for the sampled-mode adjustment.
-- No version bump, release, PR, merge, or source-media overwrite was performed.
+- OCR-TIME-02 targeted verification: PASS — `python
+  csharp/scripts/verify_ocr_scanner_contract.py`, `python
+  csharp/scripts/verify_ocr_worker_contract.py`, and Core contract tests 71/71.
+  The regression asserts `-copyts`, post-sampling `showinfo`, and an actual
+  preserved PTS of `1000` seconds. The supplied-video FFmpeg probe also returned
+  sampled source PTS `1000` and `1000.4` after a seek, which the old synthetic
+  formula could not represent.
+- GitHub Actions Windows installer workflow #498: PASS, 5m 50s. It created the
+  155 MB installer artifact and published `v4.0.49`; release manifest commit:
+  `52fa30238e06f1b9a6740c203cbd15d678179ac9`.
+- Version/release: beta `4.0.0-beta.63-csharp-p5` is published as public
+  prerelease `4.0.49`. No PR, merge beyond the normal main release-manifest
+  commit, or source-media overwrite was performed.
+- Not a functional OCR-quality PASS: Windows CI proves build/package/smoke only.
+  The full new PTS path still needs the remaining supplied-video field matrix:
+  CFR/VFR, seek, one/four lanes, and Pause/Resume.
 
 ## Constraints to preserve
 
@@ -253,5 +280,6 @@ and another left/top label. Normal dialogue was centered in the lower band.
 - Source media is never overwritten. Translation, ASR and TTS are local only.
 - One event and one state/control owner; no event handler calls another handler.
 - Fix the actual owner, not a Repair/Fix/Parity layer.
-- One small task at a time. Commit/push each completed task; release only after
-  the relevant Windows gate and functional field test pass.
+- One small task at a time. Commit/push each completed task. Release requires
+  explicit user authorization and a passing Windows build/package gate; never
+  label a compile-only gate as functional field-test PASS.
