@@ -1,12 +1,12 @@
 {
-  "version": "4.0.0-beta.62-csharp-p5",
+  "version": "4.0.0-beta.63-csharp-p5",
   "channel_ready": true,
-  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.48/BiliSubStudio_4.0.48_Windows-x64-portable.zip",
-  "sha256": "25d6c8703acb3b6b0e9e0e9a1c2a111a625b356ba90883501a319ffc3ec8efcc",
-  "size": 94794925,
+  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.49/BiliSubStudio_4.0.49_Windows-x64-portable.zip",
+  "sha256": "6c4e3d58a0f6281d3dfe50bc7319de3c717578d0f57e6e0c06a94d489f2918b4",
+  "size": 94803293,
   "payload_kind": "winui3-portable-zip",
   "notes": [
-    "Voice Việt local dùng giọng Ngọc Huyền; bỏ lựa chọn và phân tích Nam/Nữ, vẫn giữ word timing để ghép đúng timeline Preview và Export.",
-    "OCR phụ đề Trung giữ lại ký tự bị thiếu ở frame kế tiếp, căn cue sát hơn theo điểm giữa lần quét và thử lại frame confidence thấp bằng ảnh được tăng rõ nét."
+    "OCR Trung giữ bản đầy đủ khi các lane trùng nhau; lọc overlay trước khi chọn ảnh tăng rõ nét và chỉ thử lại frame trống khi cue đang chạy.",
+    "Balanced/Fast dùng PTS thật từ FFmpeg sau khi lấy mẫu và Resume dùng lại PTS đó, giảm lệch time sau seek hoặc tạm dừng."
   ]
 }
