@@ -97,24 +97,26 @@ public sealed class OcrScanner
         if (startMode == OcrScanStartMode.Resume && saved is null)
             throw new InvalidOperationException("Không còn checkpoint OCR phù hợp để tiếp tục. Hãy Quét từ đầu.");
 
-        job.Set("benchmark", 0.5, "OCR · đo nền CPU/RAM trước benchmark pipeline thật...");
-        var baseline = await _hardware.BenchmarkAsync(token);
-        job.Log($"Benchmark tốc độ nền: CPU {baseline.CpuMegabytesPerSecond:0} MiB/s · RAM {baseline.MemoryMegabytesPerSecond:0} MiB/s. Auto sẽ quyết định bằng live RAM/VRAM, topology thật và throughput.");
-
         int selected;
         if (saved is null)
         {
+            job.Set("benchmark", 0.5, "OCR · đo nền CPU/RAM trước benchmark pipeline thật...");
+            var baseline = await _hardware.BenchmarkAsync(token);
+            job.Log($"Benchmark tốc độ nền: CPU {baseline.CpuMegabytesPerSecond:0} MiB/s · RAM {baseline.MemoryMegabytesPerSecond:0} MiB/s. Auto sẽ quyết định bằng live RAM/VRAM, topology thật và throughput.");
             selected = await SelectParallelismAsync(job, ffmpeg, request, processes, token);
         }
         else
         {
             selected = saved.SelectedParallelism;
-            job.Set("benchmark", -1, $"OCR Resume Probe: kiểm tra lại topology {selected} trước khi tiếp tục...");
+            job.Set("resume", -1, $"OCR Resume: dựng lại đúng topology {selected} từ checkpoint...");
             EnsureResourceHeadroom(job, selected, isManual: true, lastStable: 0);
-            await ProbeTopologyLevelAsync(ffmpeg, request, selected, processes, null, token);
-            job.Log($"Resume Probe {selected}: {selected} Python worker + {selected} FFmpeg pipeline PASS.");
+            var restored = await _ocr.ConfigureWorkerPoolAsync(selected, token);
+            if (restored != selected || !_ocr.Status.Ready)
+                throw new InvalidOperationException($"Không khôi phục đủ topology checkpoint {selected}; chỉ có {restored} Python worker.");
+            job.Log($"Resume Commit {selected}: dựng lại đủ {selected} Python worker từ checkpoint; bỏ qua Auto benchmark và throughput probe.");
         }
         var configuredWorkers = _ocr.Status.Workers;
+        var configuredWorkerKinds = _ocr.Status.WorkerKinds;
         if (configuredWorkers != selected)
             throw new InvalidDataException($"OCR topology chưa khóa đúng: {selected} FFmpeg lane nhưng có {configuredWorkers} Python worker.");
         var checkpoint = saved ?? await _checkpoints.NewAsync(request, selected, token);
@@ -124,8 +126,8 @@ public sealed class OcrScanner
         if (configuredWorkers != selected)
             throw new InvalidDataException($"OCR checkpoint yêu cầu {selected} lane nhưng worker pool đang có {configuredWorkers}.");
         job.Log(saved is null
-            ? $"OCR Commit: benchmark xong, khóa {selected} pipeline = {selected} FFmpeg lane + {configuredWorkers} Python worker ({_ocr.Status.WorkerKinds})."
-            : $"Resume checkpoint schema 6: giữ và kiểm tra lại {selected} pipeline = {selected} FFmpeg lane + {configuredWorkers} Python worker ({_ocr.Status.WorkerKinds}).");
+            ? $"OCR Commit: benchmark xong, khóa {selected} pipeline = {selected} FFmpeg lane + {configuredWorkers} Python worker ({configuredWorkerKinds})."
+            : $"Resume checkpoint schema 6: giữ topology {selected} = {selected} FFmpeg lane + {configuredWorkers} Python worker ({configuredWorkerKinds}).");
         var decoder = await ProbeNvdecAsync(ffmpeg, source, request.Region, mode, processes, token) ? "nvdec" : "software";
         job.Log(decoder == "nvdec" ? "Decoder: NVIDIA NVDEC." : "Decoder: software fallback.");
 
@@ -151,7 +153,7 @@ public sealed class OcrScanner
                             progress[lane.Segment.Index] = at;
                             frameProgress[lane.Segment.Index] = frames;
                             imageProgress[lane.Segment.Index] = images;
-                            PublishTelemetry(job, checkpoint.Lanes, progress, frameProgress, imageProgress, completed, configuredWorkers, _ocr.Status.WorkerKinds, request.Duration);
+                            PublishTelemetry(job, checkpoint.Lanes, progress, frameProgress, imageProgress, completed, configuredWorkers, configuredWorkerKinds, request.Duration);
                         }
                     }, job, processes, laneCancellation.Token);
                 return outcome;
@@ -174,7 +176,7 @@ public sealed class OcrScanner
                         imageProgress[lane.Segment.Index] = outcome.OcrImages;
                         completed[lane.Segment.Index] = outcome.Completed;
                     }
-                    PublishTelemetry(job, checkpoint.Lanes, progress, frameProgress, imageProgress, completed, configuredWorkers, _ocr.Status.WorkerKinds, request.Duration);
+                    PublishTelemetry(job, checkpoint.Lanes, progress, frameProgress, imageProgress, completed, configuredWorkers, configuredWorkerKinds, request.Duration);
                 }
             }
         }
@@ -203,7 +205,11 @@ public sealed class OcrScanner
             var pausedCheckpoint = checkpoint with { Lanes = lanes.ToList(), BoundaryMerges = boundaryMerges };
             await _checkpoints.SaveAsync(request, pausedCheckpoint, CancellationToken.None);
             token.ThrowIfCancellationRequested();
-            pauseMessage = $"Đã tạm dừng an toàn tại {FormatClock(frontier)}.";
+            await processes.StopAsync();
+            await _ocr.StopAsync();
+            if (processes.ActiveCount != 0 || _ocr.Status.Workers != 0)
+                throw new IOException($"Tạm dừng OCR chưa thu sạch tài nguyên: {processes.ActiveCount} FFmpeg/process tree · {_ocr.Status.Workers} Python worker.");
+            pauseMessage = $"Đã tạm dừng an toàn tại {FormatClock(frontier)} · 0 Python worker · 0 FFmpeg/process tree.";
         }
         else
         {
@@ -217,7 +223,7 @@ public sealed class OcrScanner
             merged, frames, images, media, started.Elapsed.TotalSeconds,
             started.Elapsed.TotalSeconds > 0 ? media / started.Elapsed.TotalSeconds : 0,
             selected, lanes.Count(x => x.Completed), boundaryMerges, decoder,
-            configuredWorkers, _ocr.Status.WorkerKinds, frontier, mergedAll.Count, paused);
+            configuredWorkers, configuredWorkerKinds, frontier, mergedAll.Count, paused);
 
         job.SetResult(result);
         if (paused)
