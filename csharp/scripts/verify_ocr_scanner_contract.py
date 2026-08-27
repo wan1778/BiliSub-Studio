@@ -125,7 +125,7 @@ def main() -> int:
     require("TakeLast(120)" not in page and
             "ScrollViewer.SetVerticalScrollBarVisibility(CueList, ScrollBarVisibility.Auto)" in page and
             'Text = "Phụ đề OCR đã quét"' in page and
-            'ToString(@"hh\\:mm\\:ss\\,fff")' in page and '" --> "' in page,
+            'ToString(@"hh\\:mm\\:ss\\,fff")' in page and " --> " in page,
             "OCR page does not retain a full scrollable SRT-style start/end subtitle history")
 
     require("private OcrScanRequest? _checkpointRequest;" in page and
