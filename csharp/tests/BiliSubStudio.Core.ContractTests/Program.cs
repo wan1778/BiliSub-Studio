@@ -77,6 +77,7 @@ internal static class Program
         ("translation skill bundle is pinned and rejects path traversal", TranslationSkillBundleContractAsync),
         ("local translation manifest and resource gate stay pinned", LocalTranslationManifestContractAsync),
         ("local Chinese ASR model manifest and source SRT stay pinned", LocalAsrManifestContractAsync),
+        ("ASR install manifest round-trips and rejects corrupt or mismatched runtime", EditorAsrInstallContract.RunAsync),
         ("Chinese OCR validator rejects foreign scripts", ChineseOcrContractAsync),
         ("Paddle GPU wheel follows numeric CUDA compatibility", OcrGpuWheelContractAsync),
         ("OCR Auto benchmarks 1 2 4 8 16 and restores last PASS", OcrAutoBenchmarkContractAsync),
@@ -102,6 +103,8 @@ internal static class Program
 
     private static async Task<int> Main(string[] arguments)
     {
+        if (arguments is ["--asr-voice-runtime", var asrRoot, var asrVideo, var asrSrt])
+            return await EditorAsrVoiceRuntimeContract.RunAsync(asrRoot, asrVideo, asrSrt);
         if (arguments is ["--nghi-tts-runtime", var ttsRoot, var ttsVideo])
             return await EditorNghiTtsRuntimeContract.RunAsync(ttsRoot, ttsVideo);
         if (arguments is ["--ocr-lane-ffmpeg", var ffmpeg, var source, var decoder])

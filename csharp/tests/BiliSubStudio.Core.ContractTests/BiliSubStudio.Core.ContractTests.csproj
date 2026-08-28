@@ -10,5 +10,6 @@
     <Content Include="..\..\..\internal\translation\dich-trung-tu-tien.zip" Link="Fixtures\dich-trung-tu-tien.zip" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\..\internal\tts\worker.py" Link="Fixtures\tts-worker.py" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\..\internal\tts\worker.py" Link="Assets\TTS\worker.py" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\..\internal\asr\worker.py" Link="Assets\ASR\worker.py" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

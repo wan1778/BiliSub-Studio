@@ -27,6 +27,12 @@ internal sealed record AsrModelFile(string Name, long Size, string Sha256);
 
 internal sealed class LocalAsrInstaller : IDisposable
 {
+    private static readonly JsonSerializerOptions ManifestJson = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
+        WriteIndented = true,
+    };
+
     internal const string FasterWhisperVersion = "1.2.1";
     internal const string CTranslate2Version = "4.8.1";
     internal const string FasterWhisperWheel = "https://files.pythonhosted.org/packages/05/99/49ee85903dee060d9f08297b4a342e5e0bcfca2f027a07b4ee0a38ab13f9/faster_whisper-1.2.1-py3-none-any.whl#sha256=79a66ad50688c0b794dd501dc340a736992a6342f7f95e5811be60b5224a26a7";
@@ -183,7 +189,7 @@ internal sealed class LocalAsrInstaller : IDisposable
         try
         {
             if (!File.Exists(Python) || !File.Exists(Worker) || !File.Exists(RuntimeManifest)) return false;
-            var manifest = JsonSerializer.Deserialize<RuntimeInstallManifest>(File.ReadAllText(RuntimeManifest));
+            var manifest = JsonSerializer.Deserialize<RuntimeInstallManifest>(File.ReadAllText(RuntimeManifest), ManifestJson);
             return manifest is not null && manifest.Schema == 1
                 && manifest.FasterWhisper == FasterWhisperVersion
                 && manifest.CTranslate2 == CTranslate2Version
@@ -199,11 +205,8 @@ internal sealed class LocalAsrInstaller : IDisposable
         var temporary = RuntimeManifest + ".tmp-" + Guid.NewGuid().ToString("N");
         try
         {
-            await File.WriteAllTextAsync(temporary, JsonSerializer.Serialize(manifest, new JsonSerializerOptions
-            {
-                PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
-                WriteIndented = true,
-            }) + "\n", new UTF8Encoding(false), cancellationToken);
+            await File.WriteAllTextAsync(temporary, JsonSerializer.Serialize(manifest, ManifestJson) + "\n",
+                new UTF8Encoding(false), cancellationToken);
             File.Move(temporary, RuntimeManifest, overwrite: true);
         }
         finally { TryDelete(temporary); }
