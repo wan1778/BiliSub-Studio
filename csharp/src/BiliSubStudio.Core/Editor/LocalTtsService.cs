@@ -154,6 +154,15 @@ internal sealed partial class LocalTtsService : IDisposable
                             if (kind == "ready")
                                 ready = GetString(root, "voice_revision") == LocalTtsInstaller.VoiceRevision
                                     && GetString(root, "voice") == voice && GetInt(root, "model_loads") == 1;
+                            else if (kind == "attempt")
+                            {
+                                var index = GetInt(root, "index");
+                                var total = GetInt(root, "total");
+                                var attempt = GetInt(root, "attempt");
+                                if (total == cues.Count && index >= 1 && index <= total && attempt is >= 1 and <= 10)
+                                    job.Set("tts-generate", 38 + (index - 1) / (double)total * 53,
+                                        $"Model đang đọc nguyên câu {index}/{total} · lượt {attempt}/10 để canh thời lượng · không kéo tốc độ file...");
+                            }
                             else if (kind == "cue")
                             {
                                 var index = GetInt(root, "index");
@@ -189,7 +198,7 @@ internal sealed partial class LocalTtsService : IDisposable
                 job.CancellationToken.ThrowIfCancellationRequested();
                 job.Set("tts-final", 99, parsedResult.ReviewCount == 0
                     ? $"Voice Việt hoàn tất · {cueResults.Length} câu đã canh thời lượng, không cắt đuôi."
-                    : $"Voice Việt đã canh thời lượng · {parsedResult.ReviewCount} câu co giãn nhiều, cần nghe lại; không cắt chữ để ép vừa khung.");
+                    : $"Voice Việt đã canh thời lượng · {parsedResult.ReviewCount} câu dùng nhịp model khác nhiều, cần nghe lại; không kéo tốc độ file.");
                 accepted = true;
                 return new EditorTtsResult(resultPath, manifestSha,
                     new EditorVoiceTrack(masterPath, 0, duration), cueResults, parsedResult.ReviewCount,
@@ -243,7 +252,6 @@ internal sealed partial class LocalTtsService : IDisposable
             var targetFrames = checked((long)Math.Round(expected.VoiceEnd * expectedSampleRate)) - startSample;
             var target = targetFrames / (double)expectedSampleRate;
             var naturalSample = expected.TimingSource == "sample" && cue.RawDuration <= target;
-            var needsReview = !naturalSample && (cue.RawDuration / target < .8 || cue.RawDuration / target > 1.25);
             if (targetFrames <= 0 || cue.TimingSource != expected.TimingSource || cue.TargetFrames != targetFrames
                 || cue.Frames <= 0 || cue.Clipped is not false || cue.ClipStartSample != startSample
                 || cue.ClipEndSample != startSample + cue.Frames || cue.ClipEndSample > startSample + targetFrames
@@ -251,6 +259,7 @@ internal sealed partial class LocalTtsService : IDisposable
                 || (naturalSample && Math.Abs(cue.FittedDuration - cue.RawDuration) > 1d / expectedSampleRate)
                 || Math.Abs(cue.FittedDuration - cue.Frames / (double)expectedSampleRate) > 1e-9)
                 throw new InvalidDataException("Voice chưa khớp đủ thời lượng thoại gốc hoặc bị cắt đuôi; không nhận master này.");
+            var needsReview = ValidateNativeSynthesis(cue, targetFrames, naturalSample, expectedSampleRate);
             if ((cue.Status == "review") != needsReview || cue.VoiceReview != needsReview)
                 throw new InvalidDataException("Result TTS báo sai trạng thái fit/review.");
             var clipRoot = Path.Combine(Path.GetDirectoryName(path)!, "clips") + Path.DirectorySeparatorChar;
@@ -355,7 +364,8 @@ internal sealed partial class LocalTtsService : IDisposable
     private sealed record TtsInputManifest(int Schema, string EngineVersion, string Voice, string TimingAlgorithm, double Duration, IReadOnlyList<TtsCueManifest> Cues);
     private sealed record TtsWorkerCue(string Id, string Voice, bool VoiceReview, double RawDuration, double FittedDuration, string Status,
         string TimingSource, long TargetFrames, long Frames, long ClipStartSample, long ClipEndSample, bool? Clipped,
-        string ClipPath, string ClipSha256);
+        string ClipPath, string ClipSha256, string FitMethod, double BaseLengthScale, double LengthScale,
+        long GeneratedFrames, long PaddingFrames, int SynthesisAttempts, int SynthesisCalls, bool CacheHit);
     private sealed record TtsWorkerTrack(string Path, double Start, double Duration, string Sha256);
     private sealed record TtsWorkerResult(int Schema, string Engine, string EngineVersion, string Voice, string VoiceRevision,
         IReadOnlyList<TtsWorkerCue> Cues, TtsWorkerTrack Master, int ReviewCount, int SampleRate);

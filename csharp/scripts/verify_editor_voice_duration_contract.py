@@ -2,7 +2,6 @@
 """Offline duration/byte-preservation definitions; not a speech or runtime PASS."""
 import importlib.util
 import inspect
-import math
 from pathlib import Path
 import tempfile
 import unittest
@@ -30,20 +29,41 @@ class VoiceDurationContract(unittest.TestCase):
         start, frames = worker.cue_window(cue)
         self.assertEqual(start + frames, round(cue["voice_end"] * worker.SAMPLE_RATE))
 
-    def test_tempo_chain_preserves_requested_product(self):
-        for ratio in (.125, .4, .8, 1, 1.2, 1.5, 2, 3, 8):
-            factors = [float(part.split("=")[1]) for part in worker.tempo_filter(ratio).split(",")]
-            self.assertTrue(all(.5 <= factor <= 2 for factor in factors))
-            self.assertAlmostEqual(math.prod(factors), ratio, places=9)
-        for ratio in (0, -1, float("nan"), float("inf")):
+    def test_native_duration_controller_direction_and_bounds(self):
+        # Frame-count arithmetic only; these are not pretend model outputs.
+        self.assertAlmostEqual(worker.next_length_scale(1, 52920, 44100, 1, None, None), 2 / 2.4)
+        self.assertAlmostEqual(worker.next_length_scale(1, 35280, 44100, 1, None, None), 2 / 1.6)
+        self.assertAlmostEqual(worker.next_length_scale(1.1, 52920, 44100, 1.1, None, None), 1.1 * 2 / 2.4)
+        self.assertAlmostEqual(worker.next_length_scale(1, 60000, 44100, 1, .8, 1), .9)
+        self.assertEqual(worker.next_length_scale(1, 1000000, 44100, 1, None, None), .5)
+        self.assertEqual(worker.next_length_scale(1, 1000, 44100, 1, None, None), 2)
+        for scale in (0, -1, float("nan"), float("inf")):
             with self.assertRaises(ValueError):
-                worker.tempo_filter(ratio)
+                worker.next_length_scale(scale, 52920, 44100, 1, None, None)
 
-    def test_quality_warning_does_not_allow_wrong_duration(self):
-        self.assertFalse(worker.needs_tempo_review(2.4, 44100, "whisper"))
-        self.assertFalse(worker.needs_tempo_review(1.6, 44100, "whisper"))
-        self.assertTrue(worker.needs_tempo_review(3, 44100, "whisper"))
-        self.assertFalse(worker.needs_tempo_review(3, 220500, "sample"))
+    def test_review_reflects_actual_model_rate_not_playback_tempo(self):
+        self.assertFalse(worker.needs_rate_review(.8, 1))
+        self.assertFalse(worker.needs_rate_review(1.25, 1))
+        self.assertTrue(worker.needs_rate_review(.79, 1))
+        self.assertTrue(worker.needs_rate_review(1.26, 1))
+        self.assertFalse(worker.needs_rate_review(1.5, 1.5))
+
+    def test_native_metadata_rejects_old_method_and_excess_silence(self):
+        record = {"fit_method": "piper-length-scale", "raw_duration": 2.4, "frames": 44100,
+                  "generated_frames": 43800, "padding_frames": 300, "base_length_scale": 1,
+                  "length_scale": .83, "synthesis_attempts": 2, "status": "fit"}
+        self.assertTrue(worker.native_record_valid(record, 44100, False))
+        for change in ({"fit_method": "atempo"}, {"padding_frames": 1000, "generated_frames": 43100},
+                       {"generated_frames": 43700}, {"base_length_scale": 0}, {"length_scale": .4},
+                       {"length_scale": float("nan")}, {"synthesis_attempts": 0}, {"synthesis_attempts": 11},
+                       {"synthesis_attempts": 1}, {"status": "review"}):
+            self.assertFalse(worker.native_record_valid(record | change, 44100, False))
+        sample = record | {"raw_duration": 2, "generated_frames": 44100, "padding_frames": 0,
+                           "length_scale": 1, "synthesis_attempts": 1}
+        self.assertTrue(worker.native_record_valid(sample, 220500, True))
+        self.assertFalse(worker.native_record_valid(sample | {"synthesis_attempts": 2}, 220500, True))
+        self.assertEqual(worker.padding_budget(44100), 882)
+        self.assertEqual(worker.padding_budget(22050), 441)
 
     def test_padding_copies_every_pcm_byte_and_refuses_overflow(self):
         # Tiny byte fixture only: no mock model or generated-speech claim.
@@ -60,6 +80,9 @@ class VoiceDurationContract(unittest.TestCase):
             with self.assertRaises(ValueError):
                 worker.pad_exact_clip(raw, Path(directory) / "must-not-cut.wav", 3)
             self.assertFalse((Path(directory) / "must-not-cut.wav").exists())
+            with self.assertRaises(ValueError):
+                worker.pad_exact_clip(raw, Path(directory) / "must-not-pad-seconds.wav", 44100)
+            self.assertFalse((Path(directory) / "must-not-pad-seconds.wav").exists())
 
     def test_changed_whisper_window_invalidates_same_srt_cache(self):
         cue = self.cue()
@@ -75,22 +98,37 @@ class VoiceDurationContract(unittest.TestCase):
             with self.assertRaises(ValueError):
                 worker.validate_manifest(manifest | {"cues": [self.cue() | change]}, worker.VOICE_NAME)
 
-    def test_production_path_has_no_tail_cut_and_checks_actual_wav(self):
+    def test_production_uses_native_whole_cue_retries_not_audio_speed_filters(self):
         fit = inspect.getsource(worker.fit_cue)
-        self.assertIn("tempo_filter(tempo)", fit)
-        self.assertIn("len(read_wav(final_path)) != target_frames", fit)
-        self.assertNotIn("synthesize_cue(", fit)
-        self.assertNotIn('"-t"', fit)
-        self.assertNotIn("atrim=", fit)
+        self.assertIn("range(1, MAX_SYNTHESIS_ATTEMPTS + 1)", fit)
+        self.assertIn("synthesize_cue(voice, text, candidate, scale)", fit)
+        self.assertIn("next_length_scale(", fit)
+        self.assertIn("on_attempt(attempt, scale)", fit)
+        self.assertIn("output_frames != frames + padding", fit)
+        self.assertNotIn("subprocess", fit)
+        self.assertNotIn("ffmpeg", fit.lower())
+        synthesis = inspect.getsource(worker.synthesize_cue)
+        self.assertIn("SynthesisConfig(length_scale=length_scale)", synthesis)
+        self.assertIn("voice.synthesize(text, syn_config=syn_config)", synthesis)
+        self.assertNotIn("split(", synthesis)
+        source = inspect.getsource(worker)
+        for forbidden in ('"-t"', '"-af"', "atempo=", "asetrate=", "rubberband=", "atrim="):
+            self.assertNotIn(forbidden, source)
         main = inspect.getsource(worker.main)
         self.assertIn('end_sample = start_sample + record["frames"]', main)
         self.assertNotIn("end_sample = min(", main)
+        self.assertIn('"synthesis_calls": 0 if cache_hit else record["synthesis_attempts"]', main)
+        self.assertIn('"event": "attempt"', main)
+        self.assertEqual(worker.TIMING_ALGORITHM, "whole-cue-piper-rate-v4")
         service = (ROOT / "csharp/src/BiliSubStudio.Core/Editor/LocalTtsService.cs").read_text(encoding="utf-8")
         self.assertIn("BuildWholeCue(cue, voice, cueTiming[cue.Id])", service)
         self.assertIn("cue.Frames != targetFrames", service)
         self.assertIn("cue.Clipped is not false", service)
         self.assertIn("ReadClipFrames(cue.ClipPath, expectedSampleRate) != cue.Frames", service)
         self.assertIn("await HashAsync(cue.ClipPath, cancellationToken) != cue.ClipSha256", service)
+        self.assertIn("ValidateNativeSynthesis(cue, targetFrames, naturalSample, expectedSampleRate)", service)
+        self.assertIn('kind == "attempt"', service)
+        self.assertIn("(index - 1) / (double)total * 53", service)
 
 
 if __name__ == "__main__":

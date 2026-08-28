@@ -4,7 +4,8 @@ Baseline: main, 6b976bf4ef20bbf9f3c17ed0a867adb414029648 (clean at task start).
 Scope: Voice/TTS, extended by the user to remove in-app Editor translation and accept Vietnamese SRT directly. No release, version bump, PR, merge, or push.
 
 Duration-policy update: see [VOICE_SOURCE_DURATION.md](VOICE_SOURCE_DURATION.md).
-The source now fits whole cues to Whisper envelopes without tail clipping. This
+The source now asks Piper to reread whole cues at a native model rate to fit
+Whisper envelopes, without post-synthesis time stretching or tail clipping. This
 update has NOT RUN build/runtime/listening tests; historical checks below do not
 validate the new duration policy.
 
@@ -32,17 +33,19 @@ serialization/deserialization and verify the bundled worker identity.
 
 ## Runtime contract
 
-One PiperVoice.load before the cue loop; one synthesize(text) call per uncached
-whole cue. Piper's internal audio chunks are streamed into one cue WAV.
+One PiperVoice.load before the cue loop; one synthesize(text, syn_config) call per
+whole-cue attempt, with bounded native `length_scale` retries for uncached cues.
+Piper's internal audio chunks are streamed into one cue WAV.
 The text-only sample uses the same service and worker without fake source files
 or fabricated Whisper timing. Full-project Whisper provenance is still checked,
 but its word/pause data does not split synthesis.
 
-Natural duration is measured. The current timing policy fits the complete voice
-to the mapped Whisper window using chained atempo and exact frame-count checks,
-without a second TTS pass or master tail cutoff. Strong tempo changes are marked
-for listening review. No SRT timecode is rewritten. The former ±8% fit limit and
-overflow cutoff are historical behavior, superseded by VOICE_SOURCE_DURATION.md.
+Natural duration is measured. The current timing policy uses model-native rate
+changes and whole-cue resynthesis to approach the mapped Whisper window, then
+allows only a small recorded trailing padding remainder. Strong rate changes are
+marked for listening review. No SRT timecode is rewritten. The former atempo,
+one-pass constraint and overflow cutoff are historical behavior, superseded by
+VOICE_SOURCE_DURATION.md. No current native-rate runtime/quality PASS is claimed.
 
 Cache keys include model/config, worker, package and algorithm identities, cue ID,
 time interval, and normalized text. Cached WAV hashes and decoded format are

@@ -44,7 +44,10 @@ require(sum(isinstance(c.func, ast.Attribute) and isinstance(c.func.value, ast.N
             and c.func.value.id == "PiperVoice" and c.func.attr == "load" for c in calls) == 1,
         "worker must contain exactly one Piper model load")
 require(sum(isinstance(c.func, ast.Attribute) and c.func.attr == "synthesize" for c in calls) == 1,
-        "worker must use one whole-cue synthesize API call")
+        "worker must use one whole-cue synthesize call site, reused for native-rate attempts")
+require("voice.synthesize(text, syn_config=syn_config)" in worker and
+        "SynthesisConfig(length_scale=length_scale)" in worker,
+        "duration fitting must control Piper synthesis, not playback speed")
 main = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "main")
 loop = next(node for node in main.body if isinstance(node, ast.For) and ast.unparse(node.target) == "(index, cue)")
 require(not any(isinstance(node, ast.Attribute) and node.attr == "load" for node in ast.walk(loop)),

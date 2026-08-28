@@ -659,7 +659,7 @@ public sealed partial class EditorPage : Page
                 speech.AnalysisSha256,
                 selectedVoice));
             VoiceProgress.Value = 0;
-            VoiceStatusText.Text = $"Đang chuẩn bị voice {selectedVoice} local; mỗi cue đọc nguyên câu, khớp thời lượng thoại gốc...";
+            VoiceStatusText.Text = $"Đang chuẩn bị voice {selectedVoice} local; model tự canh nhịp đọc nguyên câu theo thoại gốc...";
             RefreshEditorActions();
             await PollTtsJobAsync();
         }
@@ -700,7 +700,7 @@ public sealed partial class EditorPage : Page
                     };
                     VoiceStatusText.Text = result.ReviewCount == 0
                         ? $"Voice Việt hoàn tất · {result.Cues.Count} câu khớp thời lượng thoại gốc · đã vào Xem bản chỉnh."
-                        : $"Voice Việt đã khớp thời lượng · {result.ReviewCount} câu co giãn nhiều, cần nghe lại trong Xem bản chỉnh.";
+                        : $"Voice Việt đã canh thời lượng · {result.ReviewCount} câu dùng nhịp model khác nhiều, cần nghe lại trong Xem bản chỉnh.";
                     await SaveProjectNowAsync();
                     QueuePreviewRefresh();
                 }

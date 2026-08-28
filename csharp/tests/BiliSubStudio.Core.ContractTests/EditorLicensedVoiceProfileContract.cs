@@ -70,6 +70,7 @@ internal static class EditorLicensedVoiceProfileContract
         Equal(cue.VietnameseText, type.GetProperty("Text")!.GetValue(whole));
         True(type.GetProperty("Groups") is null, "whole cue must not encode Whisper pause groups");
         VerifyVoiceWavFrames(service);
+        VerifyNativeRateMetadata(service);
         foreach (var invalid in new[] { timing with { Words = [] }, timing with { CueId = "different-cue" },
             timing with { Words = [new EditorWordTiming("outside", 6, 7, .9)] } })
         {
@@ -113,6 +114,45 @@ internal static class EditorLicensedVoiceProfileContract
             catch (TargetInvocationException error) when (error.InnerException is InvalidDataException) { }
         }
         finally { Directory.Delete(root, recursive: true); }
+    }
+
+    private static void VerifyNativeRateMetadata(Type service)
+    {
+        // Metadata-only fixture. Does not synthesize or claim audible speech.
+        var cueType = service.GetNestedType("TtsWorkerCue", BindingFlags.NonPublic)!;
+        var validate = service.GetMethod("ValidateNativeSynthesis", BindingFlags.Static | BindingFlags.NonPublic)!;
+        var json = new System.Text.Json.JsonSerializerOptions { PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.SnakeCaseLower };
+        var fixture = new Dictionary<string, object>
+        {
+            ["fit_method"] = "piper-length-scale", ["raw_duration"] = 2.4, ["frames"] = 44100L,
+            ["generated_frames"] = 43800L, ["padding_frames"] = 300L, ["base_length_scale"] = 1d,
+            ["length_scale"] = .83, ["synthesis_attempts"] = 2, ["synthesis_calls"] = 2, ["cache_hit"] = false,
+        };
+        object Cue(Dictionary<string, object> values) => System.Text.Json.JsonSerializer.Deserialize(
+            System.Text.Json.JsonSerializer.Serialize(values), cueType, json)!;
+        Equal(false, validate.Invoke(null, [Cue(fixture), 44100L, false, 22050]));
+        Equal(true, validate.Invoke(null, [Cue(new(fixture) { ["length_scale"] = .7 }), 44100L, false, 22050]));
+        Equal(false, validate.Invoke(null, [Cue(new(fixture) { ["cache_hit"] = true, ["synthesis_calls"] = 0 }), 44100L, false, 22050]));
+        var invalid = new Dictionary<string, object>[]
+        {
+            new(fixture) { ["fit_method"] = "atempo" },
+            new(fixture) { ["generated_frames"] = 43100L, ["padding_frames"] = 1000L },
+            new(fixture) { ["generated_frames"] = 43700L },
+            new(fixture) { ["base_length_scale"] = 0d },
+            new(fixture) { ["length_scale"] = .4 },
+            new(fixture) { ["synthesis_attempts"] = 11, ["synthesis_calls"] = 11 },
+            new(fixture) { ["synthesis_attempts"] = 1, ["synthesis_calls"] = 1 },
+            new(fixture) { ["cache_hit"] = true },
+        };
+        foreach (var values in invalid)
+        {
+            try
+            {
+                validate.Invoke(null, [Cue(values), 44100L, false, 22050]);
+                throw new InvalidOperationException("Invalid native synthesis metadata was accepted");
+            }
+            catch (TargetInvocationException error) when (error.InnerException is InvalidDataException) { }
+        }
     }
 
     private static async Task VerifyEditorProjectAsync()
@@ -200,13 +240,13 @@ internal static class EditorLicensedVoiceProfileContract
             var oldManifest = Path.Combine(root, "old-duration-result.json");
             await File.WriteAllTextAsync(oldManifest, System.Text.Json.JsonSerializer.Serialize(new
             {
-                schema = 2, voice_revision = revision[..revision.LastIndexOf(':')] + ":whole-cue-v2",
+                schema = 2, voice_revision = revision[..revision.LastIndexOf(':')] + ":whole-cue-whisper-fit-v3",
                 master = new { path = voicePath, sha256 = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(await File.ReadAllBytesAsync(voicePath))) },
             }));
             var oldSha = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(await File.ReadAllBytesAsync(oldManifest)));
             await store.SaveAsync(reopened with { Tts = validTts with { ManifestPath = oldManifest, ManifestSha256 = oldSha } }, CancellationToken.None);
             var staleTiming = await store.LoadOrCreateAsync(video, 1920, 1080, 120, CancellationToken.None);
-            True(staleTiming.Tts is null, "old tail-clipping timing revision was accepted");
+            True(staleTiming.Tts is null, "old post-synthesis tempo policy was accepted as native synthesis");
             True(staleTiming.Speech is not null && File.Exists(voicePath) && File.Exists(oldManifest),
                 "timing-policy migration removed source timing or old recoverable files");
 

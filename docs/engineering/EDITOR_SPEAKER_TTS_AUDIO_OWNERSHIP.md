@@ -1,6 +1,6 @@
 # Editor Voice/TTS ownership
 
-Current Voice task baseline: 6b976bf, updated 2026-08-28.
+Current native-rate Voice task baseline: 516647a, updated 2026-08-29.
 Exact models and evidence: [NGHI audit](EDITOR_NGHITTS_AUDIT.md).
 
 ## Owners
@@ -13,23 +13,25 @@ Exact models and evidence: [NGHI audit](EDITOR_NGHITTS_AUDIT.md).
 - LocalTtsService: source/Whisper provenance for a full project, whole-cue manifest,
   result validation, immutable per-run master/result, cleanup and progress.
 - internal/tts/worker.py: one Piper model per job, whole-cue synthesis, validated
-  clip cache, bounded tempo fit and bounded-memory FLAC assembly.
+  clip cache, bounded model-native rate retries and bounded-memory FLAC assembly.
 - VideoEditorService: existing shared source/voice audio graph for Preview/Export.
 
 ## Text and timing
 
-The imported SRT owns text/order/timecode. Each translated cue is normalized and
-passed to Piper once as one complete text. Whisper analysis remains available for
-provenance and karaoke; its pauses do not split TTS and acoustic classes do not
+The imported Vietnamese SRT owns text/order/timecode. Each cue is normalized and
+passed to Piper as one complete text per attempt. Whisper supplies the bounded
+source-speech envelope and karaoke timing; its pauses do not split TTS and acoustic classes do not
 select a different voice. No synthetic male/female pitch profiles remain.
 
 The sample action has its own real text cue and runs the same generator without
 creating a source video or pretending to have run Whisper.
 
-Natural speech is measured, optionally adjusted once with bounded FFmpeg atempo,
-then marked fit/review. A long cue keeps its complete cached speech but its master
-placement is bounded by the SRT interval; the UI warns that it needs review.
-Quality always requires listening.
+Natural speech is measured, then Piper may reread the full cue with a different
+`length_scale` up to ten attempts. No generated audio is sped up, slowed down or
+cut to force a fit. Only a small trailing padding remainder is permitted; bounds,
+metadata and exact sample-count checks are defined in [duration policy](VOICE_SOURCE_DURATION.md).
+Failure to fit stops the new master. Quality always requires listening; the new
+native-rate route has NOT RUN build/runtime/field tests.
 
 ## Recovery and playback
 

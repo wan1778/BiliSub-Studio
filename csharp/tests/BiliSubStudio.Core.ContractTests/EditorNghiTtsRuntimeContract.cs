@@ -139,6 +139,16 @@ internal static class EditorNghiTtsRuntimeContract
                 var clip = cues[index].GetProperty("clip_path").GetString()!;
                 Check(cues[index].GetProperty("frames").GetInt64() == cues[index].GetProperty("target_frames").GetInt64()
                     && !cues[index].GetProperty("clipped").GetBoolean(), "complete voice clip matches real source duration without tail clipping");
+                var attempts = cues[index].GetProperty("synthesis_attempts").GetInt32();
+                var frames = cues[index].GetProperty("frames").GetInt64();
+                var generated = cues[index].GetProperty("generated_frames").GetInt64();
+                var padding = cues[index].GetProperty("padding_frames").GetInt64();
+                var scale = cues[index].GetProperty("length_scale").GetDouble() / cues[index].GetProperty("base_length_scale").GetDouble();
+                Check(cues[index].GetProperty("fit_method").GetString() == "piper-length-scale"
+                    && attempts is >= 1 and <= 10 && cues[index].GetProperty("synthesis_calls").GetInt32() == attempts
+                    && scale is >= .5 and <= 2 && generated > 0 && generated + padding == frames
+                    && padding >= 0 && padding <= Math.Max(1L, Math.Min(882L, frames / 50)),
+                    "native Piper rate/retry evidence and small padding only; no playback speed fitting");
                 File.Copy(clip, Path.Combine(paths.Root, $"sentence-{index + 1}.wav"), overwrite: true);
             }
         }
@@ -146,6 +156,9 @@ internal static class EditorNghiTtsRuntimeContract
         CleanRunDirectories();
         var second = (await Run(Cues()))!;
         Check(CacheHits(second) == 4, "second run reuses all four verified whole-cue clips");
+        using (var warm = Manifest(second))
+            Check(warm.RootElement.GetProperty("cues").EnumerateArray().All(cue => cue.GetProperty("synthesis_calls").GetInt32() == 0),
+                "warm native-rate cache makes zero new synthesis calls");
         Check(Hash(second.VoiceTrack.Path) == firstHash, "cache run preserves byte-identical master");
         Check(Hash(first.VoiceTrack.Path) == firstHash, "old master preserved after successful regeneration");
 

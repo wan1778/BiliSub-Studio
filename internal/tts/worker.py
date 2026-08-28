@@ -15,10 +15,15 @@ ENGINE = "nghi-tts"
 ENGINE_VERSION = "nghi-tts-1.0.0"
 MODEL_SHA256 = "2140977786d76d834736c059dacfa553d4931dac2b2c7aaaea438bb2aa9da697"
 CONFIG_SHA256 = "971f57f8d504223fee5b40d664f503cf769baf7db21f7d2ae0554a75d07de2f8"
-TIMING_ALGORITHM = "whole-cue-whisper-fit-v3"
+TIMING_ALGORITHM = "whole-cue-piper-rate-v4"
 VOICE_REVISION = MODEL_SHA256 + ":" + CONFIG_SHA256 + ":" + TIMING_ALGORITHM
 VOICE_NAME = "ngoc_huyen"
 SAMPLE_RATE = 22050
+FIT_METHOD = "piper-length-scale"
+MAX_SYNTHESIS_ATTEMPTS = 10
+# Engineering bounds, not a claim of perceptually safe rates.
+MIN_RATE_SCALE = 0.5
+MAX_RATE_SCALE = 2.0
 PACKAGES = {"piper-tts": "1.7.0", "onnxruntime": "1.22.1", "vietnormalizer": "0.2.3", "numpy": "2.5.2"}
 
 
@@ -77,11 +82,29 @@ def cue_window(cue: dict):
     return start, frames
 
 
-def needs_tempo_review(raw_duration, target_frames, timing_source):
-    target = target_frames / SAMPLE_RATE
-    if timing_source == "sample" and raw_duration <= target:
+def padding_budget(target_frames: int) -> int:
+    # Native model durations are quantized and may vary between passes. Accept
+    # only a small short: at most 40 ms AND 2% of the target (minimum one frame).
+    return max(1, min(round(.04 * SAMPLE_RATE), target_frames // 50))
+
+
+def needs_rate_review(length_scale: float, base_length_scale: float) -> bool:
+    return not 0.8 <= length_scale / base_length_scale <= 1.25
+
+
+def native_record_valid(record: dict, target_frames: int, natural_sample: bool) -> bool:
+    base, scale = record["base_length_scale"], record["length_scale"]
+    generated, padding, attempts = record["generated_frames"], record["padding_frames"], record["synthesis_attempts"]
+    if (record["fit_method"] != FIT_METHOD or not math.isfinite(base) or base <= 0
+            or not math.isfinite(scale) or not MIN_RATE_SCALE <= scale / base <= MAX_RATE_SCALE
+            or type(generated) is not int or generated <= 0 or type(padding) is not int
+            or not 0 <= padding <= padding_budget(target_frames) or generated + padding != record["frames"]
+            or type(attempts) is not int or not 1 <= attempts <= MAX_SYNTHESIS_ATTEMPTS):
         return False
-    return not 0.8 <= raw_duration / target <= 1.25
+    if (attempts == 1 and (scale != base or abs(record["raw_duration"] - generated / SAMPLE_RATE) > 1e-9)
+            or natural_sample and (padding != 0 or attempts != 1)):
+        return False
+    return record["status"] == ("review" if needs_rate_review(scale, base) else "fit")
 
 
 def load_clip(path: Path, key: str, cue: dict):
@@ -100,106 +123,101 @@ def load_clip(path: Path, key: str, cue: dict):
                 or (not natural_sample and len(samples) != target_frames)
                 or (natural_sample and abs(record["raw_duration"] - duration) > 1 / SAMPLE_RATE)
                 or not math.isfinite(record["fitted_duration"]) or abs(record["fitted_duration"] - duration) > 1e-9
-                or not math.isfinite(record["tempo"]) or record["tempo"] <= 0
-                or record["status"] != ("review" if needs_tempo_review(record["raw_duration"], target_frames, cue["timing_source"]) else "fit")):
+                or not native_record_valid(record, target_frames, natural_sample)):
             return None
         return record
     except (OSError, ValueError, KeyError, TypeError, wave.Error):
         return None
 
 
-def synthesize_cue(voice, text: str, temporary: Path) -> None:
-    # Exactly one Piper API call per whole cue; chunk streaming is internal to Piper.
+def synthesize_cue(voice, text: str, temporary: Path, length_scale: float) -> None:
+    from piper import SynthesisConfig
+    # One complete cue per attempt. Only model-native phoneme duration changes;
+    # keep the verified config's noise/speaker settings and the same loaded voice.
+    syn_config = SynthesisConfig(length_scale=length_scale)
     with wave.open(str(temporary), "wb") as output:
         output.setnchannels(1)
         output.setsampwidth(2)
         output.setframerate(SAMPLE_RATE)
-        for chunk in voice.synthesize(text):
+        for chunk in voice.synthesize(text, syn_config=syn_config):
             if (chunk.sample_rate, chunk.sample_width, chunk.sample_channels) != (SAMPLE_RATE, 2, 1):
                 raise ValueError("Piper returned an unexpected audio format")
             output.writeframes(chunk.audio_int16_bytes)
 
 
-def tempo_filter(ratio: float) -> str:
-    if not math.isfinite(ratio) or ratio <= 0:
-        raise ValueError("Invalid whole-cue tempo ratio")
-    factors = []
-    # Keep each atempo stage in [0.5, 2]. FFmpeg documents sample skipping
-    # above 2 for a single stage; never implement fitting with atrim/-t.
-    while ratio < 0.5 or ratio > 2:
-        factor = 0.5 if ratio < 0.5 else 2.0
-        factors.append(factor)
-        ratio /= factor
-        if len(factors) > 16:
-            raise ValueError("Speech window requires an unsupported tempo ratio; check the cue timing/text")
-    factors.append(ratio)
-    return ",".join(f"atempo={factor:.12g}" for factor in factors)
+def next_length_scale(scale: float, frames: int, aim_frames: int, base: float,
+                      lower: float | None, upper: float | None) -> float:
+    if (not math.isfinite(scale) or scale <= 0 or not math.isfinite(base) or base <= 0
+            or frames <= 0 or aim_frames <= 0):
+        raise ValueError("Invalid model-native duration measurement")
+    # Unlike playback tempo, a SMALLER length_scale asks Piper to speak faster.
+    corrected = scale * aim_frames / frames
+    if lower is not None and upper is not None and lower < upper and not lower < corrected < upper:
+        corrected = (lower + upper) / 2
+    return max(base * MIN_RATE_SCALE, min(base * MAX_RATE_SCALE, corrected))
 
 
 def pad_exact_clip(source_path: Path, output_path: Path, target_frames: int):
-    # Only add a tiny, already-measured filter-rounding remainder. Never discard
-    # any output sample, not even at the end of an overlong spoken sentence.
+    # Copy all model-produced PCM unchanged; only a small trailing remainder may
+    # be silence. This is not stretching, resampling or cutting spoken audio.
     with wave.open(str(source_path), "rb") as source:
         frames = source.getnframes()
         data = source.readframes(frames)
-        if frames > target_frames or len(data) != frames * 2:
-            raise ValueError("Refusing to truncate an overlong or incomplete voice clip")
+        if not 0 <= target_frames - frames <= padding_budget(target_frames) or len(data) != frames * 2:
+            raise ValueError("Refusing to cut speech or hide a duration mismatch with silence")
         with wave.open(str(output_path), "wb") as output:
             output.setparams(source.getparams())
             output.writeframes(data)
             output.writeframes(b"\0\0" * (target_frames - frames))
 
 
-def fit_cue(ffmpeg: Path, raw_path: Path, target_frames: int, run_root: Path, key: str, timing_source: str):
+def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str, timing_source: str, on_attempt):
     if target_frames <= 0:
         raise ValueError("Source speech duration must contain at least one sample")
-    raw_frames = len(read_wav(raw_path))
-    raw = raw_frames / SAMPLE_RATE
-
-    def record(frames, tempo):
-        return {"raw_duration": raw, "fitted_duration": frames / SAMPLE_RATE,
-                "frames": frames, "target_frames": target_frames, "timing_source": timing_source, "tempo": tempo,
-                "status": "review" if needs_tempo_review(raw, target_frames, timing_source) else "fit"}
-
-    # The text-only sample has no source speech to imitate. Preserve its natural
-    # duration when it already fits, rather than stretching it to ten seconds.
-    if raw_frames == target_frames or (timing_source == "sample" and raw_frames < target_frames):
-        return raw_path, record(raw_frames, 1.0)
-
-    padding_budget = max(1, min(round(.01 * SAMPLE_RATE), target_frames // 200))
-    aim_frames = max(1, target_frames - padding_budget // 2)
-    tempo = raw_frames / aim_frames
-    too_slow, too_fast = None, None
-    candidate = run_root / (key + "-tempo.wav")
+    base = float(voice.config.length_scale)
+    if not math.isfinite(base) or base <= 0:
+        raise ValueError("Invalid length_scale in verified model config")
+    scale = base
+    raw_frames = 0
+    aim_frames = max(1, target_frames - padding_budget(target_frames) // 2)
+    lower, upper = None, None
+    candidate = run_root / (key + "-native.wav")
     final_path = run_root / (key + "-fit.wav")
-    for _ in range(10):
-        # Each correction starts from the original full utterance. Do not
-        # resynthesize or repeatedly stretch an already processed waveform.
-        result = subprocess.run(
-            [str(ffmpeg), "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-             "-i", str(raw_path), "-af", tempo_filter(tempo), "-ac", "1",
-             "-ar", str(SAMPLE_RATE), "-c:a", "pcm_s16le", str(candidate)],
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-            text=True, encoding="utf-8", errors="replace", check=False)
-        if result.returncode:
-            raise RuntimeError("FFmpeg timing fit failed: " + result.stderr[-2000:])
+    for attempt in range(1, MAX_SYNTHESIS_ATTEMPTS + 1):
+        on_attempt(attempt, scale)
+        synthesize_cue(voice, text, candidate, scale)
         frames = len(read_wav(candidate))
-        if 0 <= target_frames - frames <= padding_budget:
-            pad_exact_clip(candidate, final_path, target_frames)
-            if len(read_wav(final_path)) != target_frames:
-                raise RuntimeError("Voice duration did not match the source sample count")
-            return final_path, record(target_frames, tempo)
+        if attempt == 1:
+            raw_frames = frames
+        natural_sample = timing_source == "sample" and attempt == 1 and frames <= target_frames
+        if natural_sample or 0 <= target_frames - frames <= padding_budget(target_frames):
+            padding = 0 if natural_sample else target_frames - frames
+            output_path = candidate
+            if padding:
+                pad_exact_clip(candidate, final_path, target_frames)
+                output_path = final_path
+            output_frames = len(read_wav(output_path))
+            if output_frames != frames + padding:
+                raise RuntimeError("Voice duration did not match the native sample count")
+            record = {"raw_duration": raw_frames / SAMPLE_RATE, "fitted_duration": output_frames / SAMPLE_RATE,
+                      "frames": output_frames, "target_frames": target_frames, "timing_source": timing_source,
+                      "fit_method": FIT_METHOD, "base_length_scale": base, "length_scale": scale,
+                      "generated_frames": frames, "padding_frames": padding, "synthesis_attempts": attempt,
+                      "status": "review" if needs_rate_review(scale, base) else "fit"}
+            return output_path, record
         if frames > target_frames:
-            too_slow = tempo
+            upper = scale if upper is None else min(upper, scale)
         else:
-            too_fast = tempo
-        corrected = tempo * frames / aim_frames
-        if too_slow is not None and too_fast is not None:
-            low, high = sorted((too_slow, too_fast))
-            if not low < corrected < high:
-                corrected = math.sqrt(low * high)
-        tempo = corrected
-    raise RuntimeError("Cannot fit the whole utterance to the source duration without cutting; no master was accepted")
+            lower = scale if lower is None else max(lower, scale)
+        # Model randomness can contradict an earlier bracket; never treat it as
+        # exact linear duration control. Measurements and the attempt cap decide.
+        if lower is not None and upper is not None and lower >= upper:
+            lower, upper = None, None
+        corrected = next_length_scale(scale, frames, aim_frames, base, lower, upper)
+        if math.isclose(corrected, scale, rel_tol=0, abs_tol=1e-7):
+            break
+        scale = corrected
+    raise RuntimeError("Piper chưa đọc vừa thời lượng trong giới hạn nhịp/lượt thử; hãy kiểm tra lời Việt hoặc timing. Không kéo tốc độ file hay cắt chữ để ép vừa")
 
 
 def validate_manifest(manifest: dict, voice: str) -> list[dict]:
@@ -334,10 +352,11 @@ def main() -> int:
         record = load_clip(cached_path, key, cue)
         cache_hit = record is not None
         if record is None:
-            temporary = run_root / (key + ".wav")
-            synthesize_cue(voice, text, temporary)
+            def on_attempt(attempt, scale):
+                emit({"event": "attempt", "index": index + 1, "total": len(cues), "id": cue["id"],
+                      "attempt": attempt, "max_attempts": MAX_SYNTHESIS_ATTEMPTS, "length_scale": scale})
             try:
-                final_path, record = fit_cue(Path(options.ffmpeg), temporary, target_frames, run_root, key, cue["timing_source"])
+                final_path, record = fit_cue(voice, text, target_frames, run_root, key, cue["timing_source"], on_attempt)
             except (ValueError, RuntimeError) as error:
                 raise RuntimeError(f"Cue {index + 1} ({cue['id']}): {error}") from error
             record.update({"key": key, "sha256": sha256(final_path)})
@@ -356,9 +375,13 @@ def main() -> int:
                         "clip_path": str(cached_path), "clip_sha256": record["sha256"],
                         "clipped": False, "timing_source": cue["timing_source"], "target_frames": target_frames,
                         "frames": record["frames"], "clip_start_sample": start_sample, "clip_end_sample": end_sample,
-                        "tempo": record["tempo"]})
+                        "fit_method": record["fit_method"], "base_length_scale": record["base_length_scale"],
+                        "length_scale": record["length_scale"], "generated_frames": record["generated_frames"],
+                        "padding_frames": record["padding_frames"], "synthesis_attempts": record["synthesis_attempts"],
+                        "synthesis_calls": 0 if cache_hit else record["synthesis_attempts"]})
         emit({"event": "cue", "index": index + 1, "total": len(cues), "id": cue["id"],
-              "status": record["status"], "cache_hit": cache_hit, "synthesis_calls": 0 if cache_hit else 1})
+              "status": record["status"], "cache_hit": cache_hit,
+              "synthesis_calls": 0 if cache_hit else record["synthesis_attempts"]})
     build_master(Path(options.ffmpeg), clips, manifest["duration"], run_root, master_path)
     result = {"schema": 2, "engine": ENGINE, "engine_version": ENGINE_VERSION, "voice": VOICE_NAME,
               "voice_revision": VOICE_REVISION, "cues": results,

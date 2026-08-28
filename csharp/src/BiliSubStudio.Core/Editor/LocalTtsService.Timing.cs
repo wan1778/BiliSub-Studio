@@ -4,6 +4,22 @@ namespace BiliSubStudio.Core.Editor;
 
 internal sealed partial class LocalTtsService
 {
+    private static bool ValidateNativeSynthesis(TtsWorkerCue cue, long targetFrames, bool naturalSample, int sampleRate)
+    {
+        var paddingBudget = Math.Max(1L, Math.Min((long)Math.Round(.04 * sampleRate), targetFrames / 50));
+        var relativeScale = cue.LengthScale / cue.BaseLengthScale;
+        if (cue.FitMethod != "piper-length-scale" || !double.IsFinite(cue.BaseLengthScale) || cue.BaseLengthScale <= 0
+            || !double.IsFinite(cue.LengthScale) || !double.IsFinite(relativeScale) || relativeScale is < .5 or > 2
+            || cue.GeneratedFrames <= 0 || cue.GeneratedFrames > cue.Frames
+            || cue.PaddingFrames < 0 || cue.PaddingFrames > paddingBudget || cue.GeneratedFrames != cue.Frames - cue.PaddingFrames
+            || cue.SynthesisAttempts is < 1 or > 10 || cue.SynthesisCalls != (cue.CacheHit ? 0 : cue.SynthesisAttempts)
+            || (cue.SynthesisAttempts == 1 && (cue.LengthScale != cue.BaseLengthScale
+                || Math.Abs(cue.RawDuration - cue.GeneratedFrames / (double)sampleRate) > 1e-9))
+            || (naturalSample && (cue.PaddingFrames != 0 || cue.SynthesisAttempts != 1)))
+            throw new InvalidDataException("Voice không có metadata nhịp đọc Piper hợp lệ hoặc bù im lặng quá nhiều; không nhận master này.");
+        return relativeScale is < .8 or > 1.25;
+    }
+
     // Verify PCM frame count from the actual WAV, not only the worker's duration.
     // FFmpeg may include LIST/JUNK chunks; never assume a fixed 44-byte header.
     private static long ReadClipFrames(string path, int sampleRate)

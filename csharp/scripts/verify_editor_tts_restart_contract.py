@@ -21,12 +21,14 @@ for marker in ("VOICE_REVISION", "PACKAGES", "worker_sha", 'cue["id"]', 'cue["cu
                'cue["voice_start"]', 'cue["voice_end"]', 'cue["timing_source"]', "text"):
     require(marker in identity, "cache identity missing " + marker)
 cache = worker.split("def load_clip(", 1)[1].split("def synthesize_cue(", 1)[0]
-for marker in ('record["sha256"] != sha256(path)', "read_wav(path)", 'record["raw_duration"]', 'record["fitted_duration"]'):
+for marker in ('record["sha256"] != sha256(path)', "read_wav(path)", 'record["raw_duration"]', 'record["fitted_duration"]',
+               "native_record_valid(record, target_frames, natural_sample)"):
     require(marker in cache, "cache validation missing " + marker)
 require("final_path.replace(cached_path)" in worker and 'atomic_json(cached_path.with_suffix(".json"), record)' in worker,
         "only fully written clips and matching metadata may be reused")
 require('cache_hit = record is not None' in worker, "worker must report real cache hits")
-require("if record is None:" in worker and "synthesize_cue(voice, text, temporary)" in worker,
+require("if record is None:" in worker and "fit_cue(voice, text, target_frames" in worker
+        and "synthesize_cue(voice, text, candidate, scale)" in worker,
         "missing/corrupt clips must run real inference again")
 require("File.Delete(masterPath)" in service and "if (!accepted)" in service,
         "failed restart may remove only its new unaccepted output")
