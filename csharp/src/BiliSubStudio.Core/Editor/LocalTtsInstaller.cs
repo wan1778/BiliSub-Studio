@@ -25,7 +25,8 @@ internal sealed class LocalTtsInstaller : IDisposable
     // Drive objects are mutable; reviewed content hashes pin identity.
     internal const string ModelRevision = "2140977786d76d834736c059dacfa553d4931dac2b2c7aaaea438bb2aa9da697";
     internal const string ConfigSha256 = "971f57f8d504223fee5b40d664f503cf769baf7db21f7d2ae0554a75d07de2f8";
-    internal const string VoiceRevision = ModelRevision + ":" + ConfigSha256 + ":whole-cue-v2";
+    internal const string TimingAlgorithm = "whole-cue-whisper-fit-v3";
+    internal const string VoiceRevision = ModelRevision + ":" + ConfigSha256 + ":" + TimingAlgorithm;
     internal static readonly IReadOnlyList<string> AvailableVoices = Array.AsReadOnly(new[] { Voice });
     internal static string CanonicalVoiceId(string voice) => voice.Trim().ToLowerInvariant().Replace('-', '_');
     internal static readonly IReadOnlyList<TtsModelFile> ModelFiles = Array.AsReadOnly(new[]

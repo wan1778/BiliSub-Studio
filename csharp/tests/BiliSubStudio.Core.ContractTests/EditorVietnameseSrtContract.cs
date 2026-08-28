@@ -28,7 +28,9 @@ internal static class EditorVietnameseSrtContract
                     throw new InvalidOperationException("Vietnamese import must fill spoken text without translation");
                 var build = typeof(EditorTtsRequest).Assembly.GetType("BiliSubStudio.Core.Editor.LocalTtsService")!
                     .GetMethod("BuildWholeCue", BindingFlags.NonPublic | BindingFlags.Static)!;
-                var whole = build.Invoke(null, [cue, "ngoc_huyen"])!;
+                var timing = new EditorCueSpeechTiming(cue.Id, cue.Start, cue.End, cue.Start, cue.End, 0, 0,
+                    [new EditorWordTiming("offline timing fixture", cue.Start, cue.End, 1)], [], "uncertain", 0, 0);
+                var whole = build.Invoke(null, [cue, "ngoc_huyen", timing])!;
                 var type = whole.GetType();
                 if ((double)type.GetProperty("CueStart")!.GetValue(whole)! != cue.Start
                     || (double)type.GetProperty("CueEnd")!.GetValue(whole)! != cue.End

@@ -847,7 +847,10 @@ for marker in (
 for retired in ("Kokoro", "synth_sine", "DummyModelBytes", "MirrorModelUrl"):
     require(retired not in tts_installer + tts_service + tts_worker,
             f"unverified/retired TTS returned to production: {retired}")
-for marker in ("whole-cue-v2", "BuildWholeCue", "GenerateSampleAsync", "OwnedProcessGroup",
+require('TimingAlgorithm = "whole-cue-whisper-fit-v3"' in tts_installer
+        and 'TIMING_ALGORITHM = "whole-cue-whisper-fit-v3"' in tts_worker,
+        "Whisper duration policy/cache identity drifted")
+for marker in ("LocalTtsInstaller.TimingAlgorithm", "BuildWholeCue", "GenerateSampleAsync", "OwnedProcessGroup",
                "SamePath(reportedResult, resultPath)", "await processes.StopAsync()"):
     require(marker in tts_service, f"local TTS ownership contract missing {marker}")
 for marker in ("PiperVoice.load", "voice.synthesize(text)", "cache_identity", "sha256",

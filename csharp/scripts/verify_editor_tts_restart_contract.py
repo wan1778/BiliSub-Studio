@@ -17,7 +17,8 @@ require('var partial = destination + ".partial";' in installer and "resume=True"
         "Drive download must retain resumable partial bytes")
 require("MatchesAsync(partial, file" in installer, "resumed downloads must verify reviewed content hash")
 identity = worker.split("def cache_identity(", 1)[1].split("def load_clip(", 1)[0]
-for marker in ("VOICE_REVISION", "PACKAGES", "worker_sha", 'cue["id"]', 'cue["cue_start"]', 'cue["cue_end"]', "text"):
+for marker in ("VOICE_REVISION", "PACKAGES", "worker_sha", 'cue["id"]', 'cue["cue_start"]', 'cue["cue_end"]',
+               'cue["voice_start"]', 'cue["voice_end"]', 'cue["timing_source"]', "text"):
     require(marker in identity, "cache identity missing " + marker)
 cache = worker.split("def load_clip(", 1)[1].split("def synthesize_cue(", 1)[0]
 for marker in ('record["sha256"] != sha256(path)', "read_wav(path)", 'record["raw_duration"]', 'record["fitted_duration"]'):

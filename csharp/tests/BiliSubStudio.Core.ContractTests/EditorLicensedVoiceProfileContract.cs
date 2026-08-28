@@ -56,14 +56,63 @@ internal static class EditorLicensedVoiceProfileContract
         var method = service.GetMethod("BuildWholeCue", BindingFlags.Static | BindingFlags.NonPublic)!;
         var cue = new EditorSubtitleCue("whole-cue-0001", "37", "00:00:01,000 --> 00:00:05,000", 1, 5,
             "你好", "Xin chào đạo hữu. Hôm nay trời thật đẹp!");
-        var whole = method.Invoke(null, [cue, "ngoc_huyen"])!;
+        var timing = new EditorCueSpeechTiming(cue.Id, 1, 5, 1.5, 3.5, .5, 1.5,
+            [new EditorWordTiming("你好", 1.5, 2, .9), new EditorWordTiming("朋友", 2.5, 3.5, .9)],
+            [new EditorPauseTiming(2, 2.5)], "uncertain", 0, 0);
+        var whole = method.Invoke(null, [cue, "ngoc_huyen", timing])!;
         var type = whole.GetType();
         Equal(cue.Id, type.GetProperty("Id")!.GetValue(whole));
         Equal(1d, type.GetProperty("CueStart")!.GetValue(whole));
         Equal(5d, type.GetProperty("CueEnd")!.GetValue(whole));
+        Equal(1.5d, type.GetProperty("VoiceStart")!.GetValue(whole));
+        Equal(3.5d, type.GetProperty("VoiceEnd")!.GetValue(whole));
+        Equal("whisper", type.GetProperty("TimingSource")!.GetValue(whole));
         Equal(cue.VietnameseText, type.GetProperty("Text")!.GetValue(whole));
         True(type.GetProperty("Groups") is null, "whole cue must not encode Whisper pause groups");
+        VerifyVoiceWavFrames(service);
+        foreach (var invalid in new[] { timing with { Words = [] }, timing with { CueId = "different-cue" },
+            timing with { Words = [new EditorWordTiming("outside", 6, 7, .9)] } })
+        {
+            try
+            {
+                method.Invoke(null, [cue, "ngoc_huyen", invalid]);
+                throw new InvalidOperationException("Missing/mismatched Whisper timing was silently accepted");
+            }
+            catch (TargetInvocationException error) when (error.InnerException is InvalidDataException) { }
+        }
         return Task.CompletedTask;
+    }
+
+    private static void VerifyVoiceWavFrames(Type service)
+    {
+        var root = Path.Combine(Path.GetTempPath(), "bilisub-wav-frames-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            // Header/frame-count fixture only, not a speech-generation test.
+            var path = Path.Combine(root, "pcm-with-junk.wav");
+            using (var stream = File.Create(path))
+            using (var writer = new BinaryWriter(stream, System.Text.Encoding.ASCII))
+            {
+                writer.Write("RIFF"u8.ToArray()); writer.Write(56u); writer.Write("WAVE"u8.ToArray());
+                writer.Write("fmt "u8.ToArray()); writer.Write(16u);
+                writer.Write((ushort)1); writer.Write((ushort)1); writer.Write(22050u); writer.Write(44100u);
+                writer.Write((ushort)2); writer.Write((ushort)16);
+                writer.Write("JUNK"u8.ToArray()); writer.Write(4u); writer.Write(0u);
+                writer.Write("data"u8.ToArray()); writer.Write(8u);
+                writer.Write((short)1); writer.Write((short)-1); writer.Write((short)2); writer.Write((short)-2);
+            }
+            var read = service.GetMethod("ReadClipFrames", BindingFlags.Static | BindingFlags.NonPublic)!;
+            Equal(4L, read.Invoke(null, [path, 22050]));
+            using (var truncated = new FileStream(path, FileMode.Open, FileAccess.Write)) truncated.SetLength(62);
+            try
+            {
+                read.Invoke(null, [path, 22050]);
+                throw new InvalidOperationException("Truncated PCM clip was accepted");
+            }
+            catch (TargetInvocationException error) when (error.InnerException is InvalidDataException) { }
+        }
+        finally { Directory.Delete(root, recursive: true); }
     }
 
     private static async Task VerifyEditorProjectAsync()
@@ -104,7 +153,7 @@ internal static class EditorLicensedVoiceProfileContract
             await File.WriteAllBytesAsync(voicePath, Enumerable.Repeat((byte)1, 128).ToArray());
             var ttsManifest = Path.Combine(root, "tts-result.json");
             var installer = typeof(VideoEditorService).Assembly.GetType("BiliSubStudio.Core.Editor.LocalTtsInstaller")!;
-            var revision = installer.GetField("VoiceRevision", BindingFlags.Static | BindingFlags.NonPublic)!.GetRawConstantValue()!.ToString();
+            var revision = installer.GetField("VoiceRevision", BindingFlags.Static | BindingFlags.NonPublic)!.GetRawConstantValue()!.ToString()!;
             await File.WriteAllTextAsync(ttsManifest, System.Text.Json.JsonSerializer.Serialize(new
             {
                 schema = 2, voice_revision = revision,
@@ -147,6 +196,19 @@ internal static class EditorLicensedVoiceProfileContract
             Equal("complete", reopened.Tts!.Status);
             Equal("nghi-tts", reopened.Tts.Engine);
             Equal("female", reopened.VoiceOverrides![subtitle.Cues[0].Id]);
+
+            var oldManifest = Path.Combine(root, "old-duration-result.json");
+            await File.WriteAllTextAsync(oldManifest, System.Text.Json.JsonSerializer.Serialize(new
+            {
+                schema = 2, voice_revision = revision[..revision.LastIndexOf(':')] + ":whole-cue-v2",
+                master = new { path = voicePath, sha256 = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(await File.ReadAllBytesAsync(voicePath))) },
+            }));
+            var oldSha = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(await File.ReadAllBytesAsync(oldManifest)));
+            await store.SaveAsync(reopened with { Tts = validTts with { ManifestPath = oldManifest, ManifestSha256 = oldSha } }, CancellationToken.None);
+            var staleTiming = await store.LoadOrCreateAsync(video, 1920, 1080, 120, CancellationToken.None);
+            True(staleTiming.Tts is null, "old tail-clipping timing revision was accepted");
+            True(staleTiming.Speech is not null && File.Exists(voicePath) && File.Exists(oldManifest),
+                "timing-policy migration removed source timing or old recoverable files");
 
             // A project created by the retired beta.36 voice path must keep all upstream work
             // but discard only the stale voice track so it cannot play after upgrading to VAIS.

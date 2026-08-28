@@ -15,7 +15,8 @@ ENGINE = "nghi-tts"
 ENGINE_VERSION = "nghi-tts-1.0.0"
 MODEL_SHA256 = "2140977786d76d834736c059dacfa553d4931dac2b2c7aaaea438bb2aa9da697"
 CONFIG_SHA256 = "971f57f8d504223fee5b40d664f503cf769baf7db21f7d2ae0554a75d07de2f8"
-VOICE_REVISION = MODEL_SHA256 + ":" + CONFIG_SHA256 + ":whole-cue-v2"
+TIMING_ALGORITHM = "whole-cue-whisper-fit-v3"
+VOICE_REVISION = MODEL_SHA256 + ":" + CONFIG_SHA256 + ":" + TIMING_ALGORITHM
 VOICE_NAME = "ngoc_huyen"
 SAMPLE_RATE = 22050
 PACKAGES = {"piper-tts": "1.7.0", "onnxruntime": "1.22.1", "vietnormalizer": "0.2.3", "numpy": "2.5.2"}
@@ -63,20 +64,44 @@ def read_wav(path: Path):
 
 
 def cache_identity(cue: dict, text: str, worker_sha: str) -> str:
-    value = [VOICE_REVISION, PACKAGES, worker_sha, cue["id"], cue["cue_start"], cue["cue_end"], text]
+    value = [VOICE_REVISION, PACKAGES, worker_sha, cue["id"], cue["cue_start"], cue["cue_end"],
+             cue["voice_start"], cue["voice_end"], cue["timing_source"], text]
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
 
 
-def load_clip(path: Path, key: str):
+def cue_window(cue: dict):
+    start = round(cue["voice_start"] * SAMPLE_RATE)
+    frames = round(cue["voice_end"] * SAMPLE_RATE) - start
+    if start < 0 or frames <= 0:
+        raise ValueError("Source speech window has no PCM samples")
+    return start, frames
+
+
+def needs_tempo_review(raw_duration, target_frames, timing_source):
+    target = target_frames / SAMPLE_RATE
+    if timing_source == "sample" and raw_duration <= target:
+        return False
+    return not 0.8 <= raw_duration / target <= 1.25
+
+
+def load_clip(path: Path, key: str, cue: dict):
     try:
         record = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
         if record["key"] != key or record["sha256"] != sha256(path):
             return None
         samples = read_wav(path)
         duration = len(samples) / SAMPLE_RATE
+        _, target_frames = cue_window(cue)
         if not math.isfinite(record["raw_duration"]) or record["raw_duration"] <= 0:
             return None
-        if abs(record["fitted_duration"] - duration) > 1 / SAMPLE_RATE or record["status"] not in ("fit", "review"):
+        natural_sample = cue["timing_source"] == "sample" and record["raw_duration"] <= target_frames / SAMPLE_RATE
+        if (record["frames"] != len(samples) or record["target_frames"] != target_frames
+                or record["timing_source"] != cue["timing_source"] or len(samples) > target_frames
+                or (not natural_sample and len(samples) != target_frames)
+                or (natural_sample and abs(record["raw_duration"] - duration) > 1 / SAMPLE_RATE)
+                or not math.isfinite(record["fitted_duration"]) or abs(record["fitted_duration"] - duration) > 1e-9
+                or not math.isfinite(record["tempo"]) or record["tempo"] <= 0
+                or record["status"] != ("review" if needs_tempo_review(record["raw_duration"], target_frames, cue["timing_source"]) else "fit")):
             return None
         return record
     except (OSError, ValueError, KeyError, TypeError, wave.Error):
@@ -95,29 +120,91 @@ def synthesize_cue(voice, text: str, temporary: Path) -> None:
             output.writeframes(chunk.audio_int16_bytes)
 
 
-def fit_cue(ffmpeg: Path, raw_path: Path, target: float, run_root: Path, key: str):
-    raw = len(read_wav(raw_path)) / SAMPLE_RATE
-    final_path = raw_path
-    ratio = raw / target
-    # No resynthesis and no extreme tempo forcing. Out-of-window speech remains review.
-    if 0.92 <= ratio <= 1.08 and abs(ratio - 1) > 0.005:
-        final_path = run_root / (key + "-fit.wav")
+def tempo_filter(ratio: float) -> str:
+    if not math.isfinite(ratio) or ratio <= 0:
+        raise ValueError("Invalid whole-cue tempo ratio")
+    factors = []
+    # Keep each atempo stage in [0.5, 2]. FFmpeg documents sample skipping
+    # above 2 for a single stage; never implement fitting with atrim/-t.
+    while ratio < 0.5 or ratio > 2:
+        factor = 0.5 if ratio < 0.5 else 2.0
+        factors.append(factor)
+        ratio /= factor
+        if len(factors) > 16:
+            raise ValueError("Speech window requires an unsupported tempo ratio; check the cue timing/text")
+    factors.append(ratio)
+    return ",".join(f"atempo={factor:.12g}" for factor in factors)
+
+
+def pad_exact_clip(source_path: Path, output_path: Path, target_frames: int):
+    # Only add a tiny, already-measured filter-rounding remainder. Never discard
+    # any output sample, not even at the end of an overlong spoken sentence.
+    with wave.open(str(source_path), "rb") as source:
+        frames = source.getnframes()
+        data = source.readframes(frames)
+        if frames > target_frames or len(data) != frames * 2:
+            raise ValueError("Refusing to truncate an overlong or incomplete voice clip")
+        with wave.open(str(output_path), "wb") as output:
+            output.setparams(source.getparams())
+            output.writeframes(data)
+            output.writeframes(b"\0\0" * (target_frames - frames))
+
+
+def fit_cue(ffmpeg: Path, raw_path: Path, target_frames: int, run_root: Path, key: str, timing_source: str):
+    if target_frames <= 0:
+        raise ValueError("Source speech duration must contain at least one sample")
+    raw_frames = len(read_wav(raw_path))
+    raw = raw_frames / SAMPLE_RATE
+
+    def record(frames, tempo):
+        return {"raw_duration": raw, "fitted_duration": frames / SAMPLE_RATE,
+                "frames": frames, "target_frames": target_frames, "timing_source": timing_source, "tempo": tempo,
+                "status": "review" if needs_tempo_review(raw, target_frames, timing_source) else "fit"}
+
+    # The text-only sample has no source speech to imitate. Preserve its natural
+    # duration when it already fits, rather than stretching it to ten seconds.
+    if raw_frames == target_frames or (timing_source == "sample" and raw_frames < target_frames):
+        return raw_path, record(raw_frames, 1.0)
+
+    padding_budget = max(1, min(round(.01 * SAMPLE_RATE), target_frames // 200))
+    aim_frames = max(1, target_frames - padding_budget // 2)
+    tempo = raw_frames / aim_frames
+    too_slow, too_fast = None, None
+    candidate = run_root / (key + "-tempo.wav")
+    final_path = run_root / (key + "-fit.wav")
+    for _ in range(10):
+        # Each correction starts from the original full utterance. Do not
+        # resynthesize or repeatedly stretch an already processed waveform.
         result = subprocess.run(
             [str(ffmpeg), "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-             "-i", str(raw_path), "-af", f"atempo={ratio:.9f}", "-ac", "1",
-             "-ar", str(SAMPLE_RATE), "-c:a", "pcm_s16le", str(final_path)],
+             "-i", str(raw_path), "-af", tempo_filter(tempo), "-ac", "1",
+             "-ar", str(SAMPLE_RATE), "-c:a", "pcm_s16le", str(candidate)],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
             text=True, encoding="utf-8", errors="replace", check=False)
         if result.returncode:
             raise RuntimeError("FFmpeg timing fit failed: " + result.stderr[-2000:])
-    final = len(read_wav(final_path)) / SAMPLE_RATE
-    status = "fit" if abs(final - target) <= max(0.07, target * 0.04) else "review"
-    return final_path, raw, final, status
+        frames = len(read_wav(candidate))
+        if 0 <= target_frames - frames <= padding_budget:
+            pad_exact_clip(candidate, final_path, target_frames)
+            if len(read_wav(final_path)) != target_frames:
+                raise RuntimeError("Voice duration did not match the source sample count")
+            return final_path, record(target_frames, tempo)
+        if frames > target_frames:
+            too_slow = tempo
+        else:
+            too_fast = tempo
+        corrected = tempo * frames / aim_frames
+        if too_slow is not None and too_fast is not None:
+            low, high = sorted((too_slow, too_fast))
+            if not low < corrected < high:
+                corrected = math.sqrt(low * high)
+        tempo = corrected
+    raise RuntimeError("Cannot fit the whole utterance to the source duration without cutting; no master was accepted")
 
 
 def validate_manifest(manifest: dict, voice: str) -> list[dict]:
     if (manifest.get("schema"), manifest.get("engine_version"), manifest.get("voice"), manifest.get("timing_algorithm")) != (
-            2, ENGINE_VERSION, voice, "whole-cue-v2"):
+            2, ENGINE_VERSION, voice, TIMING_ALGORITHM):
         raise ValueError("TTS manifest identity mismatch")
     duration = manifest.get("duration")
     if not isinstance(duration, (int, float)) or not math.isfinite(duration) or duration <= 0:
@@ -130,6 +217,13 @@ def validate_manifest(manifest: dict, voice: str) -> list[dict]:
         start, end = cue["cue_start"], cue["cue_end"]
         if not math.isfinite(start) or not math.isfinite(end) or not 0 <= start < end <= duration:
             raise ValueError("TTS cue time is outside source duration")
+        voice_start, voice_end = cue["voice_start"], cue["voice_end"]
+        if (not math.isfinite(voice_start) or not math.isfinite(voice_end)
+                or not start <= voice_start < voice_end <= end or cue["timing_source"] not in ("whisper", "sample")):
+            raise ValueError("Missing or invalid source speech window")
+        if cue["timing_source"] == "sample" and (len(cues) != 1 or cue["id"] != "voice-demo-cue"):
+            raise ValueError("Natural sample mode is not valid for project subtitles")
+        cue_window(cue)
         if not isinstance(cue["id"], str) or not cue["id"] or cue["id"] in ids:
             raise ValueError("TTS cue IDs must be unique")
         ids.add(cue["id"])
@@ -143,6 +237,9 @@ def build_master(ffmpeg: Path, clips: list[dict], duration: float, run_root: Pat
     total_samples = math.ceil(duration * SAMPLE_RATE)
     block_size = 30 * SAMPLE_RATE
     pending = sorted(clips, key=lambda clip: clip["start"])
+    if any(clip["end_sample"] - clip["start_sample"] != clip["frames"]
+           or not 0 <= clip["start_sample"] < clip["end_sample"] <= total_samples for clip in pending):
+        raise ValueError("Master must include every fitted PCM sample within the source timeline")
     active = []
     cursor = 0
     temporary = run_root / "voice-master.flac"
@@ -231,31 +328,35 @@ def main() -> int:
         text = normalizer.normalize(cue["text"]).strip()
         if not text:
             raise ValueError("Vietnamese normalization returned empty text")
-        target = cue["cue_end"] - cue["cue_start"]
+        start_sample, target_frames = cue_window(cue)
         key = cache_identity(cue, text, worker_sha)
         cached_path = clip_root / (key + ".wav")
-        record = load_clip(cached_path, key)
+        record = load_clip(cached_path, key, cue)
         cache_hit = record is not None
         if record is None:
             temporary = run_root / (key + ".wav")
             synthesize_cue(voice, text, temporary)
-            final_path, raw, final, status = fit_cue(Path(options.ffmpeg), temporary, target, run_root, key)
-            record = {"key": key, "raw_duration": raw, "fitted_duration": final,
-                      "status": status, "sha256": sha256(final_path)}
+            try:
+                final_path, record = fit_cue(Path(options.ffmpeg), temporary, target_frames, run_root, key, cue["timing_source"])
+            except (ValueError, RuntimeError) as error:
+                raise RuntimeError(f"Cue {index + 1} ({cue['id']}): {error}") from error
+            record.update({"key": key, "sha256": sha256(final_path)})
             final_path.replace(cached_path)
             atomic_json(cached_path.with_suffix(".json"), record)
-        start_sample = round(cue["cue_start"] * SAMPLE_RATE)
-        # Keep every spoken sample in the cache. A cue overflow is explicitly review;
-        # the master respects SRT boundaries so overflow cannot bleed into the next cue.
-        end_sample = min(round(cue["cue_end"] * SAMPLE_RATE),
-                         start_sample + round(record["fitted_duration"] * SAMPLE_RATE))
-        clips.append({"path": cached_path, "start": cue["cue_start"],
+        # The clip already has the required length. Place ALL its samples;
+        # never hide a timing failure by truncating the clip at the SRT boundary.
+        end_sample = start_sample + record["frames"]
+        if end_sample > start_sample + target_frames:
+            raise ValueError("Fitted voice exceeds the source speech window")
+        clips.append({"path": cached_path, "start": cue["voice_start"], "frames": record["frames"],
                       "start_sample": start_sample, "end_sample": end_sample})
         results.append({"id": cue["id"], "voice": VOICE_NAME, "voice_review": record["status"] != "fit",
                         "raw_duration": record["raw_duration"], "fitted_duration": record["fitted_duration"],
                         "status": record["status"], "cache_hit": cache_hit,
                         "clip_path": str(cached_path), "clip_sha256": record["sha256"],
-                        "clipped": record["fitted_duration"] > target + 1 / SAMPLE_RATE})
+                        "clipped": False, "timing_source": cue["timing_source"], "target_frames": target_frames,
+                        "frames": record["frames"], "clip_start_sample": start_sample, "clip_end_sample": end_sample,
+                        "tempo": record["tempo"]})
         emit({"event": "cue", "index": index + 1, "total": len(cues), "id": cue["id"],
               "status": record["status"], "cache_hit": cache_hit, "synthesis_calls": 0 if cache_hit else 1})
     build_master(Path(options.ffmpeg), clips, manifest["duration"], run_root, master_path)

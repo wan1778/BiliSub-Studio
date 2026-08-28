@@ -3,6 +3,11 @@
 Baseline: main, 6b976bf4ef20bbf9f3c17ed0a867adb414029648 (clean at task start).
 Scope: Voice/TTS, extended by the user to remove in-app Editor translation and accept Vietnamese SRT directly. No release, version bump, PR, merge, or push.
 
+Duration-policy update: see [VOICE_SOURCE_DURATION.md](VOICE_SOURCE_DURATION.md).
+The source now fits whole cues to Whisper envelopes without tail clipping. This
+update has NOT RUN build/runtime/listening tests; historical checks below do not
+validate the new duration policy.
+
 ## Reviewed artifacts
 
 The [NGHI repository](https://github.com/nghimestudio/nghitts/tree/46d160da32041f7e176607203b958069265df7da)
@@ -33,10 +38,11 @@ The text-only sample uses the same service and worker without fake source files
 or fabricated Whisper timing. Full-project Whisper provenance is still checked,
 but its word/pause data does not split synthesis.
 
-Natural duration is measured. FFmpeg atempo is bounded to 0.92–1.08 with no second
-TTS pass. fit/review reflects measured duration, including cache hits. Full audio
-is preserved in the cue cache; master playback is bounded by each SRT cue and
-overlong cues are explicitly flagged for review. No SRT timecode is rewritten.
+Natural duration is measured. The current timing policy fits the complete voice
+to the mapped Whisper window using chained atempo and exact frame-count checks,
+without a second TTS pass or master tail cutoff. Strong tempo changes are marked
+for listening review. No SRT timecode is rewritten. The former ±8% fit limit and
+overflow cutoff are historical behavior, superseded by VOICE_SOURCE_DURATION.md.
 
 Cache keys include model/config, worker, package and algorithm identities, cue ID,
 time interval, and normalized text. Cached WAV hashes and decoded format are
@@ -78,7 +84,8 @@ Four spoken test texts:
 3. Đạo hữu hãy bình tĩnh, chúng ta vẫn còn cơ hội trở về nhà.
 4. Cảm ơn bạn đã lắng nghe. Chúc bạn một ngày thật bình an.
 
-Automated real integration checks: completed successfully on Windows after fixing
+Historical checks for the original duration policy (not the current update):
+automated real integration completed successfully on Windows after fixing
 the demonstrated FFmpeg file-handle cleanup race. Core contracts: 75/75, including direct Vietnamese import, readiness and edit/reopen.
 Signal integrity and successful decoding do not establish intelligible speech.
 

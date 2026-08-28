@@ -32,6 +32,7 @@ internal static class EditorNghiTtsRuntimeContract
         var type = service.GetType();
         var generate = type.GetMethod("GenerateCuesAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
         var cueType = type.GetNestedType("TtsCueManifest", BindingFlags.NonPublic)!;
+        var buildCue = type.GetMethod("BuildWholeCue", BindingFlags.Static | BindingFlags.NonPublic)!;
         var projectId = "runtime-" + Guid.NewGuid().ToString("N");
         var cacheRoot = Path.Combine(paths.Cache, "Editor", "TTS", projectId);
         var report = new List<string>();
@@ -42,21 +43,37 @@ internal static class EditorNghiTtsRuntimeContract
             Console.WriteLine("CHECK OK: " + message);
         }
 
+        // This harness now needs four real speech segments. Never label the old
+        // arbitrary ten-second test windows as measured Whisper provenance.
+        var media = await app.Media.ProbeAsync(video, CancellationToken.None);
+        var asrId = app.StartEditorAsr(new EditorAsrRequest(projectId, video, media.Duration));
+        while (!app.Jobs.GetSnapshot(asrId).Done) await Task.Delay(100);
+        if (app.Jobs.GetSnapshot(asrId).Result is not EditorAsrResult asr)
+            throw new InvalidOperationException("Real Whisper analysis failed: " + app.Jobs.GetSnapshot(asrId).Error);
+        var analysis = await EditorSpeechAnalysisDocument.LoadVerifiedAsync(asr.AnalysisPath, asr.AnalysisSha256, CancellationToken.None);
+        var sourceCues = analysis.Segments.Where(segment => segment.Words.Count > 0).Take(Sentences.Length)
+            .Select((segment, index) => new EditorSubtitleCue($"real-cue-{index + 1}", (index + 1).ToString(),
+                $"{TimeSpan.FromSeconds(segment.Start):hh\\:mm\\:ss\\,fff} --> {TimeSpan.FromSeconds(segment.End):hh\\:mm\\:ss\\,fff}",
+                segment.Start, segment.End, segment.Text, Sentences[index])).ToArray();
+        Check(sourceCues.Length == Sentences.Length, "four real source-speech windows available for duration matching");
+        var timings = EditorSpeechAnalysisDocument.MapToCues(analysis, sourceCues).ToDictionary(timing => timing.CueId);
+
         Array Cues(bool changed = false)
         {
             var array = Array.CreateInstance(cueType, Sentences.Length);
             for (var index = 0; index < Sentences.Length; index++)
-                array.SetValue(Activator.CreateInstance(cueType,
-                    $"real-cue-{index + 1}", index * 10d + .25, index * 10d + 9.75, "ngoc_huyen",
-                    Sentences[index] + (changed ? " Đây là lượt kiểm tra hủy." : "")), index);
+            {
+                var cue = sourceCues[index] with { VietnameseText = Sentences[index] + (changed ? " Đây là lượt kiểm tra hủy." : "") };
+                array.SetValue(buildCue.Invoke(null, [cue, "ngoc_huyen", timings[cue.Id]]), index);
+            }
             return array;
         }
 
-        async Task<EditorTtsResult?> Run(Array cues, double duration = 40, double? cancelAt = null)
+        async Task<EditorTtsResult?> Run(Array cues, double? duration = null, double? cancelAt = null)
         {
             var job = app.Jobs.Create("editor-tts", cleanupAwareCancel: true);
             var task = (Task<EditorTtsResult>)generate.Invoke(service,
-                [job, projectId, duration, "ngoc_huyen", cues, new Dictionary<string, EditorCueSpeechTiming>()])!;
+                [job, projectId, duration ?? media.Duration, "ngoc_huyen", cues, timings])!;
             var deadline = DateTime.UtcNow + TimeSpan.FromMinutes(15);
             var cancelled = false;
             var lastMessage = "";
@@ -120,6 +137,8 @@ internal static class EditorNghiTtsRuntimeContract
             for (var index = 0; index < cues.Length; index++)
             {
                 var clip = cues[index].GetProperty("clip_path").GetString()!;
+                Check(cues[index].GetProperty("frames").GetInt64() == cues[index].GetProperty("target_frames").GetInt64()
+                    && !cues[index].GetProperty("clipped").GetBoolean(), "complete voice clip matches real source duration without tail clipping");
                 File.Copy(clip, Path.Combine(paths.Root, $"sentence-{index + 1}.wav"), overwrite: true);
             }
         }
@@ -149,7 +168,7 @@ internal static class EditorNghiTtsRuntimeContract
         var restarted = (await Run(Cues(changed: true)))!;
         Check(CacheHits(restarted) >= 1, "cancel/retry retains completed cue cache");
 
-        await Run(Cues(), duration: 7200, cancelAt: 91.01);
+        await Run(Cues(), duration: Math.Max(7200, media.Duration), cancelAt: 91.01);
         CleanRunDirectories();
         NoChildren();
         Check(Hash(first.VoiceTrack.Path) == firstHash, "master cancellation preserves previous complete track");
@@ -157,10 +176,9 @@ internal static class EditorNghiTtsRuntimeContract
         while (!app.Jobs.GetSnapshot(sampleId).Done) await Task.Delay(100);
         Check(app.Jobs.GetSnapshot(sampleId).Result is EditorTtsResult, "real sample API succeeds without video/SRT/fabricated timing");
 
-        var media = await app.Media.ProbeAsync(video, CancellationToken.None);
         var editor = new VideoEditorService(paths, app.Tools, app.Processes);
         var preview = await editor.CreatePreviewSegmentAsync(new VideoEditRequest(video, paths.DefaultDownloads,
-            "voice-preview.mp4", media.Width, media.Height, 40, [], Audio: new EditorAudioSettings("mute", 0),
+            "voice-preview.mp4", media.Width, media.Height, media.Duration, [], Audio: new EditorAudioSettings("mute", 0),
             VoiceTrack: first.VoiceTrack), 0, CancellationToken.None);
         File.Copy(preview.Path, Path.Combine(paths.Root, "voice-preview.mp4"), overwrite: true);
         var ffmpeg = await app.Tools.EnsureFfmpegAsync(CancellationToken.None);
@@ -171,7 +189,7 @@ internal static class EditorNghiTtsRuntimeContract
         var store = new EditorProjectStore(paths);
         var project = await store.LoadOrCreateAsync(video, media.Width, media.Height, media.Duration, CancellationToken.None);
         var subtitlePath = Path.Combine(paths.Root, "field.vi.srt");
-        await File.WriteAllTextAsync(subtitlePath, "1\n00:00:00,250 --> 00:00:09,750\n" + Sentences[0] + "\n");
+        await File.WriteAllTextAsync(subtitlePath, "1\n" + sourceCues[0].Timing + "\n" + Sentences[0] + "\n");
         var subtitle = await EditorSubtitleDocument.LoadAsync(subtitlePath, CancellationToken.None);
         project = project with
         {
