@@ -12,6 +12,9 @@ public sealed partial class EditorPage
     private double _imageStageProgressFloor;
     private double _imageStageDisplayProgress;
     private readonly SemaphoreSlim _editorTabLifecycleGate = new(1, 1);
+    private Button? _voiceSampleButton;
+    private TextBlock? _voiceRequirementsText;
+    private Windows.Media.Playback.MediaPlayer? _voiceSamplePlayer;
 
     private async void EditorPage_Loaded(object sender, RoutedEventArgs e)
     {
@@ -86,15 +89,16 @@ public sealed partial class EditorPage
 
     void BindStaticUiShell()
     {
-        // UI-02: every user-facing shell element already exists in EditorPage.xaml.
-        // CLEAN-08: _editorCoreInitialized is the only stored shell-initialization state.
-        // This method binds state/events only; it never reparents or inserts controls.
+        // UI-02: the stable shell remains XAML-owned. Voice sample controls are the
+        // one runtime addition because they exercise the exact production TTS path
+        // without adding another engine or duplicating the existing Generate button.
 
         _editorOutputPathText = EditorOutputPathText;
         _editorChooseOutputButton = EditorChooseOutputButton;
         _editorOpenOutputButton = EditorOpenOutputButton;
         _editorAutoCompositeToggle = EditorAutoCompositeToggle;
         EditorOutputPathText.Text = _application.Config.OutputDirectory;
+        EnsureVoiceSampleUi();
 
         // PLAYER-UI-02: polish the compact transport without changing playback ownership or handlers.
         PlayerControlBar.Height = 56;
@@ -194,6 +198,160 @@ public sealed partial class EditorPage
         SelectShellTool("Subtitle");
         RefreshImageControls();
         RefreshEditorParityControls();
+    }
+
+    void EnsureVoiceSampleUi()
+    {
+        if (_voiceSampleButton is not null) return;
+        _voiceSampleButton = new Button
+        {
+            Content = "▶ Nghe thử giọng",
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+        };
+        AutomationProperties.SetName(_voiceSampleButton, "Nghe thử giọng Ngọc Huyền local");
+        _voiceSampleButton.Click += VoiceSample_Click;
+
+        _voiceRequirementsText = new TextBlock
+        {
+            Text = "Nghe thử không cần video hay SRT. Để tạo voice toàn bộ: mở video + Vietsub đầy đủ; Whisper timing sẽ tự chạy nếu chưa có cache.",
+            TextWrapping = TextWrapping.Wrap,
+            FontSize = 11,
+            Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["SecondaryTextBrush"],
+        };
+        var generateIndex = VoiceInspectorPanel.Children.IndexOf(GenerateTtsButton);
+        if (generateIndex < 0) generateIndex = VoiceInspectorPanel.Children.Count;
+        VoiceInspectorPanel.Children.Insert(generateIndex, _voiceSampleButton);
+        VoiceInspectorPanel.Children.Insert(generateIndex + 1, _voiceRequirementsText);
+        Unloaded += (_, _) => CleanupVoiceSample();
+    }
+
+    async void VoiceSample_Click(object sender, RoutedEventArgs e)
+    {
+        if (_voiceSampleButton is null) return;
+        if (_ttsJobId is not null || _asrJobId is not null || _jobId is not null || _translationJobId is not null)
+        {
+            VoiceStatusText.Text = "Hãy hoàn tất hoặc hủy tác vụ đang chạy trước khi nghe thử giọng.";
+            return;
+        }
+        if (!string.Equals(SelectedVoiceModel(), "ngoc-huyen", StringComparison.Ordinal))
+        {
+            VoiceStatusText.Text = "Hãy chọn Ngọc Huyền · tiếng Việt local trước khi nghe thử.";
+            return;
+        }
+
+        try
+        {
+            _voiceSampleButton.IsEnabled = false;
+            VoiceProgress.Value = 0;
+            VoiceStatusText.Text = "Đang chuẩn bị mẫu giọng Ngọc Huyền local...";
+
+            const double duration = 4.2;
+            var root = Path.Combine(_application.Paths.Cache, "Editor", "TTS", "VoiceSample");
+            Directory.CreateDirectory(root);
+            var sourcePath = Path.Combine(root, "voice-sample-source.bin");
+            if (!File.Exists(sourcePath)) await File.WriteAllTextAsync(sourcePath, "BiliSub Studio voice sample\n");
+            var sourceInfo = new FileInfo(sourcePath);
+            sourceInfo.Refresh();
+            var modelRevision = _application.LocalAsrStatus.ModelRevision;
+            if (string.IsNullOrWhiteSpace(modelRevision) || modelRevision.Length != 40)
+                throw new InvalidDataException("Không xác định được revision Whisper để tạo timing mẫu an toàn.");
+
+            var sourceKey = BiliSubStudio.Core.Editor.EditorSpeechAnalysisDocument.SourceKey(
+                sourceInfo.FullName,
+                sourceInfo.Length,
+                sourceInfo.LastWriteTimeUtc.Ticks,
+                duration,
+                modelRevision);
+            var analysis = new BiliSubStudio.Core.Editor.EditorSpeechAnalysis(
+                BiliSubStudio.Core.Editor.EditorSpeechAnalysisDocument.CurrentSchema,
+                sourceKey,
+                "voice-sample-timing",
+                modelRevision,
+                "cpu",
+                "sample",
+                1,
+                [new BiliSubStudio.Core.Editor.EditorSpeechSegment(
+                    .05,
+                    4.05,
+                    "voice sample",
+                    0,
+                    0,
+                    [new BiliSubStudio.Core.Editor.EditorWordTiming("sample", .05, 4.05, 1)],
+                    "uncertain",
+                    0,
+                    0)]);
+            var analysisPath = Path.Combine(root, "voice-sample-analysis.json");
+            var analysisSha = await BiliSubStudio.Core.Editor.EditorSpeechAnalysisDocument.SaveAsync(
+                analysisPath, analysis, CancellationToken.None);
+            var cue = new BiliSubStudio.Core.Editor.EditorSubtitleCue(
+                "voice-demo-cue",
+                "1",
+                "00:00:00,050 --> 00:00:04,050",
+                .05,
+                4.05,
+                "Ngọc Huyền",
+                "Xin chào, tôi là Ngọc Huyền. Đây là giọng đọc mẫu của BiliSub Studio.");
+            var subtitle = new BiliSubStudio.Core.Editor.EditorSubtitleSource(
+                sourceInfo.FullName,
+                sourceInfo.Length,
+                sourceInfo.LastWriteTimeUtc.Ticks,
+                new string('0', 64),
+                [cue]);
+
+            _ttsJobId = _application.StartEditorTts(new BiliSubStudio.Core.Editor.EditorTtsRequest(
+                "voice-demo-ngoc-huyen",
+                sourceInfo.FullName,
+                duration,
+                subtitle,
+                analysisPath,
+                analysisSha));
+            RefreshEditorActions();
+            var sampleJob = _ttsJobId;
+            while (_ttsJobId == sampleJob && sampleJob is not null)
+            {
+                var snapshot = _application.Jobs.GetSnapshot(sampleJob);
+                VoiceProgress.Value = snapshot.Progress;
+                VoiceStatusText.Text = snapshot.Message;
+                if (snapshot.Done)
+                {
+                    if (snapshot.Result is BiliSubStudio.Core.Editor.EditorTtsResult result)
+                    {
+                        var file = await Windows.Storage.StorageFile.GetFileFromPathAsync(result.VoiceTrack.Path);
+                        _voiceSamplePlayer?.Pause();
+                        _voiceSamplePlayer?.Dispose();
+                        _voiceSamplePlayer = new Windows.Media.Playback.MediaPlayer
+                        {
+                            AutoPlay = false,
+                            Source = Windows.Media.Core.MediaSource.CreateFromStorageFile(file),
+                        };
+                        _voiceSamplePlayer.Play();
+                        VoiceProgress.Value = 100;
+                        VoiceStatusText.Text = "Đang phát mẫu Ngọc Huyền local. Đây là đúng engine/model dùng khi tạo voice toàn bộ.";
+                    }
+                    else if (!string.IsNullOrWhiteSpace(snapshot.Error)) VoiceStatusText.Text = snapshot.Error;
+                    _ttsJobId = null;
+                    break;
+                }
+                await Task.Delay(250);
+            }
+        }
+        catch (Exception error)
+        {
+            _ttsJobId = null;
+            VoiceStatusText.Text = "Không nghe thử được giọng: " + error.Message;
+        }
+        finally
+        {
+            _voiceSampleButton.IsEnabled = true;
+            RefreshEditorActions();
+        }
+    }
+
+    void CleanupVoiceSample()
+    {
+        _voiceSamplePlayer?.Pause();
+        _voiceSamplePlayer?.Dispose();
+        _voiceSamplePlayer = null;
     }
 
     private void EnsureEditorExportProgressTimer()
