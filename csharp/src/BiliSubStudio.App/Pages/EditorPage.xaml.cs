@@ -65,6 +65,10 @@ public sealed partial class EditorPage : Page
         _picker = picker;
         _playback = new EditorPlaybackController(this);
         InitializeComponent();
+        // Page-lifetime observation of our own control covers ASR, TTS, sample,
+        // resets and completion without adding another progress owner or timer.
+        VoiceProgress.RegisterPropertyChangedCallback(ProgressBar.ValueProperty, (_, _) => UpdateVoiceProgressPercent());
+        UpdateVoiceProgressPercent();
         Loaded += EditorPage_Loaded;
         Overlay.SizeChanged += Overlay_SizeChanged;
         Unloaded += EditorPage_Unloaded;
@@ -72,6 +76,13 @@ public sealed partial class EditorPage : Page
 
     public void ApplyConfiguration() =>
         AsrExecutionModeBox.SelectedIndex = _application.Config.AsrExecutionMode switch { "cpu" => 1, "hybrid" => 2, _ => 0 };
+
+    private void UpdateVoiceProgressPercent()
+    {
+        var value = double.IsFinite(VoiceProgress.Value) ? Math.Clamp(VoiceProgress.Value, 0, 100) : 0;
+        // Do not round 99.99 up to a misleading 100% before the job completes.
+        VoiceProgressPercent.Text = $"{Math.Floor(value * 10) / 10:0.#}%";
+    }
 
     private void SetInspectorMode(InspectorMode mode)
     {

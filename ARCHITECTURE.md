@@ -109,6 +109,8 @@ Voice/TTS uses the verified NGHI Ngọc Huyền ONNX/config pair through pinned 
 
 ## Jobs, shutdown and logs
 
+The Voice inspector shows a numeric percentage beside its shared ASR/TTS/sample progress bar. A page-owned value observer formats that same job-reported value, including reset/completion, without another timer or synthetic progress. Percentages describe the current job (ASR and TTS are separate stages), and may hold steady while a model loads or a chunk runs. Canceled/failed jobs keep their last reported progress instead of being shown as complete.
+
 `JobManager` / `AppJob` own cancellation/progress/result state. Application-wide logging is centralized and persisted under the app data/log location. Safe shutdown coordinates active jobs and OCR checkpoint state before process teardown.
 
 ## Installation and update

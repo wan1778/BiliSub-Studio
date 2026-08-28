@@ -421,9 +421,13 @@
                                             <Button x:Name="GenerateTtsButton" Click="GenerateTts_Click" Content="✦  Tạo voice và tự canh timecode" IsEnabled="False" HorizontalAlignment="Stretch" MinHeight="36" Height="36" CornerRadius="8" FontWeight="SemiBold" Background="{ThemeResource AccentPrimaryBrush}" Foreground="White" BorderThickness="0"/>
                                             <Button x:Name="CancelVoiceButton" Click="CancelVoice_Click" Content="Hủy tạo voice" HorizontalAlignment="Stretch" MinHeight="36" Height="36" CornerRadius="8" Visibility="Collapsed" Style="{StaticResource DangerButtonStyle}"/>
                                         </Grid>
-                                        <!-- progress/status only when running -->
+                                        <!-- The percentage mirrors the current ASR/TTS job's progress. -->
                                         <StackPanel x:Name="VoiceProgressContainer" Spacing="5" Visibility="Collapsed">
-                                            <ProgressBar x:Name="VoiceProgress" Minimum="0" Maximum="100" Height="3" CornerRadius="2" Foreground="{ThemeResource AccentPrimaryBrush}"/>
+                                            <Grid ColumnSpacing="8">
+                                                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                                <ProgressBar x:Name="VoiceProgress" Minimum="0" Maximum="100" Height="3" CornerRadius="2" VerticalAlignment="Center" Foreground="{ThemeResource AccentPrimaryBrush}"/>
+                                                <TextBlock x:Name="VoiceProgressPercent" Grid.Column="1" Text="0%" MinWidth="42" TextAlignment="Right" VerticalAlignment="Center" FontSize="11" FontWeight="SemiBold" Foreground="{ThemeResource AccentPrimaryBrush}" AutomationProperties.Name="Phần trăm tiến trình Voice/ASR"/>
+                                            </Grid>
                                             <TextBlock x:Name="VoiceStatusText" Style="{StaticResource MutedTextStyle}" Text="Chọn giọng rồi tạo voice." TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" FontSize="10" Foreground="{ThemeResource SecondaryTextBrush}"/>
                                         </StackPanel>
                                         <Rectangle Height="1" Fill="{ThemeResource BorderBrush}" Opacity="0.5"/>

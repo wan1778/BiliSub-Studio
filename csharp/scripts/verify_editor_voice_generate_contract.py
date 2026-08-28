@@ -68,4 +68,19 @@ for marker in ("SamePath(reportedResult, resultPath)", "SamePath(result.Master.P
     require(marker in service, "result validation missing " + marker)
 require("_voiceTrack = result.VoiceTrack;" in editor and "QueuePreviewRefresh();" in editor,
         "validated master must reach processed preview")
+progress_panel = xaml.split('x:Name="VoiceProgressContainer"', 1)[1].split("</StackPanel>", 1)[0]
+progress_row = re.search(r'<Grid ColumnSpacing="8">.*?</Grid>', progress_panel, re.S)
+require(progress_row is not None and 'x:Name="VoiceProgressPercent"' in progress_row.group()
+        and 'x:Name="VoiceProgress"' in progress_row.group() and 'Text="0%"' in progress_row.group()
+        and 'Grid.Column="1"' in progress_row.group(),
+        "Voice/ASR needs a visible percentage alongside the existing progress bar")
+require("VoiceProgress.RegisterPropertyChangedCallback(ProgressBar.ValueProperty, (_, _) => UpdateVoiceProgressPercent());" in editor,
+        "percentage must follow the shared bar for ASR/TTS/sample, including resets")
+progress_formatter = editor.split("private void UpdateVoiceProgressPercent()", 1)[1].split("private void SetInspectorMode", 1)[0]
+require("double.IsFinite(VoiceProgress.Value)" in progress_formatter
+        and "Math.Clamp(VoiceProgress.Value, 0, 100)" in progress_formatter
+        and 'VoiceProgressPercent.Text = $"{Math.Floor(value * 10) / 10:0.#}%";' in progress_formatter,
+        "percentage must be bounded and must not round incomplete progress up to 100%")
+require("VoiceProgress.Value = snapshot.Progress;" in editor and "VoiceProgress.Value = snapshot.Progress;" in sample,
+        "percent must remain based on actual job progress, not a synthetic timer")
 print("PASS: NGHI real-model whole-cue source contract (not a listening/quality result)")
