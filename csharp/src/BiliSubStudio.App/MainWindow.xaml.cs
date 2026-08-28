@@ -158,6 +158,7 @@ public sealed partial class MainWindow : Window
             await _application.InitializeAsync();
             ((VideoPage)_pages["video"]).ApplyConfiguration();
             ((OcrPage)_pages["ocr"]).ApplyConfiguration();
+            ((EditorPage)_pages["editor"]).ApplyConfiguration();
             var snapshot = await _settingsPage.InitializeAsync();
             ApplyTheme(snapshot.Config.Theme);
             FooterStatus.Text = _application.Sessions.LastLoadWarning

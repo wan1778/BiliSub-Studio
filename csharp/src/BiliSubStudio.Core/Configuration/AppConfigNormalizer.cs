@@ -37,6 +37,7 @@ public static class AppConfigNormalizer
             VideoContainer = videoContainer,
             VideoMode = videoMode,
             OcrDevice = ocrDevice,
+            AsrExecutionMode = config.AsrExecutionMode is "cpu" or "hybrid" ? config.AsrExecutionMode : "gpu",
             OcrTop = config.OcrTop <= 0 ? 65 : config.OcrTop,
             OcrBottom = config.OcrBottom <= 0 ? 94 : config.OcrBottom,
             OcrLeft = config.OcrLeft < 0 ? 5 : config.OcrLeft,

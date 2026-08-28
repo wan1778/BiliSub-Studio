@@ -10,7 +10,7 @@ using BiliSubStudio.Core.Tools;
 
 namespace BiliSubStudio.Core.Editor;
 
-public sealed record EditorAsrRequest(string ProjectId, string SourcePath, double Duration);
+public sealed record EditorAsrRequest(string ProjectId, string SourcePath, double Duration, string ExecutionMode = "gpu");
 public sealed record EditorAsrResult(
     EditorSubtitleSource Source,
     string AnalysisPath,
@@ -24,7 +24,7 @@ public sealed record EditorAsrResult(
     string ModelName,
     string ModelRevision);
 
-internal sealed class LocalAsrService : IDisposable
+internal sealed partial class LocalAsrService : IDisposable
 {
     private const int CheckpointSchema = 2;
     private const double ProbeSeconds = 20;
@@ -56,9 +56,6 @@ internal sealed class LocalAsrService : IDisposable
         ValidateRequest(request);
         var source = new FileInfo(Path.GetFullPath(request.SourcePath));
         var key = CheckpointKey(source, request.Duration);
-        var checkpointPath = Path.Combine(_paths.Data, "Projects", "ASR", request.ProjectId + ".json");
-        var checkpoint = await LoadCheckpointAsync(checkpointPath, key, job.CancellationToken);
-        var restored = checkpoint.Cues.Count;
         var runtime = await _installer.PrepareAsync(job, 18);
         var ffmpeg = await _tools.EnsureFfmpegAsync(job.CancellationToken);
         var operationRoot = Path.Combine(_paths.Temp, "Editor", "ASR", request.ProjectId, Guid.NewGuid().ToString("N"));
@@ -71,67 +68,79 @@ internal sealed class LocalAsrService : IDisposable
             var probeStart = Math.Max(0, Math.Min(Math.Max(0, request.Duration - probeDuration), request.Duration * .35));
             job.Set("asr-probe-audio", 19, "Đang lấy mẫu audio thật để benchmark Whisper timing...");
             await ExtractAudioAsync(ffmpeg, source.FullName, probeAudio, probeStart, probeDuration, processes, job.CancellationToken);
-            var selection = await SelectRuntimeAsync(runtime, probeAudio, probeDuration, processes, job);
+            var selection = await SelectRuntimeAsync(runtime, probeAudio, probeDuration, processes, job, request.ExecutionMode);
             job.Log($"Whisper timing benchmark khóa {selection.Device.ToUpperInvariant()}/{selection.ComputeType} · {selection.RealtimeFactor:0.00}× thời gian thực.");
 
-            var resumeStart = checkpoint.Cues.Count == 0 ? 0 : Math.Max(0, checkpoint.Cues[^1].End - 1.5);
-            var retained = checkpoint.Cues.Where(x => x.End <= resumeStart + .05).ToList();
-            checkpoint = checkpoint with
+            var hybrid = selection.Device == "hybrid";
+            var checkpointPath = Path.Combine(_paths.Data, "Projects", "ASR", request.ProjectId + (hybrid ? ".hybrid-v1.json" : ".json"));
+            var checkpoint = await LoadCheckpointAsync(checkpointPath, hybrid ? key + ":hybrid-word-seam-v1" : key, job.CancellationToken);
+            var restoredRetained = 0;
+            if (hybrid)
             {
-                Device = selection.Device,
-                ComputeType = selection.ComputeType,
-                Cues = retained,
-                Complete = false,
-            };
-            await SaveCheckpointAsync(checkpointPath, checkpoint, job.CancellationToken);
-            var restoredRetained = retained.Count;
-            var audio = Path.Combine(operationRoot, "source.wav");
-            job.Set("asr-extract", 27, resumeStart > 0
-                ? $"Đang trích audio từ checkpoint {Time(resumeStart)} để tiếp tục timing..."
-                : "Đang trích audio mono 16 kHz để lấy word timing, khoảng lặng và chất giọng...");
-            await ExtractAudioAsync(ffmpeg, source.FullName, audio, resumeStart, null, processes, job.CancellationToken);
-
-            var sync = new SemaphoreSlim(1, 1);
-            try
-            {
-                var completed = false;
-                var ready = false;
-                var arguments = WorkerArguments(runtime, audio, selection, resumeStart, probe: false);
-                var result = await _processes.RunStreamingAsync(runtime.Python, arguments, job.CancellationToken,
-                    async (line, _) =>
-                    {
-                        if (!TryParseEvent(line, out var parsed)) return;
-                        using (parsed)
-                        {
-                            var root = parsed.RootElement;
-                            var kind = GetString(root, "event");
-                            if (kind == "ready") { ready = true; return; }
-                            if (kind == "complete") { completed = true; return; }
-                            if (kind != "segment") return;
-                            var cue = ParseCue(root);
-                            await sync.WaitAsync(CancellationToken.None);
-                            try
-                            {
-                                cue = NormalizeCue(cue, checkpoint.Cues);
-                                if (cue is null) return;
-                                checkpoint.Cues.Add(cue);
-                                checkpoint = checkpoint with { Frontier = cue.End };
-                                await SaveCheckpointAsync(checkpointPath, checkpoint, CancellationToken.None);
-                                var percent = 34 + Math.Clamp(cue.End / Math.Max(.1, request.Duration), 0, 1) * 62;
-                                var words = checkpoint.Cues.Sum(x => x.Words.Count);
-                                job.Set("asr-transcribe", percent,
-                                    $"Đang phân tích nhịp thoại · {checkpoint.Cues.Count} đoạn / {words} từ · {Time(cue.End)}/{Time(request.Duration)} · checkpoint đã lưu.");
-                            }
-                            finally { sync.Release(); }
-                        }
-                    }, runtime.Environment, processes);
-                if (result.ExitCode != 0 || !ready || !completed)
-                {
-                    var detail = string.IsNullOrWhiteSpace(result.StandardError) ? "worker không trả trạng thái hoàn tất" : LastLine(result.StandardError);
-                    throw new InvalidOperationException("Whisper local dừng bất thường: " + detail);
-                }
+                (checkpoint, restoredRetained) = await TranscribeHybridAsync(job, request, runtime, selection,
+                    ffmpeg, operationRoot, checkpointPath, checkpoint, processes);
             }
-            finally { sync.Dispose(); }
+            else
+            {
+                var resumeStart = checkpoint.Cues.Count == 0 ? 0 : Math.Max(0, checkpoint.Cues[^1].End - 1.5);
+                var retained = checkpoint.Cues.Where(x => x.End <= resumeStart + .05).ToList();
+                checkpoint = checkpoint with
+                {
+                    Device = selection.Device,
+                    ComputeType = selection.ComputeType,
+                    Cues = retained,
+                    Complete = false,
+                };
+                await SaveCheckpointAsync(checkpointPath, checkpoint, job.CancellationToken);
+                restoredRetained = retained.Count;
+                var audio = Path.Combine(operationRoot, "source.wav");
+                job.Set("asr-extract", 27, resumeStart > 0
+                    ? $"Đang trích audio từ checkpoint {Time(resumeStart)} để tiếp tục timing..."
+                    : "Đang trích audio mono 16 kHz để lấy word timing, khoảng lặng và chất giọng...");
+                await ExtractAudioAsync(ffmpeg, source.FullName, audio, resumeStart, null, processes, job.CancellationToken);
+
+                var sync = new SemaphoreSlim(1, 1);
+                try
+                {
+                    var completed = false;
+                    var ready = false;
+                    var arguments = WorkerArguments(runtime, audio, selection, resumeStart, probe: false);
+                    var result = await _processes.RunStreamingAsync(runtime.Python, arguments, job.CancellationToken,
+                        async (line, _) =>
+                        {
+                            if (!TryParseEvent(line, out var parsed)) return;
+                            using (parsed)
+                            {
+                                var root = parsed.RootElement;
+                                var kind = GetString(root, "event");
+                                if (kind == "ready") { ready = true; return; }
+                                if (kind == "complete") { completed = true; return; }
+                                if (kind != "segment") return;
+                                var cue = ParseCue(root);
+                                await sync.WaitAsync(CancellationToken.None);
+                                try
+                                {
+                                    cue = NormalizeCue(cue, checkpoint.Cues);
+                                    if (cue is null) return;
+                                    checkpoint.Cues.Add(cue);
+                                    checkpoint = checkpoint with { Frontier = cue.End };
+                                    await SaveCheckpointAsync(checkpointPath, checkpoint, CancellationToken.None);
+                                    var percent = 34 + Math.Clamp(cue.End / Math.Max(.1, request.Duration), 0, 1) * 62;
+                                    var words = checkpoint.Cues.Sum(x => x.Words.Count);
+                                    job.Set("asr-transcribe", percent,
+                                        $"Đang phân tích nhịp thoại · {checkpoint.Cues.Count} đoạn / {words} từ · {Time(cue.End)}/{Time(request.Duration)} · checkpoint đã lưu.");
+                                }
+                                finally { sync.Release(); }
+                            }
+                        }, runtime.Environment, processes);
+                    if (result.ExitCode != 0 || !ready || !completed)
+                    {
+                        var detail = string.IsNullOrWhiteSpace(result.StandardError) ? "worker không trả trạng thái hoàn tất" : LastLine(result.StandardError);
+                        throw new InvalidOperationException("Whisper local dừng bất thường: " + detail);
+                    }
+                }
+                finally { sync.Dispose(); }
+            }
 
             if (checkpoint.Cues.Count == 0) throw new InvalidDataException("Không tìm thấy đoạn thoại tiếng Trung nào để phân tích timing.");
             checkpoint = checkpoint with { Complete = true, Frontier = request.Duration };
@@ -147,7 +156,9 @@ internal sealed class LocalAsrService : IDisposable
 
             var analysisDirectory = Path.Combine(_paths.Data, "Projects", "Speech");
             Directory.CreateDirectory(analysisDirectory);
-            var analysisPath = Path.Combine(analysisDirectory, request.ProjectId + ".speech.json");
+            // Reanalysis must not replace the verified file still referenced by
+            // the saved project if cancellation/failure interrupts the handoff.
+            var analysisPath = Path.Combine(analysisDirectory, request.ProjectId + "." + Guid.NewGuid().ToString("N") + ".speech.json");
             var analysis = new EditorSpeechAnalysis(
                 EditorSpeechAnalysisDocument.CurrentSchema,
                 key,
@@ -171,13 +182,14 @@ internal sealed class LocalAsrService : IDisposable
         }
     }
 
-    private async Task<AsrSelection> SelectRuntimeAsync(LocalAsrRuntime runtime, string audio, double probeSeconds, OwnedProcessGroup processes, AppJob job)
+    private async Task<AsrSelection> SelectRuntimeAsync(LocalAsrRuntime runtime, string audio, double probeSeconds, OwnedProcessGroup processes, AppJob job, string executionMode)
     {
         var hardware = _hardware.ResourceSnapshot();
         var snapshot = _hardware.Snapshot();
         var threads = Math.Clamp(snapshot.LogicalProcessors - 2, 1, 12);
         var gpuUnavailable = LocalAsrInstaller.GpuUnavailableReason(snapshot);
-        if (gpuUnavailable is not null) job.Warn(gpuUnavailable);
+        if (executionMode == "cpu") job.Log("Đã chọn ASR CPU; không tải hay khởi động GPU.");
+        else if (gpuUnavailable is not null) job.Warn(gpuUnavailable);
         else if (hardware.VramTelemetryAvailable && hardware.AvailableVramBytes < 1_500L * 1024 * 1024)
             job.Warn("VRAM trống dưới 1.500 MB; không tải/khởi động GPU Whisper, chuyển CPU/int8.");
         else
@@ -186,6 +198,27 @@ internal sealed class LocalAsrService : IDisposable
             try
             {
                 var cudaDirectories = await _installer.PrepareGpuAsync(job);
+                if (executionMode == "hybrid")
+                {
+                    if (snapshot.LogicalProcessors < 6 || hardware.AvailableMemoryBytes < 3L * 1024 * 1024 * 1024)
+                        job.Warn("Hybrid cần ít nhất 6 luồng CPU và 3 GB RAM trống; dùng GPU riêng để giữ tài nguyên cho ứng dụng.");
+                    else
+                    {
+                        try
+                        {
+                            var hybridThreads = Math.Clamp(snapshot.LogicalProcessors - 4, 1, 8);
+                            job.Set("asr-probe-hybrid", 21, "Đang kiểm tra ASR CPU + GPU đồng thời trên audio mẫu...");
+                            var hybridProbe = await ProbeAsync(runtime, audio, probeSeconds,
+                                new AsrSelection("hybrid", compute + "+int8", hybridThreads, 0, cudaDirectories), processes, job.CancellationToken);
+                            if (hybridProbe.RealtimeFactor <= 1.5) return hybridProbe;
+                            job.Warn("Hybrid hoàn tất mẫu nhưng chậm; thử GPU riêng.");
+                        }
+                        catch (Exception error) when (error is not OperationCanceledException)
+                        {
+                            job.Warn("Hybrid không sẵn sàng: " + error.Message + " · thử GPU riêng.");
+                        }
+                    }
+                }
                 job.Set("asr-probe-gpu", 21, $"Đang benchmark Whisper GPU thật ({compute}) trên mẫu {probeSeconds:0}s...");
                 var probe = await ProbeAsync(runtime, audio, probeSeconds, new AsrSelection("cuda", compute, threads, 0, cudaDirectories), processes, job.CancellationToken);
                 if (probe.RealtimeFactor <= 1.5) return probe;
@@ -225,6 +258,9 @@ internal sealed class LocalAsrService : IDisposable
                     if (kind == "ready") ready = true;
                     if (kind == "complete")
                     {
+                        if (selection.Device == "hybrid" && (GetDouble(root, "cpu_chunks") < 1 || GetDouble(root, "gpu_chunks") < 1
+                            || !double.IsFinite(GetDouble(root, "cpu_chunks")) || !double.IsFinite(GetDouble(root, "gpu_chunks"))))
+                            throw new InvalidDataException("Hybrid probe chưa chạy đủ cả CPU và GPU.");
                         complete = true;
                         elapsed = GetDouble(root, "elapsed_seconds");
                     }
@@ -244,12 +280,12 @@ internal sealed class LocalAsrService : IDisposable
             "--model", runtime.ModelDirectory,
             "--audio", audio,
             "--device", selection.Device,
-            "--compute", selection.ComputeType,
+            "--compute", selection.Device == "hybrid" ? selection.ComputeType.Split('+')[0] : selection.ComputeType,
             "--threads", selection.Threads.ToString(CultureInfo.InvariantCulture),
-            "--offset", offset.ToString("0.000", CultureInfo.InvariantCulture),
+            "--offset", offset.ToString(selection.Device == "hybrid" ? "R" : "0.000", CultureInfo.InvariantCulture),
             "--beam", probe ? "1" : "5",
         };
-        if (selection.Device == "cuda")
+        if (selection.Device is "cuda" or "hybrid")
             foreach (var directory in selection.CudaDirectories ?? []) values.AddRange(["--cuda-bin", directory]);
         if (probe) values.Add("--probe");
         return values.ToArray();
@@ -285,6 +321,10 @@ internal sealed class LocalAsrService : IDisposable
                 || loaded.Cues is null || loaded.Cues.Count > EditorSubtitleDocument.MaxCues)
                 return AsrCheckpoint.New(key);
             var valid = loaded.Cues.Where(ValidCue).OrderBy(x => x.Start).ToList();
+            if (key.EndsWith(":hybrid-word-seam-v1", StringComparison.Ordinal)
+                && (valid.Any(cue => !ValidHybridCue(cue)) || valid.Count != loaded.Cues.Count || !double.IsFinite(loaded.Frontier)
+                    || loaded.Cues.Zip(loaded.Cues.Skip(1)).Any(pair => pair.Second.Start < pair.First.End - .005)))
+                return AsrCheckpoint.New(key);
             return loaded with { Cues = valid };
         }
         catch (OperationCanceledException) { throw; }
@@ -426,6 +466,7 @@ internal sealed class LocalAsrService : IDisposable
     private static void ValidateRequest(EditorAsrRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
+        if (request.ExecutionMode is not ("cpu" or "gpu" or "hybrid")) throw new InvalidDataException("Chế độ ASR không hợp lệ.");
         if (request.ProjectId.Length is < 8 or > 64 || request.ProjectId.Any(x => !char.IsAsciiLetterOrDigit(x) && x is not ('-' or '_')))
             throw new InvalidDataException("Project ID Whisper không hợp lệ.");
         var source = new FileInfo(Path.GetFullPath(request.SourcePath));

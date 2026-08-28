@@ -435,7 +435,7 @@ public sealed class EditorProjectStore
         var status = speech.Status?.Trim().ToLowerInvariant();
         var device = speech.Device?.Trim().ToLowerInvariant();
         var compute = speech.ComputeType?.Trim().ToLowerInvariant();
-        if (status is not ("complete" or "partial") || device is not ("cpu" or "cuda") || string.IsNullOrWhiteSpace(compute)
+        if (status is not ("complete" or "partial") || device is not ("cpu" or "cuda" or "hybrid") || string.IsNullOrWhiteSpace(compute)
             || string.IsNullOrWhiteSpace(speech.ModelName) || speech.ModelRevision?.Length != 40 || speech.ModelRevision.Any(x => !Uri.IsHexDigit(x))
             || speech.AnalysisSha256?.Length != 64 || speech.AnalysisSha256.Any(x => !Uri.IsHexDigit(x))
             || speech.SegmentCount is < 0 or > EditorSubtitleDocument.MaxCues || speech.WordCount < 0

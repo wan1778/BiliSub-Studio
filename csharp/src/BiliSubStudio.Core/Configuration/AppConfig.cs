@@ -25,6 +25,9 @@ public sealed record AppConfig
     [JsonPropertyName("check_updates")]
     public bool CheckUpdates { get; init; } = true;
 
+    [JsonPropertyName("asr_execution_mode")]
+    public string AsrExecutionMode { get; init; } = "gpu";
+
     [JsonPropertyName("ocr_device")]
     public string OcrDevice { get; init; } = "auto";
 

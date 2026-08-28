@@ -2,6 +2,7 @@ using System.IO.Compression;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text.Json.Nodes;
+using BiliSubStudio.Core.Configuration;
 using BiliSubStudio.Core.Editor;
 using BiliSubStudio.Core.Hardware;
 
@@ -44,11 +45,15 @@ internal static class EditorAsrGpuContract
         string[] cudaDirectories = [Path.Combine(Path.GetTempPath(), "ASR private CUDA"), Path.Combine(Path.GetTempPath(), "ASR cuDNN")];
         var arguments = service.GetMethod("WorkerArguments", flags)!;
         foreach (var probe in new[] { true, false })
+        foreach (var device in new[] { "cuda", "hybrid" })
         {
-            var selection = Activator.CreateInstance(selectionType, "cuda", "float16", 4, 0d, cudaDirectories)!;
+            var compute = device == "hybrid" ? "float16+int8" : "float16";
+            var selection = Activator.CreateInstance(selectionType, device, compute, 4, 0d, cudaDirectories)!;
             var values = (string[])arguments.Invoke(null, [runtime, "audio.wav", selection, 0d, probe])!;
             Check(values.Count(value => value == "--cuda-bin") == cudaDirectories.Length
                 && cudaDirectories.All(values.Contains), "probe/transcription lost private CUDA paths or split spaces");
+            Check(values[Array.IndexOf(values, "--device") + 1] == device
+                && values[Array.IndexOf(values, "--compute") + 1] == "float16", "hybrid routing/compute argument is invalid");
         }
         var cpu = Activator.CreateInstance(selectionType, "cpu", "int8", 4, 0d, cudaDirectories)!;
         Check(!((string[])arguments.Invoke(null, [runtime, "audio.wav", cpu, 0d, false])!).Contains("--cuda-bin"),
@@ -58,6 +63,28 @@ internal static class EditorAsrGpuContract
         Directory.CreateDirectory(root);
         try
         {
+            Check(new AppConfig().AsrExecutionMode == "gpu", "ASR must remain GPU-preferred by default");
+            var paths = AppPaths.FromRoot(root);
+            foreach (var mode in new[] { "cpu", "gpu", "hybrid", "invalid" })
+            {
+                var normalized = AppConfigNormalizer.Normalize(new AppConfig { AsrExecutionMode = mode }, paths);
+                Check(normalized.AsrExecutionMode == (mode == "invalid" ? "gpu" : mode), "ASR mode normalization failed");
+            }
+
+            var analysis = new EditorSpeechAnalysis(EditorSpeechAnalysisDocument.CurrentSchema, new string('a', 64),
+                "small", new string('b', 40), "hybrid", "float16+int8", .5,
+                [new EditorSpeechSegment(0, 1, "你好", -.1, .01,
+                    [new EditorWordTiming("你好", 0, 1, .95)], "unknown", 0, 0)]);
+            var analysisPath = Path.Combine(root, "hybrid.speech.json");
+            var analysisSha = await EditorSpeechAnalysisDocument.SaveAsync(analysisPath, analysis, CancellationToken.None);
+            var reopened = await EditorSpeechAnalysisDocument.LoadVerifiedAsync(analysisPath, analysisSha, CancellationToken.None);
+            Check(reopened.Device == "hybrid" && reopened.ComputeType == "float16+int8", "hybrid analysis did not reopen");
+            var speech = new EditorSpeechProject("complete", analysis.ModelName, analysis.ModelRevision, "hybrid",
+                analysis.ComputeType, analysisPath, analysisSha, 1, 1, .5);
+            var normalizeSpeech = typeof(EditorProjectStore).GetMethod("NormalizeSpeech", flags)!;
+            Check(normalizeSpeech.Invoke(null, [speech]) is EditorSpeechProject { Device: "hybrid" },
+                "hybrid project metadata was rejected on reopen");
+
             var archive = Path.Combine(root, "offline-fixture.zip");
             using (var zip = ZipFile.Open(archive, ZipArchiveMode.Create))
             {

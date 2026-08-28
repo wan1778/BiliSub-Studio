@@ -70,6 +70,9 @@ public sealed partial class EditorPage : Page
         Unloaded += EditorPage_Unloaded;
     }
 
+    public void ApplyConfiguration() =>
+        AsrExecutionModeBox.SelectedIndex = _application.Config.AsrExecutionMode switch { "cpu" => 1, "hybrid" => 2, _ => 0 };
+
     private void SetInspectorMode(InspectorMode mode)
     {
         _inspectorMode = mode;
@@ -515,20 +518,28 @@ public sealed partial class EditorPage : Page
     private string SelectedVoiceModel() =>
         (VoiceModelBox.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? string.Empty;
 
-    private async Task<bool> EnsureVoiceTimingAsync()
+    private async void AnalyzeTiming_Click(object sender, RoutedEventArgs e)
     {
-        if (_project?.Speech is { Status: "complete" }) return true;
+        if (EditorBusy || _playback.IsPreviewMode) return;
+        await EnsureVoiceTimingAsync(force: true);
+    }
+
+    private async Task<bool> EnsureVoiceTimingAsync(bool force = false)
+    {
+        if (!force && _project?.Speech is { Status: "complete" }) return true;
         if (_asrJobId is not null || _project is null || _media is null || string.IsNullOrWhiteSpace(_path)) return false;
         try
         {
-            _asrJobId = _application.StartEditorAsr(new EditorAsrRequest(_project.Id, _path, _media.Duration));
+            var executionMode = (AsrExecutionModeBox.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "gpu";
+            _asrJobId = _application.StartEditorAsr(new EditorAsrRequest(_project.Id, _path, _media.Duration, executionMode));
+            var jobId = _asrJobId;
             VoiceProgress.Value = 0;
             const string status = "Đang tự lấy word timing và khoảng lặng để canh voice...";
             AsrStatusText.Text = status;
             VoiceStatusText.Text = status;
             RefreshEditorActions();
-            await PollAsrJobAsync();
-            return _project?.Speech is { Status: "complete" };
+            await PollAsrJobAsync(continueVoice: !force);
+            return _application.Jobs.GetSnapshot(jobId).Result is EditorAsrResult;
         }
         catch (Exception error)
         {
@@ -540,13 +551,14 @@ public sealed partial class EditorPage : Page
         }
     }
 
-    private async Task PollAsrJobAsync()
+    private async Task PollAsrJobAsync(bool continueVoice)
     {
         while (_asrJobId is not null)
         {
             var snapshot = _application.Jobs.GetSnapshot(_asrJobId);
             VoiceProgress.Value = snapshot.Progress;
             AsrStatusText.Text = snapshot.Message;
+            VoiceStatusText.Text = snapshot.Message;
             if (snapshot.Done)
             {
                 if (snapshot.Result is EditorAsrResult result && _project is not null)
@@ -571,7 +583,9 @@ public sealed partial class EditorPage : Page
                     await RefreshSpeechTimingForSubtitleAsync();
                     UpdateSubtitleSummary();
                     AsrStatusText.Text = $"Whisper timing hoàn tất · {result.WordCount} từ · {result.Device.ToUpperInvariant()}/{result.ComputeType} · benchmark {result.ProbeRealtimeFactor:0.00}×.";
-                    VoiceStatusText.Text = "Đã có word timing. Đang tiếp tục tạo voice Ngọc Huyền và canh theo timecode...";
+                    VoiceStatusText.Text = continueVoice
+                        ? "Đã có word timing. Đang tiếp tục tạo voice Ngọc Huyền và canh theo timecode..."
+                        : "Đã cập nhật nhịp thoại. Có thể tạo lại voice theo timing mới.";
                     RenderOverlays();
                     await SaveProjectNowAsync();
                 }
@@ -1960,6 +1974,8 @@ public sealed partial class EditorPage : Page
         SourceAudioModeBox.IsEnabled = editable;
         SourceAudioGainSlider.IsEnabled = editable && _audioSettings.SourceMode == "duck";
         VoiceModelBox.IsEnabled = idle && !_playback.IsPreviewMode;
+        AsrExecutionModeBox.IsEnabled = idle && !_playback.IsPreviewMode;
+        AnalyzeTimingButton.IsEnabled = editable && _project is not null;
         var voiceBlockReason = EditorVietnameseSubtitleWorkflow.VoiceBlockReason(
             hasMedia, !idle, _playback.IsPreviewMode, _subtitleManualDirty, _subtitleSource);
         GenerateTtsButton.IsEnabled = voiceBlockReason is null;

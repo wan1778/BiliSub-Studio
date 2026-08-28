@@ -391,6 +391,13 @@
 
                             <StackPanel x:Name="VoiceInspectorPanel" Spacing="8" Visibility="Collapsed">
                                 <TextBlock Text="Voice · NGHI-TTS" FontSize="11" FontWeight="SemiBold" Foreground="{ThemeResource MutedTextBrush}" Opacity="0.85"/>
+                                <ComboBox x:Name="AsrExecutionModeBox" Header="Nhận dạng nhịp thoại (ASR)" SelectedIndex="0" HorizontalAlignment="Stretch">
+                                    <ComboBoxItem Tag="gpu" Content="GPU ưu tiên (mặc định)"/>
+                                    <ComboBoxItem Tag="cpu" Content="CPU"/>
+                                    <ComboBoxItem Tag="hybrid" Content="Hybrid · CPU + GPU"/>
+                                </ComboBox>
+                                <TextBlock Text="Hybrid chia việc theo thiết bị rảnh, không đảm bảo nhanh hơn GPU. Đổi chế độ không xóa timing đã lưu; dùng nút dưới để phân tích lại." FontSize="10" TextWrapping="Wrap" Foreground="{ThemeResource MutedTextBrush}"/>
+                                <Button x:Name="AnalyzeTimingButton" Content="Phân tích nhịp theo chế độ đã chọn" Click="AnalyzeTiming_Click" HorizontalAlignment="Stretch" Style="{StaticResource SecondaryButtonStyle}" ToolTipService.ToolTip="Dùng lại checkpoint hợp lệ; chỉ cập nhật timing và voice phụ thuộc khi phân tích thành công."/>
                                 <Border Style="{StaticResource CardBorderStyle}" Padding="10">
                                     <StackPanel Spacing="8">
                                         <!-- Giọng đọc compact -->

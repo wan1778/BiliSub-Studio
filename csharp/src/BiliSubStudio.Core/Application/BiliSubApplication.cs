@@ -490,10 +490,12 @@ public sealed class BiliSubApplication : IAsyncDisposable
 
     public string StartEditorAsr(EditorAsrRequest request)
     {
+        if (request.ExecutionMode is not ("cpu" or "gpu" or "hybrid")) throw new ArgumentException("Chế độ ASR không hợp lệ.");
         if (Jobs.HasActiveJobs) throw new InvalidOperationException("Hãy hoàn tất hoặc hủy tác vụ Media/OCR/Editor đang chạy trước khi phân tích nhịp thoại.");
         var job = Jobs.Create("editor-asr", cleanupAwareCancel: true);
         _ = RunJobAsync(job, async () =>
         {
+            await _configStore.UpdateAsync(config => config with { AsrExecutionMode = request.ExecutionMode }, job.CancellationToken);
             var result = await _asr.TranscribeAsync(job, request);
             job.Finish(null, $"Whisper timing hoàn tất: {result.SegmentCount} đoạn / {result.WordCount} từ.", result);
         });

@@ -189,7 +189,7 @@ public static class EditorSpeechAnalysisDocument
     {
         if (analysis.Schema != CurrentSchema || analysis.SourceKey.Length != 64 || analysis.SourceKey.Any(x => !Uri.IsHexDigit(x))
             || string.IsNullOrWhiteSpace(analysis.ModelName) || analysis.ModelRevision.Length != 40 || analysis.ModelRevision.Any(x => !Uri.IsHexDigit(x))
-            || analysis.Device is not ("cpu" or "cuda") || string.IsNullOrWhiteSpace(analysis.ComputeType)
+            || analysis.Device is not ("cpu" or "cuda" or "hybrid") || string.IsNullOrWhiteSpace(analysis.ComputeType)
             || !double.IsFinite(analysis.ProbeRealtimeFactor) || analysis.ProbeRealtimeFactor <= 0
             || analysis.Segments is null || analysis.Segments.Count > EditorSubtitleDocument.MaxCues)
             throw new InvalidDataException("Dữ liệu phân tích nhịp thoại không hợp lệ.");
