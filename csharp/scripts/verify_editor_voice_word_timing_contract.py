@@ -86,7 +86,7 @@ require(".OrderBy(x => x.Start)" in normalize,
 
 transcribe = local_asr.split("public async Task<EditorAsrResult> TranscribeAsync(", 1)[1].split(
     "private async Task<AsrSelection> SelectRuntimeAsync", 1)[0]
-require("await SaveCheckpointAsync(checkpointPath, checkpoint, CancellationToken.None);" in transcribe,
+require("await SaveCheckpointAsync(checkpointPath, checkpoint, CancellationToken.None, job.Warn);" in transcribe,
         "VOICE-04 completed segment word timing must be checkpointed durably")
 require("checkpoint.Cues.Select(ToSpeechSegment).ToArray()" in transcribe,
         "VOICE-04 final speech analysis must be built from checkpointed ASR cues")

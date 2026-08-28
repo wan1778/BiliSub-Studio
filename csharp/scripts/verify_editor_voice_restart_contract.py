@@ -102,7 +102,7 @@ require("catch (OperationCanceledException)" in run_job
 
 transcribe = local_asr.split("public async Task<EditorAsrResult> TranscribeAsync(", 1)[1].split(
     "private async Task<AsrSelection> SelectRuntimeAsync", 1)[0]
-require("var checkpoint = await LoadCheckpointAsync(checkpointPath, key, job.CancellationToken);" in transcribe,
+require('var checkpoint = await LoadCheckpointAsync(checkpointPath, hybrid ? key + ":hybrid-word-seam-v1" : key, job.CancellationToken, job.Warn);' in transcribe,
         "VOICE-03 restart must load durable ASR checkpoint before new transcription")
 require("var resumeStart = checkpoint.Cues.Count == 0 ? 0 : Math.Max(0, checkpoint.Cues[^1].End - 1.5);" in transcribe,
         "VOICE-03 checkpoint restart must overlap 1.5 seconds to avoid clipping the resume boundary")
@@ -114,7 +114,7 @@ require("await ExtractAudioAsync(ffmpeg, source.FullName, audio, resumeStart, nu
         "VOICE-03 restarted transcription must extract from the recovered resume frontier")
 require("WorkerArguments(runtime, audio, selection, resumeStart, probe: false)" in transcribe,
         "VOICE-03 worker timestamps must keep the original video offset after restart")
-require("await SaveCheckpointAsync(checkpointPath, checkpoint, CancellationToken.None);" in transcribe,
+require("await SaveCheckpointAsync(checkpointPath, checkpoint, CancellationToken.None, job.Warn);" in transcribe,
         "VOICE-03 fully received segments must remain durable even if cancellation arrives immediately afterwards")
 
 checkpoint_loader = local_asr.split("private async Task<AsrCheckpoint> LoadCheckpointAsync", 1)[1].split(

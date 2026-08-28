@@ -67,7 +67,7 @@ internal sealed partial class LocalAsrService
                                 throw new InvalidDataException("Hybrid có khoảng trống hoặc frontier không hợp lệ; không đánh dấu hoàn tất.");
                             checkpoint.Cues.AddRange(staged);
                             checkpoint = checkpoint with { Frontier = frontier };
-                            await SaveCheckpointAsync(checkpointPath, checkpoint, CancellationToken.None);
+                            await SaveCheckpointAsync(checkpointPath, checkpoint, CancellationToken.None, job.Warn);
                             staged.Clear();
                             expectedChunk++;
                             job.Set("asr-transcribe-hybrid", 34 + Math.Clamp(frontier / request.Duration, 0, 1) * 62,

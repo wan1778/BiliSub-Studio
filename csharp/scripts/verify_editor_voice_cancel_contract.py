@@ -134,7 +134,7 @@ require("await using var processes = new OwnedProcessGroup();" in transcribe,
         "VOICE-02 Whisper/FFmpeg children must share one owned process group")
 require("job.CancellationToken" in transcribe,
         "VOICE-02 ASR backend must propagate the AppJob cancellation token")
-require("await SaveCheckpointAsync(checkpointPath, checkpoint, CancellationToken.None);" in transcribe,
+require("await SaveCheckpointAsync(checkpointPath, checkpoint, CancellationToken.None, job.Warn);" in transcribe,
         "VOICE-02 fully received ASR segments must persist atomically before later cancellation")
 require("finally" in transcribe
         and "try { await processes.StopAsync(); } catch { }" in transcribe

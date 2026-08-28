@@ -73,7 +73,7 @@ internal sealed partial class LocalAsrService : IDisposable
 
             var hybrid = selection.Device == "hybrid";
             var checkpointPath = Path.Combine(_paths.Data, "Projects", "ASR", request.ProjectId + (hybrid ? ".hybrid-v1.json" : ".json"));
-            var checkpoint = await LoadCheckpointAsync(checkpointPath, hybrid ? key + ":hybrid-word-seam-v1" : key, job.CancellationToken);
+            var checkpoint = await LoadCheckpointAsync(checkpointPath, hybrid ? key + ":hybrid-word-seam-v1" : key, job.CancellationToken, job.Warn);
             var restoredRetained = 0;
             if (hybrid)
             {
@@ -91,7 +91,7 @@ internal sealed partial class LocalAsrService : IDisposable
                     Cues = retained,
                     Complete = false,
                 };
-                await SaveCheckpointAsync(checkpointPath, checkpoint, job.CancellationToken);
+                await SaveCheckpointAsync(checkpointPath, checkpoint, job.CancellationToken, job.Warn);
                 restoredRetained = retained.Count;
                 var audio = Path.Combine(operationRoot, "source.wav");
                 job.Set("asr-extract", 27, resumeStart > 0
@@ -124,7 +124,7 @@ internal sealed partial class LocalAsrService : IDisposable
                                     if (cue is null) return;
                                     checkpoint.Cues.Add(cue);
                                     checkpoint = checkpoint with { Frontier = cue.End };
-                                    await SaveCheckpointAsync(checkpointPath, checkpoint, CancellationToken.None);
+                                    await SaveCheckpointAsync(checkpointPath, checkpoint, CancellationToken.None, job.Warn);
                                     var percent = 34 + Math.Clamp(cue.End / Math.Max(.1, request.Duration), 0, 1) * 62;
                                     var words = checkpoint.Cues.Sum(x => x.Words.Count);
                                     job.Set("asr-transcribe", percent,
@@ -144,7 +144,7 @@ internal sealed partial class LocalAsrService : IDisposable
 
             if (checkpoint.Cues.Count == 0) throw new InvalidDataException("Không tìm thấy đoạn thoại tiếng Trung nào để phân tích timing.");
             checkpoint = checkpoint with { Complete = true, Frontier = request.Duration };
-            await SaveCheckpointAsync(checkpointPath, checkpoint, job.CancellationToken);
+            await SaveCheckpointAsync(checkpointPath, checkpoint, job.CancellationToken, job.Warn);
 
             // Keep an ASR-generated source SRT only as a fallback when the project has no external SRT.
             var outputDirectory = Path.Combine(_paths.Data, "Projects", "ASR");
@@ -310,25 +310,38 @@ internal sealed partial class LocalAsrService : IDisposable
             throw new InvalidOperationException("Không trích được audio để phân tích timing: " + LastLine(result.StandardError));
     }
 
-    private async Task<AsrCheckpoint> LoadCheckpointAsync(string path, string key, CancellationToken cancellationToken)
+    private async Task<AsrCheckpoint> LoadCheckpointAsync(string path, string key, CancellationToken cancellationToken,
+        Action<string>? warning = null)
     {
-        try
+        // Primary is authoritative; use the previous committed backup only if
+        // the primary is missing, unreadable or invalid for this exact source.
+        // Unpublished .tmp snapshots are retained for recovery, never auto-trusted.
+        foreach (var candidate in new[] { path, path + ".bak" })
         {
-            if (!File.Exists(path) || new FileInfo(path).Length is <= 0 or > 128L * 1024 * 1024) return AsrCheckpoint.New(key);
-            await using var stream = File.OpenRead(path);
-            var loaded = await JsonSerializer.DeserializeAsync<AsrCheckpoint>(stream, _json, cancellationToken);
-            if (loaded is null || loaded.Schema != CheckpointSchema || loaded.Key != key || loaded.ModelRevision != LocalAsrInstaller.ModelRevision
-                || loaded.Cues is null || loaded.Cues.Count > EditorSubtitleDocument.MaxCues)
-                return AsrCheckpoint.New(key);
-            var valid = loaded.Cues.Where(ValidCue).OrderBy(x => x.Start).ToList();
-            if (key.EndsWith(":hybrid-word-seam-v1", StringComparison.Ordinal)
-                && (valid.Any(cue => !ValidHybridCue(cue)) || valid.Count != loaded.Cues.Count || !double.IsFinite(loaded.Frontier)
-                    || loaded.Cues.Zip(loaded.Cues.Skip(1)).Any(pair => pair.Second.Start < pair.First.End - .005)))
-                return AsrCheckpoint.New(key);
-            return loaded with { Cues = valid };
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                if (!File.Exists(candidate) || new FileInfo(candidate).Length is <= 0 or > 128L * 1024 * 1024) continue;
+                await using var stream = new FileStream(candidate, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+                var loaded = await JsonSerializer.DeserializeAsync<AsrCheckpoint>(stream, _json, cancellationToken);
+                if (loaded is null || loaded.Schema != CheckpointSchema || loaded.Key != key || loaded.ModelRevision != LocalAsrInstaller.ModelRevision
+                    || loaded.Cues is null || loaded.Cues.Count > EditorSubtitleDocument.MaxCues
+                    || loaded.Cues.Any(cue => cue is null || cue.Words?.Any(word => word is null) == true)) continue;
+                var valid = loaded.Cues.Where(ValidCue).OrderBy(x => x.Start).ToList();
+                if (key.EndsWith(":hybrid-word-seam-v1", StringComparison.Ordinal)
+                    && (valid.Any(cue => !ValidHybridCue(cue)) || valid.Count != loaded.Cues.Count || !double.IsFinite(loaded.Frontier)
+                        || loaded.Cues.Zip(loaded.Cues.Skip(1)).Any(pair => pair.Second.Start < pair.First.End - .005))) continue;
+                if (candidate != path) warning?.Invoke($"Khôi phục checkpoint Whisper từ bản dự phòng đã xác minh: {candidate}");
+                return loaded with { Cues = valid };
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException)
+            {
+                warning?.Invoke($"Không đọc được checkpoint Whisper: {candidate}; {error.GetType().Name}, HRESULT=0x{error.HResult:X8}. "
+                    + "Giữ nguyên file, kiểm tra bản dự phòng.");
+            }
         }
-        catch (OperationCanceledException) { throw; }
-        catch { return AsrCheckpoint.New(key); }
+        return AsrCheckpoint.New(key);
     }
 
     private static bool ValidCue(AsrCue cue) =>
@@ -340,23 +353,9 @@ internal sealed partial class LocalAsrService : IDisposable
         && cue.Words.All(x => !string.IsNullOrWhiteSpace(x.Text) && x.Text.Length <= 256 && double.IsFinite(x.Start) && double.IsFinite(x.End)
             && x.Start >= 0 && x.End > x.Start && double.IsFinite(x.Probability) && x.Probability is >= 0 and <= 1.0001);
 
-    private async Task SaveCheckpointAsync(string path, AsrCheckpoint checkpoint, CancellationToken cancellationToken)
-    {
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        var temporary = path + ".tmp-" + Guid.NewGuid().ToString("N");
-        try
-        {
-            await using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None, 64 * 1024,
-                FileOptions.Asynchronous | FileOptions.WriteThrough))
-            {
-                await JsonSerializer.SerializeAsync(stream, checkpoint, _json, cancellationToken);
-                await stream.FlushAsync(cancellationToken);
-                stream.Flush(flushToDisk: true);
-            }
-            File.Move(temporary, path, overwrite: true);
-        }
-        finally { TryDelete(temporary); }
-    }
+    private async Task SaveCheckpointAsync(string path, AsrCheckpoint checkpoint, CancellationToken cancellationToken,
+        Action<string>? warning = null) =>
+        await AsrCheckpointFile.WriteAsync(path, checkpoint, _json, cancellationToken, warning);
 
     private static AsrCue? NormalizeCue(AsrCue cue, IReadOnlyList<AsrCue> existing)
     {

@@ -48,6 +48,7 @@ internal static class Program
         ("editor rapid preview requests serialize cleanup and run only the latest request", EditorRapidPreviewRequestContractAsync),
         ("editor preview cache removes normal and crash leftovers", EditorPreviewCacheCleanupContractAsync),
         ("Whisper word timing maps pauses and karaoke ASS", EditorSpeechTimingKaraokeContractAsync),
+        ("ASR checkpoint replacement retries file locks and preserves recoverable state", EditorAsrCheckpointContract.RunAsync),
         ("local NghiTTS manifest and rhythm grouping stay pinned", LocalTtsContractAsync),
         ("voice track mixes identically for keep duck mute", EditorVoiceMixContractAsync),
         ("editor final render validates streams duration and audio policy", EditorRenderValidationContractAsync),
