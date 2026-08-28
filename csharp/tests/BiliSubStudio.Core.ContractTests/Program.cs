@@ -79,6 +79,7 @@ internal static class Program
         ("local Chinese ASR model manifest and source SRT stay pinned", LocalAsrManifestContractAsync),
         ("ASR install manifest round-trips and rejects corrupt or mismatched runtime", EditorAsrInstallContract.RunAsync),
         ("Chinese OCR validator rejects foreign scripts", ChineseOcrContractAsync),
+        ("OCR touching fragments merge without erasing real short or repeated captions", OcrFragmentContract.RunAsync),
         ("Paddle GPU wheel follows numeric CUDA compatibility", OcrGpuWheelContractAsync),
         ("OCR Auto benchmarks 1 2 4 8 16 and restores last PASS", OcrAutoBenchmarkContractAsync),
         ("OCR Auto resource guard keeps safe 8 and rejects unsafe 16", OcrAutoResourceGuardContractAsync),
@@ -103,6 +104,8 @@ internal static class Program
 
     private static async Task<int> Main(string[] arguments)
     {
+        if (arguments is ["--ocr-fragments-runtime", var ocrRoot, var ocrVideo])
+            return await OcrFragmentRuntimeContract.RunAsync(ocrRoot, ocrVideo);
         if (arguments is ["--asr-voice-runtime", var asrRoot, var asrVideo, var asrSrt])
             return await EditorAsrVoiceRuntimeContract.RunAsync(asrRoot, asrVideo, asrSrt);
         if (arguments is ["--nghi-tts-runtime", var ttsRoot, var ttsVideo])

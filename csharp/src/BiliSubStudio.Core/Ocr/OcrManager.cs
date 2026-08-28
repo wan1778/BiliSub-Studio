@@ -141,14 +141,14 @@ public sealed class OcrManager : IAsyncDisposable
         finally { _gate.Release(); }
     }
 
-    public async Task<OcrResult> RunAsync(string imageBase64, CancellationToken cancellationToken)
+    public async Task<OcrResult> RunAsync(string imageBase64, CancellationToken cancellationToken, bool recoverShortBlank = false, string? activeShortText = null)
     {
         await EnsureAsync(cancellationToken);
         var channel = _available ?? throw new InvalidOperationException("OCR worker pool chưa sẵn sàng.");
         var worker = await channel.Reader.ReadAsync(cancellationToken);
         try
         {
-            return await worker.RunAsync(imageBase64, cancellationToken);
+            return await worker.RunAsync(imageBase64, cancellationToken, recoverShortBlank, activeShortText);
         }
         finally
         {

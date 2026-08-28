@@ -15,7 +15,9 @@ internal sealed class OcrCheckpointStore
     // Older lanes could report Completed after FFmpeg emitted no JPEGs or only
     // the overlap. Their stored CoreEnd is not evidence of scanned coverage.
     // Keep old files on disk, but do not resume those falsely-completed lanes.
-    private const int Schema = 7;
+    // Schema 7 can also contain weak one-glyph misreads and fragmented captions
+    // from the old recognition policy. Preserve those files, but require rescan.
+    private const int Schema = 8;
     private readonly AppPaths _paths;
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -81,7 +83,7 @@ internal sealed class OcrCheckpointStore
 
     public async Task RemoveAsync(OcrScanRequest request, CancellationToken cancellationToken)
     {
-        foreach (var schema in new[] { 7, 6, 5, 4, 3 })
+        foreach (var schema in new[] { 8, 7, 6, 5, 4, 3 })
         {
             var key = await KeyAsync(request, schema, cancellationToken);
             var path = Path.Combine(DirectoryPath, key + ".json");

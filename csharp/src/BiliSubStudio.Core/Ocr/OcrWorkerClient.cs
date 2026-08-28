@@ -91,7 +91,7 @@ internal sealed class OcrWorkerClient : IAsyncDisposable
         }
     }
 
-    public async Task<OcrResult> RunAsync(string imageBase64, CancellationToken cancellationToken)
+    public async Task<OcrResult> RunAsync(string imageBase64, CancellationToken cancellationToken, bool recoverShortBlank = false, string? activeShortText = null)
     {
         await _requestGate.WaitAsync(cancellationToken);
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -101,7 +101,7 @@ internal sealed class OcrWorkerClient : IAsyncDisposable
         {
             if (!IsAlive || _input is null || _output is null) throw new InvalidOperationException("OCR worker chưa sẵn sàng.");
             var id = Interlocked.Increment(ref _requestId);
-            var request = JsonSerializer.Serialize(new { id, image_base64 = imageBase64 });
+            var request = JsonSerializer.Serialize(new { id, image_base64 = imageBase64, recover_short_blank = recoverShortBlank, active_short_text = activeShortText });
             await _input.WriteLineAsync(request.AsMemory(), requestToken);
             await _input.FlushAsync(requestToken);
             using var registration = requestToken.Register(() => Kill());

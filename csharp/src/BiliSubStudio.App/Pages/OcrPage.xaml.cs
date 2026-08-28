@@ -356,7 +356,7 @@ public sealed partial class OcrPage : Page
                     && string.IsNullOrWhiteSpace(snapshot.Error);
                 _cues = authoritative
                     ? result.Cues.OrderBy(cue => cue.Start).ToArray()
-                    : _cues.Concat(result.Cues)
+                    : OcrCueReconciler.MergeTouchingIdentical(_cues.Concat(result.Cues)
                         .GroupBy(cue => Math.Round(cue.Start, 3))
                         .Select(group => group
                             .OrderByDescending(cue => cue.Text.EnumerateRunes().Count())
@@ -364,7 +364,7 @@ public sealed partial class OcrPage : Page
                             .ThenByDescending(cue => cue.End)
                             .First())
                         .OrderBy(cue => cue.Start)
-                        .ToArray();
+                        .ToArray());
                 RenderCues();
                 TelemetryText.Text = $"{result.ParallelismSelected} FFmpeg lane · {result.WorkerCount} worker ({result.WorkerKinds}) · {result.CompletedLanes}/{result.ParallelismSelected} lane xong · {result.Frames} frames · {result.OcrImages} OCR · {result.RealtimeSpeed:0.00}× · frontier {FormatClock(result.SafeFrontierSeconds)}";
             }

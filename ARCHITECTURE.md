@@ -77,6 +77,8 @@ For pausable OCR jobs, every OCR FFmpeg process belongs to a per-scan owned proc
 
 `internal/ocr/worker.py` is an implementation asset, not a second BiliSub backend. It communicates with the C# process through the private worker protocol and exposes no BiliSub HTTP server.
 
+Weak single-glyph OCR receives one tighter-box retry on the same image/model; only a spatially overlapping, high-confidence single glyph can replace the initial reading. A matching already-confirmed glyph may corroborate a weaker actual reread, but never invent a missing recognition. Blank retry is requested only during active-cue recovery, not for every empty frame. `OcrCueReconciler` merges exactly identical touching/overlapping cues in live history and final lane reconciliation, without bridging real blank gaps or merging different words. Checkpoint schema 8 rejects schema-7 recognition artifacts while retaining old files until explicit Fresh/Cancel. The opt-in `--ocr-fragments-runtime <isolated-root> <field-video>` contract checks the first 12 seconds of the field fixture with actual Paddle, exact frame timing, pause/resume and SRT export.
+
 ## Editor / preview
 
 WinUI pages own direct region interaction: create, select, move and resize over the displayed video rectangle. Saved regions keep stable IDs and time spans; the page owns selection plus Undo/Redo presentation, while `EditorRegionDocument` owns deterministic document history.

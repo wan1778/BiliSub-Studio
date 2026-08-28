@@ -474,8 +474,8 @@ public sealed class OcrScanner
         }
         var completedCount = completed.Count(x => x);
         var active = Math.Max(0, lanes.Count - completedCount);
-        var recentCues = liveCommitted
-            .Concat(liveActive.Where(cue => cue is not null).Select(cue => cue!))
+        var recentCues = OcrCueReconciler.MergeTouchingIdentical(liveCommitted
+            .Concat(liveActive.Where(cue => cue is not null).Select(cue => cue!)))
             .TakeLast(120)
             .ToArray();
         job.Set("scanning", percent, $"Đang quét OCR · {lanes.Count} FFmpeg lane · {workers} worker · {percent:0.0}%");
@@ -565,9 +565,11 @@ public sealed class OcrScanner
                 mediaSeconds = Math.Min(segment.ScanEnd, at + timing.Duration);
                 lastFrameDuration = timing.Duration;
                 OcrResult result;
+                var activeShortText = tracker.Active?.Text is { } activeText && activeText.EnumerateRunes().Count() == 1 ? activeText : null;
                 try
                 {
-                    result = FilterOffBaselineOverlayLines(await _ocr.RunAsync(Convert.ToBase64String(jpeg), cancellationToken), request.Region);
+                    result = FilterOffBaselineOverlayLines(await _ocr.RunAsync(Convert.ToBase64String(jpeg), cancellationToken,
+                        recoverShortBlank: tracker.Active is not null, activeShortText: activeShortText), request.Region);
                 }
                 catch (OperationCanceledException) { throw; }
                 catch (Exception error)
@@ -582,7 +584,8 @@ public sealed class OcrScanner
                     try
                     {
                         var enhanced = await CaptureFrameWithFfmpegAsync(ffmpeg, source, at, request.Region, enhanced: true, processes, cancellationToken);
-                        var alternate = FilterOffBaselineOverlayLines(await _ocr.RunAsync(Convert.ToBase64String(enhanced), cancellationToken), request.Region);
+                        var alternate = FilterOffBaselineOverlayLines(await _ocr.RunAsync(Convert.ToBase64String(enhanced), cancellationToken,
+                            recoverShortBlank: tracker.Active is not null, activeShortText: activeShortText), request.Region);
                         if (alternate.Ok && PreferRecognition(alternate, result)) result = alternate;
                     }
                     catch (OperationCanceledException) { throw; }
@@ -682,7 +685,7 @@ public sealed class OcrScanner
             }
             else output.Add(item);
         }
-        return output.Select(item => item.Cue).ToArray();
+        return OcrCueReconciler.MergeTouchingIdentical(output.Select(item => item.Cue));
     }
 
     private static string PreferReconciledText(string current, string candidate) =>

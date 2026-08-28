@@ -106,6 +106,35 @@ def main() -> int:
     }], "2/1/1")
     assert_rejected(worker, [], "không trả kết quả")
 
+    class TightRetry:
+        def __init__(self, prediction):
+            self.prediction, self.calls = prediction, 0
+
+        def predict(self, image, **kwargs):
+            self.calls += 1
+            assert kwargs["text_det_unclip_ratio"] == 0.8
+            if isinstance(self.prediction, Exception):
+                raise self.prediction
+            return [self.prediction]
+
+    def reading(text, score, box=None):
+        return {"rec_texts": [text], "rec_scores": [score], "rec_boxes": [box or [600, 130, 680, 220]]}
+
+    wrong = worker.parse_prediction([reading("徒", .63)])
+    engine = TightRetry(reading("走", .99, [610, 140, 670, 210]))
+    assert worker.refine_short_text(engine, None, wrong)["text"] == "走"
+    assert engine.calls == 1
+    assert worker.refine_short_text(TightRetry(reading("啊", .99)), None, wrong)["text"] == "啊"
+    for rejected in [reading("走", .85), reading("走吧", .99), reading("走", .99, [10, 10, 20, 20]), RuntimeError("retry failed")]:
+        assert worker.refine_short_text(TightRetry(rejected), None, wrong) is wrong
+    for original in [worker.parse_prediction([reading("走", .99)]), worker.parse_prediction([reading("你好", .60)]), empty]:
+        engine = TightRetry(reading("走", .99))
+        assert worker.refine_short_text(engine, None, original) is original and engine.calls == 0
+    assert worker.refine_short_text(TightRetry(reading("走", .99)), None, empty, recover_blank=True)["text"] == "走"
+    assert worker.refine_short_text(TightRetry(reading("走", .85)), None, empty, True, "走")["text"] == "走"
+    assert worker.refine_short_text(TightRetry(reading("徒", .85)), None, empty, True, "走") is empty
+    assert worker.refine_short_text(TightRetry({"rec_texts": [], "rec_scores": [], "rec_boxes": []}), None, empty, True, "走") is empty
+
     print("PASS OCR worker PaddleOCR 3 result and failure contract")
     return 0
 

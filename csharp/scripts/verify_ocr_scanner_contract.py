@@ -133,6 +133,12 @@ def main() -> int:
     require("snapshot.Result is OcrScanResult result" in page and
             "GroupBy(cue => Math.Round(cue.Start, 3))" in page and "RenderCues();" in page,
             "OCR page does not accumulate live OcrScanResult cue snapshots into visible history")
+    require("OcrCueReconciler.MergeTouchingIdentical" in page and
+            "OcrCueReconciler.MergeTouchingIdentical" in live_publish and
+            "OcrCueReconciler.MergeTouchingIdentical(output.Select(item => item.Cue))" in scanner,
+            "identical touching OCR fragments are not reconciled consistently in live history and final SRT")
+    require("recoverShortBlank: tracker.Active is not null" in live_lane,
+            "active short-caption recovery no longer requests a bounded tighter-box retry")
     require("var authoritative = snapshot.Done" in page and
             "? result.Cues.OrderBy(cue => cue.Start).ToArray()" in page and
             "ExportOcrAsync(_cues" in page and "ExportButton.IsEnabled = false;" in page,

@@ -150,6 +150,38 @@ def validate_device():
     return True
 
 
+def refine_short_text(engine, image, result, recover_blank=False, active_text=None):
+    # Expanded detection boxes can swallow background strokes around a lone
+    # glyph. Retry this same image with a tighter box, not a guessed character.
+    lines = result["lines"]
+    weak_glyph = len(lines) == 1 and len(lines[0]["text"]) == 1 and lines[0]["confidence"] < 0.90
+    if not weak_glyph and not (recover_blank and not lines):
+        return result
+    try:
+        tighter = parse_prediction(engine.predict(image, text_det_box_thresh=0.55,
+            text_rec_score_thresh=0.45, text_det_unclip_ratio=0.8))
+        candidates = tighter["lines"]
+        if len(candidates) != 1 or len(candidates[0]["text"]) != 1:
+            return result
+        candidate = candidates[0]
+        # A prior confirmed glyph may corroborate an actual matching reread;
+        # never fill a blank from the hint alone or accept a different weak glyph.
+        minimum = 0.80 if candidate["text"] == active_text else 0.90
+        if candidate["confidence"] < minimum or candidate["confidence"] < result["confidence"] + 0.05:
+            return result
+        if lines:
+            before, after = lines[0]["box"], candidate["box"]
+            if len(before) != 4 or len(after) != 4:
+                return result
+            # A different high-confidence glyph elsewhere is not corroboration.
+            if min(before[2], after[2]) <= max(before[0], after[0]) or min(before[3], after[3]) <= max(before[1], after[1]):
+                return result
+        return tighter
+    except Exception:
+        # A failed optional retry must not erase a valid first-pass result.
+        return result
+
+
 def main():
     cuda_available = validate_device()
     engine = PaddleOCR(
@@ -191,7 +223,8 @@ def main():
                 emit({
                     "id": request_id,
                     "ok": True,
-                    "results": [parse_prediction([prediction]) for prediction in predictions],
+                    "results": [refine_short_text(engine, image, parse_prediction([prediction]),
+                        bool(request.get("recover_short_blank", False)), request.get("active_short_text")) for image, prediction in zip(images, predictions)],
                 })
                 continue
             encoded = str(request.get("image_base64") or "").strip()
@@ -199,6 +232,7 @@ def main():
                 raise ValueError("image_base64 rỗng")
             image = decode_image(encoded)
             result = parse_prediction(engine.predict(image, text_det_box_thresh=0.55, text_rec_score_thresh=0.45))
+            result = refine_short_text(engine, image, result, bool(request.get("recover_short_blank", False)), request.get("active_short_text"))
             result["id"] = request_id
             emit(result)
         except Exception as exc:
