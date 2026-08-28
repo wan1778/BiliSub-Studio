@@ -357,7 +357,11 @@ public sealed partial class OcrPage : Page
                     ? result.Cues.OrderBy(cue => cue.Start).ToArray()
                     : _cues.Concat(result.Cues)
                         .GroupBy(cue => Math.Round(cue.Start, 3))
-                        .Select(group => group.Last())
+                        .Select(group => group
+                            .OrderByDescending(cue => cue.Text.EnumerateRunes().Count())
+                            .ThenByDescending(cue => cue.Confidence)
+                            .ThenByDescending(cue => cue.End)
+                            .First())
                         .OrderBy(cue => cue.Start)
                         .ToArray();
                 RenderCues();
