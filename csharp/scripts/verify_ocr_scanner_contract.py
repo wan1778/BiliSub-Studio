@@ -115,6 +115,13 @@ def main() -> int:
     live_lane_start = scanner.find("private async Task<OcrLaneCheckpoint> RunLaneAsync")
     live_lane_end = scanner.find("private static IReadOnlyList<OcrCue> Reconcile", live_lane_start)
     live_lane = scanner[live_lane_start:live_lane_end]
+    require('args.AddRange(["-to", end.ToString(' in scanner and
+            'args.AddRange(["-t", (end - start)' not in scanner,
+            "copyts OCR lane output still stops on a relative duration instead of absolute PTS")
+    require("ValidateLaneCoverage(segment, frames, mediaSeconds, lastFrameDuration);" in live_lane and
+            live_lane.index("ValidateLaneCoverage(segment, frames, mediaSeconds, lastFrameDuration);") <
+            live_lane.index("mediaSeconds = segment.CoreEnd;"),
+            "OCR lane marks completion without verifying decoded frame coverage")
     require("liveCommitted" in scanner and "liveActive" in scanner and
             "recentCues" in live_publish and "new OcrScanResult(" in live_publish,
             "running OCR does not publish a bounded live cue snapshot through AppJob.Result")

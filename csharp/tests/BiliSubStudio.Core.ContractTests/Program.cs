@@ -81,6 +81,7 @@ internal static class Program
         ("OCR Auto benchmarks 1 2 4 8 16 and restores last PASS", OcrAutoBenchmarkContractAsync),
         ("OCR Auto resource guard keeps safe 8 and rejects unsafe 16", OcrAutoResourceGuardContractAsync),
         ("OCR SRT export includes every final cue beyond live preview window", OcrExportAllCuesContractAsync),
+        ("OCR copyts lanes require absolute stop and decoded coverage before completion", OcrLaneCoverageRegression.RunAsync),
         ("QR encoder produces fixed version 10 matrix", QrContractAsync),
         ("session cookie normalization matches legacy", SessionCookieContractAsync),
         ("cookie normalization rejects control-character injection", SessionCookieInjectionContractAsync),
@@ -100,6 +101,8 @@ internal static class Program
 
     private static async Task<int> Main(string[] arguments)
     {
+        if (arguments is ["--ocr-lane-ffmpeg", var ffmpeg, var source, var decoder])
+            return await OcrLaneCoverageRegression.RunFfmpegAsync(ffmpeg, source, decoder == "nvdec");
         if (arguments is ["--fixture-hold-open"])
         {
             Console.WriteLine(Environment.ProcessId);

@@ -127,7 +127,7 @@ public sealed class OcrScanner
             throw new InvalidDataException($"OCR checkpoint yêu cầu {selected} lane nhưng worker pool đang có {configuredWorkers}.");
         job.Log(saved is null
             ? $"OCR Commit: benchmark xong, khóa {selected} pipeline = {selected} FFmpeg lane + {configuredWorkers} Python worker ({configuredWorkerKinds})."
-            : $"Resume checkpoint schema 6: giữ topology {selected} = {selected} FFmpeg lane + {configuredWorkers} Python worker ({configuredWorkerKinds}).");
+            : $"Resume checkpoint schema {checkpoint.Schema}: giữ topology {selected} = {selected} FFmpeg lane + {configuredWorkers} Python worker ({configuredWorkerKinds}).");
         var decoder = await ProbeNvdecAsync(ffmpeg, source, request.Region, mode, processes, token) ? "nvdec" : "software";
         job.Log(decoder == "nvdec" ? "Decoder: NVIDIA NVDEC." : "Decoder: software fallback.");
 
@@ -550,6 +550,7 @@ public sealed class OcrScanner
         var frames = saved.Frames;
         var images = saved.OcrImages;
         var mediaSeconds = startAt;
+        var lastFrameDuration = mode.EveryFrame ? 0 : 1 / mode.Fps;
         var paused = false;
         var stoppedAtBoundary = false;
         try
@@ -562,6 +563,7 @@ public sealed class OcrScanner
                 frames++;
                 images++;
                 mediaSeconds = Math.Min(segment.ScanEnd, at + timing.Duration);
+                lastFrameDuration = timing.Duration;
                 OcrResult result;
                 try
                 {
@@ -614,6 +616,7 @@ public sealed class OcrScanner
         if (!paused && !stoppedAtBoundary && process.ExitCode != 0) throw new InvalidOperationException(Compact(stderr));
         if (!paused)
         {
+            ValidateLaneCoverage(segment, frames, mediaSeconds, lastFrameDuration);
             tracker.Finish(mediaSeconds);
             var finalCommitted = tracker.Cues.Count > publishedCueCount
                 ? tracker.Cues.Skip(publishedCueCount).ToArray()
@@ -631,6 +634,18 @@ public sealed class OcrScanner
             OcrImages = images,
             Completed = !paused,
         };
+    }
+
+    private static void ValidateLaneCoverage(OcrScanSegment segment, int frames, double mediaSeconds, double lastFrameDuration)
+    {
+        // Exit 0 (or showinfo on stderr) does not prove JPEGs reached OCR. Permit
+        // one final frame/sample of rounding, but never invent unscanned hours.
+        var tolerance = Math.Max(.1, lastFrameDuration);
+        if (frames <= 0 || mediaSeconds + tolerance < segment.CoreEnd)
+            throw new InvalidDataException(
+                $"FFmpeg kết thúc sớm ở lane {segment.Index + 1}: {frames} frame, " +
+                $"đã quét tới {FormatClock(mediaSeconds)}, cần tới {FormatClock(segment.CoreEnd)}. " +
+                "Chưa quét đủ đoạn video; không thể báo hoàn tất OCR.");
     }
 
     private static IReadOnlyList<OcrCue> Reconcile(IReadOnlyList<OcrLaneCheckpoint> lanes, out int merges)
@@ -758,7 +773,9 @@ public sealed class OcrScanner
         if (start > 0) args.AddRange(["-ss", start.ToString("0.######", CultureInfo.InvariantCulture)]);
         args.Add("-copyts");
         args.AddRange(["-i", source]);
-        if (end > start) args.AddRange(["-t", (end - start).ToString("0.######", CultureInfo.InvariantCulture)]);
+        // With -copyts, output timestamps stay on the source clock after -ss.
+        // A relative -t can end later lanes before their first JPEG is emitted.
+        if (end > start) args.AddRange(["-to", end.ToString("0.######", CultureInfo.InvariantCulture)]);
         var crop = string.Format(CultureInfo.InvariantCulture,
             "crop=iw*{0}:ih*{1}:iw*{2}:ih*{3},scale=1280:320:force_original_aspect_ratio=decrease:flags=fast_bilinear,pad=1280:320:(ow-iw)/2:(oh-ih)/2:black",
             region.Width, region.Height, region.X, region.Y);

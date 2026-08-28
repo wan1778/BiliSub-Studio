@@ -1,5 +1,80 @@
 # Codex handoff — BiliSub Studio
 
+## Current session — OCR-LANE-EOF-01 (2026-08-28)
+
+- Active repository: `C:\Users\Man PC\Documents\Default Project\BiliSub-Studio`.
+- Current local main/base SHA: `6b976bf4ef20bbf9f3c17ed0a867adb414029648`.
+- Last fetched GitHub `origin/main`: `0569bf1857f03b84c4abd81bc2d5dc198fe99ebf`.
+- Current branch: `main`; PR: none. No push, merge, version bump or release in this task.
+- Existing local commits ahead of GitHub were preserved: `966b0fc` (OCR robustness),
+  `56a8300` (Editor UI), `6b976bf` (NGHI-TTS). Do not silently publish these as an OCR-only update.
+- Last completed step: reproduce the empty-lane defect and pass targeted JPEG/PTS runtime checks after fixing it.
+- Task in progress: `OCR-LANE-EOF-01` — Windows/release gates and full-video field verification are NOT PASS.
+- Exact next task: finish the Windows checks; resolve the pre-existing Voice gate in a separately scoped task before release,
+  then run a fresh full 8-hour OCR scan and verify the exported SRT against the final visible captions.
+
+### Root cause and call path
+
+`OcrScanner.RunCoreAsync` -> `RunLaneWithFallbackAsync` -> `RunLaneAsync` ->
+`BuildLaneArguments` -> FFmpeg JPEG stdout + `FrameTimestampReader` stderr ->
+`SubtitleTracker` -> lane completion -> `Reconcile` -> `OcrScanResult` -> SRT export.
+
+Output `-t (end-start)` was used with `-copyts` and input `-ss`. On the supplied
+8:06:10 video, later lanes exited 0 and printed valid global `showinfo` PTS while
+emitting **zero JPEGs**. `RunLaneAsync` then unconditionally set `CoreEnd` and
+`Completed=true`. The first lane could scan about two hours, with the remaining
+lanes falsely complete. This is not an SRT one-file limitation or a UI-only defect.
+The prior relative-PTS explanation was insufficient: stderr timestamps alone
+do not prove frames reached OCR. Do not port the old checkout's speculative patch.
+
+### Changes and files
+
+- `csharp/src/BiliSubStudio.Core/Ocr/OcrScanner.cs`: output `-to end` on the same
+  source clock as `-copyts`; validate decoded-frame coverage before completing a
+  lane, allowing one final frame/sample of rounding. Resume log reads its actual schema.
+- `csharp/src/BiliSubStudio.Core/Ocr/OcrCheckpointStore.cs`: schema 7 rejects old
+  potentially false-complete checkpoints. Loading does not delete old files.
+- `csharp/tests/BiliSubStudio.Core.ContractTests/OcrLaneCoverageRegression.cs`:
+  argument/coverage regression and opt-in real-FFmpeg JPEG/PTS test.
+- `csharp/tests/BiliSubStudio.Core.ContractTests/Program.cs`: register test and runtime command.
+- `csharp/scripts/verify_ocr_scanner_contract.py`: protect absolute stop/coverage-before-completion.
+- `docs/migration/CSHARP_CODE_MAP.generated.md`: regenerated, including previously stale source entries.
+- `docs/handoff/CODEX_HANDOFF.md`: this record. No Voice, UI, model or source-media edits.
+
+### Tests and evidence
+
+- Baseline production argument builder + real FFmpeg: at 0s, 30 JPEGs; at 7200s,
+  **0 JPEGs / 0 bytes / exit 0**. Regression failed as expected before source fix.
+- After fix: **36/36 real decode windows PASS**, software + NVDEC, Accurate +
+  Balanced + Fast, at 0/7200/14400/21600/21600.137/29168 seconds. Each window is
+  one second. Accurate returns 30 JPEGs with global PTS, including non-keyframe seek.
+- Core contracts: **73/74 PASS, overall FAIL**. The new OCR contract passes.
+  `EditorLicensedVoiceProfileContract.VerifyVoiceRegistryAsync` expects 14 IDs,
+  but existing `LocalTtsInstaller.AvailableVoices` contains 15.
+- Clean detached baseline `6b976bf` in `artifacts/ocr-baseline-6b976bf`:
+  **72/73 PASS, same Voice failure**, proving it predates this OCR change.
+- OCR scanner static contract, OCR worker contract, generated map check and `git diff --check`: PASS.
+- WinUI Release build / startup smoke: pending. CI/installer: not run for this fix.
+- Functional PASS is limited to the real FFmpeg decoding/JPEG/PTS path and the
+  coverage guard contract. No claim of full PaddleOCR, 8-hour SRT completeness,
+  pause/resume end-to-end or recognition-quality PASS. Compile is not feature PASS.
+
+Runtime reproduction command (source must be the supplied long 30fps test video):
+
+```powershell
+dotnet run --project csharp/tests/BiliSubStudio.Core.ContractTests -c Release -- --ocr-lane-ffmpeg "E:\New folder\testrc\Tools\ffmpeg.exe" "<full test video path>" software
+# Repeat with nvdec instead of software.
+```
+
+Constraints: preserve source media and existing SRTs; local-only OCR/AI/ASR/TTS;
+one small task at a time; do not alter Subtitle/Voice/UI opportunistically;
+do not overwrite release assets or publish while required gates fail. Installed
+app remains untouched at `E:\New folder\testrc`; test media stays in
+`C:\Users\Man PC\Downloads\test`. Existing truncated SRT cannot recover unscanned
+hours by re-export alone; a corrected fresh scan is required.
+
+## Historical handoff (superseded current-state fields)
+
 - Current main/base SHA: `d5ab2df1724618f1772a0a8fb11e20e1817e99c9`.
 - Current branch: `main`.
 - PR: none.
