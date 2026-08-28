@@ -1,8 +1,8 @@
 {
-  "version": "4.0.0-beta.69-csharp-p5",
+  "version": "4.0.0-beta.70-csharp-p5",
   "notes": [
-    "Khung xem trước OCR chỉ nhận cue đã được SubtitleTracker commit với mốc bắt đầu/kết thúc ổn định; không còn đưa cue active đang biến đổi lên bảng rồi tạo cảm giác thiếu chữ hoặc lặp cùng một câu.",
-    "Giữ nguyên PaddleOCR model, threshold, tracker, enhanced retry, Reconcile và logic xuất SRT; thay đổi chỉ tách dữ liệu preview live khỏi trạng thái active chưa hoàn tất.",
-    "Giữ nguyên các sửa trước đó về video dài nhiều lane, Pause/Resume, Auto VRAM thực đo và khung subtitle SRT-style có thanh cuộn."
+    "OCR preview giữ vùng ROI đúng vị trí khi khung video thay đổi kích thước, đồng thời hiển thị cue đang được xác nhận và giữ lại bằng chứng câu đầy đủ hơn giữa các frame.",
+    "OCR worker từ chối rõ ràng kết quả PaddleOCR báo lỗi, thiếu schema hoặc lệch số lượng text/score/box; không còn hoàn thành thành công với phụ đề rỗng khi backend gặp lỗi.",
+    "Editor bổ sung nghe thử mẫu giọng Việt local trước khi tạo voice track, không thay đổi chính sách trộn âm thanh khi Preview hoặc Export."
   ]
 }
