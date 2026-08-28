@@ -34,5 +34,10 @@ internal static class OcrEnhancedFilterOrderRegression
             throw new InvalidOperationException("retained low-confidence dialogue did not request enhanced OCR");
         if ((bool)(prefer.Invoke(null, [filteredOverlay, filteredDialogue]) ?? true))
             throw new InvalidOperationException("filtered enhanced overlay replaced retained dialogue");
+
+        var completePrimary = new OcrResult(true, true, "吃我的喝我的", .70, []);
+        var shorterEnhanced = new OcrResult(true, true, "吃我的喝的", .90, []);
+        if ((bool)(prefer.Invoke(null, [shorterEnhanced, completePrimary]) ?? true))
+            throw new InvalidOperationException("higher-confidence enhanced retry erased a glyph from the fuller primary reading");
     }
 }

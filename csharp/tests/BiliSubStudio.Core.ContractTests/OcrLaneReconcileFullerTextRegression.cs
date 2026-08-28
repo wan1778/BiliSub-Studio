@@ -23,10 +23,10 @@ internal static class OcrLaneReconcileFullerTextRegression
         var laneConstructor = laneType.GetConstructors(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
             .Single(x => x.GetParameters().Length == 7);
 
-        object Lane(int index, OcrCue cue)
+        object Lane(int index, params OcrCue[] cues)
         {
             var segment = segmentConstructor.Invoke([index, 0d, 100d, 0d, 100d]);
-            return laneConstructor.Invoke([segment, 100d, new List<OcrCue> { cue }, null, 0, 0, true]);
+            return laneConstructor.Invoke([segment, 100d, cues.ToList(), null, 0, 0, true]);
         }
 
         IReadOnlyList<OcrCue> Reconcile(params OcrCue[] cues)
@@ -37,6 +37,15 @@ internal static class OcrLaneReconcileFullerTextRegression
             var result = (IReadOnlyList<OcrCue>)(reconcile.Invoke(null, arguments)
                 ?? throw new InvalidOperationException("lane reconcile returned null"));
             return result;
+        }
+
+        IReadOnlyList<OcrCue> ReconcileSameLane(params OcrCue[] cues)
+        {
+            var lanes = Array.CreateInstance(laneType, 1);
+            lanes.SetValue(Lane(0, cues), 0);
+            var arguments = new object?[] { lanes, 0 };
+            return (IReadOnlyList<OcrCue>)(reconcile.Invoke(null, arguments)
+                ?? throw new InvalidOperationException("same-lane reconcile returned null"));
         }
 
         var shortCue = new OcrCue(9.9, 10.3, "吃我的喝我", .98);
@@ -51,6 +60,12 @@ internal static class OcrLaneReconcileFullerTextRegression
         var separate = Reconcile(shortCue, differentMeaning);
         if (separate.Count != 2 || separate[0].Text != shortCue.Text || separate[1].Text != differentMeaning.Text)
             throw new InvalidOperationException("lane reconcile synthesized or replaced text for a different-meaning OCR result");
+
+        var firstRapidCue = new OcrCue(20.0, 21.0, "我一定会成功", .99);
+        var secondRapidCue = new OcrCue(21.1, 22.0, "你一定会成功", .99);
+        var sameLane = ReconcileSameLane(firstRapidCue, secondRapidCue);
+        if (sameLane.Count != 2 || sameLane[0].Text != firstRapidCue.Text || sameLane[1].Text != secondRapidCue.Text)
+            throw new InvalidOperationException("lane reconcile merged two distinct fast subtitles from the same lane");
 
         var fresh = Reconcile(shortCue, completeCue);
         var resumed = Reconcile(shortCue, completeCue);

@@ -135,6 +135,22 @@ internal static class OcrTrackerModeRegression
             || Math.Abs(distinctCues[0].End - (14d + 2d / 30d)) > .000001)
             throw new InvalidOperationException("a genuinely different subtitle was merged as a script variant");
 
+        var rapid = exactConstructor.Invoke([30d, .68d, true]);
+        var rapidTexts = new[] { "我一定会成功", "你一定会成功", "他一定会成功", "她一定会成功" };
+        for (var index = 0; index < rapidTexts.Length; index++)
+        {
+            var observation = new OcrResult(true, true, rapidTexts[index], .99, []);
+            observeExact.Invoke(rapid, [16d + index, 1d / 30d, observation]);
+            observeExact.Invoke(rapid, [16d + index + 1d / 30d, 1d / 30d, observation]);
+        }
+        var rapidCues = (IReadOnlyList<OcrCue>)(cues.GetValue(rapid)
+            ?? throw new InvalidOperationException("missing rapid subtitle cue list"));
+        var rapidActive = (OcrCue)(exactActive.GetValue(rapid)
+            ?? throw new InvalidOperationException("rapid subtitle tracker lost the fourth cue"));
+        var allRapidTexts = rapidCues.Select(cue => cue.Text).Append(rapidActive.Text).ToArray();
+        if (rapidCues.Count != 3 || !allRapidTexts.SequenceEqual(rapidTexts))
+            throw new InvalidOperationException($"four fast similar subtitles collapsed into {allRapidTexts.Length} cues: {string.Join(" | ", allRapidTexts)}");
+
         var reveal = exactConstructor.Invoke([30d, .68d, true]);
         var full = new OcrResult(true, true, "你走吧", .99, []);
         observeExact.Invoke(reveal, [20d, 1d / 30d, full]);
@@ -151,6 +167,25 @@ internal static class OcrTrackerModeRegression
         if (revealCues.Count != 1 || revealCues[0].Text != "你走吧"
             || Math.Abs(revealCues[0].End - (20d + 2d / 30d)) > .000001)
             throw new InvalidOperationException("an actual new subtitle was not separated after a reveal fragment");
+
+        var shortCaption = exactConstructor.Invoke([30d, .68d, true]);
+        observeExact.Invoke(shortCaption, [22d, 1d / 30d, full]);
+        observeExact.Invoke(shortCaption, [22d + 1d / 30d, 1d / 30d, full]);
+        var oneRune = new OcrResult(true, true, "走", .99, []);
+        observeExact.Invoke(shortCaption, [22d + 2d / 30d, 1d / 30d, oneRune]);
+        observeExact.Invoke(shortCaption, [22d + 3d / 30d, 1d / 30d, oneRune]);
+        if (((IReadOnlyList<OcrCue>)(cues.GetValue(shortCaption)
+                ?? throw new InvalidOperationException("missing short-caption cue list"))).Count != 0)
+            throw new InvalidOperationException("one-rune subtext was promoted before its third stable frame");
+        observeExact.Invoke(shortCaption, [22d + 4d / 30d, 1d / 30d, oneRune]);
+        var shortCaptionCues = (IReadOnlyList<OcrCue>)(cues.GetValue(shortCaption)
+            ?? throw new InvalidOperationException("missing confirmed short-caption cue list"));
+        var shortCaptionActive = (OcrCue)(exactActive.GetValue(shortCaption)
+            ?? throw new InvalidOperationException("stable one-rune subtitle was discarded as a reveal fragment"));
+        if (shortCaptionCues.Count != 1 || shortCaptionCues[0].Text != "你走吧"
+            || shortCaptionActive.Text != "走"
+            || Math.Abs(shortCaptionActive.Start - (22d + 2d / 30d)) > .000001)
+            throw new InvalidOperationException("three-frame one-rune subtitle did not become its own timed cue");
 
         var repeated = exactConstructor.Invoke([30d, .68d, true]);
         var longText = new OcrResult(true, true, "天天被幸福包围", .99, []);

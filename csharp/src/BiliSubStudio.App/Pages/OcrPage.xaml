@@ -169,7 +169,18 @@
                         <TextBlock Style="{StaticResource CardTitleStyle}" Text="Đo hiệu năng OCR" />
                         <TextBlock x:Name="TelemetryText" Style="{StaticResource MutedTextStyle}" Text="Chưa có telemetry." AutomationProperties.LiveSetting="Polite" />
                     </StackPanel>
-                    <ListView Grid.Column="1" x:Name="CueList" MinHeight="72" SelectionChanged="CueList_SelectionChanged" AutomationProperties.Name="Danh sách câu phụ đề OCR" />
+                    <ListView Grid.Column="1" x:Name="CueList" MinHeight="72" SelectionChanged="CueList_SelectionChanged" AutomationProperties.Name="Danh sách câu phụ đề OCR">
+                        <ListView.ItemContainerStyle>
+                            <Style TargetType="ListViewItem">
+                                <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                            </Style>
+                        </ListView.ItemContainerStyle>
+                        <ListView.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding}" TextWrapping="Wrap" />
+                            </DataTemplate>
+                        </ListView.ItemTemplate>
+                    </ListView>
                 </Grid>
             </Border>
         </Grid>

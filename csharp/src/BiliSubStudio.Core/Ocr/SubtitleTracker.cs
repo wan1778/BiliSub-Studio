@@ -102,7 +102,7 @@ internal sealed class SubtitleTracker
             if (resolvedText == currentText
                 && text.EnumerateRunes().Count() > currentText.EnumerateRunes().Count()
                 && result.Confidence >= Math.Max(.45, _lowConfidence - .20)
-                && text.Contains(currentText, StringComparison.Ordinal))
+                && IsRuneSubsequence(currentText, text))
             {
                 if (string.Equals(_longerVariantText, text, StringComparison.Ordinal)
                     && at - _longerVariantLast <= _candidateGap)
@@ -208,9 +208,10 @@ internal sealed class SubtitleTracker
     private void ObserveSubtextVariant(double at, double frameDuration, string text, double confidence)
     {
         if (_active is null) return;
+        var required = confidence < _lowConfidence || text.EnumerateRunes().Count() <= 1 ? 3 : 2;
         if (_subtextVariant is null || !IsContinuousVariant(_subtextVariant.Text, text))
         {
-            _subtextVariant = new SubtextVariant(text, at, at, confidence);
+            _subtextVariant = new SubtextVariant(text, at, at, confidence, 1, required);
             return;
         }
         _subtextVariant = _subtextVariant with
@@ -218,11 +219,13 @@ internal sealed class SubtitleTracker
             Last = at,
             Text = PreferText(_subtextVariant.Text, _subtextVariant.Confidence, text, confidence),
             Confidence = Math.Max(_subtextVariant.Confidence, confidence),
+            Hits = _subtextVariant.Hits + 1,
+            Required = Math.Max(_subtextVariant.Required, required),
         };
-        // A short suffix can be a fade/reveal of the active cue. If it remains
-        // on screen for this long, it is a real repeated subtitle (for example
-        // "天天被幸福包围" followed by "幸福") and must become its own cue.
-        if (at + ActiveFrameEnd(frameDuration) - _subtextVariant.Start < .75) return;
+        // A short suffix can be a one-frame fade/reveal artifact. Requiring stable
+        // consecutive observations keeps that noise out without deleting a real
+        // short caption such as "你走吧" followed by "走".
+        if (_subtextVariant.Hits < _subtextVariant.Required) return;
         var variant = _subtextVariant;
         CommitActive(variant.Start);
         _active = new OcrCue(variant.Start, at + ActiveFrameEnd(frameDuration), variant.Text, variant.Confidence);
@@ -272,9 +275,8 @@ internal sealed class SubtitleTracker
     private static string PreferText(string current, double currentConfidence, string candidate, double candidateConfidence)
     {
         if (candidateConfidence > currentConfidence + 0.035) return candidate;
-        // Paddle can recover a trailing/leading CJK glyph on the next frame while
-        // reporting nearly the same line confidence. Do not require a two-character
-        // gain: that was the source of stable one-character truncation.
+        // Paddle can recover an omitted CJK glyph on the next frame while reporting
+        // nearly the same line confidence. Do not require a two-character gain.
         if (candidate.EnumerateRunes().Count() > current.EnumerateRunes().Count()
             && candidateConfidence >= currentConfidence - 0.08) return candidate;
         return current;
@@ -336,18 +338,34 @@ internal sealed class SubtitleTracker
     };
 
     private static bool IsContinuousVariant(string active, string observed) =>
-        Similarity(active, observed) >= 0.80
-        // Every-frame OCR sees subtitle reveals/fades one glyph at a time. A
-        // strict edit-distance threshold turns e.g. "你走吧" -> "走" into two
-        // cues even though the shorter reading is a frame-local fragment of the
-        // active visual subtitle. Containment is intentionally limited to the
-        // active cue only; candidates still require their normal confirmation.
-        || active.Contains(observed, StringComparison.Ordinal)
-        || observed.Contains(active, StringComparison.Ordinal);
+        IsTrackingEquivalent(active, observed)
+        || IsRuneSubsequence(active, observed)
+        || IsRuneSubsequence(observed, active);
+
+    private static bool IsTrackingEquivalent(string left, string right)
+    {
+        var leftRunes = left.EnumerateRunes().ToArray();
+        var rightRunes = right.EnumerateRunes().ToArray();
+        return leftRunes.Length == rightRunes.Length
+            && leftRunes.Zip(rightRunes).All(pair => SameTrackingRune(pair.First.Value, pair.Second.Value));
+    }
+
+    private static bool IsRuneSubsequence(string shorter, string longer)
+    {
+        var shorterRunes = shorter.EnumerateRunes().ToArray();
+        var longerRunes = longer.EnumerateRunes().ToArray();
+        if (shorterRunes.Length >= longerRunes.Length) return false;
+        var matched = 0;
+        foreach (var rune in longerRunes)
+        {
+            if (matched < shorterRunes.Length && SameTrackingRune(shorterRunes[matched].Value, rune.Value)) matched++;
+        }
+        return matched == shorterRunes.Length;
+    }
 
     private static bool IsStrictSubtext(string active, string observed) =>
-        active.Length > observed.Length && active.Contains(observed, StringComparison.Ordinal);
+        IsRuneSubsequence(observed, active);
 
     private sealed record Candidate(string Text, double Start, double Last, double Confidence, int Hits, int Required);
-    private sealed record SubtextVariant(string Text, double Start, double Last, double Confidence);
+    private sealed record SubtextVariant(string Text, double Start, double Last, double Confidence, int Hits, int Required);
 }

@@ -65,6 +65,17 @@ internal static class OcrTrackerFullerTextRegression
         if (!(bool)(canCheckpoint.GetValue(interleaved) ?? false))
             throw new InvalidOperationException("resolved interleaved fuller-text evidence kept checkpointing blocked");
 
+        var middleOmission = constructor.Invoke([30d, .68d, true]);
+        var missingMiddle = new OcrResult(true, true, "吃我的喝的", .98, []);
+        observe.Invoke(middleOmission, [25d, frame, missingMiddle]);
+        observe.Invoke(middleOmission, [25d + frame, frame, missingMiddle]);
+        observe.Invoke(middleOmission, [25d + 2d * frame, frame, completeText]);
+        observe.Invoke(middleOmission, [25d + 3d * frame, frame, completeText]);
+        var middleRecoveredCue = (OcrCue)(active.GetValue(middleOmission)
+            ?? throw new InvalidOperationException("tracker lost internal-omission fixture"));
+        if (middleRecoveredCue.Text != "吃我的喝我的")
+            throw new InvalidOperationException("two fuller reads did not recover a glyph omitted inside the cue");
+
         var expired = constructor.Invoke([30d, .68d, true]);
         observe.Invoke(expired, [30d, frame, shortText]);
         observe.Invoke(expired, [30d + frame, frame, shortText]);

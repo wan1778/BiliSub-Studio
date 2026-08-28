@@ -85,8 +85,8 @@ internal sealed class OcrCheckpointStore
         {
             var key = await KeyAsync(request, schema, cancellationToken);
             var path = Path.Combine(DirectoryPath, key + ".json");
-            File.Delete(path);
-            File.Delete(path + ".tmp");
+            TryDelete(path);
+            TryDelete(path + ".tmp");
             if (File.Exists(path) || File.Exists(path + ".tmp"))
                 throw new IOException($"Không thể xóa checkpoint OCR schema {schema}: {path}");
         }

@@ -7,6 +7,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 SCANNER = ROOT / "csharp" / "src" / "BiliSubStudio.Core" / "Ocr" / "OcrScanner.cs"
 CHECKPOINT = ROOT / "csharp" / "src" / "BiliSubStudio.Core" / "Ocr" / "OcrCheckpointStore.cs"
 OCR_PAGE = ROOT / "csharp" / "src" / "BiliSubStudio.App" / "Pages" / "OcrPage.xaml.cs"
+OCR_PAGE_XAML = ROOT / "csharp" / "src" / "BiliSubStudio.App" / "Pages" / "OcrPage.xaml"
 MANAGER = ROOT / "csharp" / "src" / "BiliSubStudio.Core" / "Ocr" / "OcrManager.cs"
 TOPOLOGY = ROOT / "csharp" / "src" / "BiliSubStudio.Core" / "Ocr" / "OcrTopologyBenchmark.cs"
 RESOURCE_POLICY = ROOT / "csharp" / "src" / "BiliSubStudio.Core" / "Ocr" / "OcrAutoResourcePolicy.cs"
@@ -25,6 +26,7 @@ def main() -> int:
     scanner = SCANNER.read_text(encoding="utf-8")
     checkpoint = CHECKPOINT.read_text(encoding="utf-8")
     page = OCR_PAGE.read_text(encoding="utf-8")
+    page_xaml = OCR_PAGE_XAML.read_text(encoding="utf-8")
     manager = MANAGER.read_text(encoding="utf-8")
     topology = TOPOLOGY.read_text(encoding="utf-8")
     resource_policy = RESOURCE_POLICY.read_text(encoding="utf-8")
@@ -133,6 +135,9 @@ def main() -> int:
             'Text = "Phụ đề OCR đã quét"' in page and
             'ToString(@"hh\\:mm\\:ss\\,fff")' in page and " --> " in page,
             "OCR page does not retain a full scrollable SRT-style start/end subtitle history")
+    require('HorizontalContentAlignment" Value="Stretch"' in page_xaml and
+            'Text="{Binding}" TextWrapping="Wrap"' in page_xaml,
+            "OCR cue rows can clip long recognized text instead of wrapping it inside the list")
 
     require("private OcrScanRequest? _checkpointRequest;" in page and
             "private OcrScanRequest? _activeRequest;" in page,

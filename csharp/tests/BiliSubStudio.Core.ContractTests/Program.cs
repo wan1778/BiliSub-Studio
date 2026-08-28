@@ -80,11 +80,12 @@ internal static class Program
         ("Paddle GPU wheel follows numeric CUDA compatibility", OcrGpuWheelContractAsync),
         ("OCR Auto benchmarks 1 2 4 8 16 and restores last PASS", OcrAutoBenchmarkContractAsync),
         ("OCR Auto resource guard keeps safe 8 and rejects unsafe 16", OcrAutoResourceGuardContractAsync),
+        ("OCR SRT export includes every final cue beyond live preview window", OcrExportAllCuesContractAsync),
         ("QR encoder produces fixed version 10 matrix", QrContractAsync),
         ("session cookie normalization matches legacy", SessionCookieContractAsync),
         ("cookie normalization rejects control-character injection", SessionCookieInjectionContractAsync),
         ("invalid encrypted session is quarantined without blocking startup", InvalidSessionContractAsync),
-        ("corrupt OCR checkpoint topology is ignored safely", InvalidOcrCheckpointContractAsync),
+        ("fresh and corrupt OCR checkpoint state is handled safely", InvalidOcrCheckpointContractAsync),
         ("job cancellation owns immediate terminal state", JobCancellationContractAsync),
         ("pausable OCR cancellation waits for cleanup completion", PausableJobCancellationContractAsync),
         ("cleanup-aware Editor cancellation waits for FFmpeg cleanup", CleanupAwareJobCancellationContractAsync),
@@ -2038,7 +2039,6 @@ internal static class Program
         await WithTemporaryRootAsync(async root =>
         {
             var paths = AppPaths.FromRoot(root);
-            paths.EnsureBootstrapDirectories();
             var source = Path.Combine(root, "fixture.mp4");
             await File.WriteAllBytesAsync(source, new byte[] { 1, 2, 3 });
             var request = new OcrScanRequest(source, new OcrRegion(.05, .65, .9, .29), "balanced", "cpu", "1", 1, 240);
@@ -2046,6 +2046,14 @@ internal static class Program
                 ?? throw new InvalidOperationException("missing OcrCheckpointStore");
             var store = Activator.CreateInstance(storeType, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
                 binder: null, args: [paths], culture: null) ?? throw new InvalidOperationException("cannot create checkpoint store");
+            var remove = storeType.GetMethod("RemoveAsync", BindingFlags.Instance | BindingFlags.Public)
+                ?? throw new InvalidOperationException("missing checkpoint remove method");
+            var operation = (Task?)remove.Invoke(store, [request, CancellationToken.None])
+                ?? throw new InvalidOperationException("fresh checkpoint remove did not return a task");
+            await operation;
+            True(!Directory.Exists(Path.Combine(paths.Data, "OCRCheckpoints")),
+                "fresh checkpoint removal created storage instead of tolerating its absence");
+
             var keyMethod = storeType.GetMethod("KeyAsync", BindingFlags.Instance | BindingFlags.NonPublic)
                 ?? throw new InvalidOperationException("missing checkpoint identity method");
             var key = await ((Task<string>?)keyMethod.Invoke(store, [request, 4, CancellationToken.None])
@@ -2057,7 +2065,7 @@ internal static class Program
                 """);
             var load = storeType.GetMethod("LoadAsync", BindingFlags.Instance | BindingFlags.Public)
                 ?? throw new InvalidOperationException("missing checkpoint load method");
-            var operation = (Task?)load.Invoke(store, [request, CancellationToken.None])
+            operation = (Task?)load.Invoke(store, [request, CancellationToken.None])
                 ?? throw new InvalidOperationException("checkpoint load did not return a task");
             await operation;
             var result = operation.GetType().GetProperty("Result")?.GetValue(operation);
@@ -2089,14 +2097,46 @@ internal static class Program
             result = operation.GetType().GetProperty("Result")?.GetValue(operation);
             True(result is null, "null checkpoint cue was not ignored safely");
 
-            var remove = storeType.GetMethod("RemoveAsync", BindingFlags.Instance | BindingFlags.Public)
-                ?? throw new InvalidOperationException("missing checkpoint remove method");
             operation = (Task?)remove.Invoke(store, [request, CancellationToken.None])
                 ?? throw new InvalidOperationException("checkpoint remove did not return a task");
             await operation;
             True(!File.Exists(Path.Combine(directory, key + ".json")), "checkpoint removal reported success while schema-4 file still existed");
         });
     }
+
+    private static Task OcrExportAllCuesContractAsync() => WithTemporaryRootAsync(async root =>
+    {
+        var application = new BiliSubApplication(AppPaths.FromRoot(root));
+        try
+        {
+            var cues = Enumerable.Range(0, 150)
+                .Select(index => new OcrCue(index * .5, index * .5 + .4, $"第{index + 1}句", .99))
+                .ToArray();
+            var path = await application.ExportOcrAsync(cues, root, "all-cues.srt", CancellationToken.None);
+            var blocks = (await File.ReadAllTextAsync(path))
+                .Replace("\r", string.Empty, StringComparison.Ordinal)
+                .Split("\n\n", StringSplitOptions.RemoveEmptyEntries);
+            Equal(cues.Length, blocks.Length);
+            for (var index = 0; index < cues.Length; index++)
+            {
+                True(blocks[index].StartsWith($"{index + 1}\n", StringComparison.Ordinal),
+                    $"OCR SRT block {index + 1} lost its independent sequence number");
+                True(blocks[index].EndsWith(cues[index].Text, StringComparison.Ordinal),
+                    $"OCR SRT block {index + 1} lost or merged its cue text");
+            }
+        }
+        finally
+        {
+            var containmentField = typeof(BiliSubApplication).GetField("_containment", BindingFlags.Instance | BindingFlags.NonPublic);
+            var containment = containmentField?.GetValue(application);
+            if (containment is not null)
+            {
+                var jobField = containment.GetType().GetField("_job", BindingFlags.Instance | BindingFlags.NonPublic);
+                jobField?.SetValue(containment, IntPtr.Zero);
+            }
+            await application.DisposeAsync();
+        }
+    });
 
     private static Task FileNamePolicyContractAsync()
     {

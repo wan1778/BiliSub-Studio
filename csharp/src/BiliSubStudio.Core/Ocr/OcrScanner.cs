@@ -635,35 +635,39 @@ public sealed class OcrScanner
 
     private static IReadOnlyList<OcrCue> Reconcile(IReadOnlyList<OcrLaneCheckpoint> lanes, out int merges)
     {
-        var owned = new List<OcrCue>();
+        var owned = new List<(OcrCue Cue, int Lane)>();
         foreach (var lane in lanes)
         {
             var isLast = lane.Segment.Index == lanes.Count - 1;
             foreach (var cue in lane.Cues)
             {
                 if (cue.Start < lane.Segment.CoreStart || (!isLast && cue.Start >= lane.Segment.CoreEnd) || (isLast && cue.Start > lane.Segment.CoreEnd)) continue;
-                if (ChineseSubtitleNormalizer.TryNormalize(cue.Text, out var text)) owned.Add(cue with { Text = text });
+                if (ChineseSubtitleNormalizer.TryNormalize(cue.Text, out var text))
+                    owned.Add((cue with { Text = text }, lane.Segment.Index));
             }
         }
-        owned.Sort((a, b) => a.Start.CompareTo(b.Start));
-        var output = new List<OcrCue>();
+        owned.Sort((a, b) => a.Cue.Start.CompareTo(b.Cue.Start));
+        var output = new List<(OcrCue Cue, int Lane)>();
         merges = 0;
-        foreach (var cue in owned)
+        foreach (var item in owned)
         {
-            if (output.Count > 0 && cue.Start <= output[^1].End + 0.25 && Similarity(output[^1].Text, cue.Text) >= 0.82)
+            var cue = item.Cue;
+            if (output.Count > 0 && item.Lane != output[^1].Lane
+                && cue.Start <= output[^1].Cue.End + 0.25
+                && Similarity(output[^1].Cue.Text, cue.Text) >= 0.82)
             {
                 var previous = output[^1];
-                output[^1] = previous with
-                {
-                    Text = PreferReconciledText(previous.Text, cue.Text),
-                    End = Math.Max(previous.End, cue.End),
-                    Confidence = Math.Max(previous.Confidence, cue.Confidence),
-                };
+                output[^1] = (previous.Cue with
+                    {
+                        Text = PreferReconciledText(previous.Cue.Text, cue.Text),
+                        End = Math.Max(previous.Cue.End, cue.End),
+                        Confidence = Math.Max(previous.Cue.Confidence, cue.Confidence),
+                    }, previous.Lane);
                 merges++;
             }
-            else output.Add(cue);
+            else output.Add(item);
         }
-        return output;
+        return output.Select(item => item.Cue).ToArray();
     }
 
     private static string PreferReconciledText(string current, string candidate) =>
@@ -674,7 +678,20 @@ public sealed class OcrScanner
     // never synthesize text from two merely similar readings.
     private static bool IsStrictSuperset(string candidate, string current) =>
         candidate.EnumerateRunes().Count() > current.EnumerateRunes().Count()
-        && candidate.Contains(current, StringComparison.Ordinal);
+        && IsRuneSubsequence(current, candidate);
+
+    private static bool IsRuneSubsequence(string shorter, string longer)
+    {
+        var shorterRunes = shorter.EnumerateRunes().ToArray();
+        var longerRunes = longer.EnumerateRunes().ToArray();
+        if (shorterRunes.Length >= longerRunes.Length) return false;
+        var matched = 0;
+        foreach (var rune in longerRunes)
+        {
+            if (matched < shorterRunes.Length && shorterRunes[matched] == rune) matched++;
+        }
+        return matched == shorterRunes.Length;
+    }
 
     private async Task<byte[]> CaptureFrameAsync(
         string path,
@@ -784,6 +801,7 @@ public sealed class OcrScanner
         if (!ChineseSubtitleNormalizer.TryNormalize(current.Text, out var currentText)) return true;
         var candidateRunes = candidateText.EnumerateRunes().Count();
         var currentRunes = currentText.EnumerateRunes().Count();
+        if (candidateRunes < currentRunes) return false;
         return candidate.Confidence > current.Confidence + .01
             || candidateRunes > currentRunes && candidate.Confidence >= current.Confidence - .08;
     }
