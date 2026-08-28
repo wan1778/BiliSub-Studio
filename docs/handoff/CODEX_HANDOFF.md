@@ -4,13 +4,14 @@
 
 - Active repository: `C:\Users\Man PC\Documents\Default Project\BiliSub-Studio`.
 - Current local main/base SHA: `6b976bf4ef20bbf9f3c17ed0a867adb414029648`.
+- OCR implementation commit: `16aec21f807fa67907acfac81355bf8d8522791a` (local `main`).
 - Last fetched GitHub `origin/main`: `0569bf1857f03b84c4abd81bc2d5dc198fe99ebf`.
 - Current branch: `main`; PR: none. No push, merge, version bump or release in this task.
 - Existing local commits ahead of GitHub were preserved: `966b0fc` (OCR robustness),
   `56a8300` (Editor UI), `6b976bf` (NGHI-TTS). Do not silently publish these as an OCR-only update.
 - Last completed step: reproduce the empty-lane defect and pass targeted JPEG/PTS runtime checks after fixing it.
 - Task in progress: `OCR-LANE-EOF-01` — Windows/release gates and full-video field verification are NOT PASS.
-- Exact next task: finish the Windows checks; resolve the pre-existing Voice gate in a separately scoped task before release,
+- Exact next task: resolve the Voice migration gates in the separate ongoing Voice task before release,
   then run a fresh full 8-hour OCR scan and verify the exported SRT against the final visible captions.
 
 ### Root cause and call path
@@ -54,10 +55,26 @@ do not prove frames reached OCR. Do not port the old checkout's speculative patc
 - Clean detached baseline `6b976bf` in `artifacts/ocr-baseline-6b976bf`:
   **72/73 PASS, same Voice failure**, proving it predates this OCR change.
 - OCR scanner static contract, OCR worker contract, generated map check and `git diff --check`: PASS.
-- WinUI Release build / startup smoke: pending. CI/installer: not run for this fix.
+- `verify.ps1`: **FAIL before compile** in `validate_csharp_migration.py` because
+  the existing TTS contract still requires `EngineVersion = "kokoro-vietnamese-onnx-2026-06-27"`.
+  Running the same validator on clean baseline `6b976bf` reproduced that failure.
+- Direct Windows Release solution build: **PASS, 0 warnings / 0 errors**.
+  Self-contained WinUI publish: **PASS**. These are compile/publish results only.
+- Real WinUI startup/layout smoke on the exact published OCR commit: **FAIL**;
+  PID 15164 initialized the window, then `EditorPage.RunLayoutSmokeAsync` line 99
+  threw `Editor phải mặc định chọn model voice Ngọc Huyền local.` No PASS sentinel.
+  That check still expects `ngoc-huyen`; the task made no App or Editor source changes.
+- Range regression executable: **PASS** (short-read continuation and HTTP 503 recovery).
+- Windows checks ran in clean detached `artifacts/ocr-verify-16aec21`, not against
+  concurrently edited TTS files. CI/installer: not run; release gate remains **FAIL**.
 - Functional PASS is limited to the real FFmpeg decoding/JPEG/PTS path and the
   coverage guard contract. No claim of full PaddleOCR, 8-hour SRT completeness,
   pause/resume end-to-end or recognition-quality PASS. Compile is not feature PASS.
+
+Concurrent work observed at handoff: `LocalTtsInstaller.cs`, `LocalTtsService.cs`
+and `internal/tts/worker.py` are modified outside this task. They were not staged,
+committed or reverted by this task. Re-run gates after that work is completed;
+the results above describe `16aec21`, not those later uncommitted changes.
 
 Runtime reproduction command (source must be the supplied long 30fps test video):
 
