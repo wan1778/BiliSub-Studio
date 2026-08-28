@@ -42,6 +42,7 @@ public sealed partial class OcrPage : Page
         _application = application;
         _picker = picker;
         InitializeComponent();
+        PreviewCanvas.SizeChanged += (_, _) => ApplyRegionVisual();
 
         _cueCountText = new TextBlock
         {
