@@ -97,20 +97,36 @@ def normalize_box(box):
 
 def parse_prediction(prediction):
     lines = []
+    result_count = 0
     for item in prediction:
+        result_count += 1
         data = as_mapping(item)
+        if data.get("error"):
+            raise RuntimeError(f"PaddleOCR trả lỗi: {data['error']}")
+        missing = [key for key in ("rec_texts", "rec_scores") if key not in data]
+        if "rec_boxes" not in data and "rec_polys" not in data:
+            missing.append("rec_boxes/rec_polys")
+        if missing:
+            raise RuntimeError(f"PaddleOCR trả schema không hợp lệ, thiếu: {', '.join(missing)}")
         texts = as_list(data.get("rec_texts"))
         scores = as_list(data.get("rec_scores"))
         boxes = as_list(data.get("rec_boxes"))
         if not boxes:
             boxes = as_list(data.get("rec_polys"))
+        if len(scores) != len(texts) or len(boxes) != len(texts):
+            raise RuntimeError(
+                "PaddleOCR trả số lượng text/score/box không khớp: "
+                f"{len(texts)}/{len(scores)}/{len(boxes)}"
+            )
         for index, text in enumerate(texts):
             text = str(text or "").strip()
             if not text:
                 continue
-            confidence = float(scores[index]) if index < len(scores) else 0.0
-            box = normalize_box(boxes[index]) if index < len(boxes) else []
+            confidence = float(scores[index])
+            box = normalize_box(boxes[index])
             lines.append({"text": text, "confidence": confidence, "box": box})
+    if result_count == 0:
+        raise RuntimeError("PaddleOCR không trả kết quả cho ảnh")
     text = "\n".join(line["text"] for line in lines)
     confidence = sum(line["confidence"] for line in lines) / len(lines) if lines else 0.0
     return {

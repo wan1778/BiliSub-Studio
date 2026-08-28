@@ -57,6 +57,15 @@ def assert_result(result: dict, text: str, confidence: float, box: list[int]) ->
     assert result["lines"] == [{"text": text, "confidence": confidence, "box": box}]
 
 
+def assert_rejected(worker, prediction, expected: str) -> None:
+    try:
+        worker.parse_prediction(prediction)
+    except RuntimeError as exc:
+        assert expected in str(exc), str(exc)
+        return
+    raise AssertionError(f"invalid PaddleOCR result was accepted: {prediction!r}")
+
+
 def main() -> int:
     worker = load_worker()
 
@@ -88,7 +97,16 @@ def main() -> int:
     empty = worker.parse_prediction([{"res": {"rec_texts": [], "rec_scores": [], "rec_boxes": []}}])
     assert empty["ok"] is True and empty["detected"] is False and empty["text"] == ""
 
-    print("PASS OCR worker PaddleOCR 3 result contract")
+    assert_rejected(worker, [{"error": "backend failed"}], "backend failed")
+    assert_rejected(worker, [{"rec_texts": [], "rec_scores": []}], "rec_boxes/rec_polys")
+    assert_rejected(worker, [{
+        "rec_texts": ["第一行", "第二行"],
+        "rec_scores": [0.9],
+        "rec_boxes": [[1, 2, 3, 4]],
+    }], "2/1/1")
+    assert_rejected(worker, [], "không trả kết quả")
+
+    print("PASS OCR worker PaddleOCR 3 result and failure contract")
     return 0
 
 
