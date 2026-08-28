@@ -1,8 +1,8 @@
 {
-  "version": "4.0.0-beta.67-csharp-p5",
+  "version": "4.0.0-beta.68-csharp-p5",
   "notes": [
-    "Khung Phụ đề OCR đã quét được tách thành danh sách có thanh cuộn, giữ toàn bộ cue đã nhận để xem lại và hiển thị rõ mốc bắt đầu --> kết thúc theo định dạng thời gian SRT.",
-    "OCR Auto giữ cơ chế đo VRAM thực tế theo từng topology, chừa reserve trước probe và dùng margin an toàn sau khi đã học mức VRAM/GPU worker; regression khóa trường hợp 8 worker an toàn và 16 worker thiếu headroom.",
-    "Giữ nguyên các sửa lỗi OCR trước đó về timeline video dài nhiều lane, Pause/Resume và cleanup tiến trình; bản public mới được tạo riêng vì 4.0.52 đã là release bất biến."
+    "Live OCR preview không còn để snapshot ngắn hơn của cùng một cue ghi đè câu đầy đủ đã thấy; cùng timestamp ưu tiên nội dung nhiều ký tự hơn, sau đó mới xét confidence và thời điểm kết thúc.",
+    "Giữ nguyên PaddleOCR model, threshold, tracker, frame sampling và logic xuất SRT; thay đổi này chỉ sửa bước merge lịch sử subtitle đang hiển thị trong lúc quét.",
+    "Giữ nguyên các sửa lỗi trước đó về video dài nhiều lane, Pause/Resume, Auto VRAM thực đo và khung subtitle SRT-style có thanh cuộn."
   ]
 }
