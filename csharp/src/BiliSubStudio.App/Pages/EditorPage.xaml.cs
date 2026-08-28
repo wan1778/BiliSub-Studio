@@ -681,9 +681,10 @@ public sealed partial class EditorPage : Page
             VoiceStatusText.Text = "Hãy Vietsub đầy đủ trước khi tạo voice Việt.";
             return;
         }
-        if (!string.Equals(SelectedVoiceModel(), "ngoc-huyen", StringComparison.Ordinal))
+        var selectedVoice = SelectedVoiceModel();
+        if (string.IsNullOrWhiteSpace(selectedVoice))
         {
-            VoiceStatusText.Text = "Hãy chọn model đọc Ngọc Huyền local trước khi tạo voice.";
+            VoiceStatusText.Text = "Hãy chọn giọng đọc local trước khi tạo voice.";
             return;
         }
         try
@@ -715,9 +716,10 @@ public sealed partial class EditorPage : Page
                 media.Duration,
                 subtitle,
                 speech.AnalysisPath,
-                speech.AnalysisSha256));
+                speech.AnalysisSha256,
+                selectedVoice));
             VoiceProgress.Value = 0;
-            VoiceStatusText.Text = "Đang chuẩn bị voice Ngọc Huyền local và fit theo word timing Whisper...";
+            VoiceStatusText.Text = $"Đang chuẩn bị voice {selectedVoice} local và fit theo word timing Whisper...";
             RefreshEditorActions();
             await PollTtsJobAsync();
         }
@@ -2067,6 +2069,8 @@ public sealed partial class EditorPage : Page
         var hasMedia = _media is not null;
         var editable = idle && hasMedia && !_playback.IsPreviewMode;
         OpenVideoButton.IsEnabled = idle && !_playback.IsPreviewMode;
+        EmptyPreviewState.Visibility = hasMedia ? Visibility.Collapsed : Visibility.Visible;
+        EmptyOpenVideoButton.IsEnabled = idle && !_playback.IsPreviewMode;
         Overlay.IsHitTestVisible = editable &&
             (_inspectorMode == InspectorMode.Blur || _inspectorMode == InspectorMode.Subtitle && _subtitleSource is not null);
         AddRegionButton.IsEnabled = editable && _draftRegion is not null;
@@ -2116,6 +2120,12 @@ public sealed partial class EditorPage : Page
         VoiceModelBox.IsEnabled = editable;
         GenerateTtsButton.IsEnabled = editable && !_subtitleManualDirty && subtitleReady;
         CancelVoiceButton.IsEnabled = _asrJobId is not null || _ttsJobId is not null;
+        // Compact: swap button in same slot, show progress only when busy
+        var voiceBusy = _asrJobId is not null || _ttsJobId is not null;
+        GenerateTtsButton.Visibility = voiceBusy ? Visibility.Collapsed : Visibility.Visible;
+        CancelVoiceButton.Visibility = voiceBusy ? Visibility.Visible : Visibility.Collapsed;
+        if (VoiceProgressContainer is not null) VoiceProgressContainer.Visibility = voiceBusy ? Visibility.Visible : Visibility.Collapsed;
+        if (_voiceSampleButton is not null) _voiceSampleButton.IsEnabled = editable;
         KaraokeToggle.IsEnabled = idle && !_playback.IsPreviewMode && _subtitleSource is not null;
         RefreshImageControls();
         RefreshEditorParityControls();

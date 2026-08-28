@@ -205,23 +205,41 @@ public sealed partial class EditorPage
         if (_voiceSampleButton is not null) return;
         _voiceSampleButton = new Button
         {
-            Content = "▶ Nghe thử giọng",
+            Content = "▶ Thử",
+            MinHeight = 36,
+            Height = 36,
+            Padding = new Thickness(12, 0, 12, 0),
+            CornerRadius = new CornerRadius(8),
             HorizontalAlignment = HorizontalAlignment.Stretch,
+            Style = (Style)Application.Current.Resources["SecondaryButtonStyle"],
         };
+        ToolTipService.SetToolTip(_voiceSampleButton, "Nghe thử không cần video hay SRT");
         AutomationProperties.SetName(_voiceSampleButton, "Nghe thử giọng Ngọc Huyền local");
         _voiceSampleButton.Click += VoiceSample_Click;
 
         _voiceRequirementsText = new TextBlock
         {
-            Text = "Nghe thử không cần video hay SRT. Để tạo voice toàn bộ: mở video + Vietsub đầy đủ; Whisper timing sẽ tự chạy nếu chưa có cache.",
+            Text = "Nghe thử không cần video hay SRT.",
             TextWrapping = TextWrapping.Wrap,
-            FontSize = 11,
+            FontSize = 10,
+            Opacity = 0.0,
+            Height = 0,
             Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["SecondaryTextBrush"],
         };
-        var generateIndex = VoiceInspectorPanel.Children.IndexOf(GenerateTtsButton);
-        if (generateIndex < 0) generateIndex = VoiceInspectorPanel.Children.Count;
-        VoiceInspectorPanel.Children.Insert(generateIndex, _voiceSampleButton);
-        VoiceInspectorPanel.Children.Insert(generateIndex + 1, _voiceRequirementsText);
+        // Compact: try to place sample button next to dropdown slot
+        if (VoiceSampleSlot is not null)
+        {
+            VoiceSampleSlot.Children.Add(_voiceSampleButton);
+            // requirements as tooltip, not extra block
+            ToolTipService.SetToolTip(VoiceModelBox, "Nghe thử không cần video hay SRT. Để tạo voice toàn bộ: mở video + Vietsub đầy đủ; Whisper timing sẽ tự chạy nếu chưa có cache.");
+        }
+        else
+        {
+            var generateIndex = VoiceInspectorPanel.Children.IndexOf(GenerateTtsButton);
+            if (generateIndex < 0) generateIndex = VoiceInspectorPanel.Children.Count;
+            VoiceInspectorPanel.Children.Insert(generateIndex, _voiceSampleButton);
+            VoiceInspectorPanel.Children.Insert(generateIndex + 1, _voiceRequirementsText);
+        }
         Unloaded += (_, _) => CleanupVoiceSample();
     }
 
@@ -233,9 +251,10 @@ public sealed partial class EditorPage
             VoiceStatusText.Text = "Hãy hoàn tất hoặc hủy tác vụ đang chạy trước khi nghe thử giọng.";
             return;
         }
-        if (!string.Equals(SelectedVoiceModel(), "ngoc-huyen", StringComparison.Ordinal))
+        var selectedVoice = SelectedVoiceModel();
+        if (string.IsNullOrWhiteSpace(selectedVoice))
         {
-            VoiceStatusText.Text = "Hãy chọn Ngọc Huyền · tiếng Việt local trước khi nghe thử.";
+            VoiceStatusText.Text = "Hãy chọn giọng đọc local trước khi nghe thử.";
             return;
         }
 
@@ -243,7 +262,7 @@ public sealed partial class EditorPage
         {
             _voiceSampleButton.IsEnabled = false;
             VoiceProgress.Value = 0;
-            VoiceStatusText.Text = "Đang chuẩn bị mẫu giọng Ngọc Huyền local...";
+            VoiceStatusText.Text = $"Đang chuẩn bị mẫu giọng {selectedVoice} local...";
 
             const double duration = 4.2;
             var root = Path.Combine(_application.Paths.Cache, "Editor", "TTS", "VoiceSample");
@@ -299,12 +318,13 @@ public sealed partial class EditorPage
                 [cue]);
 
             _ttsJobId = _application.StartEditorTts(new BiliSubStudio.Core.Editor.EditorTtsRequest(
-                "voice-demo-ngoc-huyen",
+                $"voice-demo-{selectedVoice}",
                 sourceInfo.FullName,
                 duration,
                 subtitle,
                 analysisPath,
-                analysisSha));
+                analysisSha,
+                selectedVoice));
             RefreshEditorActions();
             var sampleJob = _ttsJobId;
             while (_ttsJobId == sampleJob && sampleJob is not null)
