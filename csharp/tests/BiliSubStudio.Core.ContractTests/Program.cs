@@ -72,6 +72,7 @@ internal static class Program
         ("editor Preview and Export preserve exact normalized region geometry within one pixel", EditorRegionPreviewExportGeometryContractAsync),
         ("editor SRT keeps exact blocks order and timecodes", EditorSubtitleDocumentContractAsync),
         ("editor manual cue state persists locks and preserves timeline", EditorSubtitleManualContract.RunAsync),
+        ("external Vietnamese SRT enables whole-cue voice and survives edit/reopen without translation", EditorVietnameseSrtContract.RunAsync),
         ("editor source selection keeps cancel/same-source transitions safe", EditorSourceSelectionContract.RunAsync),
         ("translation skill bundle is pinned and rejects path traversal", TranslationSkillBundleContractAsync),
         ("local translation manifest and resource gate stay pinned", LocalTranslationManifestContractAsync),
@@ -101,6 +102,8 @@ internal static class Program
 
     private static async Task<int> Main(string[] arguments)
     {
+        if (arguments is ["--nghi-tts-runtime", var ttsRoot, var ttsVideo])
+            return await EditorNghiTtsRuntimeContract.RunAsync(ttsRoot, ttsVideo);
         if (arguments is ["--ocr-lane-ffmpeg", var ffmpeg, var source, var decoder])
             return await OcrLaneCoverageRegression.RunFfmpegAsync(ffmpeg, source, decoder == "nvdec");
         if (arguments is ["--fixture-hold-open"])

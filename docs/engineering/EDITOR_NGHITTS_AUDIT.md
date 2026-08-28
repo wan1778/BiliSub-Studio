@@ -1,98 +1,87 @@
-# NghiTTS audit and final local voice-pin decision
+# NGHI/Piper Voice task — 2026-08-28
 
-Audit date: 2026-08-23
-Status: production model decision closed for the Editor field candidate.
+Baseline: main, 6b976bf4ef20bbf9f3c17ed0a867adb414029648 (clean at task start).
+Scope: Voice/TTS, extended by the user to remove in-app Editor translation and accept Vietnamese SRT directly. No release, version bump, PR, merge, or push.
 
-## What NghiTTS contributed
+## Reviewed artifacts
 
-Reference: `nghimestudio/nghitts`.
+The [NGHI repository](https://github.com/nghimestudio/nghitts/tree/46d160da32041f7e176607203b958069265df7da)
+links its [official model folder](https://drive.google.com/drive/folders/1f_pCpvgqfvO4fdNKM7WS4zTuXC0HBskL).
+Its folder listing identifies the following exact Ngọc Huyền files, independently
+re-downloaded by the production installer during this task:
 
-NghiTTS demonstrated a useful fully local Vietnamese TTS design based on Piper-compatible ONNX models, Vietnamese text preprocessing, adjustable synthesis speed and WAV output. BiliSub Studio used that work as an architecture/reference input only.
+| Artifact | Drive ID | Bytes | SHA-256 |
+| --- | --- | ---: | --- |
+| ngochuyen.onnx | 12HNgJmBY3GiNCcFBRpHxYFv-qbE-jEv7 | 63516050 | 2140977786d76d834736c059dacfa553d4931dac2b2c7aaaea438bb2aa9da697 |
+| ngochuyen.onnx.json | 1p-oDIiuhecInjgys4bqsaeOf794OFcHC | 4855 | 971f57f8d504223fee5b40d664f503cf769baf7db21f7d2ae0554a75d07de2f8 |
 
-BiliSub Studio does **not** embed the NghiTTS Vue/Vite app, browser Web Worker, WebView, Node runtime, localhost API or cloud inference service. The native application owns its local runtime, worker lifecycle, checksums, cache, timing fit and preview/export audio graph.
+Drive URLs are mutable; the reviewed bytes and SHA pins are authoritative.
+The model is mono 22050 Hz, Vietnamese espeak phonemes, one speaker.
+Canonical/default voice: ngoc_huyen. Unverified dropdown voices were removed,
+including the former fallback that served VAIS bytes under unrelated NGHI labels.
+Kokoro and synthetic substitute models are absent from the production TTS path.
 
-## Rejected production weights
+Runtime pins: piper-tts 1.7.0, onnxruntime 1.22.1, vietnormalizer 0.2.3,
+numpy 2.5.2, gdown 6.1.0. Runtime manifests use symmetric snake-case
+serialization/deserialization and verify the bundled worker identity.
 
-The initially evaluated generic pair was:
+## Runtime contract
 
-- `deepman3909`
-- `calmwoman3688`
-- source: `sannht/vi_voice`
+One PiperVoice.load before the cue loop; one synthesize(text) call per uncached
+whole cue. Piper's internal audio chunks are streamed into one cue WAV.
+The text-only sample uses the same service and worker without fake source files
+or fabricated Whisper timing. Full-project Whisper provenance is still checked,
+but its word/pause data does not split synthesis.
 
-Although the exact files could be pinned by revision, size and SHA-256, the reviewed weight index identifies their model license as `unknown` and the repository/model card did not establish a sufficiently clear redistribution/downloader license for release.
+Natural duration is measured. FFmpeg atempo is bounded to 0.92–1.08 with no second
+TTS pass. fit/review reflects measured duration, including cache hits. Full audio
+is preserved in the cue cache; master playback is bounded by each SRT cue and
+overlong cues are explicitly flagged for review. No SRT timecode is rewritten.
 
-Decision: these weights are **not** downloaded or distributed by the production path. Celebrity/reference-person voice models are also excluded from default production use.
+Cache keys include model/config, worker, package and algorithm identities, cue ID,
+time interval, and normalized text. Cached WAV hashes and decoded format are
+checked before reuse. Separate per-run paths keep previous masters/results safe.
+Cancellation stops the owned process tree, then waits boundedly for Windows file
+handles before deleting only the current run directory. Completed cue cache stays.
 
-## Final production voice source
+Master PCM is assembled in 30-second blocks and streamed to FLAC. C# verifies
+result identity, cue order/count, review count, master SHA, decoded rate/channels
+and duration before promotion. Project reopen rejects older TTS manifest revisions
+and changed master bytes. Preview/Export continue consuming the same voice graph.
 
-BiliSub Studio uses the official Piper voice collection:
+## External Vietnamese SRT workflow
 
-- repository: `rhasspy/piper-voices`
-- exact model revision: `3d796cc2f2c884b3517c527507e084f7bb245aea`
-- voice: `vi_VN-vais1000-medium`
-- model collection license: MIT as declared by the upstream repository metadata
-- training dataset: VAIS-1000
-- dataset license: CC BY 4.0
-- speaker profile documented for the dataset/model: one Vietnamese female/Northern voice
-- sample rate: 22,050 Hz
+The user explicitly retired in-app translation. Editor now offers one Vietnamese
+SRT import, Vietnamese-only cue editing and separate SRT export. Import fills
+spoken text immediately, preserving original bytes, cue identity and timecodes.
+No Chinese SRT, AI preparation or translation step is required. Dirty state compares
+actual text rather than treating programmatic TextChanged events as user edits.
+The Voice action explains missing video/SRT, pending edits and active-job blockers.
+Voice selection/sample stays available without video. Whisper still runs internally
+for full-project timing if no valid cache exists; it does not split cue synthesis.
 
-Pinned files:
+## Verification and limits
 
-- `vi_VN-vais1000-medium.onnx`
-  - size: 63,201,294 bytes
-  - SHA-256: `ec7c89e2c85f4d1edc24b6120c18aaf1bda614f06b511567eb9c7c0de15e2dab`
-- `vi_VN-vais1000-medium.onnx.json`
-  - size: 4,860 bytes
-  - SHA-256: `fafb9da1354ed4b77c31af228ed41fb41cd825c14cffa105454b25e6ae751ee0`
+The opt-in real integration runs the actual installer, model and service:
 
-The Windows app downloads these exact immutable files once, verifies byte size and SHA-256, and then runs synthesis locally/offline.
+    dotnet run --project csharp/tests/BiliSubStudio.Core.ContractTests -- --nghi-tts-runtime <isolated-root> <real-video>
 
-## Male/female routing without a second ambiguous model
+It retains four cue WAVs, a master, processed preview and runtime-checks.json.
+It checks cold/warm cache, same-size corruption, inference cancel/retry, cancellation
+during master encoding, zero remaining child processes, sample API, decoded preview,
+and project reopen. It does not use fake model bytes or an oscillator.
 
-The product still needs two acoustic routes because the owner requested only practical Nam/Nữ voice selection, not speaker identity.
+Four spoken test texts:
 
-BiliSub Studio therefore exposes two deterministic profiles from the one licensed VAIS-1000 base model:
+1. Xin chào, tôi đang kiểm tra giọng đọc tiếng Việt của Ngọc Huyền.
+2. Hôm nay trời trong xanh, những hàng cây khẽ đung đưa trước gió.
+3. Đạo hữu hãy bình tĩnh, chúng ta vẫn còn cơ hội trở về nhà.
+4. Cảm ơn bạn đã lắng nghe. Chúc bạn một ngày thật bình an.
 
-- `vais1000-female-profile-v1`: original base synthesis.
-- `vais1000-male-profile-v1`: synthetic lower-pitch profile generated locally.
+Automated real integration checks: completed successfully on Windows after fixing
+the demonstrated FFmpeg file-handle cleanup race. Core contracts: 75/75, including direct Vietnamese import, readiness and edit/reopen.
+Signal integrity and successful decoding do not establish intelligible speech.
 
-For the male profile, `internal/tts/worker.py` applies a fixed pitch factor `0.84` (approximately -3 semitones) using FFmpeg `asetrate` + `aresample`, then compensates tempo by `1 / 0.84` so the transform itself does not intentionally lengthen the cue. The normal timing-fit stage measures the transformed WAV afterwards.
-
-This route is described as a synthetic acoustic profile. It is not presented as a recording, identity or likeness of a real male speaker.
-
-The worker detects that both routes point to the same ONNX/config pair and loads the Piper model only once to avoid duplicate model RAM.
-
-## Timing fit and cache identity
-
-The production sequence remains:
-
-1. normalize Vietnamese text locally;
-2. map cue to Whisper speech/pause timing;
-3. choose automatic acoustic route or authoritative manual override;
-4. synthesize baseline Piper WAV;
-5. apply the selected VAIS acoustic profile;
-6. measure actual decoded WAV duration;
-7. retry Piper `length_scale` only within 0.86–1.16;
-8. measure again;
-9. apply bounded `atempo` only within 0.92–1.08 when needed;
-10. measure final duration;
-11. mark `fit` or `review` instead of forcing extreme speed.
-
-No SRT order or timecode is silently rewritten.
-
-The TTS cache fingerprint includes a voice revision string containing both the immutable model revision and `profile-v1`. Therefore the beta.36 NghiTTS clip cache cannot be reused after the production voice-source change, and a future acoustic-profile change must increment the profile revision.
-
-## Attribution
-
-`THIRD_PARTY_NOTICES.md` records the Piper/VAIS source, exact model revision, hashes and CC BY 4.0 dataset attribution. The App project packages this notice into the Windows publish output.
-
-## Final production constraints
-
-- local/offline inference after first verified download;
-- no paid TTS API;
-- no localhost service;
-- no WebView/browser TTS runtime;
-- no celebrity/reference-person default voice;
-- no pyannote/diarization;
-- no Demucs/stem separation;
-- preview and export consume the same generated `voice-master.flac` semantics.
+Technical/runtime speech gate: user confirmed audible speech from the real Ngọc Huyền sample on 2026-08-28 ("ok nghe được rồi"). Automated checks are not a listening assessment. Full-video timing/quality remains a user field test.
+Voice quality: WAITING FOR USER FIELD TEST.
+This task does not authorize release or model-license clearance for publication.

@@ -35,7 +35,6 @@ public sealed partial class EditorPage : Page
     private EditorAudioSettings _audioSettings = EditorAudioSettings.Default;
     private EditRegion? _draftRegion;
     private string? _jobId;
-    private string? _translationJobId;
     private string? _asrJobId;
     private string? _ttsJobId;
     private IReadOnlyList<EditorCueSpeechTiming> _cueSpeechTiming = [];
@@ -58,7 +57,7 @@ public sealed partial class EditorPage : Page
     private EditorProject? _pendingProjectSave;
     private bool _projectSaveFlushInProgress;
     private int _previewRevision;
-    private bool EditorBusy => _jobId is not null || _translationJobId is not null || _asrJobId is not null || _ttsJobId is not null || _playback.IsRendering;
+    private bool EditorBusy => _jobId is not null || _asrJobId is not null || _ttsJobId is not null || _playback.IsRendering;
 
     public EditorPage(BiliSubApplication application, IFilePickerService picker)
     {
@@ -91,12 +90,14 @@ public sealed partial class EditorPage : Page
 
     internal Task RunLayoutSmokeAsync()
     {
-        if (!ImportSrtButton.IsEnabled || !PrepareAiButton.IsEnabled)
-            throw new InvalidOperationException("Editor phải cho phép chọn SRT và chuẩn bị AI trước khi chọn video.");
+        if (!ImportSrtButton.IsEnabled || !VoiceModelBox.IsEnabled)
+            throw new InvalidOperationException("Editor phải cho phép chọn SRT Việt và giọng đọc trước khi chọn video.");
         if (GenerateTtsButton.IsEnabled)
             throw new InvalidOperationException("Editor không được cho tạo voice khi chưa có video nguồn.");
-        if (!string.Equals(SelectedVoiceModel(), "ngoc-huyen", StringComparison.Ordinal))
+        if (!string.Equals(SelectedVoiceModel(), "ngoc_huyen", StringComparison.Ordinal))
             throw new InvalidOperationException("Editor phải mặc định chọn model voice Ngọc Huyền local.");
+        if (_voiceSampleButton is null || !_voiceSampleButton.IsEnabled)
+            throw new InvalidOperationException("Editor phải cho nghe thử giọng local trước khi chọn video/SRT.");
         if (!string.Equals(PlayerPlayPauseButton.Content?.ToString(), "▶", StringComparison.Ordinal))
             throw new InvalidOperationException("Editor preview phải có đúng một nút Play/Pause do playback controller sở hữu.");
         if (PreviewPlayer.AreTransportControlsEnabled)
@@ -227,7 +228,7 @@ public sealed partial class EditorPage : Page
             AttachSubtitleToProject(string.Empty);
             SrtPathText.Text = pendingSubtitle.Path;
             UpdateSubtitleSummary();
-            TranslationStatusText.Text = "Đã gắn SRT đã chọn vào video; có thể đặt khung và Vietsub.";
+            SubtitleStatusText.Text = "Đã gắn SRT Việt vào video; có thể tạo voice hoặc xuất video.";
         }
         else await RestoreSubtitleAsync(_project.Subtitle);
         await SyncSubtitleCueEditorAsync();
@@ -259,7 +260,7 @@ public sealed partial class EditorPage : Page
                 ? $"Đã mở lại project với {_document.Regions.Count} vùng."
                 : _subtitleSource is not null
                     ? $"Đã mở lại SRT {_subtitleSource.Cues.Count} câu; khung phụ đề có thể kéo/resize trực tiếp."
-                    : "Chọn SRT tiếng Trung để bắt đầu Vietsub, hoặc kéo frame để tạo vùng hiệu ứng.";
+                    : "Chọn SRT Việt đã dịch để tạo voice, hoặc kéo frame để tạo vùng hiệu ứng.";
         RefreshEditorActions();
         QueueProjectSave();
     }
@@ -308,7 +309,7 @@ public sealed partial class EditorPage : Page
     private void EnsureCurrentSubtitleFingerprint()
     {
         if (_subtitleSource is not null && !CurrentSubtitleFingerprintMatches())
-            throw new InvalidDataException("SRT nguồn đã thay đổi ngoài ứng dụng; hãy chọn lại file SRT để reset Vietsub/voice trước khi tiếp tục.");
+            throw new InvalidDataException("SRT nguồn đã thay đổi ngoài ứng dụng; hãy chọn lại file SRT để làm mới phụ đề/voice trước khi tiếp tục.");
     }
 
     private async Task RestoreSubtitleAsync(EditorSubtitleProject? saved)
@@ -316,21 +317,22 @@ public sealed partial class EditorPage : Page
         _subtitleSource = null;
         _subtitlePlacement = EditorSubtitlePlacement.Default;
         SrtPathText.Text = "Chưa chọn SRT.";
-        SrtSummaryText.Text = "Skill: Dịch Trung Tu Tiên (tích hợp, đã khóa SHA-256).";
+        SrtSummaryText.Text = "Chọn SRT Việt đã dịch bên ngoài app.";
         if (saved is null) return;
         try
         {
             var current = await _application.LoadEditorSubtitleAsync(saved.SourcePath, CancellationToken.None);
             if (!string.Equals(current.Sha256, saved.SourceSha256, StringComparison.Ordinal))
             {
-                TranslationStatusText.Text = "File SRT nguồn đã thay đổi; hãy chọn lại để không ghép nhầm checkpoint/bản dịch.";
+                SubtitleStatusText.Text = "File SRT đã thay đổi; hãy nạp lại SRT Việt để dùng đúng nội dung mới.";
                 return;
             }
             var restoreTranslatedCues = string.Equals(
                 saved.TranslationPolicyKey,
                 LocalSubtitleTranslationService.TranslationPolicyKey,
                 StringComparison.Ordinal)
-                || string.Equals(saved.TranslationPolicyKey, EditorSubtitleDocument.ImportedTranslationPolicyKey, StringComparison.Ordinal);
+                || string.Equals(saved.TranslationPolicyKey, EditorSubtitleDocument.ImportedTranslationPolicyKey, StringComparison.Ordinal)
+                || string.Equals(saved.TranslationPolicyKey, EditorSubtitleDocument.DirectVietnamesePolicyKey, StringComparison.Ordinal);
             var translated = restoreTranslatedCues
                 ? saved.Cues.ToDictionary(x => x.Id, x => x.VietnameseText, StringComparer.Ordinal)
                 : new Dictionary<string, string>(StringComparer.Ordinal);
@@ -338,15 +340,14 @@ public sealed partial class EditorPage : Page
             {
                 Cues = current.Cues.Select(x => x with
                 {
-                    VietnameseText = translated.TryGetValue(x.Id, out var value) ? value : string.Empty,
+                    VietnameseText = translated.TryGetValue(x.Id, out var value) ? value
+                        : saved.TranslationPolicyKey == EditorSubtitleDocument.DirectVietnamesePolicyKey ? x.SourceText : string.Empty,
                 }).ToArray(),
             };
             if (!restoreTranslatedCues && _project is not null)
             {
-                // Project cue text is AI output. It has no semantic value after a
-                // translation-policy revision, unlike the immutable source SRT.
-                // Clearing its output path also keeps the manual-store restore path
-                // from applying old Vietnamese overrides over the fresh source.
+                // Legacy source-only projects are not assumed to contain Vietnamese.
+                // Require an explicit Vietnamese SRT import before enabling voice.
                 _project = _project with
                 {
                     Subtitle = saved with
@@ -364,15 +365,15 @@ public sealed partial class EditorPage : Page
             try { KaraokeToggle.IsOn = saved.Karaoke; } finally { _syncingVoice = false; }
             SrtPathText.Text = saved.SourcePath;
             UpdateSubtitleSummary();
-            TranslationStatusText.Text = !restoreTranslatedCues
-                ? "Bản dịch AI cũ không còn tương thích với policy hiện tại; đã giữ SRT gốc và cần Vietsub lại."
+            SubtitleStatusText.Text = !restoreTranslatedCues
+                ? "Project cũ chưa có lời Việt hợp lệ. Hãy nạp SRT Việt đã dịch."
                 : _subtitleSource.Cues.All(x => !string.IsNullOrWhiteSpace(x.VietnameseText))
-                    ? "Bản Vietsub đã hoàn tất; có thể mở thư mục SRT Việt."
-                    : "Đã khôi phục SRT và các câu dịch/checkpoint hiện có.";
+                    ? "Đã khôi phục SRT Việt; có thể tạo voice."
+                    : "Đã khôi phục phụ đề; hãy nạp SRT Việt nếu còn câu thiếu lời.";
         }
         catch (Exception error)
         {
-            TranslationStatusText.Text = "Không khôi phục được SRT: " + error.Message;
+            SubtitleStatusText.Text = "Không khôi phục được SRT: " + error.Message;
         }
     }
 
@@ -426,28 +427,12 @@ public sealed partial class EditorPage : Page
         catch (OperationCanceledException) { }
         catch (InvalidDataException error)
         {
-            TranslationStatusText.Text = "SRT không hợp lệ: " + error.Message;
+            SubtitleStatusText.Text = "SRT không hợp lệ: " + error.Message;
             RefreshEditorActions();
         }
         catch (Exception error)
         {
-            TranslationStatusText.Text = "Không nhập được SRT: " + error.Message;
-            RefreshEditorActions();
-        }
-    }
-
-    private async void ImportTranslatedSubtitle_Click(object sender, RoutedEventArgs e)
-    {
-        try { await ImportTranslatedSubtitleAsync(); }
-        catch (OperationCanceledException) { }
-        catch (InvalidDataException error)
-        {
-            TranslationStatusText.Text = "SRT Việt không hợp lệ: " + error.Message;
-            RefreshEditorActions();
-        }
-        catch (Exception error)
-        {
-            TranslationStatusText.Text = "Không nạp được SRT Việt: " + error.Message;
+            SubtitleStatusText.Text = "Không nhập được SRT: " + error.Message;
             RefreshEditorActions();
         }
     }
@@ -463,6 +448,7 @@ public sealed partial class EditorPage : Page
         try
         {
             candidate = await _application.LoadEditorSubtitleAsync(path, CancellationToken.None);
+            candidate = EditorSubtitleDocument.UseVietnameseSrt(candidate);
         }
         catch (Exception error) when (error is not OperationCanceledException)
         {
@@ -472,6 +458,8 @@ public sealed partial class EditorPage : Page
             throw new InvalidDataException(detail, error);
         }
 
+        // Preserve a real pending edit before switching files; never silently discard it.
+        if (_subtitleManualDirty) await SaveCurrentSubtitleCueAsync();
         var subtitleSourceChanged = _subtitleSource is not null
             && (!string.Equals(Path.GetFullPath(_subtitleSource.Path), Path.GetFullPath(candidate.Path), StringComparison.OrdinalIgnoreCase)
                 || !string.Equals(_subtitleSource.Sha256, candidate.Sha256, StringComparison.OrdinalIgnoreCase));
@@ -495,50 +483,18 @@ public sealed partial class EditorPage : Page
         AsrStatusText.Text = _project?.Speech is { Status: "complete" }
             ? "Đang dùng SRT đã chọn; Whisper timing của video vẫn được giữ và ánh xạ vào SRT này."
             : "Đã dùng SRT đã chọn. Vào Âm thanh để chạy Whisper word timing/nhịp thoại.";
-        TranslationProgress.Value = 0;
-        TranslationStatusText.Text = _media is null
-            ? "Đã khóa timecode và thứ tự. Có thể chuẩn bị AI ngay; hãy chọn video để đặt khung và Vietsub."
-            : "Đã khóa timecode và thứ tự. Kéo/resize khung phụ đề trên preview rồi bấm Chuẩn bị AI.";
+        SubtitleStatusText.Text = _media is null
+            ? "Đã nạp SRT Việt, giữ nguyên timecode. Mở video để tạo voice."
+            : "Đã nạp SRT Việt. Có thể chỉnh lời, tạo voice hoặc xuất video.";
         UpdateSubtitleSummary();
         RenderOverlays();
         if (_project is not null) await SaveProjectNowAsync();
         RefreshEditorActions();
     }
 
-    private async Task ImportTranslatedSubtitleAsync()
-    {
-        if (_project is null || _subtitleSource is null)
-            throw new InvalidDataException("Hãy chọn video và SRT tiếng Trung trước khi nạp SRT Việt đã dịch.");
-        EnsureCurrentSubtitleFingerprint();
-        var path = await _picker.PickTranslatedSubtitleAsync();
-        if (string.IsNullOrWhiteSpace(path)) return;
-
-        var vietnamese = await _application.LoadEditorSubtitleAsync(path, CancellationToken.None);
-        var attached = EditorSubtitleDocument.AttachVietnameseSrt(_subtitleSource, vietnamese);
-
-        // An explicitly selected Vietnamese SRT is the new authoritative text.
-        // Clear cue-local overrides from a former translation before synchronizing it.
-        _manualCueStates.Clear();
-        await SubtitleManualStore.SaveAsync(attached.Sha256, _manualCueStates, CancellationToken.None);
-        _subtitleSource = attached;
-        _subtitleManualDirty = false;
-        _voiceTrack = null;
-        _project = _project with { Tts = null };
-        AttachSubtitleToProject(vietnamese.Path, EditorSubtitleDocument.ImportedTranslationPolicyKey);
-        await RefreshSpeechTimingForSubtitleAsync();
-        await SyncSubtitleCueEditorAsync();
-        TranslationProgress.Value = 100;
-        TranslationStatusText.Text = "Đã nạp SRT Việt đã dịch; source Trung, thứ tự và timecode đã được kiểm tra khớp.";
-        UpdateSubtitleSummary();
-        RenderOverlays();
-        await SaveProjectNowAsync();
-        RefreshEditorActions();
-    }
-
-    private void AttachSubtitleToProject(string outputPath, string? translationPolicyKey = null)
+    private void AttachSubtitleToProject(string outputPath, string? translationPolicyKey = EditorSubtitleDocument.DirectVietnamesePolicyKey)
     {
         if (_project is null || _subtitleSource is null) return;
-        var skill = _application.LocalTranslationStatus;
         _project = _project with
         {
             Subtitle = new EditorSubtitleProject(
@@ -548,48 +504,16 @@ public sealed partial class EditorPage : Page
                 _subtitleSource.Sha256,
                 _subtitleSource.Cues,
                 _subtitlePlacement,
-                skill.SkillName,
-                skill.SkillSha256,
+                string.Empty,
+                string.Empty,
                 outputPath,
                 KaraokeToggle.IsOn,
                 translationPolicyKey),
         };
     }
 
-    private EditorTranslationModelMode SelectedTranslationModelMode() =>
-        TranslationFastModeToggle.IsOn ? EditorTranslationModelMode.Fast : EditorTranslationModelMode.Quality;
-
     private string SelectedVoiceModel() =>
         (VoiceModelBox.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? string.Empty;
-
-    private void TranslationFastMode_Toggled(object sender, RoutedEventArgs e)
-    {
-        if (!IsLoaded) return;
-        var mode = SelectedTranslationModelMode();
-        var status = _application.LocalTranslationStatusFor(mode);
-        TranslationStatusText.Text = status.ModelReady
-            ? $"Đã chọn {status.ModelName}; model này đã sẵn sàng."
-            : $"Đã chọn {status.ModelName}; bấm Chuẩn bị AI để tải/xác minh model này.";
-        RefreshEditorActions();
-    }
-
-    private async void PrepareAi_Click(object sender, RoutedEventArgs e)
-    {
-        if (_translationJobId is not null) return;
-        try
-        {
-            var mode = SelectedTranslationModelMode();
-            _translationJobId = _application.StartLocalTranslationPreparation(mode);
-            RefreshEditorActions();
-            await PollTranslationJobAsync(preparing: true);
-        }
-        catch (Exception error)
-        {
-            _translationJobId = null;
-            TranslationStatusText.Text = error.Message;
-            RefreshEditorActions();
-        }
-    }
 
     private async Task<bool> EnsureVoiceTimingAsync()
     {
@@ -627,15 +551,6 @@ public sealed partial class EditorPage : Page
             {
                 if (snapshot.Result is EditorAsrResult result && _project is not null)
                 {
-                    if (_subtitleSource is null)
-                    {
-                        _subtitleSource = result.Source;
-                        _subtitlePlacement = EditorSubtitlePlacement.Default;
-                        AttachSubtitleToProject(string.Empty);
-                        SrtPathText.Text = result.Source.Path;
-                        TranslationStatusText.Text = "Video chưa có SRT nên đã giữ thêm SRT Trung do Whisper tạo; mục chính vẫn là word timing/nhịp thoại.";
-                        await SyncSubtitleCueEditorAsync();
-                    }
                     _voiceTrack = null;
                     _project = _project with
                     {
@@ -678,7 +593,7 @@ public sealed partial class EditorPage : Page
         }
         if (_subtitleSource.Cues.Any(x => string.IsNullOrWhiteSpace(x.VietnameseText)))
         {
-            VoiceStatusText.Text = "Hãy Vietsub đầy đủ trước khi tạo voice Việt.";
+            VoiceStatusText.Text = "Hãy nạp SRT Việt đầy đủ trước khi tạo voice.";
             return;
         }
         var selectedVoice = SelectedVoiceModel();
@@ -719,7 +634,7 @@ public sealed partial class EditorPage : Page
                 speech.AnalysisSha256,
                 selectedVoice));
             VoiceProgress.Value = 0;
-            VoiceStatusText.Text = $"Đang chuẩn bị voice {selectedVoice} local và fit theo word timing Whisper...";
+            VoiceStatusText.Text = $"Đang chuẩn bị voice {selectedVoice} local; mỗi cue đọc nguyên câu theo timecode SRT...";
             RefreshEditorActions();
             await PollTtsJobAsync();
         }
@@ -790,85 +705,29 @@ public sealed partial class EditorPage : Page
         NotifyEditorCompositeChanged();
     }
 
-    private async void Translate_Click(object sender, RoutedEventArgs e)
-    {
-        try { await TranslateAllWithManualStateAsync(); }
-        catch (Exception error)
-        {
-            _translationJobId = null;
-            TranslationStatusText.Text = error.Message;
-            RefreshEditorActions();
-            RefreshSubtitleCueEditorControls();
-        }
-    }
-
-    private void CancelTranslation_Click(object sender, RoutedEventArgs e)
-    {
-        var job = _translationJobId;
-        if (job is null) return;
-        _application.CancelJob(job);
-        TranslationStatusText.Text = "Đang dừng AI an toàn; các batch đã xong vẫn nằm trong checkpoint...";
-    }
-
-    private async Task PollTranslationJobAsync(bool preparing)
-    {
-        while (_translationJobId is not null)
-        {
-            var snapshot = _application.Jobs.GetSnapshot(_translationJobId);
-            TranslationProgress.Value = snapshot.Progress;
-            TranslationStatusText.Text = snapshot.Message;
-            if (snapshot.Done)
-            {
-                if (!preparing && snapshot.Result is EditorTranslationResult result && _project?.Subtitle is { } subtitle && _subtitleSource is not null)
-                {
-                    _subtitleSource = _subtitleSource with { Cues = result.Cues };
-                    _voiceTrack = null;
-                    _project = _project with
-                    {
-                        Tts = null,
-                        Subtitle = subtitle with
-                        {
-                            Cues = result.Cues,
-                            Placement = _subtitlePlacement,
-                            SkillSha256 = result.SkillSha256,
-                            OutputPath = result.OutputPath,
-                        },
-                    };
-                    await SaveProjectNowAsync();
-                    UpdateSubtitleSummary();
-                    RenderOverlays();
-                }
-                _translationJobId = null;
-                RefreshEditorActions();
-                break;
-            }
-            await Task.Delay(350);
-        }
-    }
-
     private async void SaveKaraokeAss_Click(object sender, RoutedEventArgs e)
     {
         if (_media is null || _subtitleSource is null) return;
         if (!CurrentSubtitleFingerprintMatches())
         {
-            TranslationStatusText.Text = "SRT nguồn đã thay đổi ngoài ứng dụng; hãy chọn lại SRT trước khi lưu ASS karaoke.";
+            SubtitleStatusText.Text = "SRT nguồn đã thay đổi ngoài ứng dụng; hãy chọn lại SRT trước khi lưu ASS karaoke.";
             return;
         }
         var burn = CompletedSubtitleBurn();
         if (burn is null || !KaraokeToggle.IsOn || _cueSpeechTiming.Count == 0)
         {
-            TranslationStatusText.Text = "Cần Vietsub đầy đủ và Whisper word timing trước khi lưu Caption ASS.";
+            SubtitleStatusText.Text = "Cần SRT Việt đầy đủ và Whisper word timing trước khi lưu Caption ASS.";
             return;
         }
         try
         {
             var output = await _application.SaveEditorKaraokeAssAsync(
                 burn, _media.Width, _media.Height, _subtitleSource.Path, CancellationToken.None);
-            TranslationStatusText.Text = "Đã lưu Caption ASS: " + output;
+            SubtitleStatusText.Text = "Đã lưu Caption ASS: " + output;
         }
         catch (Exception error)
         {
-            TranslationStatusText.Text = "Không lưu được ASS karaoke: " + error.Message;
+            SubtitleStatusText.Text = "Không lưu được ASS karaoke: " + error.Message;
         }
     }
 
@@ -876,7 +735,7 @@ public sealed partial class EditorPage : Page
     {
         if (_subtitleSource is not null && !CurrentSubtitleFingerprintMatches())
         {
-            TranslationStatusText.Text = "SRT nguồn đã thay đổi ngoài ứng dụng; output Vietsub cũ đã bị khóa cho tới khi chọn lại SRT.";
+            SubtitleStatusText.Text = "SRT nguồn đã thay đổi ngoài ứng dụng; bản SRT xuất cũ đã bị khóa cho tới khi chọn lại SRT.";
             return;
         }
         var output = _project?.Subtitle?.OutputPath;
@@ -887,14 +746,14 @@ public sealed partial class EditorPage : Page
             var folder = await StorageFolder.GetFolderFromPathAsync(directory);
             await Launcher.LaunchFolderAsync(folder);
         }
-        catch (Exception error) { TranslationStatusText.Text = "Không mở được thư mục: " + error.Message; }
+        catch (Exception error) { SubtitleStatusText.Text = "Không mở được thư mục: " + error.Message; }
     }
 
     private void UpdateSubtitleSummary()
     {
         if (_subtitleSource is null) return;
         var translated = _subtitleSource.Cues.Count(x => !string.IsNullOrWhiteSpace(x.VietnameseText));
-        SrtSummaryText.Text = $"{_subtitleSource.Cues.Count} câu · đã dịch {translated} · Skill Dịch Trung Tu Tiên · timecode giữ nguyên";
+        SrtSummaryText.Text = $"{_subtitleSource.Cues.Count} câu · {translated} câu có lời Việt · timecode giữ nguyên";
     }
 
     private void Timeline_ValueChanged(object sender, Microsoft.UI.Xaml.Controls.Primitives.RangeBaseValueChangedEventArgs e)
@@ -1444,7 +1303,7 @@ public sealed partial class EditorPage : Page
             if (commit)
             {
                 QueueProjectSave();
-                TranslationStatusText.Text = "Đã lưu vị trí/kích thước khung phụ đề.";
+                SubtitleStatusText.Text = "Đã lưu vị trí/kích thước khung phụ đề.";
             }
             _subtitleDrag = false;
             _subtitleDragOriginal = null;
@@ -2054,8 +1913,8 @@ public sealed partial class EditorPage : Page
             _subtitleSource.Sha256,
             _subtitleSource.Cues,
             _subtitlePlacement,
-            _project!.Subtitle?.SkillName ?? "Dịch Trung Tu Tiên",
-            _project.Subtitle?.SkillSha256 ?? TranslationSkillBundle.BuiltInSha256,
+            _project!.Subtitle?.SkillName ?? string.Empty,
+            _project.Subtitle?.SkillSha256 ?? string.Empty,
             _project.Subtitle?.OutputPath ?? string.Empty,
             KaraokeToggle.IsOn,
             _project.Subtitle?.TranslationPolicyKey),
@@ -2078,7 +1937,7 @@ public sealed partial class EditorPage : Page
         UndoButton.IsEnabled = editable && _document.CanUndo;
         RedoButton.IsEnabled = editable && _document.CanRedo;
         SubtitlePresetButton.IsEnabled = WatermarkPresetButton.IsEnabled = editable;
-        var subtitleReady = _subtitleSource is not null && _subtitleSource.Cues.All(x => !string.IsNullOrWhiteSpace(x.VietnameseText));
+        var subtitleReady = _subtitleSource is { Cues.Count: > 0 } && _subtitleSource.Cues.All(x => !string.IsNullOrWhiteSpace(x.VietnameseText));
         var audioChanged = _audioSettings.SourceMode != "keep";
         var hasImages = _imageFeatureInitialized && _imageOverlays.Count > 0;
         RenderButton.IsEnabled = editable && !_subtitleManualDirty && _path is not null
@@ -2095,37 +1954,23 @@ public sealed partial class EditorPage : Page
         EditorUseCurrentStartButton.IsEnabled = EditorUseCurrentEndButton.IsEnabled = editable && !WholeToggle.IsOn;
         FileNameBox.IsEnabled = editable;
         ImportSrtButton.IsEnabled = idle && !_playback.IsPreviewMode;
-        ImportTranslatedSrtButton.IsEnabled = idle && !_playback.IsPreviewMode && _project is not null && _subtitleSource is not null;
-        ImportTranslatedSrtButton.Content = _subtitleSource is null
-            ? "Chọn SRT Trung trước"
-            : _project is null
-                ? "Chọn video trước"
-                : "Nạp SRT Việt đã dịch";
-        PrepareAiButton.IsEnabled = idle && !_playback.IsPreviewMode;
-        TranslationFastModeToggle.IsEnabled = idle && !_playback.IsPreviewMode;
-        var aiReady = false;
-        try
-        {
-            var selectedTranslationStatus = _application.LocalTranslationStatusFor(SelectedTranslationModelMode());
-            aiReady = selectedTranslationStatus.RuntimeReady && selectedTranslationStatus.ModelReady;
-        }
-        catch { }
-        TranslateButton.IsEnabled = editable && _project is not null && _subtitleSource is not null && aiReady;
-        CancelTranslationButton.IsEnabled = _translationJobId is not null;
         OpenTranslatedSrtButton.IsEnabled = idle && !_playback.IsPreviewMode && !_subtitleManualDirty && File.Exists(_project?.Subtitle?.OutputPath);
         SaveKaraokeAssButton.IsEnabled = editable && !_subtitleManualDirty && subtitleReady && KaraokeToggle.IsOn && _cueSpeechTiming.Count > 0;
         PreviewMuteToggle.IsEnabled = PreviewVolumeSlider.IsEnabled = idle && hasMedia;
         SourceAudioModeBox.IsEnabled = editable;
         SourceAudioGainSlider.IsEnabled = editable && _audioSettings.SourceMode == "duck";
-        VoiceModelBox.IsEnabled = editable;
-        GenerateTtsButton.IsEnabled = editable && !_subtitleManualDirty && subtitleReady;
+        VoiceModelBox.IsEnabled = idle && !_playback.IsPreviewMode;
+        var voiceBlockReason = EditorVietnameseSubtitleWorkflow.VoiceBlockReason(
+            hasMedia, !idle, _playback.IsPreviewMode, _subtitleManualDirty, _subtitleSource);
+        GenerateTtsButton.IsEnabled = voiceBlockReason is null;
+        if (idle && voiceBlockReason is not null) VoiceStatusText.Text = voiceBlockReason;
         CancelVoiceButton.IsEnabled = _asrJobId is not null || _ttsJobId is not null;
         // Compact: swap button in same slot, show progress only when busy
         var voiceBusy = _asrJobId is not null || _ttsJobId is not null;
         GenerateTtsButton.Visibility = voiceBusy ? Visibility.Collapsed : Visibility.Visible;
         CancelVoiceButton.Visibility = voiceBusy ? Visibility.Visible : Visibility.Collapsed;
-        if (VoiceProgressContainer is not null) VoiceProgressContainer.Visibility = voiceBusy ? Visibility.Visible : Visibility.Collapsed;
-        if (_voiceSampleButton is not null) _voiceSampleButton.IsEnabled = editable;
+        if (VoiceProgressContainer is not null) VoiceProgressContainer.Visibility = Visibility.Visible;
+        if (_voiceSampleButton is not null) _voiceSampleButton.IsEnabled = idle && !_playback.IsPreviewMode;
         KaraokeToggle.IsEnabled = idle && !_playback.IsPreviewMode && _subtitleSource is not null;
         RefreshImageControls();
         RefreshEditorParityControls();

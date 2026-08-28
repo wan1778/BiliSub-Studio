@@ -18,7 +18,7 @@ internal static class EditorLicensedVoiceProfileContract
 
         Replace(tests,
             "local NghiTTS manifest and rhythm grouping stay pinned",
-            "local Ngọc Huyền voice and rhythm grouping stay pinned",
+            "local Ngọc Huyền hashes and whole-cue synthesis stay pinned",
             VerifyVoiceProfileAsync);
         Replace(tests,
             "editor project persists, isolates source drift and quarantines corrupt state",
@@ -41,39 +41,28 @@ internal static class EditorLicensedVoiceProfileContract
     private static Task VerifyVoiceProfileAsync()
     {
         var assembly = typeof(VideoEditorService).Assembly;
-        var installer = assembly.GetType("BiliSubStudio.Core.Editor.LocalTtsInstaller")
-            ?? throw new InvalidOperationException("missing LocalTtsInstaller type");
-        static object? Constant(Type type, string name) => type.GetField(name, BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public)?.GetRawConstantValue();
-
-        Equal("nghi-tts-1.0.0", Constant(installer, "EngineVersion")?.ToString());
-        Equal("nghimestudio/nghitts", Constant(installer, "ModelRepository")?.ToString());
-        Equal("nghi-2026-09-01", Constant(installer, "ModelRevision")?.ToString());
-        Equal("nghi-2026-09-01-ngoc_huyen-v1", Constant(installer, "VoiceRevision")?.ToString());
-        Equal("ngoc_huyen", Constant(installer, "Voice")?.ToString());
-
-        var workerPath = Path.Combine(AppContext.BaseDirectory, "Fixtures", "tts-worker.py");
-        var worker = File.ReadAllText(workerPath);
-        True(worker.Contains("ENGINE = \"nghi-tts\"", StringComparison.Ordinal), "NGHI-TTS worker engine missing");
-        True(worker.Contains("VOICE_REVISION = \"nghi-2026-09-01-ngoc_huyen-v1\"", StringComparison.Ordinal), "TTS cache revision drifted");
-        True(worker.Contains("ensure_voice_cache(output_root)", StringComparison.Ordinal), "old TTS clips can bypass voice cache invalidation");
-        True(worker.Contains("\"engine\": \"nghi-tts\"", StringComparison.Ordinal) || worker.Contains("ENGINE = \"nghi-tts\"", StringComparison.Ordinal), "TTS worker engine identity drifted");
-        True(worker.Contains("vietnormalizer", StringComparison.Ordinal), "NGHI worker must use vietnormalizer");
-        True(!worker.Contains("class KokoroNgocHuyen", StringComparison.Ordinal), "Kokoro worker must not remain on NGHI production path");
-
-        var service = assembly.GetType("BiliSubStudio.Core.Editor.LocalTtsService")
-            ?? throw new InvalidOperationException("missing LocalTtsService type");
-        var method = service.GetMethod("BuildRhythmGroups", BindingFlags.Static | BindingFlags.NonPublic)
-            ?? throw new InvalidOperationException("missing TTS rhythm grouping policy");
-        var cue = new EditorSubtitleCue("rhythm-cue-0001", "1", "00:00:01,000 --> 00:00:05,000", 1, 5, "你好", "Xin chào đạo hữu");
-        var timing = new EditorCueSpeechTiming(cue.Id, 1, 5, 1.2, 4.7, .2, .3,
-            [new EditorWordTiming("你", 1.2, 2, .9), new EditorWordTiming("好", 3, 4.7, .9)],
-            [new EditorPauseTiming(2, 3)], "female_like", .8, 210);
-        var groups = ((System.Collections.IEnumerable)method.Invoke(null, [cue, timing, "Xin chào đạo hữu", "ngoc_huyen"])!).Cast<object>().ToArray();
-        Equal(2, groups.Length);
-        var firstType = groups[0].GetType();
-        Equal(1.2d, (double)(firstType.GetProperty("Start")?.GetValue(groups[0]) ?? 0d));
-        Equal(2d, (double)(firstType.GetProperty("End")?.GetValue(groups[0]) ?? 0d));
-        True(!string.IsNullOrWhiteSpace(firstType.GetProperty("Text")?.GetValue(groups[0])?.ToString()), "TTS first rhythm group lost Vietnamese text");
+        var installer = assembly.GetType("BiliSubStudio.Core.Editor.LocalTtsInstaller")!;
+        static string Constant(Type type, string name) => type.GetField(name, BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public)!.GetRawConstantValue()!.ToString()!;
+        Equal("nghi-tts-1.0.0", Constant(installer, "EngineVersion"));
+        Equal("nghimestudio/nghitts", Constant(installer, "ModelRepository"));
+        Equal("2140977786d76d834736c059dacfa553d4931dac2b2c7aaaea438bb2aa9da697", Constant(installer, "ModelRevision"));
+        Equal("ngoc_huyen", Constant(installer, "Voice"));
+        var worker = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "tts-worker.py"));
+        True(worker.Contains(Constant(installer, "ModelRevision"), StringComparison.Ordinal), "worker model SHA drifted");
+        True(worker.Contains(Constant(installer, "ConfigSha256"), StringComparison.Ordinal), "worker config SHA drifted");
+        True(!worker.Contains("Kokoro", StringComparison.Ordinal) && !worker.Contains("synth_sine", StringComparison.Ordinal),
+            "retired or synthetic runtime entered production");
+        var service = assembly.GetType("BiliSubStudio.Core.Editor.LocalTtsService")!;
+        var method = service.GetMethod("BuildWholeCue", BindingFlags.Static | BindingFlags.NonPublic)!;
+        var cue = new EditorSubtitleCue("whole-cue-0001", "37", "00:00:01,000 --> 00:00:05,000", 1, 5,
+            "你好", "Xin chào đạo hữu. Hôm nay trời thật đẹp!");
+        var whole = method.Invoke(null, [cue, "ngoc_huyen"])!;
+        var type = whole.GetType();
+        Equal(cue.Id, type.GetProperty("Id")!.GetValue(whole));
+        Equal(1d, type.GetProperty("CueStart")!.GetValue(whole));
+        Equal(5d, type.GetProperty("CueEnd")!.GetValue(whole));
+        Equal(cue.VietnameseText, type.GetProperty("Text")!.GetValue(whole));
+        True(type.GetProperty("Groups") is null, "whole cue must not encode Whisper pause groups");
         return Task.CompletedTask;
     }
 
@@ -114,7 +103,13 @@ internal static class EditorLicensedVoiceProfileContract
             var voicePath = Path.Combine(root, "voice.flac");
             await File.WriteAllBytesAsync(voicePath, Enumerable.Repeat((byte)1, 128).ToArray());
             var ttsManifest = Path.Combine(root, "tts-result.json");
-            await File.WriteAllTextAsync(ttsManifest, "{\"schema\":1}");
+            var installer = typeof(VideoEditorService).Assembly.GetType("BiliSubStudio.Core.Editor.LocalTtsInstaller")!;
+            var revision = installer.GetField("VoiceRevision", BindingFlags.Static | BindingFlags.NonPublic)!.GetRawConstantValue()!.ToString();
+            await File.WriteAllTextAsync(ttsManifest, System.Text.Json.JsonSerializer.Serialize(new
+            {
+                schema = 2, voice_revision = revision,
+                master = new { path = voicePath, sha256 = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(await File.ReadAllBytesAsync(voicePath))) },
+            }));
             var ttsManifestSha = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(await File.ReadAllBytesAsync(ttsManifest)));
 
             var validTts = new EditorTtsProject(
@@ -219,9 +214,9 @@ internal static class EditorLicensedVoiceProfileContract
         var voices = installer.GetField("AvailableVoices", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public)?.GetValue(null) as System.Collections.IEnumerable
             ?? throw new InvalidOperationException("AvailableVoices not found");
         var list = voices.Cast<object>().Select(x => x?.ToString() ?? string.Empty).ToArray();
-        Equal(14, list.Length);
+        Equal(1, list.Length);
         True(list.Contains("ngoc_huyen", StringComparer.Ordinal), "canonical ngoc_huyen missing from registry");
-        True(list.Distinct(StringComparer.Ordinal).Count() == 14, "voice registry contains duplicate IDs");
+        True(list.Distinct(StringComparer.Ordinal).Count() == 1, "voice registry contains duplicate IDs");
         foreach (var v in list)
         {
             True(!string.IsNullOrWhiteSpace(v) && v.All(c => char.IsLetterOrDigit(c) || c == '_'), $"voice ID {v} must be canonical underscore form");

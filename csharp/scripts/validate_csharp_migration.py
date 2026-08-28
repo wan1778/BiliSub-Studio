@@ -687,7 +687,7 @@ require("BuildFilterCore(sliced, subtitleAss, \"previewbase\", requireEdit: fals
         and "Regions = _document.Regions.ToArray()," in editor_main
         and "editor Preview and Export preserve exact normalized region geometry within one pixel" in contract_tests_source,
         "BLUR-17 Preview frame playback and Export must share one tested normalized region geometry owner")
-require("SubtitleCueList" in editor and "SubtitleRetranslateCueButton" in editor and "SubtitleSaveSrtButton" in editor,
+require("SubtitleCueList" in editor and "SubtitleVietnameseEdit" in editor and "SubtitleSaveSrtButton" in editor,
         "Editor static subtitle cue editor controls missing")
 require("ForceFresh = false" in read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalSubtitleTranslationService.cs")
         and "if (request.ForceFresh) TryDelete(checkpointPath);" in read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalSubtitleTranslationService.cs"),
@@ -722,24 +722,26 @@ require("_subtitleDrag = true;" in editor_partials and "HitTestSubtitle(point)" 
         "SUB-08 subtitle drag ownership missing")
 for direction in ("North", "South", "East", "West", "NorthEast", "NorthWest", "SouthEast", "SouthWest"):
     require(f"DragKind.{direction}" in editor_partials, f"SUB-09 subtitle resize direction missing: {direction}")
-require("SourceOverride" in editor_partials and "SubtitleSourceEdit.Text.Trim()" in editor_partials,
-        "SUB-10 Chinese cue edit state missing")
+require("SubtitleSourceEdit" not in editor_xaml and "SubtitleVietnameseEdit" in editor_xaml,
+        "SUB-10 editor must expose only externally translated Vietnamese text")
 require("Preview hiển thị bản nháp" in editor_partials and "RenderOverlays();" in editor_partials
         and "SubtitleVietnameseEdit.Text.Trim()" in editor_partials,
         "SUB-11 Vietnamese cue edit must update Preview draft immediately")
-require("state.Locked" in editor_partials and "locked.TryGetValue(c.Id, out var keep)" in editor_partials,
-        "SUB-12 locked cue protection missing from full Vietsub merge")
-require("await RetranslateSelectedCueAsync();" in editor_partials and "ForceFresh: true" in editor_partials
-        and "SubtitleRetranslateCue_Click(sender" not in editor_partials,
-        "SUB-13 clean force-fresh cue retranslation contract missing")
-translation_source = read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalSubtitleTranslationService.cs")
-require("TranslationSkillBundle.Load" in translation_source and "ValidateUnchangedTimeline(source, translated)" in translation_source
-        and "Qwen3-8B" in translation_source,
-        "SUB-14 local AI + skill + exact timeline Vietsub contract missing")
-require('string.Equals(snapshot.Status, "cancelled"' in editor_partials
-        and "finally { TryDelete(temporary); }" in translation_source
-        and "cleanupAwareCancel: true" in composition,
-        "SUB-15 translation cancellation/checkpoint cleanup contract missing")
+require("candidate = EditorSubtitleDocument.UseVietnameseSrt(candidate);" in editor_partials
+        and "EditorVietnameseSubtitleWorkflow.HasDraftChange" in editor_partials
+        and "EditorVietnameseSubtitleWorkflow.VoiceBlockReason" in editor_partials,
+        "SUB-12 direct Vietnamese import and actual edit/readiness state missing")
+for removed_action in ("PrepareAiButton", "TranslateButton", "TranslationFastModeToggle",
+                       "ImportTranslatedSrtButton", "SubtitleRetranslateCueButton", "SubtitleLockToggle"):
+    require(removed_action not in editor_xaml,
+            "SUB-13 retired translation UI returned: " + removed_action)
+require("StartEditorTranslation(" not in editor_partials
+        and "StartLocalTranslationPreparation(" not in editor_partials
+        and "LocalTranslationStatusFor(" not in editor_partials,
+        "SUB-14 editor must not start or prepare AI translation")
+require("DirectVietnamesePolicyKey" in editor_partials
+        and "string.Equals(current.Sha256, saved.SourceSha256" in editor_partials,
+        "SUB-15 reopened Vietnamese input must preserve explicit policy and source hash verification")
 require("await SaveCurrentSubtitleCueAsync();" in editor_partials and "EditorSubtitleDocument.RenderVietnamese(cues)" in editor_partials,
         "SUB-16 save Vietnamese SRT must include latest cue edit")
 require("MarkTranslatedOutputStale();" in editor_partials and "OutputPath = string.Empty" in editor_partials
@@ -747,7 +749,7 @@ require("MarkTranslatedOutputStale();" in editor_partials and "OutputPath = stri
         "SUB-17 stale Vietnamese SRT protection missing")
 require("RestoreSubtitleAsync(_project.Subtitle)" in editor_partials and "SubtitleManualStore.LoadAsync" in editor_partials
         and "EditorSubtitleManualStore.Apply" in editor_partials,
-        "SUB-18 project reopen must restore translation/edit/lock state")
+        "SUB-18 project reopen must restore persisted Vietnamese cue edits")
 require("Loaded += EditorPage_Loaded;" in editor and "private async void EditorPage_Loaded" in editor_partials,
         "Editor must use the actual Loaded event as its single feature initialization lifecycle")
 
@@ -770,15 +772,15 @@ require("_application.Media.ProbeAsync(candidatePath" in open_video and "_path =
 for marker in (
     "SubtitleModeButton", "BlurModeButton", "AudioModeButton", "ExportModeButton",
     "SubtitleInspectorPanel", "BlurInspectorPanel", "AudioInspectorPanel", "ExportInspectorPanel",
-    "RunLayoutSmokeAsync", "ImportSrtButton.IsEnabled = idle && !_playback.IsPreviewMode;", "PrepareAiButton.IsEnabled = idle && !_playback.IsPreviewMode;",
+    "RunLayoutSmokeAsync", "ImportSrtButton.IsEnabled = idle && !_playback.IsPreviewMode;", "VoiceModelBox.IsEnabled = idle && !_playback.IsPreviewMode;",
     "_inspectorMode == InspectorMode.Blur", "_inspectorMode == InspectorMode.Subtitle",
     "EditorPlaybackController", "CreateEditorPreviewSegmentAsync", "PlayerMediaEnded",
 ):
     require(marker in editor, f"Editor icon-mode/action-state contract missing {marker}")
 require("ImportSrtButton.IsEnabled = idle && hasMedia" not in editor,
         "Editor SRT picker regressed to requiring a selected video")
-require("PrepareAiButton.IsEnabled = idle && hasMedia" not in editor,
-        "Editor AI preparation regressed to requiring a selected video")
+require("VoiceModelBox.IsEnabled = editable;" not in editor,
+        "Editor voice selection regressed to requiring a selected video")
 for marker in (
     "VoiceModelBox", "EnsureVoiceTimingAsync", "PollAsrJobAsync",
     "GenerateTtsButton", "GenerateTts_Click", "KaraokeToggle", "SaveKaraokeAssButton",
@@ -821,26 +823,22 @@ tts_installer = read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalTtsInstaller.c
 tts_service = read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalTtsService.cs")
 tts_worker = read(ROOT / "internal/tts/worker.py")
 for marker in (
-    'EngineVersion = "kokoro-vietnamese-onnx-2026-06-27"',
-    'ModelRepository = "contextboxai/Kokoro-Vietnamese"',
-    'ModelRevision = "9f210d622209fcc216fe2ac6159fed2ff381cb8a"',
-    'Voice = "ngoc-huyen"',
-    "da191277f58633649a9c0d2ae8012e80ef57ea8e2a56e30323c0f7df1ca29087",
-    "2ae069207dedfd62700957d84d9dec12268a0f115adca63129faf58a6196812a",
-    "DownloadVerifiedAsync", "EnsurePrivatePythonAsync",
+    'EngineVersion = "nghi-tts-1.0.0"',
+    'ModelRepository = "nghimestudio/nghitts"',
+    'ModelRevision = "2140977786d76d834736c059dacfa553d4931dac2b2c7aaaea438bb2aa9da697"',
+    'Voice = "ngoc_huyen"', "971f57f8d504223fee5b40d664f503cf769baf7db21f7d2ae0554a75d07de2f8",
+    "DownloadVerifiedAsync", "MatchesAsync", "EnsurePrivatePythonAsync",
 ):
-    require(marker in tts_installer, f"Ngoc Huyen local installer contract missing {marker}")
-for retired in ("PiperVoice", "MALE_PITCH_FACTOR", "SelectVoice"):
-    require(retired not in tts_service and retired not in tts_worker,
-            f"retired Nam/Nu TTS route returned to production: {retired}")
-for marker in ("whisper-rhythm-v1", "BuildRhythmGroups", "EditorSpeechAnalysisDocument.MapToCues", "OwnedProcessGroup"):
-    require(marker in tts_service, f"local TTS timing/cache/process contract missing {marker}")
-for marker in (
-    "class KokoroNgocHuyen", "length_scale", "atempo=", "voice-master.flac",
-    'VOICE_REVISION = "9f210d622209fcc216fe2ac6159fed2ff381cb8a-ngoc-huyen-v1"',
-    "ensure_voice_cache(output_root)", '"engine": "kokoro-vietnamese-onnx"', '"event": "cue"', '"event": "block"',
-):
-    require(marker in tts_worker, f"Ngoc Huyen local TTS worker contract missing {marker}")
+    require(marker in tts_installer, f"NGHI local installer contract missing {marker}")
+for retired in ("Kokoro", "synth_sine", "DummyModelBytes", "MirrorModelUrl"):
+    require(retired not in tts_installer + tts_service + tts_worker,
+            f"unverified/retired TTS returned to production: {retired}")
+for marker in ("whole-cue-v2", "BuildWholeCue", "GenerateSampleAsync", "OwnedProcessGroup",
+               "SamePath(reportedResult, resultPath)", "await processes.StopAsync()"):
+    require(marker in tts_service, f"local TTS ownership contract missing {marker}")
+for marker in ("PiperVoice.load", "voice.synthesize(text)", "cache_identity", "sha256",
+               "atempo=", "voice-master.flac", '"event": "cue"', '"event": "block"'):
+    require(marker in tts_worker, f"NGHI worker contract missing {marker}")
 
 main_xaml = read(CSHARP / "src/BiliSubStudio.App/MainWindow.xaml")
 main_code = read(CSHARP / "src/BiliSubStudio.App/MainWindow.xaml.cs")

@@ -130,7 +130,8 @@ internal static class TranslationQualityPolicyContract
             {
                 "saved.TranslationPolicyKey",
                 "LocalSubtitleTranslationService.TranslationPolicyKey",
-                "Bản dịch AI cũ không còn tương thích với policy hiện tại",
+                "Project cũ chưa có lời Việt hợp lệ. Hãy nạp SRT Việt đã dịch.",
+                "EditorSubtitleDocument.DirectVietnamesePolicyKey",
                 "TranslationPolicyKey = null",
             })
             {

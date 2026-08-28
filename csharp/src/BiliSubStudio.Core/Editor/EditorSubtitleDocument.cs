@@ -27,6 +27,19 @@ public static partial class EditorSubtitleDocument
     public const int MaxCues = 100_000;
     public const int MaxCueCharacters = 2_000;
     public const string ImportedTranslationPolicyKey = "imported-srt-v1";
+    public const string DirectVietnamesePolicyKey = "vietnamese-srt-v1";
+
+    // Explicit Vietnamese import: no language guessing, translation, retiming or file rewrite.
+    public static EditorSubtitleSource UseVietnameseSrt(EditorSubtitleSource source)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        if (source.Cues.Count == 0 || source.Cues.Any(cue => string.IsNullOrWhiteSpace(cue.SourceText)))
+            throw new InvalidDataException("SRT Việt không có lời đọc hợp lệ.");
+        return source with
+        {
+            Cues = source.Cues.Select(cue => cue with { VietnameseText = cue.SourceText.Trim() }).ToArray(),
+        };
+    }
 
     public static async Task<EditorSubtitleSource> LoadAsync(string path, CancellationToken cancellationToken)
     {

@@ -94,10 +94,11 @@ for marker in (
 ):
     require(marker in job_code, f"Vietsub full-job progress mapping missing {marker}")
 
-require('TranslationProgress.Visibility = Visibility.Collapsed' in parity_code,
-        "Subtitle panel must not duplicate the shared Vietsub progress bar")
-require('TranslationStatusText.Visibility = _translationJobId is null ? Visibility.Visible : Visibility.Collapsed' in parity_code,
-        "Subtitle panel must hide duplicate live Vietsub detail while the shared log owns progress")
+editor_xaml = read("csharp/src/BiliSubStudio.App/Pages/EditorPage.xaml")
+require('TranslationProgress' not in editor_xaml and 'PrepareAiButton' not in editor_xaml,
+        "Vietnamese-only Subtitle panel must not expose retired AI translation/progress")
+require('x:Name="SubtitleStatusText"' in editor_xaml,
+        "Vietnamese import/edit status must remain visible")
 
 for marker in (
     'Path.Combine(Path.GetFullPath(dataDirectory), "Logs")',

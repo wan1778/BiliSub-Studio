@@ -127,6 +127,9 @@ Invoke-Checked python @("csharp/scripts/verify_editor_voice_preview_contract.py"
 Invoke-Checked python @("csharp/scripts/verify_editor_voice_mix_contract.py")
 Invoke-Checked python @("csharp/scripts/verify_editor_voice_preview_export_contract.py")
 Invoke-Checked python @("csharp/scripts/verify_editor_voice_reopen_contract.py")
+Invoke-Checked python @("csharp/scripts/verify_editor_voice_generate_contract.py")
+Invoke-Checked python @("csharp/scripts/verify_editor_tts_cancel_contract.py")
+Invoke-Checked python @("csharp/scripts/verify_editor_tts_restart_contract.py")
 Invoke-Checked python @("csharp/scripts/verify_editor_preview_unload_contract.py")
 Invoke-Checked python @("csharp/scripts/generate_csharp_code_map.py", "--check")
 Invoke-Checked python @("csharp/scripts/verify_global_log_ui_contract.py")
@@ -165,6 +168,10 @@ if ((Get-Sha256 $asrWorker) -ne (Get-Sha256 $sourceAsrWorker)) {
     throw "published ASR worker differs from embedded source"
 }
 $translationSkill = "$publish/Assets/Translation/dich-trung-tu-tien.zip"
+$ttsWorker = "$publish/Assets/TTS/worker.py"
+if (-not (Test-Path $ttsWorker -PathType Leaf) -or (Get-Sha256 $ttsWorker) -ne (Get-Sha256 "internal/tts/worker.py")) {
+    throw "published TTS worker differs from reviewed NGHI source"
+}
 if (-not (Test-Path $translationSkill -PathType Leaf)) { throw "publish missing integrated translation skill" }
 $sourceTranslationSkill = "internal/translation/dich-trung-tu-tien.zip"
 if ((Get-Sha256 $translationSkill) -ne (Get-Sha256 $sourceTranslationSkill)) {
@@ -200,7 +207,7 @@ if (Test-Path $smokeSentinel) { Remove-Item $smokeSentinel -Force }
 $startupLog = Join-Path $env:LOCALAPPDATA "BiliSub Studio\Logs\startup.log"
 if (Test-Path $startupLog) { Remove-Item $startupLog -Force }
 $smokeArgument = '--startup-smoke-test="' + $smokeSentinel + '"'
-$smokeProcess = Start-Process $exe -ArgumentList $smokeArgument -PassThru
+$smokeProcess = Start-Process $exe -ArgumentList $smokeArgument -WindowStyle Hidden -PassThru
 if (-not $smokeProcess.WaitForExit(30000)) {
     Stop-Process -Id $smokeProcess.Id -Force -ErrorAction SilentlyContinue
     throw "WinUI startup smoke test timed out"

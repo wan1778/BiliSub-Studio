@@ -60,7 +60,7 @@ require(generate_button.get("IsEnabled") in ("False", "false"),
 voice_model = named_xaml_control("VoiceModelBox")
 require(voice_model.get("SelectedIndex") == "0",
         "VOICE-01 must show the default supported local reading model")
-require("ngoc-huyen" in editor_xaml and "Ngọc Huyền" in editor_xaml,
+require("ngoc_huyen" in editor_xaml and "Ngọc Huyền" in editor_xaml,
         "VOICE-01 must identify Ngọc Huyền as the supported local reading model")
 require("CreateAsrButton" not in editor_xaml and "CreateAsr_Click" not in editor_main,
         "VOICE-01 must not expose a separate manual analysis action")
@@ -85,8 +85,9 @@ require(ensure_timing.index("_asrJobId = _application.StartEditorAsr")
 
 generate_handler = editor_main.split("private async void GenerateTts_Click", 1)[1].split(
     "private async Task PollTtsJobAsync()", 1)[0]
-require('if (!string.Equals(SelectedVoiceModel(), "ngoc-huyen", StringComparison.Ordinal))' in generate_handler,
-        "VOICE-01 must reject a missing/unsupported reading model before generation")
+require('var selectedVoice = SelectedVoiceModel();' in generate_handler
+        and 'if (string.IsNullOrWhiteSpace(selectedVoice))' in generate_handler,
+        "VOICE-01 must reject a missing reading model; Core validates the pinned registry")
 require("if (!await EnsureVoiceTimingAsync())" in generate_handler,
         "VOICE-01 the create-voice entry point must automatically acquire timing")
 require("_ttsJobId = _application.StartEditorTts(new EditorTtsRequest(" in generate_handler,
@@ -99,14 +100,15 @@ refresh_actions = editor_main.split("private void RefreshEditorActions()", 1)[1]
     "private static string FormatClock", 1)[0]
 require("var editable = idle && hasMedia && !_playback.IsPreviewMode;" in refresh_actions,
         "VOICE-01 create-voice availability must require an idle editable media source")
-require("VoiceModelBox.IsEnabled = editable;" in refresh_actions,
-        "VOICE-01 reading-model selection must follow Editor editability")
-require("GenerateTtsButton.IsEnabled = editable && !_subtitleManualDirty && subtitleReady;" in refresh_actions,
-        "VOICE-01 create-voice must no longer require a prior manual ASR click")
+require("VoiceModelBox.IsEnabled = idle && !_playback.IsPreviewMode;" in refresh_actions,
+        "VOICE-01 voice selection and sample must not require video")
+require("GenerateTtsButton.IsEnabled = voiceBlockReason is null;" in refresh_actions
+        and "EditorVietnameseSubtitleWorkflow.VoiceBlockReason" in refresh_actions,
+        "VOICE-01 create-voice must use the tested Vietnamese SRT readiness policy")
 require("CancelVoiceButton.IsEnabled = _asrJobId is not null || _ttsJobId is not null;" in refresh_actions,
         "VOICE-01 automatic timing must expose the Voice cancel path")
 
-busy_decl = "private bool EditorBusy => _jobId is not null || _translationJobId is not null || _asrJobId is not null || _ttsJobId is not null || _playback.IsRendering;"
+busy_decl = "private bool EditorBusy => _jobId is not null || _asrJobId is not null || _ttsJobId is not null || _playback.IsRendering;"
 require(busy_decl in editor_main,
         "VOICE-01 active ASR job must participate in the single Editor busy owner")
 

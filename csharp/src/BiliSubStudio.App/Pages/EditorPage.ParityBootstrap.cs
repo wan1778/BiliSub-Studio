@@ -60,19 +60,6 @@ public sealed partial class EditorPage
                 LoadSelectedSubtitleCue();
                 UpdateSubtitleSummary();
                 RenderOverlays();
-                if (_translationJobId is not null)
-                {
-                    var snapshot = _application.Jobs.GetSnapshot(_translationJobId);
-                    TranslationProgress.Value = snapshot.Progress;
-                    TranslationStatusText.Text = snapshot.Message;
-                }
-                else if (_subtitleSource.Cues.Count > 0
-                    && _subtitleSource.Cues.All(cue => !string.IsNullOrWhiteSpace(cue.VietnameseText))
-                    && !string.IsNullOrWhiteSpace(_project?.Subtitle?.OutputPath))
-                {
-                    TranslationProgress.Value = 100;
-                    TranslationStatusText.Text = $"Vietsub hoàn tất · {_subtitleSource.Cues.Count:N0} câu.";
-                }
                 RefreshSubtitleCueEditorControls();
             }
 
@@ -231,7 +218,7 @@ public sealed partial class EditorPage
         {
             VoiceSampleSlot.Children.Add(_voiceSampleButton);
             // requirements as tooltip, not extra block
-            ToolTipService.SetToolTip(VoiceModelBox, "Nghe thử không cần video hay SRT. Để tạo voice toàn bộ: mở video + Vietsub đầy đủ; Whisper timing sẽ tự chạy nếu chưa có cache.");
+            ToolTipService.SetToolTip(VoiceModelBox, "Nghe thử không cần video hay SRT. Để tạo voice toàn bộ: mở video + SRT Việt; Whisper timing sẽ tự chạy nếu chưa có cache.");
         }
         else
         {
@@ -246,7 +233,7 @@ public sealed partial class EditorPage
     async void VoiceSample_Click(object sender, RoutedEventArgs e)
     {
         if (_voiceSampleButton is null) return;
-        if (_ttsJobId is not null || _asrJobId is not null || _jobId is not null || _translationJobId is not null)
+        if (_ttsJobId is not null || _asrJobId is not null || _jobId is not null)
         {
             VoiceStatusText.Text = "Hãy hoàn tất hoặc hủy tác vụ đang chạy trước khi nghe thử giọng.";
             return;
@@ -264,67 +251,7 @@ public sealed partial class EditorPage
             VoiceProgress.Value = 0;
             VoiceStatusText.Text = $"Đang chuẩn bị mẫu giọng {selectedVoice} local...";
 
-            const double duration = 4.2;
-            var root = Path.Combine(_application.Paths.Cache, "Editor", "TTS", "VoiceSample");
-            Directory.CreateDirectory(root);
-            var sourcePath = Path.Combine(root, "voice-sample-source.bin");
-            if (!File.Exists(sourcePath)) await File.WriteAllTextAsync(sourcePath, "BiliSub Studio voice sample\n");
-            var sourceInfo = new FileInfo(sourcePath);
-            sourceInfo.Refresh();
-            var modelRevision = _application.LocalAsrStatus.ModelRevision;
-            if (string.IsNullOrWhiteSpace(modelRevision) || modelRevision.Length != 40)
-                throw new InvalidDataException("Không xác định được revision Whisper để tạo timing mẫu an toàn.");
-
-            var sourceKey = BiliSubStudio.Core.Editor.EditorSpeechAnalysisDocument.SourceKey(
-                sourceInfo.FullName,
-                sourceInfo.Length,
-                sourceInfo.LastWriteTimeUtc.Ticks,
-                duration,
-                modelRevision);
-            var analysis = new BiliSubStudio.Core.Editor.EditorSpeechAnalysis(
-                BiliSubStudio.Core.Editor.EditorSpeechAnalysisDocument.CurrentSchema,
-                sourceKey,
-                "voice-sample-timing",
-                modelRevision,
-                "cpu",
-                "sample",
-                1,
-                [new BiliSubStudio.Core.Editor.EditorSpeechSegment(
-                    .05,
-                    4.05,
-                    "voice sample",
-                    0,
-                    0,
-                    [new BiliSubStudio.Core.Editor.EditorWordTiming("sample", .05, 4.05, 1)],
-                    "uncertain",
-                    0,
-                    0)]);
-            var analysisPath = Path.Combine(root, "voice-sample-analysis.json");
-            var analysisSha = await BiliSubStudio.Core.Editor.EditorSpeechAnalysisDocument.SaveAsync(
-                analysisPath, analysis, CancellationToken.None);
-            var cue = new BiliSubStudio.Core.Editor.EditorSubtitleCue(
-                "voice-demo-cue",
-                "1",
-                "00:00:00,050 --> 00:00:04,050",
-                .05,
-                4.05,
-                "Ngọc Huyền",
-                "Xin chào, tôi là Ngọc Huyền. Đây là giọng đọc mẫu của BiliSub Studio.");
-            var subtitle = new BiliSubStudio.Core.Editor.EditorSubtitleSource(
-                sourceInfo.FullName,
-                sourceInfo.Length,
-                sourceInfo.LastWriteTimeUtc.Ticks,
-                new string('0', 64),
-                [cue]);
-
-            _ttsJobId = _application.StartEditorTts(new BiliSubStudio.Core.Editor.EditorTtsRequest(
-                $"voice-demo-{selectedVoice}",
-                sourceInfo.FullName,
-                duration,
-                subtitle,
-                analysisPath,
-                analysisSha,
-                selectedVoice));
+            _ttsJobId = _application.StartEditorTtsSample(selectedVoice);
             RefreshEditorActions();
             var sampleJob = _ttsJobId;
             while (_ttsJobId == sampleJob && sampleJob is not null)
@@ -334,9 +261,10 @@ public sealed partial class EditorPage
                 VoiceStatusText.Text = snapshot.Message;
                 if (snapshot.Done)
                 {
-                    if (snapshot.Result is BiliSubStudio.Core.Editor.EditorTtsResult result)
+                    if (snapshot.Result is BiliSubStudio.Core.Editor.EditorTtsResult result && IsLoaded)
                     {
                         var file = await Windows.Storage.StorageFile.GetFileFromPathAsync(result.VoiceTrack.Path);
+                        if (!IsLoaded) { _ttsJobId = null; break; }
                         _voiceSamplePlayer?.Pause();
                         _voiceSamplePlayer?.Dispose();
                         _voiceSamplePlayer = new Windows.Media.Playback.MediaPlayer

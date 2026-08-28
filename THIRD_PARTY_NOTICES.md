@@ -1,40 +1,37 @@
 # Third-party notices
 
-BiliSub Studio uses the following third-party components and data in its local AI/media pipeline. This file is distributed with the Windows application and exact-source archive.
+BiliSub Studio's Voice/TTS path uses these upstream components locally.
+This notice accompanies the app; no authorship of upstream software or voices is claimed.
 
-## Piper TTS runtime
+## Piper and Vietnamese normalization
 
-- Component: `piper-tts 1.4.2`
-- Project/package: Piper text-to-speech runtime
-- Use in BiliSub Studio: executed as an app-managed local process; no cloud inference is required.
-- BiliSub Studio pins the Windows x64 wheel by exact version and SHA-256.
-- License obligations are governed by the upstream Piper package/project license distributed by its maintainers.
+- [Piper](https://github.com/OHF-Voice/piper1-gpl): piper-tts 1.7.0, local Python API.
+  The upstream GPL license and package notices govern its use.
+- [ONNX Runtime](https://github.com/microsoft/onnxruntime): 1.22.1.
+- [NumPy](https://numpy.org): 2.5.2.
+- [vietnormalizer](https://pypi.org/project/vietnormalizer/0.2.3/): 0.2.3.
+- [gdown](https://github.com/wkentaro/gdown): 6.1.0, used only to retrieve the pinned
+  public Drive artifacts, including Drive confirmation handling.
 
-## Vietnamese Piper voice: vi_VN-vais1000-medium
+Direct runtime versions are pinned; this notice does not claim that all transitive
+package distributions are locked by SHA-256.
 
-- Voice collection: `rhasspy/piper-voices`
-- Exact source revision: `3d796cc2f2c884b3517c527507e084f7bb245aea`
-- Voice path: `vi/vi_VN/vais1000/medium/vi_VN-vais1000-medium`
-- Model collection license: MIT as declared by the upstream repository metadata.
-- Training dataset: VAIS-1000.
-- Dataset license: Creative Commons Attribution 4.0 International (CC BY 4.0).
-- Original dataset/model attribution remains with the VAIS-1000 and Piper voice authors/contributors.
-- BiliSub Studio does not claim authorship of the original voice model or dataset.
+## NGHI Ngọc Huyền voice
 
-Pinned files used by BiliSub Studio:
+Source: [nghimestudio/nghitts](https://github.com/nghimestudio/nghitts) and its
+[official model folder](https://drive.google.com/drive/folders/1f_pCpvgqfvO4fdNKM7WS4zTuXC0HBskL).
+Upstream voice/model attribution remains with NGHI and its contributors.
+BiliSub uses the exact Ngọc Huyền ONNX/config files, not NGHI's browser application.
 
-- `vi_VN-vais1000-medium.onnx` — 63,201,294 bytes — SHA-256 `ec7c89e2c85f4d1edc24b6120c18aaf1bda614f06b511567eb9c7c0de15e2dab`
-- `vi_VN-vais1000-medium.onnx.json` — 4,860 bytes — SHA-256 `fafb9da1354ed4b77c31af228ed41fb41cd825c14cffa105454b25e6ae751ee0`
+- Model: ngochuyen.onnx, 63,516,050 bytes,
+  SHA-256 2140977786d76d834736c059dacfa553d4931dac2b2c7aaaea438bb2aa9da697.
+- Config: ngochuyen.onnx.json, 4,855 bytes,
+  SHA-256 971f57f8d504223fee5b40d664f503cf769baf7db21f7d2ae0554a75d07de2f8.
+- Canonical voice: ngoc_huyen, 22,050 Hz, mono.
+- Full source/download provenance is recorded in docs/engineering/EDITOR_NGHITTS_AUDIT.md.
 
-BiliSub Studio exposes two routing profiles from this one licensed local voice model:
+The current Voice task is local implementation and validation, not a release or a
+new legal clearance for redistribution. Upstream license/voice-use obligations
+must be reviewed before any later publication.
 
-- `vais1000-female-profile-v1`: original Piper synthesis profile.
-- `vais1000-male-profile-v1`: a deterministic synthetic acoustic profile created locally by lowering pitch approximately three semitones and compensating tempo before the normal timing-fit stage.
-
-The male profile is a generated acoustic transformation for subtitle-voice routing. It is not presented as a recording or likeness of a real male speaker.
-
-## NghiTTS reference
-
-The open-source NghiTTS project was reviewed as an architectural/reference implementation for Vietnamese Piper-compatible TTS and text handling. BiliSub Studio does **not** embed its Vue/Vite application, WebView runtime, localhost server, or cloud inference path.
-
-The previously evaluated `sannht/vi_voice` generic weights (`deepman3909` / `calmwoman3688`) are not downloaded or distributed by the production path because the reviewed weight index did not provide a sufficiently clear model-weight license for release.
+Previous VAIS synthetic male/female routes and Kokoro are not production TTS paths.

@@ -500,6 +500,18 @@ public sealed class BiliSubApplication : IAsyncDisposable
         return job.Id;
     }
 
+    public string StartEditorTtsSample(string voice)
+    {
+        if (Jobs.HasActiveJobs) throw new InvalidOperationException("Hãy hoàn tất hoặc hủy tác vụ đang chạy trước khi nghe thử.");
+        var job = Jobs.Create("editor-tts", cleanupAwareCancel: true);
+        _ = RunJobAsync(job, async () =>
+        {
+            var result = await _tts.GenerateSampleAsync(job, voice);
+            job.Finish(null, "Đã tạo mẫu Ngọc Huyền bằng model NGHI local.", result);
+        });
+        return job.Id;
+    }
+
     public string StartEditorTts(EditorTtsRequest request)
     {
         if (Jobs.HasActiveJobs) throw new InvalidOperationException("Hãy hoàn tất hoặc hủy tác vụ Media/OCR/Editor đang chạy trước khi tạo voice Việt.");

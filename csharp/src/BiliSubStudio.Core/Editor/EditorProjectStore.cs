@@ -480,7 +480,8 @@ public sealed class EditorProjectStore
             return null;
         var trackPath = Path.GetFullPath(track.Path.Trim());
         if (status == "complete" && (manifest.Length == 0 || !File.Exists(manifest) || !FileShaMatches(manifest, tts.ManifestSha256)
-            || !File.Exists(trackPath) || new FileInfo(trackPath).Length <= 64)) return null;
+            || !File.Exists(trackPath) || new FileInfo(trackPath).Length <= 64
+            || !TtsManifestMatches(manifest, trackPath))) return null;
         return tts with
         {
             Status = status,
@@ -492,6 +493,25 @@ public sealed class EditorProjectStore
             ManifestSha256 = tts.ManifestSha256.ToLowerInvariant(),
             VoiceTrack = track with { Path = trackPath, Gain = Math.Clamp(track.Gain, 0, 4) },
         };
+    }
+
+    private static bool TtsManifestMatches(string manifest, string trackPath)
+    {
+        try
+        {
+            if (new FileInfo(manifest).Length > 32L * 1024 * 1024) return false;
+            using var json = JsonDocument.Parse(File.ReadAllText(manifest));
+            var root = json.RootElement;
+            var master = root.GetProperty("master");
+            return root.GetProperty("schema").GetInt32() == 2
+                && root.GetProperty("voice_revision").GetString() == LocalTtsInstaller.VoiceRevision
+                && string.Equals(Path.GetFullPath(master.GetProperty("path").GetString()!), trackPath, StringComparison.OrdinalIgnoreCase)
+                && FileShaMatches(trackPath, master.GetProperty("sha256").GetString()!);
+        }
+        catch (Exception error) when (error is IOException or JsonException or InvalidOperationException or KeyNotFoundException or ArgumentException)
+        {
+            return false;
+        }
     }
 
     private static IReadOnlyDictionary<string, string> NormalizeVoiceOverrides(IReadOnlyDictionary<string, string>? source)

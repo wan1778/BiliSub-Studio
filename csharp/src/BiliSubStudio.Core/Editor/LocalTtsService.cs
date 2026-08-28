@@ -37,10 +37,9 @@ public sealed record EditorTtsResult(
 
 internal sealed class LocalTtsService : IDisposable
 {
-    private const int ManifestSchema = 1;
-    private const string TimingAlgorithm = "whisper-rhythm-v1";
-    private const double BlockSeconds = 300;
-    private const int NormalizationRevision = 1;
+    private const int ManifestSchema = 2;
+    private const string TimingAlgorithm = "whole-cue-v2";
+    private readonly SemaphoreSlim _generationGate = new(1, 1);
     private readonly AppPaths _paths;
     private readonly LocalTtsInstaller _installer;
     private readonly ToolManager _tools;
@@ -71,243 +70,196 @@ internal sealed class LocalTtsService : IDisposable
         var analysis = await EditorSpeechAnalysisDocument.LoadVerifiedAsync(request.SpeechAnalysisPath, request.SpeechAnalysisSha256, job.CancellationToken);
         if (!string.Equals(analysis.SourceKey, expectedSourceKey, StringComparison.Ordinal))
             throw new InvalidDataException("Whisper timing không còn khớp video nguồn; hãy phân tích nhịp lại trước khi tạo voice.");
-        var voice = LocalTtsInstaller.CanonicalVoiceId(string.IsNullOrWhiteSpace(request.Voice) ? LocalTtsInstaller.Voice : request.Voice);
-        if (!LocalTtsInstaller.AvailableVoices.Contains(voice, StringComparer.Ordinal)) throw new InvalidDataException($"Giọng {request.Voice} không hỗ trợ.");
+        // Whisper remains provenance/word-timing metadata; it never splits the text sent to Piper.
         var cueTiming = EditorSpeechAnalysisDocument.MapToCues(analysis, request.Subtitle.Cues).ToDictionary(x => x.CueId, StringComparer.Ordinal);
-        var runtime = await _installer.PrepareAsync(job, voice, 35);
-        var ffmpeg = await _tools.EnsureFfmpegAsync(job.CancellationToken);
-        var outputRoot = Path.Combine(_paths.Cache, "Editor", "TTS", request.ProjectId);
-        Directory.CreateDirectory(outputRoot);
-        var inputPath = Path.Combine(outputRoot, "input.json");
-        var cues = new List<TtsCueManifest>(request.Subtitle.Cues.Count);
-        foreach (var cue in request.Subtitle.Cues)
-        {
-            var raw = cue.VietnameseText;
-            var text = VietnameseTtsTextNormalizer.Normalize(raw);
-            if (text.Length == 0) throw new InvalidDataException($"Cue {cue.Number} chưa có câu Việt để tạo voice.");
-            // Debug log original vs normalized (not spam UI)
-            System.Diagnostics.Debug.WriteLine($"TTS normalize cue {cue.Id}: '{raw}' -> '{text}' voice={voice}");
-            if (!cueTiming.TryGetValue(cue.Id, out var timing))
-                timing = new EditorCueSpeechTiming(cue.Id, cue.Start, cue.End, cue.Start, cue.End, 0, 0, [], [], "uncertain", 0, 0);
-            var groups = BuildRhythmGroups(cue, timing, text, voice);
-            cues.Add(new TtsCueManifest(
-                cue.Id,
-                cue.Start,
-                cue.End,
-                voice,
-                groups));
-        }
-        var manifest = new TtsInputManifest(
-            ManifestSchema,
-            LocalTtsInstaller.EngineVersion,
-            voice,
-            TimingAlgorithm,
-            BlockSeconds,
-            cues);
-        await WriteAtomicJsonAsync(inputPath, manifest, job.CancellationToken);
+        var voice = ResolveVoice(request.Voice);
+        var cues = request.Subtitle.Cues.Select(cue => BuildWholeCue(cue, voice)).ToArray();
+        return await GenerateCuesAsync(job, request.ProjectId, request.Duration, voice, cues, cueTiming);
+    }
 
-        job.Set("tts-generate", 37, $"Đang tạo voice Việt local ({voice}) · {cues.Count} câu · canh theo word timing Whisper...");
-        await using var processes = new OwnedProcessGroup();
-        var reportedResult = string.Empty;
+    public Task<EditorTtsResult> GenerateSampleAsync(AppJob job, string voice)
+    {
+        voice = ResolveVoice(voice);
+        var cue = new TtsCueManifest("voice-demo-cue", 0, 10, voice,
+            "Xin chào, đây là giọng Ngọc Huyền. Chúc bạn một ngày thật bình an.");
+        // A text-only sample uses real synthesis, without a fabricated source or Whisper analysis.
+        return GenerateCuesAsync(job, "voice-demo-" + voice, 10, voice, [cue],
+            new Dictionary<string, EditorCueSpeechTiming>());
+    }
+
+    internal static TtsCueManifest BuildWholeCue(EditorSubtitleCue cue, string voice)
+    {
+        var text = VietnameseTtsTextNormalizer.Normalize(cue.VietnameseText);
+        if (string.IsNullOrWhiteSpace(text)) throw new InvalidDataException($"Cue {cue.Number} chưa có câu Việt để tạo voice.");
+        return new TtsCueManifest(cue.Id, cue.Start, cue.End, voice, text);
+    }
+
+    private static string ResolveVoice(string? voice)
+    {
+        var value = LocalTtsInstaller.CanonicalVoiceId(string.IsNullOrWhiteSpace(voice) ? LocalTtsInstaller.Voice : voice);
+        if (!LocalTtsInstaller.AvailableVoices.Contains(value, StringComparer.Ordinal))
+            throw new InvalidDataException($"Giọng {value} chưa có model NGHI được xác minh.");
+        return value;
+    }
+
+    private async Task<EditorTtsResult> GenerateCuesAsync(AppJob job, string projectId, double duration, string voice,
+        IReadOnlyList<TtsCueManifest> cues, IReadOnlyDictionary<string, EditorCueSpeechTiming> cueTiming)
+    {
+        await _generationGate.WaitAsync(job.CancellationToken);
         try
         {
-            var ready = false;
-            var completed = false;
-            var result = await _processes.RunStreamingAsync(
-                runtime.Python,
-                [
-                    "-I", runtime.Worker,
-                    "--manifest", inputPath,
-                    "--model", runtime.Model,
-                    "--config", runtime.Config,
-                    "--ffmpeg", ffmpeg,
-                    "--output-root", outputRoot,
-                    "--voice", voice,
-                ],
-                job.CancellationToken,
-                (line, _) =>
-                {
-                    if (!TryParseEvent(line, out var parsed)) return ValueTask.CompletedTask;
-                    using (parsed)
-                    {
-                        var root = parsed.RootElement;
-                        var kind = GetString(root, "event");
-                        if (kind == "ready") ready = true;
-                        else if (kind == "cue")
-                        {
-                            var index = GetInt(root, "index");
-                            var total = Math.Max(1, GetInt(root, "total"));
-                            var percent = 38 + index / (double)total * 53;
-                            job.Set("tts-generate", percent, $"Đang tạo và fit voice Việt · {index}/{total} câu...");
-                        }
-                        else if (kind == "block")
-                        {
-                            var index = GetInt(root, "index");
-                            var total = Math.Max(1, GetInt(root, "total"));
-                            job.Set("tts-mix", 91 + index / (double)total * 6, $"Đang gom voice thành track cache · block {index}/{total}...");
-                        }
-                        else if (kind == "complete")
-                        {
-                            completed = true;
-                            reportedResult = GetString(root, "result");
-                        }
-                        else if (kind == "error")
-                        {
-                            var msg = GetString(root, "message");
-                            if (!string.IsNullOrWhiteSpace(msg)) job.Log($"NGHI-TTS worker: {msg}");
-                        }
-                    }
-                    return ValueTask.CompletedTask;
-                }, runtime.Environment, processes);
-            if (result.ExitCode != 0 || !ready || !completed || string.IsNullOrWhiteSpace(reportedResult))
+            var runtime = await _installer.PrepareAsync(job, voice, 35);
+            var ffmpeg = await _tools.EnsureFfmpegAsync(job.CancellationToken);
+            var outputRoot = Path.Combine(_paths.Cache, "Editor", "TTS", projectId);
+            var runId = Guid.NewGuid().ToString("N");
+            var runRoot = Path.Combine(outputRoot, "runs", runId);
+            var inputPath = Path.Combine(runRoot, "input.json");
+            var resultPath = Path.Combine(outputRoot, $"result-{runId}.json");
+            var masterPath = Path.Combine(outputRoot, $"voice-master-{runId}.flac");
+            Directory.CreateDirectory(runRoot);
+            var accepted = false;
+            await using var processes = new OwnedProcessGroup();
+            try
             {
-                var shortMsg = LastLine(result.StandardError);
-                if (shortMsg.Contains("model missing", StringComparison.OrdinalIgnoreCase) || shortMsg.Contains("config missing", StringComparison.OrdinalIgnoreCase))
-                    throw new InvalidOperationException("Không thể tải giọng " + voice + ". Model NGHI-TTS bị thiếu hoặc không hợp lệ.");
-                if (shortMsg.Contains("invalid voice", StringComparison.OrdinalIgnoreCase))
-                    throw new InvalidOperationException($"Giọng {voice} không hỗ trợ.");
-                if (shortMsg.Contains("normalization", StringComparison.OrdinalIgnoreCase))
-                    throw new InvalidOperationException("Lỗi chuẩn hoá văn bản tiếng Việt.");
-                throw new InvalidOperationException("Không thể tạo voice: " + shortMsg);
+                var manifest = new TtsInputManifest(ManifestSchema, LocalTtsInstaller.EngineVersion,
+                    voice, TimingAlgorithm, duration, cues);
+                await WriteAtomicJsonAsync(inputPath, manifest, job.CancellationToken);
+                job.Set("tts-generate", 37, $"Đang tạo Ngọc Huyền local · {cues.Count} câu · mỗi cue đọc nguyên câu...");
+                var ready = false;
+                var completed = false;
+                var reportedResult = string.Empty;
+                var result = await _processes.RunStreamingAsync(runtime.Python,
+                    ["-I", "-X", "utf8", runtime.Worker, "--manifest", inputPath,
+                     "--model", runtime.Model, "--config", runtime.Config, "--ffmpeg", ffmpeg,
+                     "--output-root", outputRoot, "--run-root", runRoot,
+                     "--result", resultPath, "--master", masterPath, "--voice", voice],
+                    job.CancellationToken, (line, _) =>
+                    {
+                        if (!TryParseEvent(line, out var parsed)) return ValueTask.CompletedTask;
+                        using (parsed)
+                        {
+                            var root = parsed.RootElement;
+                            var kind = GetString(root, "event");
+                            if (kind == "ready")
+                                ready = GetString(root, "voice_revision") == LocalTtsInstaller.VoiceRevision
+                                    && GetString(root, "voice") == voice && GetInt(root, "model_loads") == 1;
+                            else if (kind == "cue")
+                            {
+                                var index = GetInt(root, "index");
+                                var total = Math.Max(1, GetInt(root, "total"));
+                                job.Set("tts-generate", 38 + index / (double)total * 53,
+                                    $"Đang tạo voice nguyên câu · {index}/{total}...");
+                            }
+                            else if (kind == "block")
+                            {
+                                var total = Math.Max(1d, root.GetProperty("total").GetDouble());
+                                job.Set("tts-mix", 91 + root.GetProperty("index").GetDouble() / total * 6,
+                                    "Đang ghép master voice theo timecode SRT...");
+                            }
+                            else if (kind == "complete")
+                            {
+                                completed = true;
+                                reportedResult = GetString(root, "result");
+                            }
+                        }
+                        return ValueTask.CompletedTask;
+                    }, runtime.Environment, processes);
+                job.CancellationToken.ThrowIfCancellationRequested();
+                if (result.ExitCode != 0 || !ready || !completed || !SamePath(reportedResult, resultPath))
+                    throw new InvalidOperationException("Không thể tạo voice NGHI: " + LastLine(result.StandardError));
+                var parsedResult = await ReadResultAsync(resultPath, masterPath, duration, runtime.SampleRate, voice, cues, job.CancellationToken);
+                var manifestSha = await HashAsync(resultPath, job.CancellationToken);
+                var cueResults = parsedResult.Cues.Select(cue =>
+                {
+                    var timing = cueTiming.TryGetValue(cue.Id, out var value) ? value : null;
+                    return new EditorTtsCueResult(cue.Id, cue.Voice, timing?.VoiceClass ?? "uncertain",
+                        timing?.VoiceConfidence ?? 0, cue.Status, cue.RawDuration, cue.FittedDuration);
+                }).ToArray();
+                job.CancellationToken.ThrowIfCancellationRequested();
+                job.Set("tts-final", 99, parsedResult.ReviewCount == 0
+                    ? $"Voice Việt hoàn tất · {cueResults.Length} câu khớp cửa sổ timecode."
+                    : $"Voice Việt hoàn tất · {parsedResult.ReviewCount} câu cần nghe/kiểm tra thời lượng; câu quá dài được giới hạn trong cue.");
+                accepted = true;
+                return new EditorTtsResult(resultPath, manifestSha,
+                    new EditorVoiceTrack(masterPath, 0, duration), cueResults, parsedResult.ReviewCount,
+                    parsedResult.Engine, parsedResult.EngineVersion, parsedResult.Voice);
+            }
+            finally
+            {
+                // Cleanup is part of completion/cancellation, never swallowed.
+                await processes.StopAsync();
+                await CleanupRunAsync(runRoot);
+                if (!accepted) { File.Delete(resultPath); File.Delete(masterPath); }
             }
         }
-        finally
-        {
-            try { await processes.StopAsync(); } catch { }
-        }
-
-        var resultPath = reportedResult;
-        var parsedResult = await ReadResultAsync(resultPath, outputRoot, request.Duration, runtime.SampleRate, job.CancellationToken);
-        var manifestSha = await HashAsync(resultPath, job.CancellationToken);
-        var timingById = cueTiming;
-        var cueResults = parsedResult.Cues.Select(cue =>
-        {
-            var timing = timingById.TryGetValue(cue.Id, out var value) ? value : null;
-            return new EditorTtsCueResult(
-                cue.Id,
-                cue.Voice,
-                timing?.VoiceClass ?? "uncertain",
-                timing?.VoiceConfidence ?? 0,
-                cue.Status,
-                cue.RawDuration,
-                cue.FittedDuration);
-        }).ToArray();
-        job.Set("tts-final", 99, parsedResult.ReviewCount == 0
-            ? $"Voice Việt hoàn tất · {cueResults.Length} câu đều fit timing."
-            : $"Voice Việt hoàn tất · {cueResults.Length} câu · {parsedResult.ReviewCount} câu cần xem lại timing/giọng.");
-        return new EditorTtsResult(
-            resultPath,
-            manifestSha,
-            new EditorVoiceTrack(parsedResult.Master.Path, parsedResult.Master.Start, parsedResult.Master.Duration),
-            cueResults,
-            parsedResult.ReviewCount,
-            parsedResult.Engine,
-            parsedResult.EngineVersion,
-                parsedResult.Voice);
+        finally { _generationGate.Release(); }
     }
 
-    internal static IReadOnlyList<TtsRhythmGroup> BuildRhythmGroups(EditorSubtitleCue cue, EditorCueSpeechTiming timing, string normalizedText, string voice)
+    private static async Task CleanupRunAsync(string runRoot)
     {
-        var tokens = normalizedText.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        if (tokens.Length == 0) return [];
-        var speechStart = Math.Clamp(timing.SpeechStart, cue.Start, cue.End);
-        var speechEnd = Math.Clamp(timing.SpeechEnd, speechStart, cue.End);
-        if (speechEnd <= speechStart + .01) { speechStart = cue.Start; speechEnd = cue.End; }
-        var intervals = new List<(double Start, double End)>();
-        var cursor = speechStart;
-        foreach (var pause in timing.Pauses.OrderBy(x => x.Start))
+        // Kill(entireProcessTree) reaps the Python parent first. Windows can still
+        // hold a descendant's file handle briefly while that process exits.
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+        while (Directory.Exists(runRoot))
         {
-            var pauseStart = Math.Clamp(pause.Start, cursor, speechEnd);
-            var pauseEnd = Math.Clamp(pause.End, pauseStart, speechEnd);
-            if (pauseStart - cursor >= .08) intervals.Add((cursor, pauseStart));
-            cursor = Math.Max(cursor, pauseEnd);
+            try { Directory.Delete(runRoot, recursive: true); }
+            catch (IOException) when (DateTime.UtcNow < deadline) { await Task.Delay(50); }
         }
-        if (speechEnd - cursor >= .08) intervals.Add((cursor, speechEnd));
-        if (intervals.Count == 0) intervals.Add((speechStart, speechEnd));
-        while (intervals.Count > tokens.Length && intervals.Count > 1)
-        {
-            var smallest = Enumerable.Range(0, intervals.Count - 1)
-                .OrderBy(index => (intervals[index].End - intervals[index].Start) + (intervals[index + 1].End - intervals[index + 1].Start))
-                .First();
-            intervals[smallest] = (intervals[smallest].Start, intervals[smallest + 1].End);
-            intervals.RemoveAt(smallest + 1);
-        }
-
-        var durations = intervals.Select(x => Math.Max(.08, x.End - x.Start)).ToArray();
-        var remainingTokens = tokens.Length;
-        var remainingWeight = durations.Sum();
-        var tokenOffset = 0;
-        var groups = new List<TtsRhythmGroup>(intervals.Count);
-        for (var index = 0; index < intervals.Count; index++)
-        {
-            var remainingGroups = intervals.Count - index;
-            var count = index == intervals.Count - 1
-                ? remainingTokens
-                : Math.Clamp((int)Math.Round(remainingTokens * durations[index] / Math.Max(.001, remainingWeight)), 1, remainingTokens - (remainingGroups - 1));
-            var groupText = string.Join(' ', tokens.Skip(tokenOffset).Take(count));
-            var interval = intervals[index];
-            var cacheKey = CacheKey(cue.Id, index, groupText, voice, interval.Start, interval.End);
-            groups.Add(new TtsRhythmGroup(interval.Start, interval.End, groupText, cacheKey));
-            tokenOffset += count;
-            remainingTokens -= count;
-            remainingWeight -= durations[index];
-        }
-        return groups;
     }
 
-    private static string CacheKey(string cueId, int groupIndex, string text, string voice, double start, double end)
+    private async Task<TtsWorkerResult> ReadResultAsync(string path, string expectedMaster, double duration,
+        int expectedSampleRate, string voice, IReadOnlyList<TtsCueManifest> expectedCues, CancellationToken cancellationToken)
     {
-        var value = $"{LocalTtsInstaller.Engine}\n{LocalTtsInstaller.EngineVersion}\n{LocalTtsInstaller.ModelRevision}\n{voice}\n{NormalizationRevision}\n{cueId}\n{groupIndex}\n{voice}\n{start:0.000}\n{end:0.000}\n{text}";
-        return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
-    }
-
-    private async Task<TtsWorkerResult> ReadResultAsync(string path, string root, double duration, int expectedSampleRate, CancellationToken cancellationToken)
-    {
-        var absolute = Path.GetFullPath(path);
-        var safeRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
-        if (!absolute.StartsWith(safeRoot, StringComparison.OrdinalIgnoreCase)
-            || !File.Exists(absolute) || new FileInfo(absolute).Length is <= 0 or > 32L * 1024 * 1024)
-            throw new InvalidDataException("Worker TTS không tạo result hợp lệ trong cache project.");
-        await using var stream = File.OpenRead(absolute);
+        if (!File.Exists(path) || new FileInfo(path).Length is <= 0 or > 32L * 1024 * 1024)
+            throw new InvalidDataException("Worker TTS không tạo result hợp lệ.");
+        await using var stream = File.OpenRead(path);
         var result = await JsonSerializer.DeserializeAsync<TtsWorkerResult>(stream, _json, cancellationToken)
             ?? throw new InvalidDataException("Result TTS rỗng.");
-        if (result.Schema != ManifestSchema || result.Cues is null || result.Master is null || result.ReviewCount < 0
-            || string.IsNullOrWhiteSpace(result.Engine) || string.IsNullOrWhiteSpace(result.EngineVersion))
-            throw new InvalidDataException("Result TTS sai schema.");
-        if (!string.Equals(result.Engine, LocalTtsInstaller.Engine, StringComparison.Ordinal)
-            || !string.Equals(result.EngineVersion, LocalTtsInstaller.EngineVersion, StringComparison.Ordinal)
-            || !LocalTtsInstaller.AvailableVoices.Contains(result.Voice, StringComparer.Ordinal))
-            throw new InvalidDataException($"Result TTS không thuộc voice {result.Voice} đã khóa.");
-        var masterPath = Path.GetFullPath(result.Master.Path);
-        if (!masterPath.StartsWith(safeRoot, StringComparison.OrdinalIgnoreCase) || !File.Exists(masterPath) || new FileInfo(masterPath).Length <= 64
-            || !double.IsFinite(result.Master.Start) || result.Master.Start < 0 || !double.IsFinite(result.Master.Duration)
-            || result.Master.Duration <= 0 || result.Master.Duration > duration + 5)
-            throw new InvalidDataException("Track voice master TTS không hợp lệ.");
-        // Validate WAV sample rate matches config (not hardcoded)
-        try
+        if (result.Schema != ManifestSchema || result.Cues is null || result.Master is null
+            || result.Engine != LocalTtsInstaller.Engine || result.EngineVersion != LocalTtsInstaller.EngineVersion
+            || result.VoiceRevision != LocalTtsInstaller.VoiceRevision || result.Voice != voice
+            || result.SampleRate != expectedSampleRate || result.Cues.Count != expectedCues.Count)
+            throw new InvalidDataException("Result TTS sai schema/model/voice/cue count.");
+        for (var index = 0; index < expectedCues.Count; index++)
         {
-            var probe = await _tools.EnsureFfprobeAsync(cancellationToken);
-            var info = await new ProcessRunner().RunAsync(probe, ["-v", "quiet", "-print_format", "json", "-show_streams", masterPath], cancellationToken);
-            if (info.ExitCode == 0)
-            {
-                var json = info.StandardOutput;
-                if (json.Contains("\"sample_rate\""))
-                {
-                    var sr = ExtractSampleRate(json);
-                    if (sr > 0 && sr != expectedSampleRate)
-                    {
-                        // Deterministic resample would be done here, but we accept worker native rate for now
-                    }
-                }
-            }
+            var cue = result.Cues[index];
+            var expected = expectedCues[index];
+            if (cue.Id != expected.Id || cue.Voice != voice || cue.Status is not ("fit" or "review")
+                || !double.IsFinite(cue.RawDuration) || cue.RawDuration <= 0
+                || !double.IsFinite(cue.FittedDuration) || cue.FittedDuration <= 0)
+                throw new InvalidDataException("Result TTS chứa cue sai hoặc bị thay thứ tự.");
+            var target = expected.CueEnd - expected.CueStart;
+            var fits = Math.Abs(cue.FittedDuration - target) <= Math.Max(.07, target * .04);
+            if ((cue.Status == "fit") != fits || cue.VoiceReview != (cue.Status == "review"))
+                throw new InvalidDataException("Result TTS báo sai trạng thái fit/review.");
         }
-        catch { }
-        return result with { Master = result.Master with { Path = masterPath } };
+        if (result.ReviewCount != result.Cues.Count(cue => cue.Status == "review"))
+            throw new InvalidDataException("Result TTS báo sai số câu cần kiểm tra.");
+        if (!SamePath(result.Master.Path, expectedMaster) || !File.Exists(expectedMaster)
+            || new FileInfo(expectedMaster).Length <= 64 || result.Master.Start != 0
+            || !double.IsFinite(result.Master.Duration) || Math.Abs(result.Master.Duration - duration) > .001
+            || await HashAsync(expectedMaster, cancellationToken) != result.Master.Sha256)
+            throw new InvalidDataException("Track voice master TTS không hợp lệ.");
+        var probe = await _tools.EnsureFfprobeAsync(cancellationToken);
+        var info = await _processes.RunAsync(probe,
+            ["-v", "error", "-print_format", "json", "-show_streams", "-show_format", expectedMaster], cancellationToken);
+        if (info.ExitCode != 0) throw new InvalidDataException("Không giải mã được master voice: " + info.StandardError);
+        using var probeJson = JsonDocument.Parse(info.StandardOutput);
+        var audioStreams = probeJson.RootElement.GetProperty("streams").EnumerateArray()
+            .Where(item => GetString(item, "codec_type") == "audio").ToArray();
+        if (audioStreams.Length != 1 || GetString(audioStreams[0], "sample_rate") != expectedSampleRate.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            || GetInt(audioStreams[0], "channels") != 1
+            || !double.TryParse(GetString(probeJson.RootElement.GetProperty("format"), "duration"),
+                System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var actualDuration)
+            || !double.IsFinite(actualDuration) || Math.Abs(actualDuration - duration) > .05)
+            throw new InvalidDataException("Master voice sai sample rate/kênh/thời lượng.");
+        return result;
     }
 
-    private static int ExtractSampleRate(string json)
+    private static bool SamePath(string left, string right)
     {
-        try { var idx = json.IndexOf("\"sample_rate\"", StringComparison.Ordinal); if (idx < 0) return 0; var colon = json.IndexOf(':', idx); var quote1 = json.IndexOf('"', colon); var quote2 = json.IndexOf('"', quote1 + 1); if (quote1 < 0 || quote2 < 0) return 0; var s = json.Substring(quote1 + 1, quote2 - quote1 - 1); return int.TryParse(s, out var v) ? v : 0; } catch { return 0; }
+        try { return string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase); }
+        catch (ArgumentException) { return false; }
     }
 
     private static void ValidateRequest(EditorTtsRequest request)
@@ -320,6 +272,11 @@ internal sealed class LocalTtsService : IDisposable
         if (!double.IsFinite(request.Duration) || request.Duration <= 0) throw new InvalidDataException("Thời lượng video TTS không hợp lệ.");
         if (request.Subtitle.Cues.Count == 0 || request.Subtitle.Cues.Any(x => string.IsNullOrWhiteSpace(x.VietnameseText)))
             throw new InvalidDataException("Phải Vietsub đầy đủ trước khi tạo voice Việt.");
+        if (request.Subtitle.Cues.Count > EditorSubtitleDocument.MaxCues
+            || request.Subtitle.Cues.Select(cue => cue.Id).Distinct(StringComparer.Ordinal).Count() != request.Subtitle.Cues.Count
+            || request.Subtitle.Cues.Any(cue => string.IsNullOrWhiteSpace(cue.Id) || !double.IsFinite(cue.Start)
+                || !double.IsFinite(cue.End) || cue.Start < 0 || cue.End <= cue.Start || cue.End > request.Duration))
+            throw new InvalidDataException("Cue voice bị trùng ID hoặc nằm ngoài thời lượng video.");
         if (request.SpeechAnalysisSha256.Length != 64 || request.SpeechAnalysisSha256.Any(x => !Uri.IsHexDigit(x)))
             throw new InvalidDataException("SHA-256 Whisper timing không hợp lệ.");
         var canonicalVoice = LocalTtsInstaller.CanonicalVoiceId(request.Voice ?? string.Empty);
@@ -364,12 +321,12 @@ internal sealed class LocalTtsService : IDisposable
     }
     private static void TryDelete(string path) { try { File.Delete(path); } catch { } }
 
-    public void Dispose() => _installer.Dispose();
+    public void Dispose() { _generationGate.Dispose(); _installer.Dispose(); }
 
-    internal sealed record TtsRhythmGroup(double Start, double End, string Text, string CacheKey);
-    private sealed record TtsCueManifest(string Id, double CueStart, double CueEnd, string Voice, IReadOnlyList<TtsRhythmGroup> Groups);
-    private sealed record TtsInputManifest(int Schema, string EngineVersion, string Voice, string TimingAlgorithm, double BlockSeconds, IReadOnlyList<TtsCueManifest> Cues);
+    internal sealed record TtsCueManifest(string Id, double CueStart, double CueEnd, string Voice, string Text);
+    private sealed record TtsInputManifest(int Schema, string EngineVersion, string Voice, string TimingAlgorithm, double Duration, IReadOnlyList<TtsCueManifest> Cues);
     private sealed record TtsWorkerCue(string Id, string Voice, bool VoiceReview, double RawDuration, double FittedDuration, string Status);
-    private sealed record TtsWorkerTrack(string Path, double Start, double Duration);
-    private sealed record TtsWorkerResult(int Schema, string Engine, string EngineVersion, string Voice, IReadOnlyList<TtsWorkerCue> Cues, TtsWorkerTrack Master, int ReviewCount);
+    private sealed record TtsWorkerTrack(string Path, double Start, double Duration, string Sha256);
+    private sealed record TtsWorkerResult(int Schema, string Engine, string EngineVersion, string Voice, string VoiceRevision,
+        IReadOnlyList<TtsWorkerCue> Cues, TtsWorkerTrack Master, int ReviewCount, int SampleRate);
 }
