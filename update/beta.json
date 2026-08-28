@@ -1,13 +1,13 @@
 {
-  "version": "4.0.0-beta.69-csharp-p5",
+  "version": "4.0.0-beta.70-csharp-p5",
   "channel_ready": true,
-  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.55/BiliSubStudio_4.0.55_Windows-x64-portable.zip",
-  "sha256": "6e649582d576db58f43fff6b1cf7a849334a2524f4f3aa94b82216c039333fd4",
-  "size": 94808814,
+  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.56/BiliSubStudio_4.0.56_Windows-x64-portable.zip",
+  "sha256": "0f8a6bf98d8e73e069d909d3ca7dc44c7647b9c1586b0e90eeaaab8a028d750a",
+  "size": 94811350,
   "payload_kind": "winui3-portable-zip",
   "notes": [
-    "Khung xem trước OCR chỉ nhận cue đã được SubtitleTracker commit với mốc bắt đầu/kết thúc ổn định; không còn đưa cue active đang biến đổi lên bảng rồi tạo cảm giác thiếu chữ hoặc lặp cùng một câu.",
-    "Giữ nguyên PaddleOCR model, threshold, tracker, enhanced retry, Reconcile và logic xuất SRT; thay đổi chỉ tách dữ liệu preview live khỏi trạng thái active chưa hoàn tất.",
-    "Giữ nguyên các sửa trước đó về video dài nhiều lane, Pause/Resume, Auto VRAM thực đo và khung subtitle SRT-style có thanh cuộn."
+    "OCR preview giữ vùng ROI đúng vị trí khi khung video thay đổi kích thước, đồng thời hiển thị cue đang được xác nhận và giữ lại bằng chứng câu đầy đủ hơn giữa các frame.",
+    "OCR worker từ chối rõ ràng kết quả PaddleOCR báo lỗi, thiếu schema hoặc lệch số lượng text/score/box; không còn hoàn thành thành công với phụ đề rỗng khi backend gặp lỗi.",
+    "Editor bổ sung nghe thử mẫu giọng Việt local trước khi tạo voice track, không thay đổi chính sách trộn âm thanh khi Preview hoặc Export."
   ]
 }
