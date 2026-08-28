@@ -474,7 +474,10 @@ public sealed class OcrScanner
         }
         var completedCount = completed.Count(x => x);
         var active = Math.Max(0, lanes.Count - completedCount);
-        var recentCues = liveCommitted.TakeLast(120).ToArray();
+        var recentCues = liveCommitted
+            .Concat(liveActive.Where(cue => cue is not null).Select(cue => cue!))
+            .TakeLast(120)
+            .ToArray();
         job.Set("scanning", percent, $"Đang quét OCR · {lanes.Count} FFmpeg lane · {workers} worker · {percent:0.0}%");
         job.SetResult(new OcrScanResult(
             recentCues, frames.Sum(), images.Sum(), unique, elapsedSeconds,

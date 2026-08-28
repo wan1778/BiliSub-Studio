@@ -116,12 +116,18 @@ def main() -> int:
     require("liveCommitted" in scanner and "liveActive" in scanner and
             "recentCues" in live_publish and "new OcrScanResult(" in live_publish,
             "running OCR does not publish a bounded live cue snapshot through AppJob.Result")
+    require(".Concat(liveActive.Where(cue => cue is not null).Select(cue => cue!))" in live_publish,
+            "live OCR preview hides the tracker-confirmed active cue until a later subtitle commits it")
     require("publishedCueCount" in live_lane and "tracker.Cues.Skip(publishedCueCount)" in live_lane and
             "tracker.Active" in live_lane and "onProgress(at, frames, images, committedCues, tracker.Active)" in live_lane,
             "tracker-confirmed committed/active OCR text is not streamed while scanning")
     require("snapshot.Result is OcrScanResult result" in page and
             "GroupBy(cue => Math.Round(cue.Start, 3))" in page and "RenderCues();" in page,
             "OCR page does not accumulate live OcrScanResult cue snapshots into visible history")
+    require("var authoritative = snapshot.Done" in page and
+            "? result.Cues.OrderBy(cue => cue.Start).ToArray()" in page and
+            "ExportOcrAsync(_cues" in page and "ExportButton.IsEnabled = false;" in page,
+            "provisional live active cues can leak into export instead of being replaced by the final authoritative scan result")
     require("TakeLast(120)" not in page and
             "ScrollViewer.SetVerticalScrollBarVisibility(CueList, ScrollBarVisibility.Auto)" in page and
             'Text = "Phụ đề OCR đã quét"' in page and
@@ -163,7 +169,7 @@ def main() -> int:
     require("Where(x => x.Start <= media + 0.001)" in checkpoint,
             "paused checkpoint cues are not restricted to the contiguous safe frontier")
 
-    print("PASS OCR Predict/Probe/Commit base 1/2/4/8/16 plus descending fallbacks, machine-measured VRAM growth/reserve/throughput gate, full scrollable SRT-style live cue history, exact topology, live tracker cue stream, owned-process cleanup, transactional cancel, safe-frontier and NVDEC contracts")
+    print("PASS OCR Predict/Probe/Commit base 1/2/4/8/16 plus descending fallbacks, machine-measured VRAM growth/reserve/throughput gate, full scrollable SRT-style live cue history including the current confirmed active cue, final-authoritative export isolation, exact topology, owned-process cleanup, transactional cancel, safe-frontier and NVDEC contracts")
     return 0
 
 
