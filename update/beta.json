@@ -1,13 +1,13 @@
 {
-  "version": "4.0.0-beta.68-csharp-p5",
+  "version": "4.0.0-beta.69-csharp-p5",
   "channel_ready": true,
-  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.54/BiliSubStudio_4.0.54_Windows-x64-portable.zip",
-  "sha256": "724371e785a1174585078980950cea8611f1c3a909870694f6af0d70a590e012",
-  "size": 94808851,
+  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.55/BiliSubStudio_4.0.55_Windows-x64-portable.zip",
+  "sha256": "6e649582d576db58f43fff6b1cf7a849334a2524f4f3aa94b82216c039333fd4",
+  "size": 94808814,
   "payload_kind": "winui3-portable-zip",
   "notes": [
-    "Live OCR preview không còn để snapshot ngắn hơn của cùng một cue ghi đè câu đầy đủ đã thấy; cùng timestamp ưu tiên nội dung nhiều ký tự hơn, sau đó mới xét confidence và thời điểm kết thúc.",
-    "Giữ nguyên PaddleOCR model, threshold, tracker, frame sampling và logic xuất SRT; thay đổi này chỉ sửa bước merge lịch sử subtitle đang hiển thị trong lúc quét.",
-    "Giữ nguyên các sửa lỗi trước đó về video dài nhiều lane, Pause/Resume, Auto VRAM thực đo và khung subtitle SRT-style có thanh cuộn."
+    "Khung xem trước OCR chỉ nhận cue đã được SubtitleTracker commit với mốc bắt đầu/kết thúc ổn định; không còn đưa cue active đang biến đổi lên bảng rồi tạo cảm giác thiếu chữ hoặc lặp cùng một câu.",
+    "Giữ nguyên PaddleOCR model, threshold, tracker, enhanced retry, Reconcile và logic xuất SRT; thay đổi chỉ tách dữ liệu preview live khỏi trạng thái active chưa hoàn tất.",
+    "Giữ nguyên các sửa trước đó về video dài nhiều lane, Pause/Resume, Auto VRAM thực đo và khung subtitle SRT-style có thanh cuộn."
   ]
 }
