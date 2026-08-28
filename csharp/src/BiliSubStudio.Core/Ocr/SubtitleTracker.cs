@@ -12,6 +12,7 @@ internal sealed class SubtitleTracker
     private OcrCue? _active;
     private string? _longerVariantText;
     private int _longerVariantHits;
+    private double _longerVariantLast;
     private int _emptyHits;
     private double _emptyStart;
     private double _lastFrameDuration;
@@ -47,6 +48,7 @@ internal sealed class SubtitleTracker
         _subtextVariant = null;
         _longerVariantText = null;
         _longerVariantHits = 0;
+        _longerVariantLast = 0;
         _emptyHits = 0;
     }
 
@@ -68,12 +70,14 @@ internal sealed class SubtitleTracker
             _candidate = null;
             _longerVariantText = null;
             _longerVariantHits = 0;
+            _longerVariantLast = 0;
             return;
         }
         if (_active is not null && _exactFrameTiming && IsStrictSubtext(_active.Text, text))
         {
             _longerVariantText = null;
             _longerVariantHits = 0;
+            _longerVariantLast = 0;
             ObserveSubtextVariant(at, frameDuration, text, result.Confidence);
             return;
         }
@@ -100,7 +104,8 @@ internal sealed class SubtitleTracker
                 && result.Confidence >= Math.Max(.45, _lowConfidence - .20)
                 && text.Contains(currentText, StringComparison.Ordinal))
             {
-                if (string.Equals(_longerVariantText, text, StringComparison.Ordinal))
+                if (string.Equals(_longerVariantText, text, StringComparison.Ordinal)
+                    && at - _longerVariantLast <= _candidateGap)
                 {
                     _longerVariantHits++;
                 }
@@ -109,20 +114,30 @@ internal sealed class SubtitleTracker
                     _longerVariantText = text;
                     _longerVariantHits = 1;
                 }
+                _longerVariantLast = at;
                 // A single longer read can be a hallucinated edge glyph. Two
-                // consecutive compatible reads recover a glyph Paddle omitted
-                // from an otherwise high-confidence active caption.
+                // matching compatible reads inside the same short evidence window
+                // recover a glyph even when Paddle alternates full/short/full.
                 if (_longerVariantHits >= 2)
                 {
                     resolvedText = _longerVariantText ?? text;
                     _longerVariantText = null;
                     _longerVariantHits = 0;
+                    _longerVariantLast = 0;
                 }
+            }
+            else if (_longerVariantHits > 0
+                && string.Equals(text, currentText, StringComparison.Ordinal)
+                && at - _longerVariantLast <= _candidateGap)
+            {
+                // Keep recent fuller-text evidence across an intermittent short
+                // base reading. The evidence still expires after _candidateGap.
             }
             else
             {
                 _longerVariantText = null;
                 _longerVariantHits = 0;
+                _longerVariantLast = 0;
             }
             _active = _active with
             {
@@ -134,6 +149,7 @@ internal sealed class SubtitleTracker
         }
         _longerVariantText = null;
         _longerVariantHits = 0;
+        _longerVariantLast = 0;
         _emptyHits = 0;
         var required = result.Confidence < _lowConfidence || (_exactFrameTiming && text.EnumerateRunes().Count() <= 1)
             ? 3
@@ -165,6 +181,7 @@ internal sealed class SubtitleTracker
         _subtextVariant = null;
         _longerVariantText = null;
         _longerVariantHits = 0;
+        _longerVariantLast = 0;
     }
 
     private void ObserveEmpty(double at, double frameDuration)
@@ -172,6 +189,7 @@ internal sealed class SubtitleTracker
         _candidate = null;
         _longerVariantText = null;
         _longerVariantHits = 0;
+        _longerVariantLast = 0;
         if (_active is null)
         {
             _emptyHits = 0;
@@ -234,6 +252,7 @@ internal sealed class SubtitleTracker
         _active = null;
         _longerVariantText = null;
         _longerVariantHits = 0;
+        _longerVariantLast = 0;
     }
 
     private double EstimateBoundary(double sampledAt, double frameDuration) => _exactFrameTiming

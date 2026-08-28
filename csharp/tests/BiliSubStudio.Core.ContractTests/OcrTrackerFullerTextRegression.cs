@@ -48,24 +48,37 @@ internal static class OcrTrackerFullerTextRegression
         var recoveredCue = (OcrCue)(active.GetValue(recovered)
             ?? throw new InvalidOperationException("tracker lost the active cue while recovering fuller text"));
         if (recoveredCue.Text != "吃我的喝我的")
-            throw new InvalidOperationException("two consecutive compatible fuller reads did not recover the omitted glyph");
+            throw new InvalidOperationException("two compatible fuller reads did not recover the omitted glyph");
         if (!(bool)(canCheckpoint.GetValue(recovered) ?? false))
             throw new InvalidOperationException("resolved fuller-text evidence kept checkpointing blocked");
 
-        var interrupted = constructor.Invoke([30d, .68d, true]);
-        observe.Invoke(interrupted, [20d, frame, shortText]);
-        observe.Invoke(interrupted, [20d + frame, frame, shortText]);
-        observe.Invoke(interrupted, [20d + 2d * frame, frame, completeText]);
-        observe.Invoke(interrupted, [20d + 3d * frame, frame, shortText]);
-        observe.Invoke(interrupted, [20d + 4d * frame, frame, completeText]);
-        var interruptedCue = (OcrCue)(active.GetValue(interrupted)
-            ?? throw new InvalidOperationException("tracker lost interrupted fuller-text fixture"));
-        if (interruptedCue.Text != "吃我的喝我")
-            throw new InvalidOperationException("non-consecutive fuller OCR evidence overrode the active cue");
-        observe.Invoke(interrupted, [20d + 5d * frame, frame, completeText]);
-        interruptedCue = (OcrCue)(active.GetValue(interrupted)
-            ?? throw new InvalidOperationException("tracker lost the recovered interrupted fixture"));
-        if (interruptedCue.Text != "吃我的喝我的")
-            throw new InvalidOperationException("fresh consecutive fuller OCR evidence did not recover after interruption");
+        var interleaved = constructor.Invoke([30d, .68d, true]);
+        observe.Invoke(interleaved, [20d, frame, shortText]);
+        observe.Invoke(interleaved, [20d + frame, frame, shortText]);
+        observe.Invoke(interleaved, [20d + 2d * frame, frame, completeText]);
+        observe.Invoke(interleaved, [20d + 3d * frame, frame, shortText]);
+        observe.Invoke(interleaved, [20d + 4d * frame, frame, completeText]);
+        var interleavedCue = (OcrCue)(active.GetValue(interleaved)
+            ?? throw new InvalidOperationException("tracker lost interleaved fuller-text fixture"));
+        if (interleavedCue.Text != "吃我的喝我的")
+            throw new InvalidOperationException("full-short-full OCR evidence inside one caption did not recover the omitted glyph");
+        if (!(bool)(canCheckpoint.GetValue(interleaved) ?? false))
+            throw new InvalidOperationException("resolved interleaved fuller-text evidence kept checkpointing blocked");
+
+        var expired = constructor.Invoke([30d, .68d, true]);
+        observe.Invoke(expired, [30d, frame, shortText]);
+        observe.Invoke(expired, [30d + frame, frame, shortText]);
+        observe.Invoke(expired, [30d + 2d * frame, frame, completeText]);
+        observe.Invoke(expired, [31d, frame, shortText]);
+        observe.Invoke(expired, [31d + frame, frame, completeText]);
+        var expiredCue = (OcrCue)(active.GetValue(expired)
+            ?? throw new InvalidOperationException("tracker lost expired fuller-text fixture"));
+        if (expiredCue.Text != "吃我的喝我")
+            throw new InvalidOperationException("stale fuller-text evidence leaked across the safety window");
+        observe.Invoke(expired, [31d + 2d * frame, frame, completeText]);
+        expiredCue = (OcrCue)(active.GetValue(expired)
+            ?? throw new InvalidOperationException("tracker lost renewed fuller-text fixture"));
+        if (expiredCue.Text != "吃我的喝我的")
+            throw new InvalidOperationException("fresh fuller-text evidence after expiry did not recover the omitted glyph");
     }
 }
