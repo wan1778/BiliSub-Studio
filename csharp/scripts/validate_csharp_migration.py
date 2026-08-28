@@ -808,7 +808,7 @@ for marker in (
     "49f96e861b57301f0b76a082109bde2cac8204a6b4fedc870883008271e82251",
     'ModelRevision = "536b0662742c02347bc0e980a01041f333bce120"',
     "3e305921506d8872816023e4c273e75d2419fb89b24da97b4fe7bce14170d671",
-    "EnsurePrivatePythonAsync", "SHA-256 model ASR", "HF_HUB_OFFLINE",
+    "EnsurePrivatePythonAsync", "SHA-256 {payloadLabel}", 'payloadLabel = "model ASR"', "HF_HUB_OFFLINE",
 ):
     require(marker in asr_installer, f"ASR pinned installer contract missing {marker}")
 for marker in ("SelectRuntimeAsync", "ProbeRealtimeFactor", "asr-probe-gpu", "asr-probe-cpu", "SaveCheckpointAsync", "RunStreamingAsync", "OwnedProcessGroup"):
@@ -817,6 +817,20 @@ for marker in ('local_files_only=True', 'language="zh"', "word_timestamps=True",
     require(marker in asr_worker, f"ASR worker offline/Chinese/timestamp contract missing {marker}")
 require("WhisperModel(" in asr_worker and "str(model_dir)" in asr_worker,
         "ASR worker must load only the verified local model directory")
+asr_gpu = read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalAsrInstaller.Gpu.cs")
+for marker in ("GpuUnavailableReason", "PrepareGpuAsync", "ReadGpuDirectoryAsync", "ExtractGpuPackageAsync",
+               'Path.Combine(Root, "gpu")', "DownloadVerifiedAsync", "package.Sha256", "HashAsync",
+               "catch (OperationCanceledException) { throw; }", "CUDA 12.8", "9.10.2.21"):
+    require(marker in asr_gpu, f"ASR private GPU preparation missing {marker}")
+require("await _installer.PrepareGpuAsync(job)" in asr_service and '"--cuda-bin", directory' in asr_service,
+        "ASR GPU probe and real transcription must receive private DLL directories")
+require("range.From != existing" in asr_installer and "range.Length != expectedSize" in asr_installer
+        and asr_installer.index("response.EnsureSuccessStatusCode();") < asr_installer.index("response.StatusCode == HttpStatusCode.PartialContent"),
+        "ASR CUDA/model retries must preserve partial bytes on HTTP errors and validate resumed offsets")
+require('if args.device == "cuda":\n        configure_cuda(args.cuda_bin)' in asr_worker
+        and asr_worker.index("configure_cuda(args.cuda_bin)") < asr_worker.index("from faster_whisper import WhisperModel")
+        and "_cuda_handles.append(os.add_dll_directory" in asr_worker and "ctypes.WinDLL" in asr_worker,
+        "ASR must register and retain private CUDA DLLs before importing Whisper, without requiring them on CPU")
 
 
 tts_installer = read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalTtsInstaller.cs")

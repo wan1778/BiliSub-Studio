@@ -8,6 +8,33 @@ import time
 from pathlib import Path
 
 
+# Keep both directory registrations and loaded DLLs alive for this worker only.
+_cuda_handles = []
+
+
+def configure_cuda(directories: list[str]) -> None:
+    if sys.platform != "win32" or not directories:
+        raise RuntimeError("Private Windows CUDA libraries were not prepared for ASR")
+    import ctypes
+
+    resolved = [Path(value).resolve(strict=True) for value in directories]
+    if any(not directory.is_dir() for directory in resolved):
+        raise RuntimeError("Invalid private CUDA directory")
+    # PATH is child-process local, for libraries that use LoadLibrary internally.
+    # add_dll_directory handles Python's restricted Windows DLL search as well.
+    os.environ["PATH"] = os.pathsep.join(map(str, resolved)) + os.pathsep + os.environ.get("PATH", "")
+    for directory in resolved:
+        _cuda_handles.append(os.add_dll_directory(str(directory)))
+    for name in ("cudart64_12.dll", "cublasLt64_12.dll", "cublas64_12.dll", "cudnn64_9.dll"):
+        library = next((directory / name for directory in resolved if (directory / name).is_file()), None)
+        if library is None:
+            raise RuntimeError(f"Private ASR CUDA library is missing: {name}")
+        try:
+            _cuda_handles.append(ctypes.WinDLL(str(library)))
+        except OSError as error:
+            raise RuntimeError(f"Cannot load private ASR CUDA library {name}: {error}") from error
+
+
 def emit(payload: dict) -> None:
     sys.stdout.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n")
     sys.stdout.flush()
@@ -18,6 +45,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", required=True)
     parser.add_argument("--audio", required=True)
     parser.add_argument("--device", choices=("cpu", "cuda"), required=True)
+    parser.add_argument("--cuda-bin", action="append", default=[])
     parser.add_argument("--compute", required=True)
     parser.add_argument("--threads", type=int, required=True)
     parser.add_argument("--offset", type=float, default=0.0)
@@ -37,6 +65,8 @@ def main() -> int:
 
     os.environ["HF_HUB_OFFLINE"] = "1"
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    if args.device == "cuda":
+        configure_cuda(args.cuda_bin)
     from faster_whisper import WhisperModel
 
     started = time.perf_counter()

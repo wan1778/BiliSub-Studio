@@ -25,7 +25,7 @@ public sealed record LocalAsrStatus(
 internal sealed record LocalAsrRuntime(string Python, string Worker, string ModelDirectory, IReadOnlyDictionary<string, string?> Environment);
 internal sealed record AsrModelFile(string Name, long Size, string Sha256);
 
-internal sealed class LocalAsrInstaller : IDisposable
+internal sealed partial class LocalAsrInstaller : IDisposable
 {
     private static readonly JsonSerializerOptions ManifestJson = new()
     {
@@ -105,6 +105,7 @@ internal sealed class LocalAsrInstaller : IDisposable
             _lastError = null;
             Directory.CreateDirectory(Root);
             var worker = await EnsureWorkerAsync(job.CancellationToken);
+            _runtimeReady = null; // A bundled worker update invalidates a previously cached status.
             if (!Status.RuntimeReady)
             {
                 job.Set("asr-python", Progress(1), "Đang dựng Python ASR riêng bằng bootstrap Windows an toàn...");
@@ -221,7 +222,8 @@ internal sealed class LocalAsrInstaller : IDisposable
         double endProgress,
         long totalModelBytes,
         long completedModelBytes,
-        AppJob job)
+        AppJob job,
+        string payloadLabel = "model ASR")
     {
         var partial = destination + ".partial";
         var existing = File.Exists(partial) ? new FileInfo(partial).Length : 0;
@@ -241,12 +243,17 @@ internal sealed class LocalAsrInstaller : IDisposable
         request.Headers.UserAgent.ParseAdd("BiliSubStudio/4-CSharp-ASR");
         if (existing > 0) request.Headers.Range = new RangeHeaderValue(existing, null);
         using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, job.CancellationToken);
-        if (existing > 0 && response.StatusCode != HttpStatusCode.PartialContent)
-        {
-            TryDelete(partial);
-            existing = 0;
-        }
+        // A CDN error must not discard a recoverable CUDA/model partial.
         response.EnsureSuccessStatusCode();
+        if (response.StatusCode == HttpStatusCode.PartialContent)
+        {
+            var range = response.Content.Headers.ContentRange;
+            if (range is null || range.Unit != "bytes" || range.From != existing || range.Length != expectedSize
+                || range.To is null || range.To.Value < existing || range.To.Value >= expectedSize)
+                throw new InvalidDataException($"Range tải {payloadLabel} không khớp; giữ file tải dở để thử lại.");
+        }
+        else if (response.StatusCode == HttpStatusCode.OK) existing = 0; // Server ignored Range: replace only after success.
+        else throw new InvalidDataException($"Phản hồi tải {payloadLabel} không có dữ liệu hợp lệ.");
         await using var source = await response.Content.ReadAsStreamAsync(job.CancellationToken);
         await using (var target = new FileStream(partial, existing > 0 ? FileMode.Append : FileMode.Create, FileAccess.Write, FileShare.Read,
             1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
@@ -261,25 +268,25 @@ internal sealed class LocalAsrInstaller : IDisposable
                 if (read == 0) break;
                 await target.WriteAsync(buffer.AsMemory(0, read), job.CancellationToken);
                 fileBytes += read;
-                if (fileBytes > expectedSize) throw new InvalidDataException("File model ASR lớn hơn manifest đã khóa.");
+                if (fileBytes > expectedSize) throw new InvalidDataException($"File {payloadLabel} lớn hơn manifest đã khóa.");
                 if (clock.Elapsed - lastReport >= TimeSpan.FromMilliseconds(400))
                 {
                     lastReport = clock.Elapsed;
                     var progress = startProgress + fileBytes / (double)expectedSize * (endProgress - startProgress);
                     var all = completedModelBytes + fileBytes;
-                    job.Set("asr-download", progress, $"Đang tải model ASR · {all / 1024d / 1024:0}/{totalModelBytes / 1024d / 1024:0} MB");
+                    job.Set("asr-download", progress, $"Đang tải {payloadLabel} · {all / 1024d / 1024:0}/{totalModelBytes / 1024d / 1024:0} MB");
                 }
             }
             await target.FlushAsync(job.CancellationToken);
             target.Flush(flushToDisk: true);
         }
-        if (new FileInfo(partial).Length != expectedSize) throw new InvalidDataException("File model ASR tải về chưa đủ kích thước manifest.");
+        if (new FileInfo(partial).Length != expectedSize) throw new InvalidDataException($"File {payloadLabel} tải về chưa đủ kích thước manifest.");
         job.Set("asr-verify", endProgress, $"Đang xác minh SHA-256 {Path.GetFileName(destination)}...");
         var actual = await HashAsync(partial, job.CancellationToken);
         if (!string.Equals(actual, expectedSha, StringComparison.Ordinal))
         {
             TryDelete(partial);
-            throw new InvalidDataException("SHA-256 model ASR không khớp; đã xóa file không tin cậy.");
+            throw new InvalidDataException($"SHA-256 {payloadLabel} không khớp; đã xóa file không tin cậy.");
         }
         File.Move(partial, destination, overwrite: true);
     }

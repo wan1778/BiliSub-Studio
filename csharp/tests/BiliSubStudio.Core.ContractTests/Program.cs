@@ -78,6 +78,7 @@ internal static class Program
         ("local translation manifest and resource gate stay pinned", LocalTranslationManifestContractAsync),
         ("local Chinese ASR model manifest and source SRT stay pinned", LocalAsrManifestContractAsync),
         ("ASR install manifest round-trips and rejects corrupt or mismatched runtime", EditorAsrInstallContract.RunAsync),
+        ("ASR private GPU package cache and driver policy reject unsafe state", EditorAsrGpuContract.RunAsync),
         ("Chinese OCR validator rejects foreign scripts", ChineseOcrContractAsync),
         ("OCR touching fragments merge without erasing real short or repeated captions", OcrFragmentContract.RunAsync),
         ("Paddle GPU wheel follows numeric CUDA compatibility", OcrGpuWheelContractAsync),

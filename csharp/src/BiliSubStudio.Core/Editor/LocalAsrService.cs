@@ -176,19 +176,24 @@ internal sealed class LocalAsrService : IDisposable
         var hardware = _hardware.ResourceSnapshot();
         var snapshot = _hardware.Snapshot();
         var threads = Math.Clamp(snapshot.LogicalProcessors - 2, 1, 12);
-        if (snapshot.NvidiaDetected && (!hardware.VramTelemetryAvailable || hardware.AvailableVramBytes >= 1_500L * 1024 * 1024))
+        var gpuUnavailable = LocalAsrInstaller.GpuUnavailableReason(snapshot);
+        if (gpuUnavailable is not null) job.Warn(gpuUnavailable);
+        else if (hardware.VramTelemetryAvailable && hardware.AvailableVramBytes < 1_500L * 1024 * 1024)
+            job.Warn("VRAM trống dưới 1.500 MB; không tải/khởi động GPU Whisper, chuyển CPU/int8.");
+        else
         {
             var compute = hardware.VramTelemetryAvailable && hardware.AvailableVramBytes < 2_500L * 1024 * 1024 ? "int8_float16" : "float16";
-            job.Set("asr-probe-gpu", 21, $"Đang benchmark Whisper GPU thật ({compute}) trên mẫu {probeSeconds:0}s...");
             try
             {
-                var probe = await ProbeAsync(runtime, audio, probeSeconds, new AsrSelection("cuda", compute, threads, 0), processes, job.CancellationToken);
+                var cudaDirectories = await _installer.PrepareGpuAsync(job);
+                job.Set("asr-probe-gpu", 21, $"Đang benchmark Whisper GPU thật ({compute}) trên mẫu {probeSeconds:0}s...");
+                var probe = await ProbeAsync(runtime, audio, probeSeconds, new AsrSelection("cuda", compute, threads, 0, cudaDirectories), processes, job.CancellationToken);
                 if (probe.RealtimeFactor <= 1.5) return probe;
                 job.Warn($"Whisper GPU benchmark chậm {probe.RealtimeFactor:0.00}× thời gian thực; đo CPU trước khi khóa cấu hình.");
             }
             catch (Exception error) when (error is not OperationCanceledException)
             {
-                job.Warn("Whisper GPU không vượt benchmark (VRAM/CUDA/cuDNN): " + error.Message + " · chuyển đo CPU.");
+                job.Warn("Whisper GPU chưa sẵn sàng (tải thư viện/driver/VRAM/benchmark): " + error.Message + " · chuyển đo CPU. Lần chạy sau sẽ thử chuẩn bị GPU lại.");
             }
         }
 
@@ -244,6 +249,8 @@ internal sealed class LocalAsrService : IDisposable
             "--offset", offset.ToString("0.000", CultureInfo.InvariantCulture),
             "--beam", probe ? "1" : "5",
         };
+        if (selection.Device == "cuda")
+            foreach (var directory in selection.CudaDirectories ?? []) values.AddRange(["--cuda-bin", directory]);
         if (probe) values.Add("--probe");
         return values.ToArray();
     }
@@ -439,7 +446,7 @@ internal sealed class LocalAsrService : IDisposable
 
     public void Dispose() => _installer.Dispose();
 
-    private sealed record AsrSelection(string Device, string ComputeType, int Threads, double RealtimeFactor);
+    private sealed record AsrSelection(string Device, string ComputeType, int Threads, double RealtimeFactor, IReadOnlyList<string>? CudaDirectories = null);
     private sealed record AsrWord(double Start, double End, string Text, double Probability);
     private sealed record AsrCue(
         double Start,
