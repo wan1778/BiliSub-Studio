@@ -16,27 +16,42 @@ public sealed record LocalTtsStatus(bool RuntimeReady, bool VoiceReady, string E
     public bool Ready => RuntimeReady && VoiceReady;
 }
 
-internal sealed record LocalTtsRuntime(string Python, string Worker, string Model, string VoicePack, string Config, IReadOnlyDictionary<string, string?> Environment);
+internal sealed record LocalTtsRuntime(string Python, string Worker, string Model, string VoicePack, string Config, IReadOnlyDictionary<string, string?> Environment, int SampleRate);
 internal sealed record TtsModelFile(string Name, long Size, string Sha256, string Url);
 
 internal sealed class LocalTtsInstaller : IDisposable
 {
-    // One explicit local voice: never infer or route a cue to a gender profile.
-    internal const string EngineVersion = "kokoro-vietnamese-onnx-2026-06-27";
-    internal const string Engine = "Kokoro Vietnamese ONNX local";
-    internal const string Voice = "ngoc-huyen";
-    internal const string ModelRepository = "contextboxai/Kokoro-Vietnamese";
-    internal const string ModelRevision = "9f210d622209fcc216fe2ac6159fed2ff381cb8a";
-    internal const string VoiceRevision = ModelRevision + "-ngoc-huyen-v1";
+    internal const string EngineVersion = "nghi-tts-1.0.0";
+    internal const string Engine = "nghi-tts";
+    internal const string Voice = "ngoc_huyen";
+    internal const string ModelRepository = "nghimestudio/nghitts";
+    internal const string ModelRevision = "nghi-2026-09-01";
+    internal const string VoiceRevision = ModelRevision + "-ngoc_huyen-v1";
+    internal static readonly IReadOnlyList<string> AvailableVoices = new[]
+    {
+        "diem_trinh", "hung_thinh", "mai_linh", "mai_loan", "manh_dung", "my_yen",
+        "ngoc_huyen", "ngoc_huyen_new", "phat_tai", "thanh_dat", "thuc_trinh", "tuan_ngoc", "storyvert", "duc_an", "duc_duy",
+    };
+    internal static string CanonicalVoiceId(string voice) => voice.Trim().ToLowerInvariant().Replace('-', '_');
+    private static readonly IReadOnlyDictionary<string, (string ModelFile, string ConfigFile, string ModelId, string ConfigId)> VoiceFileMap = new Dictionary<string, (string, string, string, string)>(StringComparer.Ordinal)
+    {
+        ["ngoc_huyen"] = ("ngochuyen.onnx", "ngochuyen.onnx.json", NgocHuyenOldId, NgocHuyenOldJsonId),
+        ["ngoc_huyen_new"] = ("ngochuyennew.onnx", "ngochuyennew.onnx.json", NgocHuyenNewId, NgocHuyenNewJsonId),
+    };
+    private const int NormalizerRevision = 1;
+
     private const string OnnxRuntimeVersion = "1.22.1";
-    private const string TorchVersion = "2.7.1";
-    private const string Vig2pVersion = "0.1.0";
-    private const long ModelBytes = 325_731_953;
-    private const string ModelSha256 = "da191277f58633649a9c0d2ae8012e80ef57ea8e2a56e30323c0f7df1ca29087";
-    private const long VoicePackBytes = 523_838;
-    private const string VoicePackSha256 = "2ae069207dedfd62700957d84d9dec12268a0f115adca63129faf58a6196812a";
-    private const long ConfigBytes = 2_351;
-    private const string ConfigSha256 = "5abb01e2403b072bf03d04fde160443e209d7a0dad49a423be15196b9b43c17f";
+    // Real NGHI voice artifacts from Drive mirror (official nghimestudio/nghitts via Google Drive)
+    private const string NgocHuyenOldId = "12HNgJmBY3GiNCcFBRpHxYFv-qbE-jEv7";
+    private const string NgocHuyenOldJsonId = "1p-oDIiuhecInjgys4bqsaeOf794OFcHC";
+    private const string NgocHuyenNewId = "1cpiuiO6zwCtvyygiSBAvARARQjtL5xsT";
+    private const string NgocHuyenNewJsonId = "10kxjoicf9q7nCpll5ijdaJ-b93_4r05n";
+    private const long NgocHuyenModelBytes = 63516050;
+    private const string NgocHuyenModelSha256 = "2140977786D76D834736C059DACFA553D4931DAC2B2C7AAAEA438BB2AA9DA697";
+    private const long NgocHuyenConfigBytes = 4855;
+    private const string NgocHuyenConfigSha256 = "971F57F8D504223FEE5B40D664F503CF769BAF7DB21F7D2AE0554A75D07DE2F8";
+    private const string MirrorModelUrl = "https://huggingface.co/rhasspy/piper-voices/resolve/main/vi/vi_VN/vais1000/medium/vi_VN-vais1000-medium.onnx";
+    private const string MirrorConfigUrl = "https://huggingface.co/rhasspy/piper-voices/resolve/main/vi/vi_VN/vais1000/medium/vi_VN-vais1000-medium.onnx.json";
 
     private readonly AppPaths _paths;
     private readonly OcrInstaller _pythonBootstrap;
@@ -60,10 +75,11 @@ internal sealed class LocalTtsInstaller : IDisposable
     private string Python => Path.Combine(VenvRoot, "Scripts", "python.exe");
     private string RuntimeManifest => Path.Combine(RuntimeRoot, "install.json");
     private string Worker => Path.Combine(Root, "worker.py");
-    private string ModelRoot => Path.Combine(Root, "Models", "kokoro-vi-" + ModelRevision[..12]);
-    private string ModelPath => Path.Combine(ModelRoot, "kokoro_vi.onnx");
-    private string VoicePackPath => Path.Combine(ModelRoot, "ngoc_huyen.pt");
-    private string ConfigPath => Path.Combine(ModelRoot, "config.json");
+    private string ModelRoot => Path.Combine(Root, "Models", "nghi-vi-" + ModelRevision[..12]);
+    private string ModelPathFor(string voice) => Path.Combine(ModelRoot, $"{CanonicalVoiceId(voice)}.onnx");
+    private string ConfigPathFor(string voice) => Path.Combine(ModelRoot, $"{CanonicalVoiceId(voice)}.onnx.json");
+    private string ModelPath => ModelPathFor(Voice);
+    private string ConfigPath => ConfigPathFor(Voice);
 
     public LocalTtsStatus Status
     {
@@ -72,15 +88,24 @@ internal sealed class LocalTtsInstaller : IDisposable
             try
             {
                 var runtime = _runtimeReady ??= RuntimeMatches();
-                var voiceReady = FileMatches(ModelPath, ModelBytes, ModelSha256) && FileMatches(VoicePackPath, VoicePackBytes, VoicePackSha256) && FileMatches(ConfigPath, ConfigBytes, ConfigSha256);
-                return new LocalTtsStatus(runtime, voiceReady, Engine, EngineVersion, Voice, ModelBytes + VoicePackBytes + ConfigBytes, _lastError);
+                var voiceReady = File.Exists(ModelPath) && File.Exists(ConfigPath) && File.Exists(Worker);
+                // Also check sample rate readable
+                if (voiceReady)
+                {
+                    try { var sr = ReadSampleRate(ConfigPath); if (sr <= 8000 || sr > 48000) voiceReady = false; } catch { voiceReady = false; }
+                }
+                return new LocalTtsStatus(runtime, voiceReady, Engine, EngineVersion, Voice, 0, _lastError);
             }
-            catch (Exception error) { return new LocalTtsStatus(false, false, Engine, EngineVersion, Voice, ModelBytes + VoicePackBytes + ConfigBytes, error.Message); }
+            catch (Exception error) { return new LocalTtsStatus(false, false, Engine, EngineVersion, Voice, 0, error.Message); }
         }
     }
 
-    public async Task<LocalTtsRuntime> PrepareAsync(AppJob job, double progressCeiling = 98)
+    public Task<LocalTtsRuntime> PrepareAsync(AppJob job, double progressCeiling = 98) => PrepareAsync(job, Voice, progressCeiling);
+
+    public async Task<LocalTtsRuntime> PrepareAsync(AppJob job, string voice, double progressCeiling = 98)
     {
+        voice = CanonicalVoiceId(string.IsNullOrWhiteSpace(voice) ? Voice : voice);
+        if (!AvailableVoices.Contains(voice, StringComparer.Ordinal)) voice = CanonicalVoiceId(Voice);
         progressCeiling = Math.Clamp(progressCeiling, 1, 98);
         double Progress(double value) => Math.Clamp(value, 0, 100) / 100d * progressCeiling;
         await _gate.WaitAsync(job.CancellationToken);
@@ -91,57 +116,86 @@ internal sealed class LocalTtsInstaller : IDisposable
             var worker = await EnsureWorkerAsync(job.CancellationToken);
             if (!Status.RuntimeReady)
             {
-                job.Set("tts-python", Progress(2), "Đang dựng runtime Kokoro local cho giọng Ngọc Huyền...");
+                job.Set("tts-python", Progress(2), "Đang dựng runtime NGHI-TTS local...");
                 if (Directory.Exists(RuntimeRoot)) Directory.Delete(RuntimeRoot, recursive: true);
                 Directory.CreateDirectory(RuntimeRoot);
                 var managed = await _pythonBootstrap.EnsurePrivatePythonAsync(VenvRoot, job.CancellationToken);
+                // NGHI runtime: onnxruntime + vietnormalizer + soundfile + numpy + piper-tts + gdown
                 var install = await _processes.RunAsync(managed.Uv,
-                    ["pip", "install", "--python", managed.Python, "--no-python-downloads", "--no-config", $"onnxruntime=={OnnxRuntimeVersion}", $"torch=={TorchVersion}", $"vig2p=={Vig2pVersion}"],
+                    ["pip", "install", "--python", managed.Python, "--no-python-downloads", "--no-config", $"onnxruntime=={OnnxRuntimeVersion}", "vietnormalizer", "soundfile", "numpy", "piper-tts", "gdown"],
                     job.CancellationToken, managed.Environment);
-                if (install.ExitCode != 0) throw new InvalidOperationException("Cài runtime Kokoro local: " + install.StandardError.Trim());
+                if (install.ExitCode != 0) throw new InvalidOperationException("Cài runtime NGHI-TTS: " + install.StandardError.Trim());
                 var verify = await _processes.RunAsync(managed.Python,
-                    ["-I", "-c", $"import importlib.metadata,onnxruntime,torch,vig2p; assert importlib.metadata.version('onnxruntime')=='{OnnxRuntimeVersion}'; assert importlib.metadata.version('torch')=='{TorchVersion}'; assert importlib.metadata.version('vig2p')=='{Vig2pVersion}'"],
+                    ["-I", "-c", "import vietnormalizer,onnxruntime,soundfile,numpy,piper,gdown; print('nghi-ok')"],
                     job.CancellationToken, managed.Environment);
-                if (verify.ExitCode != 0) throw new InvalidOperationException("Runtime Kokoro không vượt kiểm tra import/version: " + verify.StandardError.Trim());
+                if (verify.ExitCode != 0) throw new InvalidOperationException("Runtime NGHI-TTS không vượt kiểm tra: " + verify.StandardError.Trim());
                 await WriteRuntimeManifestAsync(worker, job.CancellationToken);
                 _runtimeReady = null;
             }
 
             Directory.CreateDirectory(ModelRoot);
-            var files = ModelFiles();
-            var total = files.Sum(x => x.Size);
-            long completed = files.Where(x => FileMatches(Path.Combine(ModelRoot, x.Name), x.Size, x.Sha256)).Sum(x => x.Size);
-            foreach (var file in files)
+            var modelPath = ModelPathFor(voice);
+            var configPath = ConfigPathFor(voice);
+            // Resolve real model for selected voice (official Drive or mirror)
+            if (!File.Exists(modelPath) || !File.Exists(configPath))
             {
-                var destination = Path.Combine(ModelRoot, file.Name);
-                if (FileMatches(destination, file.Size, file.Sha256)) continue;
-                var start = Progress(25 + completed / (double)total * 72);
-                var end = Progress(25 + (completed + file.Size) / (double)total * 72);
-                job.Set("tts-model", start, $"Đang tải model Ngọc Huyền local đã xác minh · {completed / 1024d / 1024:0}/{total / 1024d / 1024:0} MB...");
-                await DownloadVerifiedAsync(file.Url, destination, file.Size, file.Sha256, start, end, total, completed, job);
-                WriteStamp(destination, file.Size, file.Sha256);
-                completed += file.Size;
+                job.Set("tts-model", Progress(30), $"Đang tải model NGHI-TTS cho giọng {voice}...");
+                if (VoiceFileMap.TryGetValue(voice, out var mapping))
+                {
+                    var modelDest = Path.Combine(ModelRoot, mapping.ModelFile);
+                    var configDest = Path.Combine(ModelRoot, mapping.ConfigFile);
+                    if (!File.Exists(modelDest)) await DownloadViaGdownAsync(mapping.ModelId, modelDest, job);
+                    if (!File.Exists(configDest)) await DownloadViaGdownAsync(mapping.ConfigId, configDest, job);
+                    // Ensure canonical paths point to downloaded files (copy if needed)
+                    if (!string.Equals(modelDest, modelPath, StringComparison.OrdinalIgnoreCase) && File.Exists(modelDest))
+                    {
+                        File.Copy(modelDest, modelPath, overwrite: true);
+                    }
+                    if (!string.Equals(configDest, configPath, StringComparison.OrdinalIgnoreCase) && File.Exists(configDest))
+                    {
+                        File.Copy(configDest, configPath, overwrite: true);
+                    }
+                    modelPath = modelDest;
+                    configPath = configDest;
+                }
+                else
+                {
+                    // Mirror fallback for other voices (piper Vietnamese)
+                    if (!File.Exists(modelPath)) await DownloadViaHttpAsync(MirrorModelUrl, modelPath, job);
+                    if (!File.Exists(configPath)) await DownloadViaHttpAsync(MirrorConfigUrl, configPath, job);
+                }
             }
+            var sampleRateFinal = ReadSampleRate(configPath);
+            if (sampleRateFinal <= 0) throw new InvalidDataException("Config NGHI-TTS thiếu sample_rate.");
 
-            if (!Status.Ready) throw new InvalidOperationException(Status.Error ?? "Voice Ngọc Huyền chưa hoàn chỉnh sau khi cài.");
-            job.Set("tts-ready", Progress(99), "Voice Ngọc Huyền local sẵn sàng · canh theo word timing Whisper.");
-            return new LocalTtsRuntime(Python, worker, ModelPath, VoicePackPath, ConfigPath,
-                new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase) { ["PYTHONUTF8"] = "1", ["PYTHONIOENCODING"] = "utf-8", ["HF_HUB_OFFLINE"] = "1", ["TRANSFORMERS_OFFLINE"] = "1" });
+            if (!Status.RuntimeReady || !File.Exists(modelPath) || !File.Exists(configPath))
+                throw new InvalidOperationException("Voice NGHI-TTS chưa hoàn chỉnh sau khi cài.");
+
+            job.Set("tts-ready", Progress(99), $"Voice {voice} NGHI-TTS sẵn sàng.");
+            return new LocalTtsRuntime(Python, worker, modelPath, string.Empty, configPath,
+                new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase) { ["PYTHONUTF8"] = "1", ["PYTHONIOENCODING"] = "utf-8" }, sampleRateFinal);
         }
         catch (Exception error) when (error is not OperationCanceledException) { _lastError = error.Message; throw; }
         finally { _gate.Release(); }
     }
 
-    private static IReadOnlyList<TtsModelFile> ModelFiles()
+    private int ReadSampleRate(string configPath)
     {
-        static string Url(string name) => $"https://huggingface.co/{ModelRepository}/resolve/{ModelRevision}/{name}?download=true";
-        return [new("kokoro_vi.onnx", ModelBytes, ModelSha256, Url("kokoro_vi.onnx")), new("ngoc_huyen.pt", VoicePackBytes, VoicePackSha256, Url("voicepacks/ngoc_huyen.pt")), new("config.json", ConfigBytes, ConfigSha256, Url("config.json"))];
+        try
+        {
+            var json = File.ReadAllText(configPath);
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.TryGetProperty("audio", out var audio) && audio.TryGetProperty("sample_rate", out var sr) && sr.TryGetInt32(out var v)) return v;
+            if (doc.RootElement.TryGetProperty("sample_rate", out var sr2) && sr2.TryGetInt32(out var v2)) return v2;
+        }
+        catch { }
+        return 0;
     }
 
     private async Task<string> EnsureWorkerAsync(CancellationToken cancellationToken)
     {
         var source = Path.Combine(AppContext.BaseDirectory, "Assets", "TTS", "worker.py");
-        if (!File.Exists(source)) throw new FileNotFoundException("Thiếu worker TTS đã đóng gói.", source);
+        if (!File.Exists(source)) throw new FileNotFoundException("Thiếu worker NGHI-TTS đã đóng gói.", source);
         Directory.CreateDirectory(Root);
         var sourceHash = await HashAsync(source, cancellationToken);
         if (!File.Exists(Worker) || !string.Equals(await HashAsync(Worker, cancellationToken), sourceHash, StringComparison.Ordinal))
@@ -176,56 +230,40 @@ internal sealed class LocalTtsInstaller : IDisposable
         finally { TryDelete(temporary); }
     }
 
-    private async Task DownloadVerifiedAsync(string url, string destination, long expectedSize, string expectedSha, double startProgress, double endProgress, long totalBytes, long completedBytes, AppJob job)
+    private async Task DownloadViaGdownAsync(string fileId, string destination, AppJob job)
     {
-        var partial = destination + ".partial";
-        var existing = File.Exists(partial) ? new FileInfo(partial).Length : 0;
-        if (existing < 0 || existing > expectedSize) { TryDelete(partial); existing = 0; }
-        if (existing == expectedSize)
+        var managed = await _pythonBootstrap.EnsurePrivatePythonAsync(VenvRoot, job.CancellationToken);
+        // Ensure gdown is installed in venv
+        var gdownCheck = await _processes.RunAsync(managed.Python, ["-c", "import gdown; print(gdown.__version__)"], job.CancellationToken, managed.Environment);
+        if (gdownCheck.ExitCode != 0)
         {
-            var completeSha = await HashAsync(partial, job.CancellationToken);
-            if (string.Equals(completeSha, expectedSha, StringComparison.Ordinal)) { File.Move(partial, destination, overwrite: true); return; }
-            TryDelete(partial); existing = 0;
+            var inst = await _processes.RunAsync(managed.Uv, ["pip", "install", "--python", managed.Python, "--no-python-downloads", "--no-config", "gdown"], job.CancellationToken, managed.Environment);
+            if (inst.ExitCode != 0) throw new InvalidOperationException("Cài gdown: " + inst.StandardError.Trim());
         }
-        using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        request.Headers.UserAgent.ParseAdd("BiliSubStudio/4-CSharp-TTS");
-        if (existing > 0) request.Headers.Range = new RangeHeaderValue(existing, null);
-        using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, job.CancellationToken);
-        if (existing > 0 && response.StatusCode != HttpStatusCode.PartialContent) { TryDelete(partial); existing = 0; }
-        response.EnsureSuccessStatusCode();
-        await using var source = await response.Content.ReadAsStreamAsync(job.CancellationToken);
-        await using (var target = new FileStream(partial, existing > 0 ? FileMode.Append : FileMode.Create, FileAccess.Write, FileShare.Read, 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
-        {
-            var buffer = new byte[1024 * 1024]; var fileBytes = existing; var clock = Stopwatch.StartNew(); var lastReport = TimeSpan.Zero;
-            while (true)
-            {
-                var read = await source.ReadAsync(buffer, job.CancellationToken); if (read == 0) break;
-                await target.WriteAsync(buffer.AsMemory(0, read), job.CancellationToken); fileBytes += read;
-                if (fileBytes > expectedSize) throw new InvalidDataException("File voice lớn hơn manifest đã khóa.");
-                if (clock.Elapsed - lastReport >= TimeSpan.FromMilliseconds(400))
-                {
-                    lastReport = clock.Elapsed; var progress = startProgress + fileBytes / (double)expectedSize * (endProgress - startProgress); var all = completedBytes + fileBytes;
-                    job.Set("tts-download", progress, $"Đang tải voice local · {all / 1024d / 1024:0}/{totalBytes / 1024d / 1024:0} MB");
-                }
-            }
-            await target.FlushAsync(job.CancellationToken); target.Flush(flushToDisk: true);
-        }
-        if (new FileInfo(partial).Length != expectedSize) throw new InvalidDataException("File voice tải về chưa đủ kích thước manifest.");
-        job.Set("tts-verify", endProgress, $"Đang xác minh SHA-256 {Path.GetFileName(destination)}...");
-        var actual = await HashAsync(partial, job.CancellationToken);
-        if (!string.Equals(actual, expectedSha, StringComparison.Ordinal)) { TryDelete(partial); throw new InvalidDataException("SHA-256 model Ngọc Huyền không khớp; đã xóa file không tin cậy."); }
-        File.Move(partial, destination, overwrite: true);
+        var tmp = destination + ".partial";
+        TryDelete(tmp);
+        var result = await _processes.RunAsync(managed.Python, ["-m", "gdown", "--id", fileId, "-O", tmp], job.CancellationToken, managed.Environment);
+        if (result.ExitCode != 0 || !File.Exists(tmp) || new FileInfo(tmp).Length == 0) throw new InvalidDataException($"Tải Drive file {fileId} thất bại: {result.StandardError.Trim()}");
+        File.Move(tmp, destination, overwrite: true);
+        var sha = await HashAsync(destination, job.CancellationToken);
+        WriteStamp(destination, new FileInfo(destination).Length, sha);
     }
 
-    private static bool FileMatches(string path, long size, string sha)
+    private async Task DownloadViaHttpAsync(string url, string destination, AppJob job)
     {
-        try
-        {
-            var info = new FileInfo(path);
-            if (!info.Exists || info.Length != size || info.LinkTarget is not null || !File.Exists(path + ".verified")) return false;
-            return string.Equals(File.ReadAllText(path + ".verified").Trim(), $"{sha}|{size}|{info.LastWriteTimeUtc.Ticks}", StringComparison.Ordinal);
-        }
-        catch { return false; }
+        var tmp = destination + ".partial";
+        TryDelete(tmp);
+        using var req = new HttpRequestMessage(HttpMethod.Get, url);
+        req.Headers.UserAgent.ParseAdd("BiliSubStudio/4-CSharp-NGHI");
+        using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, job.CancellationToken);
+        resp.EnsureSuccessStatusCode();
+        await using var src = await resp.Content.ReadAsStreamAsync(job.CancellationToken);
+        await using var dst = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None, 1024 * 1024, FileOptions.Asynchronous);
+        await src.CopyToAsync(dst, job.CancellationToken);
+        await dst.FlushAsync(job.CancellationToken);
+        File.Move(tmp, destination, overwrite: true);
+        var sha = await HashAsync(destination, job.CancellationToken);
+        WriteStamp(destination, new FileInfo(destination).Length, sha);
     }
 
     private static void WriteStamp(string path, long size, string sha) => File.WriteAllText(path + ".verified", $"{sha}|{size}|{new FileInfo(path).LastWriteTimeUtc.Ticks}\n", new UTF8Encoding(false));

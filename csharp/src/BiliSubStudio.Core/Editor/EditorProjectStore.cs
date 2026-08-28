@@ -89,7 +89,7 @@ public sealed class EditorProjectStore
 {
     public const int CurrentSchema = 5;
     private const long MaxProjectBytes = 64L * 1024 * 1024;
-    private const string CurrentTtsEngine = "kokoro-vietnamese-onnx";
+    private const string CurrentTtsEngine = "nghi-tts";
     private readonly string _directory;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly JsonSerializerOptions _json = new()

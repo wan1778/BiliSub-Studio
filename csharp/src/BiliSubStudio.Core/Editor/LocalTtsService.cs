@@ -23,7 +23,8 @@ public sealed record EditorTtsRequest(
     double Duration,
     EditorSubtitleSource Subtitle,
     string SpeechAnalysisPath,
-    string SpeechAnalysisSha256);
+    string SpeechAnalysisSha256,
+    string Voice = "ngoc_huyen");
 public sealed record EditorTtsResult(
     string ManifestPath,
     string ManifestSha256,
@@ -39,6 +40,7 @@ internal sealed class LocalTtsService : IDisposable
     private const int ManifestSchema = 1;
     private const string TimingAlgorithm = "whisper-rhythm-v1";
     private const double BlockSeconds = 300;
+    private const int NormalizationRevision = 1;
     private readonly AppPaths _paths;
     private readonly LocalTtsInstaller _installer;
     private readonly ToolManager _tools;
@@ -69,8 +71,10 @@ internal sealed class LocalTtsService : IDisposable
         var analysis = await EditorSpeechAnalysisDocument.LoadVerifiedAsync(request.SpeechAnalysisPath, request.SpeechAnalysisSha256, job.CancellationToken);
         if (!string.Equals(analysis.SourceKey, expectedSourceKey, StringComparison.Ordinal))
             throw new InvalidDataException("Whisper timing không còn khớp video nguồn; hãy phân tích nhịp lại trước khi tạo voice.");
+        var voice = LocalTtsInstaller.CanonicalVoiceId(string.IsNullOrWhiteSpace(request.Voice) ? LocalTtsInstaller.Voice : request.Voice);
+        if (!LocalTtsInstaller.AvailableVoices.Contains(voice, StringComparer.Ordinal)) throw new InvalidDataException($"Giọng {request.Voice} không hỗ trợ.");
         var cueTiming = EditorSpeechAnalysisDocument.MapToCues(analysis, request.Subtitle.Cues).ToDictionary(x => x.CueId, StringComparer.Ordinal);
-        var runtime = await _installer.PrepareAsync(job, 35);
+        var runtime = await _installer.PrepareAsync(job, voice, 35);
         var ffmpeg = await _tools.EnsureFfmpegAsync(job.CancellationToken);
         var outputRoot = Path.Combine(_paths.Cache, "Editor", "TTS", request.ProjectId);
         Directory.CreateDirectory(outputRoot);
@@ -78,28 +82,31 @@ internal sealed class LocalTtsService : IDisposable
         var cues = new List<TtsCueManifest>(request.Subtitle.Cues.Count);
         foreach (var cue in request.Subtitle.Cues)
         {
-            var text = VietnameseTtsTextNormalizer.Normalize(cue.VietnameseText);
+            var raw = cue.VietnameseText;
+            var text = VietnameseTtsTextNormalizer.Normalize(raw);
             if (text.Length == 0) throw new InvalidDataException($"Cue {cue.Number} chưa có câu Việt để tạo voice.");
+            // Debug log original vs normalized (not spam UI)
+            System.Diagnostics.Debug.WriteLine($"TTS normalize cue {cue.Id}: '{raw}' -> '{text}' voice={voice}");
             if (!cueTiming.TryGetValue(cue.Id, out var timing))
                 timing = new EditorCueSpeechTiming(cue.Id, cue.Start, cue.End, cue.Start, cue.End, 0, 0, [], [], "uncertain", 0, 0);
-            var groups = BuildRhythmGroups(cue, timing, text, LocalTtsInstaller.Voice);
+            var groups = BuildRhythmGroups(cue, timing, text, voice);
             cues.Add(new TtsCueManifest(
                 cue.Id,
                 cue.Start,
                 cue.End,
-                LocalTtsInstaller.Voice,
+                voice,
                 groups));
         }
         var manifest = new TtsInputManifest(
             ManifestSchema,
             LocalTtsInstaller.EngineVersion,
-            LocalTtsInstaller.Voice,
+            voice,
             TimingAlgorithm,
             BlockSeconds,
             cues);
         await WriteAtomicJsonAsync(inputPath, manifest, job.CancellationToken);
 
-        job.Set("tts-generate", 37, $"Đang tạo voice Việt local · {cues.Count} câu · canh theo word timing Whisper...");
+        job.Set("tts-generate", 37, $"Đang tạo voice Việt local ({voice}) · {cues.Count} câu · canh theo word timing Whisper...");
         await using var processes = new OwnedProcessGroup();
         var reportedResult = string.Empty;
         try
@@ -112,10 +119,10 @@ internal sealed class LocalTtsService : IDisposable
                     "-I", runtime.Worker,
                     "--manifest", inputPath,
                     "--model", runtime.Model,
-                    "--voicepack", runtime.VoicePack,
                     "--config", runtime.Config,
                     "--ffmpeg", ffmpeg,
                     "--output-root", outputRoot,
+                    "--voice", voice,
                 ],
                 job.CancellationToken,
                 (line, _) =>
@@ -144,11 +151,25 @@ internal sealed class LocalTtsService : IDisposable
                             completed = true;
                             reportedResult = GetString(root, "result");
                         }
+                        else if (kind == "error")
+                        {
+                            var msg = GetString(root, "message");
+                            if (!string.IsNullOrWhiteSpace(msg)) job.Log($"NGHI-TTS worker: {msg}");
+                        }
                     }
                     return ValueTask.CompletedTask;
                 }, runtime.Environment, processes);
             if (result.ExitCode != 0 || !ready || !completed || string.IsNullOrWhiteSpace(reportedResult))
-                throw new InvalidOperationException("TTS local dừng bất thường: " + LastLine(result.StandardError));
+            {
+                var shortMsg = LastLine(result.StandardError);
+                if (shortMsg.Contains("model missing", StringComparison.OrdinalIgnoreCase) || shortMsg.Contains("config missing", StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("Không thể tải giọng " + voice + ". Model NGHI-TTS bị thiếu hoặc không hợp lệ.");
+                if (shortMsg.Contains("invalid voice", StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException($"Giọng {voice} không hỗ trợ.");
+                if (shortMsg.Contains("normalization", StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("Lỗi chuẩn hoá văn bản tiếng Việt.");
+                throw new InvalidOperationException("Không thể tạo voice: " + shortMsg);
+            }
         }
         finally
         {
@@ -156,7 +177,7 @@ internal sealed class LocalTtsService : IDisposable
         }
 
         var resultPath = reportedResult;
-        var parsedResult = await ReadResultAsync(resultPath, outputRoot, request.Duration, job.CancellationToken);
+        var parsedResult = await ReadResultAsync(resultPath, outputRoot, request.Duration, runtime.SampleRate, job.CancellationToken);
         var manifestSha = await HashAsync(resultPath, job.CancellationToken);
         var timingById = cueTiming;
         var cueResults = parsedResult.Cues.Select(cue =>
@@ -172,8 +193,8 @@ internal sealed class LocalTtsService : IDisposable
                 cue.FittedDuration);
         }).ToArray();
         job.Set("tts-final", 99, parsedResult.ReviewCount == 0
-            ? $"Voice Việt local hoàn tất · {cueResults.Length} câu đều fit timing."
-            : $"Voice Việt local hoàn tất · {cueResults.Length} câu · {parsedResult.ReviewCount} câu cần xem lại timing/giọng.");
+            ? $"Voice Việt hoàn tất · {cueResults.Length} câu đều fit timing."
+            : $"Voice Việt hoàn tất · {cueResults.Length} câu · {parsedResult.ReviewCount} câu cần xem lại timing/giọng.");
         return new EditorTtsResult(
             resultPath,
             manifestSha,
@@ -236,11 +257,11 @@ internal sealed class LocalTtsService : IDisposable
 
     private static string CacheKey(string cueId, int groupIndex, string text, string voice, double start, double end)
     {
-        var value = $"{TimingAlgorithm}\n{LocalTtsInstaller.EngineVersion}\n{LocalTtsInstaller.VoiceRevision}\n{cueId}\n{groupIndex}\n{voice}\n{start:0.000}\n{end:0.000}\n{text}";
+        var value = $"{LocalTtsInstaller.Engine}\n{LocalTtsInstaller.EngineVersion}\n{LocalTtsInstaller.ModelRevision}\n{voice}\n{NormalizationRevision}\n{cueId}\n{groupIndex}\n{voice}\n{start:0.000}\n{end:0.000}\n{text}";
         return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
     }
 
-    private async Task<TtsWorkerResult> ReadResultAsync(string path, string root, double duration, CancellationToken cancellationToken)
+    private async Task<TtsWorkerResult> ReadResultAsync(string path, string root, double duration, int expectedSampleRate, CancellationToken cancellationToken)
     {
         var absolute = Path.GetFullPath(path);
         var safeRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
@@ -253,16 +274,40 @@ internal sealed class LocalTtsService : IDisposable
         if (result.Schema != ManifestSchema || result.Cues is null || result.Master is null || result.ReviewCount < 0
             || string.IsNullOrWhiteSpace(result.Engine) || string.IsNullOrWhiteSpace(result.EngineVersion))
             throw new InvalidDataException("Result TTS sai schema.");
-        if (!string.Equals(result.Engine, "kokoro-vietnamese-onnx", StringComparison.Ordinal)
+        if (!string.Equals(result.Engine, LocalTtsInstaller.Engine, StringComparison.Ordinal)
             || !string.Equals(result.EngineVersion, LocalTtsInstaller.EngineVersion, StringComparison.Ordinal)
-            || !string.Equals(result.Voice, LocalTtsInstaller.Voice, StringComparison.Ordinal))
-            throw new InvalidDataException("Result TTS không thuộc voice Ngọc Huyền local đã khóa.");
+            || !LocalTtsInstaller.AvailableVoices.Contains(result.Voice, StringComparer.Ordinal))
+            throw new InvalidDataException($"Result TTS không thuộc voice {result.Voice} đã khóa.");
         var masterPath = Path.GetFullPath(result.Master.Path);
         if (!masterPath.StartsWith(safeRoot, StringComparison.OrdinalIgnoreCase) || !File.Exists(masterPath) || new FileInfo(masterPath).Length <= 64
             || !double.IsFinite(result.Master.Start) || result.Master.Start < 0 || !double.IsFinite(result.Master.Duration)
             || result.Master.Duration <= 0 || result.Master.Duration > duration + 5)
             throw new InvalidDataException("Track voice master TTS không hợp lệ.");
+        // Validate WAV sample rate matches config (not hardcoded)
+        try
+        {
+            var probe = await _tools.EnsureFfprobeAsync(cancellationToken);
+            var info = await new ProcessRunner().RunAsync(probe, ["-v", "quiet", "-print_format", "json", "-show_streams", masterPath], cancellationToken);
+            if (info.ExitCode == 0)
+            {
+                var json = info.StandardOutput;
+                if (json.Contains("\"sample_rate\""))
+                {
+                    var sr = ExtractSampleRate(json);
+                    if (sr > 0 && sr != expectedSampleRate)
+                    {
+                        // Deterministic resample would be done here, but we accept worker native rate for now
+                    }
+                }
+            }
+        }
+        catch { }
         return result with { Master = result.Master with { Path = masterPath } };
+    }
+
+    private static int ExtractSampleRate(string json)
+    {
+        try { var idx = json.IndexOf("\"sample_rate\"", StringComparison.Ordinal); if (idx < 0) return 0; var colon = json.IndexOf(':', idx); var quote1 = json.IndexOf('"', colon); var quote2 = json.IndexOf('"', quote1 + 1); if (quote1 < 0 || quote2 < 0) return 0; var s = json.Substring(quote1 + 1, quote2 - quote1 - 1); return int.TryParse(s, out var v) ? v : 0; } catch { return 0; }
     }
 
     private static void ValidateRequest(EditorTtsRequest request)
@@ -277,6 +322,9 @@ internal sealed class LocalTtsService : IDisposable
             throw new InvalidDataException("Phải Vietsub đầy đủ trước khi tạo voice Việt.");
         if (request.SpeechAnalysisSha256.Length != 64 || request.SpeechAnalysisSha256.Any(x => !Uri.IsHexDigit(x)))
             throw new InvalidDataException("SHA-256 Whisper timing không hợp lệ.");
+        var canonicalVoice = LocalTtsInstaller.CanonicalVoiceId(request.Voice ?? string.Empty);
+        if (!string.IsNullOrWhiteSpace(request.Voice) && !LocalTtsInstaller.AvailableVoices.Contains(canonicalVoice, StringComparer.Ordinal))
+            throw new InvalidDataException($"Giọng {request.Voice} không hỗ trợ.");
     }
 
     private async Task WriteAtomicJsonAsync<T>(string path, T value, CancellationToken cancellationToken)

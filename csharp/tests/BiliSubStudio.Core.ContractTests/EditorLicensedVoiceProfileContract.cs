@@ -24,6 +24,7 @@ internal static class EditorLicensedVoiceProfileContract
             "editor project persists, isolates source drift and quarantines corrupt state",
             "editor project persists, invalidates stale TTS, isolates source drift and quarantines corrupt state",
             VerifyEditorProjectAsync);
+        tests.Add(("voice dropdown uses exact canonical IDs and ValidateRequest passes for all local voices", VerifyVoiceRegistryAsync));
     }
 
     private static void Replace(
@@ -44,19 +45,20 @@ internal static class EditorLicensedVoiceProfileContract
             ?? throw new InvalidOperationException("missing LocalTtsInstaller type");
         static object? Constant(Type type, string name) => type.GetField(name, BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public)?.GetRawConstantValue();
 
-        Equal("kokoro-vietnamese-onnx-2026-06-27", Constant(installer, "EngineVersion")?.ToString());
-        Equal("contextboxai/Kokoro-Vietnamese", Constant(installer, "ModelRepository")?.ToString());
-        Equal("9f210d622209fcc216fe2ac6159fed2ff381cb8a", Constant(installer, "ModelRevision")?.ToString());
-        Equal("9f210d622209fcc216fe2ac6159fed2ff381cb8a-ngoc-huyen-v1", Constant(installer, "VoiceRevision")?.ToString());
-        Equal("ngoc-huyen", Constant(installer, "Voice")?.ToString());
+        Equal("nghi-tts-1.0.0", Constant(installer, "EngineVersion")?.ToString());
+        Equal("nghimestudio/nghitts", Constant(installer, "ModelRepository")?.ToString());
+        Equal("nghi-2026-09-01", Constant(installer, "ModelRevision")?.ToString());
+        Equal("nghi-2026-09-01-ngoc_huyen-v1", Constant(installer, "VoiceRevision")?.ToString());
+        Equal("ngoc_huyen", Constant(installer, "Voice")?.ToString());
 
         var workerPath = Path.Combine(AppContext.BaseDirectory, "Fixtures", "tts-worker.py");
         var worker = File.ReadAllText(workerPath);
-        True(worker.Contains("class KokoroNgocHuyen", StringComparison.Ordinal), "Ngọc Huyền ONNX worker is missing");
-        True(worker.Contains("VOICE_REVISION = \"9f210d622209fcc216fe2ac6159fed2ff381cb8a-ngoc-huyen-v1\"", StringComparison.Ordinal), "TTS cache revision drifted");
+        True(worker.Contains("ENGINE = \"nghi-tts\"", StringComparison.Ordinal), "NGHI-TTS worker engine missing");
+        True(worker.Contains("VOICE_REVISION = \"nghi-2026-09-01-ngoc_huyen-v1\"", StringComparison.Ordinal), "TTS cache revision drifted");
         True(worker.Contains("ensure_voice_cache(output_root)", StringComparison.Ordinal), "old TTS clips can bypass voice cache invalidation");
-        True(worker.Contains("\"engine\": \"kokoro-vietnamese-onnx\"", StringComparison.Ordinal), "TTS worker engine identity drifted");
-        True(!worker.Contains("PiperVoice", StringComparison.Ordinal) && !worker.Contains("MALE_PITCH_FACTOR", StringComparison.Ordinal), "retired Nam/Nữ Piper route returned to production worker");
+        True(worker.Contains("\"engine\": \"nghi-tts\"", StringComparison.Ordinal) || worker.Contains("ENGINE = \"nghi-tts\"", StringComparison.Ordinal), "TTS worker engine identity drifted");
+        True(worker.Contains("vietnormalizer", StringComparison.Ordinal), "NGHI worker must use vietnormalizer");
+        True(!worker.Contains("class KokoroNgocHuyen", StringComparison.Ordinal), "Kokoro worker must not remain on NGHI production path");
 
         var service = assembly.GetType("BiliSubStudio.Core.Editor.LocalTtsService")
             ?? throw new InvalidOperationException("missing LocalTtsService type");
@@ -66,7 +68,7 @@ internal static class EditorLicensedVoiceProfileContract
         var timing = new EditorCueSpeechTiming(cue.Id, 1, 5, 1.2, 4.7, .2, .3,
             [new EditorWordTiming("你", 1.2, 2, .9), new EditorWordTiming("好", 3, 4.7, .9)],
             [new EditorPauseTiming(2, 3)], "female_like", .8, 210);
-        var groups = ((System.Collections.IEnumerable)method.Invoke(null, [cue, timing, "Xin chào đạo hữu", "ngoc-huyen"])!).Cast<object>().ToArray();
+        var groups = ((System.Collections.IEnumerable)method.Invoke(null, [cue, timing, "Xin chào đạo hữu", "ngoc_huyen"])!).Cast<object>().ToArray();
         Equal(2, groups.Length);
         var firstType = groups[0].GetType();
         Equal(1.2d, (double)(firstType.GetProperty("Start")?.GetValue(groups[0]) ?? 0d));
@@ -116,8 +118,8 @@ internal static class EditorLicensedVoiceProfileContract
             var ttsManifestSha = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(await File.ReadAllBytesAsync(ttsManifest)));
 
             var validTts = new EditorTtsProject(
-                "complete", "kokoro-vietnamese-onnx", "kokoro-vietnamese-onnx-2026-06-27",
-                "ngoc-huyen", "ngoc-huyen",
+                "complete", "nghi-tts", "nghi-tts-1.0.0",
+                "ngoc_huyen", "ngoc_huyen",
                 ttsManifest, ttsManifestSha, new EditorVoiceTrack(voicePath, 0, 120), 1, 0);
             await store.SaveAsync(created with
             {
@@ -148,7 +150,7 @@ internal static class EditorLicensedVoiceProfileContract
             Equal("complete", reopened.Speech!.Status);
             Equal(speechSha, reopened.Speech.AnalysisSha256);
             Equal("complete", reopened.Tts!.Status);
-            Equal("kokoro-vietnamese-onnx", reopened.Tts.Engine);
+            Equal("nghi-tts", reopened.Tts.Engine);
             Equal("female", reopened.VoiceOverrides![subtitle.Cues[0].Id]);
 
             // A project created by the retired beta.36 voice path must keep all upstream work
@@ -207,6 +209,57 @@ internal static class EditorLicensedVoiceProfileContract
         {
             try { Directory.Delete(root, recursive: true); } catch { }
         }
+    }
+
+    private static async Task VerifyVoiceRegistryAsync()
+    {
+        var assembly = typeof(VideoEditorService).Assembly;
+        var installer = assembly.GetType("BiliSubStudio.Core.Editor.LocalTtsInstaller")
+            ?? throw new InvalidOperationException("missing LocalTtsInstaller type");
+        var voices = installer.GetField("AvailableVoices", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public)?.GetValue(null) as System.Collections.IEnumerable
+            ?? throw new InvalidOperationException("AvailableVoices not found");
+        var list = voices.Cast<object>().Select(x => x?.ToString() ?? string.Empty).ToArray();
+        Equal(14, list.Length);
+        True(list.Contains("ngoc_huyen", StringComparer.Ordinal), "canonical ngoc_huyen missing from registry");
+        True(list.Distinct(StringComparer.Ordinal).Count() == 14, "voice registry contains duplicate IDs");
+        foreach (var v in list)
+        {
+            True(!string.IsNullOrWhiteSpace(v) && v.All(c => char.IsLetterOrDigit(c) || c == '_'), $"voice ID {v} must be canonical underscore form");
+            True(!v.Contains('-'), $"voice ID {v} must not contain hyphen, use underscore canonical");
+        }
+        var service = assembly.GetType("BiliSubStudio.Core.Editor.LocalTtsService")
+            ?? throw new InvalidOperationException("missing LocalTtsService type");
+        var validate = service.GetMethod("ValidateRequest", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing ValidateRequest");
+        var canonical = installer.GetMethod("CanonicalVoiceId", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public)
+            ?? throw new InvalidOperationException("missing CanonicalVoiceId");
+        // UI sends hyphen form ngoc-huyen, backend must accept via canonicalization
+        var hyphen = "ngoc-huyen";
+        var expectedCanonical = canonical.Invoke(null, new object[] { hyphen })?.ToString() ?? string.Empty;
+        Equal("ngoc_huyen", expectedCanonical);
+        var tmpSource = Path.Combine(Path.GetTempPath(), $"bilisub-voice-reg-{Guid.NewGuid():N}.mp4");
+        await File.WriteAllBytesAsync(tmpSource, new byte[] { 1, 2, 3 });
+        try
+        {
+            // Every registry voice must pass validation (simulates dropdown selection -> request -> ValidateRequest)
+            foreach (var vid in list)
+            {
+                var req = Activator.CreateInstance(typeof(EditorTtsRequest), new object[] { "voice-reg-test", tmpSource, 4.2, new EditorSubtitleSource("C:\\tmp\\a.srt", 10, 1, new string('0', 64), new[] { new EditorSubtitleCue("c1", "1", "00:00:00,000 --> 00:00:01,000", 0, 1, "你好", "Xin chào") }), "C:\\tmp\\analysis.json", new string('a', 64), vid });
+                try { validate.Invoke(null, new[] { req }); }
+                catch (TargetInvocationException ex) when (ex.InnerException is not null) { throw new InvalidOperationException($"ValidateRequest rejected canonical voice {vid}: {ex.InnerException.Message}", ex.InnerException); }
+            }
+            // Hyphen form from old UI must also pass via canonicalization
+            var hyphenReq = Activator.CreateInstance(typeof(EditorTtsRequest), new object[] { "voice-reg-test", tmpSource, 4.2, new EditorSubtitleSource("C:\\tmp\\a.srt", 10, 1, new string('0', 64), new[] { new EditorSubtitleCue("c1", "1", "00:00:00,000 --> 00:00:01,000", 0, 1, "你好", "Xin chào") }), "C:\\tmp\\analysis.json", new string('a', 64), hyphen });
+            try { validate.Invoke(null, new[] { hyphenReq }); }
+            catch (TargetInvocationException ex) when (ex.InnerException is InvalidDataException) { throw new InvalidOperationException("hyphen voice ngoc-huyen must pass via canonicalization", ex.InnerException); }
+            // Unsupported voice must be rejected (do not remove validation)
+            var badReq = Activator.CreateInstance(typeof(EditorTtsRequest), new object[] { "voice-reg-test", tmpSource, 4.2, new EditorSubtitleSource("C:\\tmp\\a.srt", 10, 1, new string('0', 64), new[] { new EditorSubtitleCue("c1", "1", "00:00:00,000 --> 00:00:01,000", 0, 1, "你好", "Xin chào") }), "C:\\tmp\\analysis.json", new string('a', 64), "invalid_voice_xyz" });
+            var threw = false;
+            try { validate.Invoke(null, new[] { badReq }); } catch (TargetInvocationException ex) when (ex.InnerException is InvalidDataException) { threw = true; }
+            True(threw, "unsupported voice must be rejected by ValidateRequest");
+        }
+        finally { try { File.Delete(tmpSource); } catch { } }
+        return;
     }
 
     private static void Equal<T>(T expected, T actual)

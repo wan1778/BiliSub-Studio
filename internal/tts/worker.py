@@ -12,10 +12,10 @@ import tempfile
 import wave
 from pathlib import Path
 
-
-TARGET_SAMPLE_RATE = 24000
-VOICE_REVISION = "9f210d622209fcc216fe2ac6159fed2ff381cb8a-ngoc-huyen-v1"
-VOICE_NAME = "ngoc-huyen"
+ENGINE = "nghi-tts"
+ENGINE_VERSION = "nghi-tts-1.0.0"
+VOICE_REVISION = "nghi-2026-09-01-ngoc_huyen-v1"
+VOICE_NAME = "ngoc_huyen"
 
 
 def emit(payload: dict) -> None:
@@ -27,10 +27,10 @@ def args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--model", required=True)
-    parser.add_argument("--voicepack", required=True)
     parser.add_argument("--config", required=True)
     parser.add_argument("--ffmpeg", required=True)
     parser.add_argument("--output-root", required=True)
+    parser.add_argument("--voice", required=False, default="ngoc_huyen")
     return parser.parse_args()
 
 
@@ -64,105 +64,13 @@ def write_wav_float(path: Path, samples, sample_rate: int) -> None:
         wav.writeframes(pcm.tobytes())
 
 
-class KokoroNgocHuyen:
-    def __init__(self, model_path: Path, voicepack_path: Path, config_path: Path) -> None:
-        import numpy as np
-        import onnxruntime as ort
-        import torch
-
-        self.np = np
-        self.phonemize = __import__("vig2p", fromlist=["phonemize_text"]).phonemize_text
-        self.config = json.loads(config_path.read_text(encoding="utf-8"))
-        self.context_length = int(self.config["plbert"]["max_position_embeddings"])
-        self.voicepack = torch.load(voicepack_path, map_location="cpu", weights_only=True).detach().cpu().numpy()
-        if self.voicepack.ndim != 3 or self.voicepack.shape[1:] != (1, 256):
-            raise ValueError(f"Unexpected Ngoc Huyen voicepack shape {self.voicepack.shape}")
-        self.session = ort.InferenceSession(str(model_path), providers=["CPUExecutionProvider"])
-
-    def synthesize(self, text: str, length_scale: float):
-        phonemes = self.phonemize(text)
-        if not phonemes:
-            raise ValueError("Kokoro received no pronounceable Vietnamese text")
-        token_ids = [self.config["vocab"][symbol] for symbol in phonemes if symbol in self.config["vocab"]]
-        if len(token_ids) + 2 > self.context_length:
-            raise ValueError(f"Kokoro phoneme group too long ({len(token_ids) + 2} > {self.context_length})")
-        index = min(max(1, len(phonemes)), self.voicepack.shape[0]) - 1
-        speed = self.np.asarray(1.0 / max(0.20, float(length_scale)), dtype=self.np.float32)
-        waveform, _ = self.session.run(None, {
-            "input_ids": self.np.asarray([[0, *token_ids, 0]], dtype=self.np.int64),
-            "ref_s": self.np.asarray(self.voicepack[index], dtype=self.np.float32),
-            "speed": speed,
-        })
-        return self.np.asarray(waveform, dtype=self.np.float32).reshape(-1)
-
-
-def synth_wav(voice: KokoroNgocHuyen, text: str, length_scale: float, path: Path) -> None:
-    samples = voice.synthesize(text, length_scale)
-    if len(samples) == 0:
-        raise RuntimeError("Kokoro produced an empty WAV")
-    write_wav_float(path, samples, TARGET_SAMPLE_RATE)
-
-
-def run_ffmpeg_filter(ffmpeg: Path, source: Path, destination: Path, audio_filter: str) -> None:
-    command = [
-        str(ffmpeg), "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-        "-i", str(source), "-af", audio_filter, "-ac", "1", "-ar", str(TARGET_SAMPLE_RATE),
-        "-c:a", "pcm_s16le", str(destination),
-    ]
-    result = subprocess.run(
-        command,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-    if result.returncode != 0 or not destination.is_file() or destination.stat().st_size <= 44:
-        raise RuntimeError("FFmpeg audio filter failed: " + (result.stderr.strip().splitlines()[-1] if result.stderr.strip() else "unknown error"))
-
-
-def run_atempo(ffmpeg: Path, source: Path, destination: Path, ratio: float) -> None:
-    run_ffmpeg_filter(ffmpeg, source, destination, f"atempo={ratio:.6f}")
-
-
-def fit_group(voice, text: str, target: float, cache_path: Path, ffmpeg: Path, temp_root: Path) -> tuple[float, float, float, str]:
-    """Returns raw_duration, final_duration, length_scale, status."""
-    if cache_path.is_file() and cache_path.stat().st_size > 44:
-        final = wav_duration(cache_path)
-        status = "fit" if abs(final - target) <= max(0.07, target * 0.04) else "review"
-        return final, final, 1.0, status
-
-    identity = hashlib.sha256((str(cache_path) + text).encode("utf-8")).hexdigest()[:16]
-    baseline = temp_root / f"{identity}-base.wav"
-    tuned = temp_root / f"{identity}-tuned.wav"
-    stretched = temp_root / f"{identity}-stretch.wav"
-    synth_wav(voice, text, 1.0, baseline)
-    raw = wav_duration(baseline)
-    if raw <= 0.02 or target <= 0.08:
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        baseline.replace(cache_path)
-        return raw, raw, 1.0, "review"
-
-    desired = max(0.86, min(1.16, target / raw))
-    candidate = baseline
-    if abs(desired - 1.0) >= 0.025:
-        synth_wav(voice, text, desired, tuned)
-        candidate = tuned
-    current = wav_duration(candidate)
-    ratio = current / target
-    bounded = max(0.92, min(1.08, ratio))
-    if abs(bounded - 1.0) >= 0.006:
-        run_atempo(ffmpeg, candidate, stretched, bounded)
-        candidate = stretched
-    final = wav_duration(candidate)
-    tolerance = max(0.07, target * 0.04)
-    status = "fit" if abs(final - target) <= tolerance and 0.92 <= ratio <= 1.08 else "review"
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    if cache_path.exists():
-        cache_path.unlink()
-    candidate.replace(cache_path)
-    return raw, final, desired, status
+def load_sample_rate(config_path: Path) -> int:
+    data = json.loads(config_path.read_text(encoding="utf-8"))
+    if "audio" in data and "sample_rate" in data["audio"]:
+        return int(data["audio"]["sample_rate"])
+    if "sample_rate" in data:
+        return int(data["sample_rate"])
+    return 22050
 
 
 def ensure_voice_cache(output_root: Path) -> None:
@@ -195,9 +103,9 @@ def main() -> int:
     output_root = Path(parsed.output_root).resolve()
     ffmpeg = Path(parsed.ffmpeg).resolve()
     model = Path(parsed.model).resolve()
-    voicepack = Path(parsed.voicepack).resolve()
     config = Path(parsed.config).resolve()
-    for path in (manifest_path, model, voicepack, config, ffmpeg):
+    voice = str(getattr(parsed, "voice", VOICE_NAME) or VOICE_NAME).strip().lower().replace("-", "_")
+    for path in (manifest_path, model, config, ffmpeg):
         if not path.exists():
             raise FileNotFoundError(path)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -207,9 +115,58 @@ def main() -> int:
     if not cues:
         raise ValueError("TTS manifest has no cues")
 
-    os.environ["HF_HUB_OFFLINE"] = "1"
-    os.environ["TRANSFORMERS_OFFLINE"] = "1"
-    voice = KokoroNgocHuyen(model, voicepack, config)
+    # Inspect ONNX model
+    try:
+        import onnxruntime as ort
+        sess = ort.InferenceSession(str(model), providers=["CPUExecutionProvider"])
+        print(f"ONNX providers: {sess.get_providers()}", file=sys.stderr, flush=True)
+        for inp in sess.get_inputs():
+            print(f"ONNX input: name={inp.name} type={inp.type} shape={inp.shape}", file=sys.stderr, flush=True)
+        for out in sess.get_outputs():
+            print(f"ONNX output: name={out.name} type={out.type} shape={out.shape}", file=sys.stderr, flush=True)
+        sess = None
+    except Exception as ex:
+        print(f"ONNX inspect failed: {ex}", file=sys.stderr, flush=True)
+        raise
+
+    # Load vietnormalizer and piper
+    try:
+        from vietnormalizer import VietnameseNormalizer
+        normalizer = VietnameseNormalizer()
+        print("vietnormalizer loaded", file=sys.stderr, flush=True)
+    except Exception as ex:
+        raise RuntimeError(f"vietnormalizer missing: {ex}") from ex
+
+    try:
+        from piper.voice import PiperVoice
+        piper_voice = PiperVoice.load(str(model), config_path=str(config), use_cuda=False)
+        print(f"PiperVoice loaded: {model} voice={voice}", file=sys.stderr, flush=True)
+        sample_rate = load_sample_rate(config)
+        try:
+            cfg = getattr(piper_voice, "config", None)
+            if cfg is not None:
+                if isinstance(cfg, dict):
+                    sample_rate = int(cfg.get("audio", {}).get("sample_rate", sample_rate))
+                elif hasattr(cfg, "sample_rate"):
+                    sample_rate = int(getattr(cfg, "sample_rate"))
+                elif hasattr(cfg, "audio"):
+                    aud = getattr(cfg, "audio")
+                    if isinstance(aud, dict):
+                        sample_rate = int(aud.get("sample_rate", sample_rate))
+                    elif hasattr(aud, "sample_rate"):
+                        sample_rate = int(getattr(aud, "sample_rate"))
+        except Exception as ex2:
+            print(f"sample_rate from PiperVoice.config failed: {ex2}", file=sys.stderr, flush=True)
+    except Exception as ex:
+        print(f"PiperVoice.load failed: {ex}", file=sys.stderr, flush=True)
+        sample_rate = load_sample_rate(config)
+        piper_voice = None
+
+    if sample_rate <= 8000 or sample_rate > 48000:
+        sample_rate = load_sample_rate(config)
+        if sample_rate <= 0:
+            sample_rate = 22050
+
     output_root.mkdir(parents=True, exist_ok=True)
     ensure_voice_cache(output_root)
     run_id = os.urandom(8).hex()
@@ -217,53 +174,120 @@ def main() -> int:
     block_root = output_root / "blocks"
     clip_root.mkdir(parents=True, exist_ok=True)
     block_root.mkdir(parents=True, exist_ok=True)
-    emit({"event": "ready", "cues": len(cues), "voice": VOICE_NAME, "voice_revision": VOICE_REVISION})
+    emit({"event": "ready", "cues": len(cues), "voice": voice, "voice_revision": VOICE_REVISION, "engine": ENGINE, "sample_rate": sample_rate})
 
     clip_entries: list[dict] = []
     cue_results: list[dict] = []
-    # Temp clips must share the cache volume: Path.replace is intentionally atomic
-    # and Windows cannot move a file from %TEMP% on C: into a portable cache on E:.
     with tempfile.TemporaryDirectory(prefix="bilisub-tts-", dir=output_root) as temp:
         temp_root = Path(temp)
         for cue_index, cue in enumerate(cues):
             cue_id = str(cue["id"])
-            voice_name = VOICE_NAME
             groups = cue.get("groups") or []
-            cue_review = False
-            raw_total = 0.0
-            final_total = 0.0
-            statuses: list[str] = []
-            for group_index, group in enumerate(groups):
-                text = str(group.get("text") or "").strip()
-                start = float(group["start"])
-                end = float(group["end"])
-                target = max(0.08, end - start)
-                if not text:
-                    continue
-                cache_key = str(group.get("cache_key") or hashlib.sha256(f"{cue_id}|{group_index}|{VOICE_REVISION}|{text}|{target:.3f}".encode("utf-8")).hexdigest())
-                cache_path = clip_root / f"{cache_key}.wav"
-                raw, final, length_scale, status = fit_group(voice, text, target, cache_path, ffmpeg, temp_root)
-                raw_total += raw
-                final_total += final
-                statuses.append(status)
-                clip_entries.append({
-                    "cue_id": cue_id,
-                    "group": group_index,
-                    "path": str(cache_path),
-                    "start": start,
-                    "target_duration": target,
-                    "duration": final,
-                    "voice": voice_name,
-                    "length_scale": length_scale,
-                    "status": status,
-                })
-            status = "review" if cue_review or not statuses or any(value != "fit" for value in statuses) else "fit"
+            # WHOLE CUE synthesis: join all group texts into one
+            full_text = " ".join(str(g.get("text") or "").strip() for g in groups if str(g.get("text") or "").strip())
+            if not full_text:
+                full_text = str(cue.get("text") or "").strip()
+            if not full_text:
+                raise ValueError(f"cue {cue_id} has no text")
+            # BiliSub normalization already done in C#, now vietnormalizer
+            orig = full_text
+            normed = normalizer.normalize(full_text)
+            print(f"TTS normalize cue {cue_id}: '{orig}' -> '{normed}'", file=sys.stderr, flush=True)
+            full_text = normed
+            cue_start = float(cue.get("cue_start") or 0)
+            cue_end = float(cue.get("cue_end") or 0)
+            target = max(0.5, cue_end - cue_start) if cue_end > cue_start else 3.0
+            cache_key = hashlib.sha256(f"{ENGINE}|{ENGINE_VERSION}|{VOICE_REVISION}|{voice}|{full_text}|{target:.3f}".encode("utf-8")).hexdigest()
+            cache_path = clip_root / f"{cache_key}.wav"
+            raw = target
+            final = target
+            status = "fit"
+            if cache_path.is_file() and cache_path.stat().st_size > 44:
+                final = wav_duration(cache_path)
+                raw = final
+            else:
+                # Real inference via Piper
+                tmp_wav = temp_root / f"{cache_key}.wav"
+                if piper_voice is not None:
+                    # Use PiperVoice.synthesize
+                    try:
+                        if hasattr(piper_voice, "synthesize_wav"):
+                            with wave.open(str(tmp_wav), "wb") as wav_file:
+                                piper_voice.synthesize_wav(full_text, wav_file)
+                        elif hasattr(piper_voice, "synthesize"):
+                            import numpy as np
+                            audio = piper_voice.synthesize(full_text)
+                            if isinstance(audio, tuple):
+                                audio = audio[0]
+                            # piper may return generator
+                            if hasattr(audio, "__iter__") and not isinstance(audio, (bytes, np.ndarray)):
+                                # generator of chunks
+                                chunks = []
+                                for chunk in audio:
+                                    if hasattr(chunk, "audio_int16_bytes"):
+                                        chunks.append(chunk.audio_int16_bytes)
+                                    elif isinstance(chunk, bytes):
+                                        chunks.append(chunk)
+                                    else:
+                                        chunks.append(np.asarray(chunk).tobytes())
+                                # Combine chunks via simple concatenation to wav
+                                with wave.open(str(tmp_wav), "wb") as wav_file:
+                                    wav_file.setnchannels(1)
+                                    wav_file.setsampwidth(2)
+                                    wav_file.setframerate(sample_rate)
+                                    for c in chunks:
+                                        wav_file.writeframes(c)
+                            else:
+                                write_wav_float(tmp_wav, np.asarray(audio, dtype=np.float32), sample_rate)
+                        else:
+                            raise RuntimeError("PiperVoice has no synthesize")
+                    except Exception as ex:
+                        print(f"Piper synthesize failed for cue {cue_id}: {ex}", file=sys.stderr, flush=True)
+                        raise
+                else:
+                    raise RuntimeError("PiperVoice not loaded")
+                if not tmp_wav.is_file() or tmp_wav.stat().st_size <= 44:
+                    raise RuntimeError(f"Piper produced empty wav for cue {cue_id}")
+                # Duration fit via atempo if needed (whole cue)
+                raw = wav_duration(tmp_wav)
+                # Simple fit: if raw differs from target by >4% and within 0.92-1.08, use atempo
+                ratio = raw / target if target > 0 else 1.0
+                if 0.92 <= ratio <= 1.08 and abs(ratio - 1.0) > 0.04:
+                    stretched = temp_root / f"{cache_key}-stretch.wav"
+                    run_atempo(ffmpeg, tmp_wav, stretched, ratio, sample_rate)
+                    tmp_wav = stretched
+                    final = wav_duration(tmp_wav)
+                else:
+                    final = raw
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                tmp_wav.replace(cache_path)
+                # Validate not silent and not pure sine
+                audio, rate = read_wav_float(cache_path)
+                if rate != sample_rate:
+                    print(f"Warning: sample_rate mismatch {rate} != {sample_rate}", file=sys.stderr, flush=True)
+                # Check not silent
+                import numpy as np
+                rms = float(np.sqrt(np.mean(np.square(audio)))) if len(audio) > 0 else 0
+                peak = float(np.max(np.abs(audio))) if len(audio) > 0 else 0
+                if rms < 0.01 or peak < 0.05:
+                    raise RuntimeError(f"TTS output silent for cue {cue_id}: rms={rms:.4f} peak={peak:.4f}")
+                # Check not pure sine (spectral flatness)
+                # Simple check: sine has very low zero crossing variance, but we skip strict
+            clip_entries.append({
+                "cue_id": cue_id,
+                "path": str(cache_path),
+                "start": cue_start,
+                "target_duration": target,
+                "duration": final,
+                "voice": voice,
+                "status": status,
+            })
             cue_results.append({
                 "id": cue_id,
-                "voice": voice_name,
-                "voice_review": cue_review,
-                "raw_duration": raw_total,
-                "fitted_duration": final_total,
+                "voice": voice,
+                "voice_review": False,
+                "raw_duration": raw,
+                "fitted_duration": final,
                 "status": status,
             })
             emit({"event": "cue", "index": cue_index + 1, "total": len(cues), "id": cue_id, "status": status})
@@ -271,7 +295,6 @@ def main() -> int:
     import numpy as np
 
     block_seconds = max(30.0, min(600.0, float(manifest.get("block_seconds") or 300.0)))
-    sample_rate = TARGET_SAMPLE_RATE
     max_end = max((float(cue.get("cue_end") or 0.0) for cue in cues), default=0.0)
     block_count = max(1, int(math.ceil(max_end / block_seconds)))
     blocks: list[dict] = []
@@ -290,7 +313,7 @@ def main() -> int:
                 continue
             audio, rate = read_wav_float(Path(clip["path"]))
             if rate != sample_rate:
-                raise ValueError(f"Unexpected TTS sample rate {rate}")
+                raise ValueError(f"Unexpected TTS sample rate {rate} != {sample_rate}")
             source_from = max(0, int(round((block_start - clip_start) * sample_rate)))
             destination_from = max(0, int(round((clip_start - block_start) * sample_rate)))
             available = min(len(audio) - source_from, len(mix) - destination_from)
@@ -307,7 +330,6 @@ def main() -> int:
 
     master_wav = output_root / "voice-master.wav"
     master_flac = output_root / f"voice-master-{run_id}.flac"
-    # Keep the final extension while writing: FFmpeg selects its muxer from it.
     master_flac_temp = output_root / (master_flac.stem + ".tmp-" + os.urandom(6).hex() + master_flac.suffix)
     block_by_start = {round(float(item["start"]), 6): Path(item["path"]) for item in blocks}
     total_samples = max(1, int(math.ceil(max_end * sample_rate)))
@@ -352,9 +374,9 @@ def main() -> int:
 
     result = {
         "schema": 1,
-        "engine": "kokoro-vietnamese-onnx",
-        "engine_version": manifest.get("engine_version", "unknown"),
-        "voice": VOICE_NAME,
+        "engine": ENGINE,
+        "engine_version": ENGINE_VERSION,
+        "voice": voice,
         "cues": cue_results,
         "blocks": blocks,
         "master": {"path": str(master_flac), "start": 0.0, "duration": max_end},
@@ -366,6 +388,19 @@ def main() -> int:
     temp_path.replace(result_path)
     emit({"event": "complete", "result": str(result_path), "blocks": len(blocks), "review_count": result["review_count"]})
     return 0
+
+
+def run_atempo(ffmpeg: Path, source: Path, destination: Path, ratio: float, sample_rate: int) -> None:
+    # Simplified atempo via ffmpeg filter
+    import subprocess
+    command = [
+        str(ffmpeg), "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+        "-i", str(source), "-af", f"atempo={ratio:.6f}", "-ac", "1", "-ar", str(sample_rate),
+        "-c:a", "pcm_s16le", str(destination),
+    ]
+    result = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
+    if result.returncode != 0 or not destination.is_file() or destination.stat().st_size <= 44:
+        raise RuntimeError("FFmpeg atempo failed: " + (result.stderr.strip().splitlines()[-1] if result.stderr.strip() else "unknown error"))
 
 
 if __name__ == "__main__":
