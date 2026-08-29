@@ -438,6 +438,50 @@
                                         </Grid>
                                     </StackPanel>
                                 </Border>
+                                <Border x:Name="VoiceCuePreviewPanel" Style="{StaticResource CardBorderStyle}" Padding="10">
+                                    <Grid Height="300" RowSpacing="7">
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="*"/>
+                                        </Grid.RowDefinitions>
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                            <TextBlock Text="NGHE THỬ TỪNG CÂU" FontSize="10" FontWeight="SemiBold" Foreground="{ThemeResource MutedTextBrush}" VerticalAlignment="Center"/>
+                                            <TextBlock x:Name="VoiceCuePreviewCountText" Grid.Column="1" Text="0 câu" FontSize="10" Foreground="{ThemeResource AccentPrimaryBrush}" VerticalAlignment="Center"/>
+                                        </Grid>
+                                        <TextBlock x:Name="VoiceCuePreviewStatusText" Grid.Row="1" Text="Tạo voice xong để nghe từng câu tại đây." FontSize="10" Foreground="{ThemeResource SecondaryTextBrush}" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite"/>
+                                        <ListView x:Name="VoiceCuePreviewList" Grid.Row="2" Padding="0" SelectionMode="None" Visibility="Collapsed"
+                                                  ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                                  AutomationProperties.Name="Danh sách nghe thử từng câu voice">
+                                            <ListView.ItemContainerStyle>
+                                                <Style TargetType="ListViewItem">
+                                                    <Setter Property="Padding" Value="3,2"/>
+                                                    <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                                                    <Setter Property="IsTabStop" Value="False"/>
+                                                </Style>
+                                            </ListView.ItemContainerStyle>
+                                            <ListView.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Grid MinHeight="52" ColumnSpacing="8">
+                                                        <Grid.ColumnDefinitions><ColumnDefinition Width="34"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                                        <Button Width="32" Height="32" Padding="0" VerticalAlignment="Center" Tag="{Binding}" Click="VoiceCuePreview_Click"
+                                                                Style="{StaticResource SecondaryButtonStyle}" ToolTipService.ToolTip="Nghe riêng câu này">
+                                                            <FontIcon Glyph="&#xE768;" FontSize="13"/>
+                                                        </Button>
+                                                        <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
+                                                            <TextBlock Text="{Binding DisplayText}" FontSize="11" Foreground="{ThemeResource PrimaryTextBrush}" TextTrimming="CharacterEllipsis" TextWrapping="NoWrap"/>
+                                                            <TextBlock Text="{Binding TimecodeText}" FontSize="9" Foreground="{ThemeResource MutedTextBrush}" TextTrimming="CharacterEllipsis" TextWrapping="NoWrap"/>
+                                                        </StackPanel>
+                                                        <Border Grid.Column="2" Padding="6,3" CornerRadius="6" Background="{ThemeResource StrongSurfaceBrush}" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="1" VerticalAlignment="Center">
+                                                            <TextBlock Text="{Binding DurationText}" FontSize="9" Foreground="{ThemeResource SecondaryTextBrush}"/>
+                                                        </Border>
+                                                    </Grid>
+                                                </DataTemplate>
+                                            </ListView.ItemTemplate>
+                                        </ListView>
+                                    </Grid>
+                                </Border>
                             </StackPanel>
 
                             <StackPanel x:Name="ImageInspectorPanel" Spacing="12" Visibility="Collapsed">

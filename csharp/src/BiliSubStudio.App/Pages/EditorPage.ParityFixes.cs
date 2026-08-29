@@ -125,6 +125,7 @@ public sealed partial class EditorPage
         // CLEAN-01: EditorPage_Unloaded is the only Unloaded event owner.
         // Progress/voice cleanup is a subordinate lifecycle operation, never a second event subscription.
         CleanupEditorProgress();
+        CleanupVoiceCuePreview();
         _editorAutoCompositeCancellation?.Cancel();
         _editorAutoCompositeCancellation?.Dispose();
         _editorAutoCompositeCancellation = null;

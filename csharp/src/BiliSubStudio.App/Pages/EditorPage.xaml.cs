@@ -1999,6 +1999,7 @@ public sealed partial class EditorPage : Page
         if (VoiceProgressContainer is not null) VoiceProgressContainer.Visibility = Visibility.Visible;
         if (_voiceSampleButton is not null) _voiceSampleButton.IsEnabled = idle && !_playback.IsPreviewMode;
         KaraokeToggle.IsEnabled = idle && !_playback.IsPreviewMode && _subtitleSource is not null;
+        RefreshVoiceCuePreview();
         RefreshImageControls();
         RefreshEditorParityControls();
         RefreshSubtitleCueEditorControls();
