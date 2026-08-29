@@ -169,7 +169,7 @@ public sealed partial class EditorPage
 
     private void MarkTranslatedOutputStale()
     {
-        _voiceTrack = null;
+        ClearVoiceTrackState();
         if (_project is null) return;
         _project = _project with
         {

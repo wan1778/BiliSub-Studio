@@ -114,8 +114,8 @@ map_to_cues = speech.split(
 )[1].split("public static string SourceKey", 1)[0]
 require(".SelectMany(segment => segment.Words)" in map_to_cues,
         "VOICE-04 cue timing must derive from persisted word timing")
-require("Midpoint(word.Start, word.End) >= cue.Start - .08" in map_to_cues
-        and "Midpoint(word.Start, word.End) <= cue.End + .08" in map_to_cues,
+require("LowerBoundWord(wordsByMidpoint, cue.Start - .08)" in map_to_cues
+        and "UpperBoundWord(wordsByMidpoint, cue.End + .08)" in map_to_cues,
         "VOICE-04 cue mapping must use the reviewed ±80 ms midpoint tolerance")
 require(".OrderBy(word => word.Start)" in map_to_cues,
         "VOICE-04 cue word timing must stay chronological")
@@ -131,7 +131,8 @@ load_timing = application.split(
 )[1].split("public Task<byte[]> GetEditorPreviewFrameJpegAsync", 1)[0]
 require("EditorSpeechAnalysisDocument.LoadVerifiedAsync" in load_timing,
         "VOICE-04 cue timing must load only SHA-256 verified speech analysis")
-require("EditorSpeechAnalysisDocument.MapToCues(analysis, cues)" in load_timing,
+require("EditorSpeechAnalysisDocument.MapToCues(analysis, cues, cancellationToken)" in load_timing
+        and "Task.Run(" in load_timing,
         "VOICE-04 application boundary must map verified analysis to current subtitle cues")
 
 refresh_timing = editor_main.split(

@@ -144,8 +144,9 @@ internal static class EditorNghiTtsRuntimeContract
                 var generated = cues[index].GetProperty("generated_frames").GetInt64();
                 var padding = cues[index].GetProperty("padding_frames").GetInt64();
                 var scale = cues[index].GetProperty("length_scale").GetDouble() / cues[index].GetProperty("base_length_scale").GetDouble();
+                var calls = cues[index].GetProperty("synthesis_calls").GetInt32();
                 Check(cues[index].GetProperty("fit_method").GetString() == "piper-length-scale"
-                    && attempts is >= 1 and <= 10 && cues[index].GetProperty("synthesis_calls").GetInt32() == attempts
+                    && attempts is >= 1 and <= 10 && calls >= attempts && calls <= attempts + 10
                     && scale is >= .85 and <= 1.20 && generated > 0 && generated + padding == frames
                     && padding >= 0 && padding <= Math.Max(1L, Math.Min(882L, frames / 50)),
                     "native Piper rate/retry evidence and small padding only; no playback speed fitting");
@@ -210,7 +211,8 @@ internal static class EditorNghiTtsRuntimeContract
                 [subtitle.Cues[0] with { VietnameseText = Sentences[0] }], new EditorSubtitlePlacement(.1, .72, .8, .18),
                 "Dịch Trung Tu Tiên", TranslationSkillBundle.BuiltInSha256, subtitlePath),
             Tts = new EditorTtsProject("complete", first.Engine, first.EngineVersion, first.Voice, first.Voice,
-                first.ManifestPath, first.ManifestSha256, first.VoiceTrack, first.Cues.Count, first.ReviewCount),
+                first.ManifestPath, first.ManifestSha256, first.VoiceTrack, first.Cues.Count, first.ReviewCount,
+                first.CueWindows),
         };
         await store.SaveAsync(project, CancellationToken.None);
         var reopened = await store.LoadOrCreateAsync(video, media.Width, media.Height, media.Duration, CancellationToken.None);

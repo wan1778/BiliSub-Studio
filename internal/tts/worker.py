@@ -15,7 +15,7 @@ ENGINE = "nghi-tts"
 ENGINE_VERSION = "nghi-tts-1.0.0"
 MODEL_SHA256 = "2140977786d76d834736c059dacfa553d4931dac2b2c7aaaea438bb2aa9da697"
 CONFIG_SHA256 = "971f57f8d504223fee5b40d664f503cf769baf7db21f7d2ae0554a75d07de2f8"
-TIMING_ALGORITHM = "whole-cue-piper-rate-v5"
+TIMING_ALGORITHM = "whole-cue-piper-rate-v6"
 VOICE_REVISION = MODEL_SHA256 + ":" + CONFIG_SHA256 + ":" + TIMING_ALGORITHM
 VOICE_NAME = "ngoc_huyen"
 SAMPLE_RATE = 22050
@@ -224,6 +224,18 @@ def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str, timi
     raise RuntimeError("Piper không thể đọc vừa timecode trong biên giữ chất giọng 0,85–1,20×; hãy rút gọn câu SRT Việt hoặc nới timecode. Không ép giọng, kéo tốc độ file hay cắt chữ")
 
 
+def srt_fallback_cue(cue: dict):
+    if cue["timing_source"] != "whisper":
+        return None
+    if cue["voice_start"] == cue["cue_start"] and cue["voice_end"] == cue["cue_end"]:
+        return None
+    fallback = dict(cue)
+    fallback["voice_start"] = cue["cue_start"]
+    fallback["voice_end"] = cue["cue_end"]
+    fallback["timing_source"] = "srt-fallback"
+    return fallback
+
+
 def validate_manifest(manifest: dict, voice: str) -> list[dict]:
     if (manifest.get("schema"), manifest.get("engine_version"), manifest.get("voice"), manifest.get("timing_algorithm")) != (
             2, ENGINE_VERSION, voice, TIMING_ALGORITHM):
@@ -353,43 +365,82 @@ def main() -> int:
         text = normalizer.normalize(cue["text"]).strip()
         if not text:
             raise ValueError("Vietnamese normalization returned empty text")
-        start_sample, target_frames = cue_window(cue)
-        key = cache_identity(cue, text, worker_sha)
-        cached_path = clip_root / (key + ".wav")
-        record = load_clip(cached_path, key, cue)
-        cache_hit = record is not None
+        candidate_cues = [cue]
+        fallback = srt_fallback_cue(cue)
+        if fallback is not None:
+            candidate_cues.append(fallback)
+        candidates = []
+        for candidate_cue in candidate_cues:
+            candidate_key = cache_identity(candidate_cue, text, worker_sha)
+            candidate_path = clip_root / (candidate_key + ".wav")
+            candidates.append((candidate_cue, candidate_key, candidate_path))
+
+        active_cue = key = cached_path = record = None
+        cache_hit = False
+        synthesis_calls = 0
+        # Check both the precise Whisper window and its deterministic full-SRT
+        # fallback before synthesizing. A fallback cache must remain reusable.
+        for candidate_cue, candidate_key, candidate_path in candidates:
+            candidate_record = load_clip(candidate_path, candidate_key, candidate_cue)
+            if candidate_record is not None:
+                active_cue, key, cached_path, record = candidate_cue, candidate_key, candidate_path, candidate_record
+                cache_hit = True
+                break
         if record is None:
-            def on_attempt(attempt, scale):
-                emit({"event": "attempt", "index": index + 1, "total": len(cues), "id": cue["id"],
-                      "attempt": attempt, "max_attempts": MAX_SYNTHESIS_ATTEMPTS, "length_scale": scale})
-            try:
-                final_path, record = fit_cue(voice, text, target_frames, run_root, key, cue["timing_source"], on_attempt)
-            except (ValueError, RuntimeError) as error:
-                raise RuntimeError(f"Cue {index + 1} ({cue['id']}): {error}") from error
-            record.update({"key": key, "sha256": sha256(final_path)})
-            final_path.replace(cached_path)
-            atomic_json(cached_path.with_suffix(".json"), record)
+            failures = []
+            for candidate_cue, candidate_key, candidate_path in candidates:
+                _, candidate_target_frames = cue_window(candidate_cue)
+                phase_calls = 0
+
+                def on_attempt(attempt, scale):
+                    nonlocal synthesis_calls, phase_calls
+                    synthesis_calls += 1
+                    phase_calls += 1
+                    emit({"event": "attempt", "index": index + 1, "total": len(cues), "id": cue["id"],
+                          "attempt": attempt, "max_attempts": MAX_SYNTHESIS_ATTEMPTS,
+                          "timing_source": candidate_cue["timing_source"], "length_scale": scale})
+                try:
+                    final_path, candidate_record = fit_cue(
+                        voice, text, candidate_target_frames, run_root, candidate_key,
+                        candidate_cue["timing_source"], on_attempt)
+                except (ValueError, RuntimeError) as error:
+                    failures.append(f"{candidate_cue['timing_source']}: {error}")
+                    continue
+                if phase_calls != candidate_record["synthesis_attempts"]:
+                    raise RuntimeError("TTS attempt accounting mismatch")
+                candidate_record.update({"key": candidate_key, "sha256": sha256(final_path)})
+                final_path.replace(candidate_path)
+                atomic_json(candidate_path.with_suffix(".json"), candidate_record)
+                active_cue, key, cached_path, record = candidate_cue, candidate_key, candidate_path, candidate_record
+                break
+            if record is None:
+                detail = " | ".join(failures)
+                raise RuntimeError(
+                    f"Cue {index + 1} ({cue['id']}): không thể đọc vừa cả nhịp Whisper lẫn toàn timecode SRT. "
+                    f"{detail}")
+
+        start_sample, target_frames = cue_window(active_cue)
         # The clip already has the required length. Place ALL its samples;
         # never hide a timing failure by truncating the clip at the SRT boundary.
         end_sample = start_sample + record["frames"]
         if end_sample > start_sample + target_frames:
             raise ValueError("Fitted voice exceeds the source speech window")
-        clips.append({"path": cached_path, "start": cue["voice_start"], "frames": record["frames"],
+        clips.append({"path": cached_path, "start": active_cue["voice_start"], "frames": record["frames"],
                       "start_sample": start_sample, "end_sample": end_sample})
-        output_status = "review" if record["status"] != "fit" or cue["timing_source"] == "srt-fallback" else "fit"
+        output_status = "review" if record["status"] != "fit" or active_cue["timing_source"] == "srt-fallback" else "fit"
         results.append({"id": cue["id"], "voice": VOICE_NAME, "voice_review": output_status == "review",
                         "raw_duration": record["raw_duration"], "fitted_duration": record["fitted_duration"],
                         "status": output_status, "cache_hit": cache_hit,
                         "clip_path": str(cached_path), "clip_sha256": record["sha256"],
-                        "clipped": False, "timing_source": cue["timing_source"], "target_frames": target_frames,
+                        "clipped": False, "timing_source": active_cue["timing_source"], "target_frames": target_frames,
                         "frames": record["frames"], "clip_start_sample": start_sample, "clip_end_sample": end_sample,
                         "fit_method": record["fit_method"], "base_length_scale": record["base_length_scale"],
                         "length_scale": record["length_scale"], "generated_frames": record["generated_frames"],
                         "padding_frames": record["padding_frames"], "synthesis_attempts": record["synthesis_attempts"],
-                        "synthesis_calls": 0 if cache_hit else record["synthesis_attempts"]})
+                        "synthesis_calls": synthesis_calls})
         emit({"event": "cue", "index": index + 1, "total": len(cues), "id": cue["id"],
               "status": output_status, "cache_hit": cache_hit,
-              "synthesis_calls": 0 if cache_hit else record["synthesis_attempts"]})
+              "timing_source": active_cue["timing_source"], "synthesis_calls": synthesis_calls})
     build_master(Path(options.ffmpeg), clips, manifest["duration"], run_root, master_path)
     result = {"schema": 2, "engine": ENGINE, "engine_version": ENGINE_VERSION, "voice": VOICE_NAME,
               "voice_revision": VOICE_REVISION, "cues": results,

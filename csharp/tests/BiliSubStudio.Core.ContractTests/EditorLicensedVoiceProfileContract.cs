@@ -25,6 +25,7 @@ internal static class EditorLicensedVoiceProfileContract
             "editor project persists, invalidates stale TTS, isolates source drift and quarantines corrupt state",
             VerifyEditorProjectAsync);
         tests.Add(("voice dropdown uses exact canonical IDs and ValidateRequest passes for all local voices", VerifyVoiceRegistryAsync));
+        tests.Add(("Whisper cue mapping stays exact and indexed for large Voice projects", VerifyIndexedCueMappingAsync));
     }
 
     private static void Replace(
@@ -89,6 +90,61 @@ internal static class EditorLicensedVoiceProfileContract
         return Task.CompletedTask;
     }
 
+    private static Task VerifyIndexedCueMappingAsync()
+    {
+        var segments = Enumerable.Range(0, 12_280).Select(index =>
+        {
+            var start = index * 2.4;
+            var wordCount = index < 3_927 ? 6 : 5;
+            var words = Enumerable.Range(0, wordCount)
+                .Select(word => new EditorWordTiming($"w{index}-{word}", start + word * .32, start + word * .32 + .24, .9))
+                .Reverse()
+                .ToArray();
+            return new EditorSpeechSegment(start, start + 2, string.Empty, 0, 0, words,
+                index % 2 == 0 ? "male_like" : "female_like", .8, 150);
+        }).Reverse().ToArray();
+        var analysis = new EditorSpeechAnalysis(
+            EditorSpeechAnalysisDocument.CurrentSchema,
+            new string('a', 64),
+            "indexed fixture",
+            new string('b', 40),
+            "cpu",
+            "int8",
+            .5,
+            segments);
+        var cues = Enumerable.Range(0, 11_306)
+            .Select(index =>
+            {
+                var start = index * 2.5;
+                return new EditorSubtitleCue($"cue-{index}", (index + 1).ToString(), string.Empty,
+                    start, start + 1.8, "source", "Tiếng Việt");
+            }).ToArray();
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        var mapped = EditorSpeechAnalysisDocument.MapToCues(analysis, cues);
+        watch.Stop();
+        Equal(cues.Length, mapped.Count);
+        Equal(6, mapped[0].Words.Count);
+        Equal("w0-0", mapped[0].Words[0].Text);
+        Equal("w0-5", mapped[0].Words[^1].Text);
+        Equal(0d, mapped[0].SpeechStart);
+        Equal(1.8d, mapped[0].SpeechEnd);
+        Equal("male_like", mapped[0].VoiceClass);
+        True(mapped.SelectMany(timing => timing.Words).All(word => word.End > word.Start),
+            "indexed mapping returned invalid words");
+        True(watch.Elapsed < TimeSpan.FromSeconds(10),
+            $"indexed mapping regressed to dispatcher-blocking runtime: {watch.Elapsed}");
+
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+        try
+        {
+            EditorSpeechAnalysisDocument.MapToCues(analysis, cues, cancelled.Token);
+            throw new InvalidOperationException("cancelled cue mapping continued");
+        }
+        catch (OperationCanceledException) { }
+        return Task.CompletedTask;
+    }
+
     private static void VerifyVoiceWavFrames(Type service)
     {
         var root = Path.Combine(Path.GetTempPath(), "bilisub-wav-frames-" + Guid.NewGuid().ToString("N"));
@@ -137,6 +193,7 @@ internal static class EditorLicensedVoiceProfileContract
             System.Text.Json.JsonSerializer.Serialize(values), cueType, json)!;
         Equal(false, validate.Invoke(null, [Cue(fixture), 44100L, false, 22050]));
         Equal(true, validate.Invoke(null, [Cue(new(fixture) { ["length_scale"] = .88 }), 44100L, false, 22050]));
+        Equal(false, validate.Invoke(null, [Cue(new(fixture) { ["synthesis_calls"] = 12 }), 44100L, false, 22050]));
         Equal(false, validate.Invoke(null, [Cue(new(fixture) { ["cache_hit"] = true, ["synthesis_calls"] = 0 }), 44100L, false, 22050]));
         var invalid = new Dictionary<string, object>[]
         {
@@ -146,6 +203,7 @@ internal static class EditorLicensedVoiceProfileContract
             new(fixture) { ["base_length_scale"] = 0d },
             new(fixture) { ["length_scale"] = .84 },
             new(fixture) { ["synthesis_attempts"] = 11, ["synthesis_calls"] = 11 },
+            new(fixture) { ["synthesis_calls"] = 13 },
             new(fixture) { ["synthesis_attempts"] = 1, ["synthesis_calls"] = 1 },
             new(fixture) { ["cache_hit"] = true },
         };
@@ -201,7 +259,12 @@ internal static class EditorLicensedVoiceProfileContract
             var revision = installer.GetField("VoiceRevision", BindingFlags.Static | BindingFlags.NonPublic)!.GetRawConstantValue()!.ToString()!;
             await File.WriteAllTextAsync(ttsManifest, System.Text.Json.JsonSerializer.Serialize(new
             {
-                schema = 2, voice_revision = revision,
+                schema = 2, sample_rate = 22050, voice_revision = revision,
+                cues = new[]
+                {
+                    new { id = subtitle.Cues[0].Id, timing_source = "srt-fallback", status = "review",
+                        clip_start_sample = 22050L, target_frames = 22050L },
+                },
                 master = new { path = voicePath, sha256 = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(await File.ReadAllBytesAsync(voicePath))) },
             }));
             var ttsManifestSha = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(await File.ReadAllBytesAsync(ttsManifest)));
@@ -209,7 +272,8 @@ internal static class EditorLicensedVoiceProfileContract
             var validTts = new EditorTtsProject(
                 "complete", "nghi-tts", "nghi-tts-1.0.0",
                 "ngoc_huyen", "ngoc_huyen",
-                ttsManifest, ttsManifestSha, new EditorVoiceTrack(voicePath, 0, 120), 1, 0);
+                ttsManifest, ttsManifestSha, new EditorVoiceTrack(voicePath, 0, 120), 1, 1,
+                [new EditorTtsCueWindow(subtitle.Cues[0].Id, 1, 2, "srt-fallback", "review")]);
             await store.SaveAsync(created with
             {
                 FileName = "episode-edited.mp4",
@@ -240,6 +304,7 @@ internal static class EditorLicensedVoiceProfileContract
             Equal(speechSha, reopened.Speech.AnalysisSha256);
             Equal("complete", reopened.Tts!.Status);
             Equal("nghi-tts", reopened.Tts.Engine);
+            Equal("srt-fallback", reopened.Tts.CueWindows![0].TimingSource);
             Equal("female", reopened.VoiceOverrides![subtitle.Cues[0].Id]);
 
             var oldManifest = Path.Combine(root, "old-duration-result.json");

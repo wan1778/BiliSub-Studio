@@ -534,8 +534,11 @@ public sealed class BiliSubApplication : IAsyncDisposable
         IReadOnlyList<EditorSubtitleCue> cues,
         CancellationToken cancellationToken)
     {
-        var analysis = await EditorSpeechAnalysisDocument.LoadVerifiedAsync(analysisPath, analysisSha256, cancellationToken);
-        return EditorSpeechAnalysisDocument.MapToCues(analysis, cues);
+        var analysis = await EditorSpeechAnalysisDocument.LoadVerifiedAsync(
+            analysisPath, analysisSha256, cancellationToken).ConfigureAwait(false);
+        return await Task.Run(
+            () => EditorSpeechAnalysisDocument.MapToCues(analysis, cues, cancellationToken),
+            cancellationToken).ConfigureAwait(false);
     }
 
     public Task<byte[]> GetEditorPreviewFrameJpegAsync(

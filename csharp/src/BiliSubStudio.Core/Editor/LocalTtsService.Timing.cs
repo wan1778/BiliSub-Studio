@@ -12,7 +12,9 @@ internal sealed partial class LocalTtsService
             || !double.IsFinite(cue.LengthScale) || !double.IsFinite(relativeScale) || relativeScale is < .85 or > 1.20
             || cue.GeneratedFrames <= 0 || cue.GeneratedFrames > cue.Frames
             || cue.PaddingFrames < 0 || cue.PaddingFrames > paddingBudget || cue.GeneratedFrames != cue.Frames - cue.PaddingFrames
-            || cue.SynthesisAttempts is < 1 or > 10 || cue.SynthesisCalls != (cue.CacheHit ? 0 : cue.SynthesisAttempts)
+            || cue.SynthesisAttempts is < 1 or > 10
+            || (cue.CacheHit ? cue.SynthesisCalls != 0
+                : cue.SynthesisCalls < cue.SynthesisAttempts || cue.SynthesisCalls > cue.SynthesisAttempts + 10)
             || (cue.SynthesisAttempts == 1 && (cue.LengthScale != cue.BaseLengthScale
                 || Math.Abs(cue.RawDuration - cue.GeneratedFrames / (double)sampleRate) > 1e-9))
             || (naturalSample && (cue.PaddingFrames != 0 || cue.SynthesisAttempts != 1)))

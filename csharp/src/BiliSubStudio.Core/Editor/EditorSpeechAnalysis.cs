@@ -95,17 +95,45 @@ public static class EditorSpeechAnalysisDocument
         return loaded;
     }
 
-    public static IReadOnlyList<EditorCueSpeechTiming> MapToCues(EditorSpeechAnalysis analysis, IReadOnlyList<EditorSubtitleCue> cues)
+    public static IReadOnlyList<EditorCueSpeechTiming> MapToCues(
+        EditorSpeechAnalysis analysis,
+        IReadOnlyList<EditorSubtitleCue> cues,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(analysis);
         ArgumentNullException.ThrowIfNull(cues);
         Validate(analysis);
-        var result = new List<EditorCueSpeechTiming>(cues.Count);
-        foreach (var cue in cues)
+        // Index once. The previous implementation flattened and scanned every
+        // Whisper word and segment again for every SRT cue (O(cues * words)),
+        // which blocked the WinUI dispatcher for large projects.
+        var wordsByMidpoint = analysis.Segments
+            .SelectMany(segment => segment.Words)
+            .Select(word => new IndexedWord(Midpoint(word.Start, word.End), word))
+            .OrderBy(item => item.Midpoint)
+            .ThenBy(item => item.Word.Start)
+            .ThenBy(item => item.Word.End)
+            .ToArray();
+        var segmentsByStart = analysis.Segments
+            .OrderBy(segment => segment.Start)
+            .ThenBy(segment => segment.End)
+            .ToArray();
+        var prefixMaxSegmentEnd = new double[segmentsByStart.Length];
+        var maxSegmentEnd = double.NegativeInfinity;
+        for (var index = 0; index < segmentsByStart.Length; index++)
         {
-            var words = analysis.Segments
-                .SelectMany(segment => segment.Words)
-                .Where(word => Midpoint(word.Start, word.End) >= cue.Start - .08 && Midpoint(word.Start, word.End) <= cue.End + .08)
+            maxSegmentEnd = Math.Max(maxSegmentEnd, segmentsByStart[index].End);
+            prefixMaxSegmentEnd[index] = maxSegmentEnd;
+        }
+
+        var result = new List<EditorCueSpeechTiming>(cues.Count);
+        for (var cueIndex = 0; cueIndex < cues.Count; cueIndex++)
+        {
+            if ((cueIndex & 255) == 0) cancellationToken.ThrowIfCancellationRequested();
+            var cue = cues[cueIndex];
+            var wordStart = LowerBoundWord(wordsByMidpoint, cue.Start - .08);
+            var wordEnd = UpperBoundWord(wordsByMidpoint, cue.End + .08);
+            var words = wordsByMidpoint.AsSpan(wordStart, wordEnd - wordStart).ToArray()
+                .Select(item => item.Word)
                 .OrderBy(word => word.Start)
                 .ThenBy(word => word.End)
                 .ToArray();
@@ -120,11 +148,16 @@ public static class EditorSpeechAnalysisDocument
                 if (end - start >= PauseThresholdSeconds) pauses.Add(new EditorPauseTiming(start, end));
             }
 
-            var overlapping = analysis.Segments
-                .Select(segment => new { Segment = segment, Weight = Overlap(segment.Start, segment.End, cue.Start, cue.End) })
-                .Where(x => x.Weight > .02)
-                .ToArray();
-            var voice = ResolveVoice(overlapping.Select(x => (x.Segment, x.Weight)));
+            var overlapping = new List<(EditorSpeechSegment Segment, double Weight)>();
+            var segmentEnd = LowerBoundSegmentStart(segmentsByStart, cue.End - .02);
+            var segmentStart = LowerBoundPrefixEnd(prefixMaxSegmentEnd, cue.Start + .02);
+            for (var index = segmentStart; index < segmentEnd; index++)
+            {
+                var segment = segmentsByStart[index];
+                var weight = Overlap(segment.Start, segment.End, cue.Start, cue.End);
+                if (weight > .02) overlapping.Add((segment, weight));
+            }
+            var voice = ResolveVoice(overlapping);
             result.Add(new EditorCueSpeechTiming(
                 cue.Id,
                 cue.Start,
@@ -140,6 +173,58 @@ public static class EditorSpeechAnalysisDocument
                 voice.Pitch));
         }
         return result;
+    }
+
+    private static int LowerBoundWord(IndexedWord[] words, double value)
+    {
+        var lower = 0;
+        var upper = words.Length;
+        while (lower < upper)
+        {
+            var middle = lower + (upper - lower) / 2;
+            if (words[middle].Midpoint < value) lower = middle + 1;
+            else upper = middle;
+        }
+        return lower;
+    }
+
+    private static int UpperBoundWord(IndexedWord[] words, double value)
+    {
+        var lower = 0;
+        var upper = words.Length;
+        while (lower < upper)
+        {
+            var middle = lower + (upper - lower) / 2;
+            if (words[middle].Midpoint <= value) lower = middle + 1;
+            else upper = middle;
+        }
+        return lower;
+    }
+
+    private static int LowerBoundSegmentStart(EditorSpeechSegment[] segments, double value)
+    {
+        var lower = 0;
+        var upper = segments.Length;
+        while (lower < upper)
+        {
+            var middle = lower + (upper - lower) / 2;
+            if (segments[middle].Start < value) lower = middle + 1;
+            else upper = middle;
+        }
+        return lower;
+    }
+
+    private static int LowerBoundPrefixEnd(double[] prefixEnd, double value)
+    {
+        var lower = 0;
+        var upper = prefixEnd.Length;
+        while (lower < upper)
+        {
+            var middle = lower + (upper - lower) / 2;
+            if (prefixEnd[middle] <= value) lower = middle + 1;
+            else upper = middle;
+        }
+        return lower;
     }
 
     public static string SourceKey(string sourcePath, long size, long lastWriteUtcTicks, double duration, string modelRevision)
@@ -212,6 +297,7 @@ public static class EditorSpeechAnalysisDocument
 
     private static double Midpoint(double start, double end) => start + (end - start) * .5;
     private static double Overlap(double a0, double a1, double b0, double b1) => Math.Max(0, Math.Min(a1, b1) - Math.Max(a0, b0));
+    private sealed record IndexedWord(double Midpoint, EditorWordTiming Word);
     private static async Task<string> Sha256Async(string path, CancellationToken cancellationToken)
     {
         await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1024 * 1024,

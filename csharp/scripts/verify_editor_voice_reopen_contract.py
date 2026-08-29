@@ -101,7 +101,7 @@ require("VoiceTrack = track with { Path = trackPath, Gain = Math.Clamp(track.Gai
 restore = editor.split("private async Task RestoreSpeechAndVoiceAsync()", 1)[1].split(
     "private async Task RefreshSpeechTimingForSubtitleAsync", 1
 )[0]
-require("_cueSpeechTiming = [];" in restore and "_voiceTrack = null;" in restore,
+require("_cueSpeechTiming = [];" in restore and "ClearVoiceTrackState();" in restore,
         "VOICE-15 reopen must clear runtime owners before validating persisted state")
 require("_project?.Speech is not { Status: \"complete\" } speech" in restore,
         "VOICE-15 a voice is not restorable when its Whisper timing owner is unavailable")
@@ -113,6 +113,8 @@ require("_project.Tts is { Status: \"complete\" } tts && File.Exists(tts.VoiceTr
         "VOICE-15 only a complete normalized TTS project may become runtime voice")
 require("_voiceTrack = tts.VoiceTrack;" in restore,
         "VOICE-15 valid reopened TTS must repopulate the runtime voice owner")
+require("_voiceCueWindows = (tts.CueWindows ?? [])" in restore,
+        "VOICE-15 reopen must restore the worker-selected cue windows used by preview")
 require("Preview/Export dùng cùng track" in restore,
         "VOICE-15 UI must report that the restored track is the shared Preview/Export owner")
 require("StartEditorTts" not in restore and "Generate" not in restore,

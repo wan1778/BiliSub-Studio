@@ -35,7 +35,7 @@ public sealed partial class EditorPage
         var key = available
             ? string.Join('|', Path.GetFullPath(track!.Path), track.Start.ToString("R"), track.Duration.ToString("R"),
                 _project?.Tts?.ManifestSha256 ?? string.Empty, _project?.Speech?.AnalysisSha256 ?? string.Empty,
-                subtitle!.Sha256, subtitle.Cues.Count, _cueSpeechTiming.Count)
+                subtitle!.Sha256, subtitle.Cues.Count, _cueSpeechTiming.Count, _voiceCueWindows.Count)
             : string.Empty;
 
         VoiceCuePreviewList.IsEnabled = available && !EditorBusy && !_playback.IsPreviewMode;
@@ -59,8 +59,12 @@ public sealed partial class EditorPage
         var rows = new List<VoiceCuePreviewItem>(subtitle!.Cues.Count);
         foreach (var cue in subtitle.Cues)
         {
-            if (!timings.TryGetValue(cue.Id, out var timing)) continue;
-            var row = CreateVoiceCuePreviewItem(cue, timing, track!);
+            VoiceCuePreviewItem? row;
+            if (_voiceCueWindows.TryGetValue(cue.Id, out var actualWindow))
+                row = CreateVoiceCuePreviewItem(cue, actualWindow, track!);
+            else if (timings.TryGetValue(cue.Id, out var timing))
+                row = CreateVoiceCuePreviewItem(cue, timing, track!);
+            else continue;
             if (row is not null) rows.Add(row);
         }
 
@@ -86,6 +90,19 @@ public sealed partial class EditorPage
         var fallback = timing.Words.Count == 0;
         var voiceStart = fallback ? cue.Start : Math.Max(cue.Start, timing.Words.Min(word => word.Start));
         var voiceEnd = fallback ? cue.End : Math.Min(cue.End, timing.Words.Max(word => word.End));
+        return CreateVoiceCuePreviewItem(cue,
+            new EditorTtsCueWindow(cue.Id, voiceStart, voiceEnd, fallback ? "srt-fallback" : "whisper", "review"),
+            track);
+    }
+
+    private static VoiceCuePreviewItem? CreateVoiceCuePreviewItem(
+        EditorSubtitleCue cue,
+        EditorTtsCueWindow window,
+        EditorVoiceTrack track)
+    {
+        if (!string.Equals(window.Id, cue.Id, StringComparison.Ordinal)) return null;
+        var voiceStart = window.VoiceStart;
+        var voiceEnd = window.VoiceEnd;
         if (!double.IsFinite(voiceStart) || !double.IsFinite(voiceEnd) || voiceEnd <= voiceStart
             || Math.Round(voiceEnd * 22050) <= Math.Round(voiceStart * 22050))
             return null;
@@ -102,7 +119,9 @@ public sealed partial class EditorPage
             cue.Id,
             $"{cue.Number}. {text.Trim()}",
             $"{FormatVoiceCueTime(voiceStart)} → {FormatVoiceCueTime(voiceStart + duration)}",
-            fallback ? $"Đọc {duration:0.###} giây · theo timecode SRT" : $"Đọc {duration:0.###} giây",
+            window.TimingSource == "srt-fallback"
+                ? $"Đọc {duration:0.###} giây · theo timecode SRT"
+                : $"Đọc {duration:0.###} giây",
             sourceStart,
             duration);
     }

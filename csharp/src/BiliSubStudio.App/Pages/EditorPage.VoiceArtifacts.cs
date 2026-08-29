@@ -100,7 +100,7 @@ public sealed partial class EditorPage
         _voiceArtifactRecoveryRunning = true;
         try
         {
-            _voiceTrack = null;
+            ClearVoiceTrackState();
             if (speechCacheMissing)
             {
                 _cueSpeechTiming = [];

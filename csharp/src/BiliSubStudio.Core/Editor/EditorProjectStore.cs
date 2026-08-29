@@ -55,7 +55,8 @@ public sealed record EditorTtsProject(
     string ManifestSha256,
     EditorVoiceTrack VoiceTrack,
     int CueCount,
-    int ReviewCount);
+    int ReviewCount,
+    IReadOnlyList<EditorTtsCueWindow>? CueWindows = null);
 
 public sealed record EditorSubtitleProject(
     string SourcePath,
@@ -479,9 +480,10 @@ public sealed class EditorProjectStore
             || !double.IsFinite(track.Duration) || track.Duration <= 0 || !double.IsFinite(track.Gain) || track.Gain is < 0 or > 4)
             return null;
         var trackPath = Path.GetFullPath(track.Path.Trim());
+        var cueWindows = NormalizeTtsCueWindows(tts.CueWindows, tts.CueCount, track.Start, track.Duration);
         if (status == "complete" && (manifest.Length == 0 || !File.Exists(manifest) || !FileShaMatches(manifest, tts.ManifestSha256)
             || !File.Exists(trackPath) || new FileInfo(trackPath).Length <= 64
-            || !TtsManifestMatches(manifest, trackPath))) return null;
+            || cueWindows is null || !TtsManifestMatches(manifest, trackPath, cueWindows))) return null;
         return tts with
         {
             Status = status,
@@ -492,10 +494,41 @@ public sealed class EditorProjectStore
             ManifestPath = manifest,
             ManifestSha256 = tts.ManifestSha256.ToLowerInvariant(),
             VoiceTrack = track with { Path = trackPath, Gain = Math.Clamp(track.Gain, 0, 4) },
+            CueWindows = cueWindows,
         };
     }
 
-    private static bool TtsManifestMatches(string manifest, string trackPath)
+    private static IReadOnlyList<EditorTtsCueWindow>? NormalizeTtsCueWindows(
+        IReadOnlyList<EditorTtsCueWindow>? windows,
+        int cueCount,
+        double trackStart,
+        double trackDuration)
+    {
+        if (windows is null) return null;
+        if (windows.Count != cueCount) throw new InvalidDataException("Project Editor thiếu cửa sổ timing voice.");
+        var trackEnd = trackStart + trackDuration;
+        var ids = new HashSet<string>(StringComparer.Ordinal);
+        var result = new EditorTtsCueWindow[windows.Count];
+        for (var index = 0; index < windows.Count; index++)
+        {
+            var window = windows[index];
+            var id = window.Id?.Trim() ?? string.Empty;
+            var timingSource = window.TimingSource?.Trim().ToLowerInvariant() ?? string.Empty;
+            var status = window.Status?.Trim().ToLowerInvariant() ?? string.Empty;
+            if (id.Length == 0 || !ids.Add(id)
+                || !double.IsFinite(window.VoiceStart) || !double.IsFinite(window.VoiceEnd)
+                || window.VoiceStart < trackStart || window.VoiceEnd <= window.VoiceStart || window.VoiceEnd > trackEnd + .001
+                || timingSource is not ("whisper" or "srt-fallback") || status is not ("fit" or "review"))
+                throw new InvalidDataException("Project Editor chứa cửa sổ timing voice không hợp lệ.");
+            result[index] = window with { Id = id, TimingSource = timingSource, Status = status };
+        }
+        return result;
+    }
+
+    private static bool TtsManifestMatches(
+        string manifest,
+        string trackPath,
+        IReadOnlyList<EditorTtsCueWindow> cueWindows)
     {
         try
         {
@@ -503,10 +536,27 @@ public sealed class EditorProjectStore
             using var json = JsonDocument.Parse(File.ReadAllText(manifest));
             var root = json.RootElement;
             var master = root.GetProperty("master");
-            return root.GetProperty("schema").GetInt32() == 2
-                && root.GetProperty("voice_revision").GetString() == LocalTtsInstaller.VoiceRevision
-                && string.Equals(Path.GetFullPath(master.GetProperty("path").GetString()!), trackPath, StringComparison.OrdinalIgnoreCase)
-                && FileShaMatches(trackPath, master.GetProperty("sha256").GetString()!);
+            if (root.GetProperty("schema").GetInt32() != 2
+                || root.GetProperty("sample_rate").GetInt32() != 22050
+                || root.GetProperty("voice_revision").GetString() != LocalTtsInstaller.VoiceRevision
+                || !string.Equals(Path.GetFullPath(master.GetProperty("path").GetString()!), trackPath, StringComparison.OrdinalIgnoreCase)
+                || !FileShaMatches(trackPath, master.GetProperty("sha256").GetString()!)) return false;
+            var cues = root.GetProperty("cues").EnumerateArray().ToArray();
+            if (cues.Length != cueWindows.Count) return false;
+            for (var index = 0; index < cues.Length; index++)
+            {
+                var cue = cues[index];
+                var window = cueWindows[index];
+                var startSample = cue.GetProperty("clip_start_sample").GetInt64();
+                var targetFrames = cue.GetProperty("target_frames").GetInt64();
+                if (cue.GetProperty("id").GetString() != window.Id
+                    || cue.GetProperty("timing_source").GetString() != window.TimingSource
+                    || cue.GetProperty("status").GetString() != window.Status
+                    || Math.Abs(window.VoiceStart - startSample / 22050d) > .5 / 22050
+                    || Math.Abs(window.VoiceEnd - (startSample + targetFrames) / 22050d) > .5 / 22050)
+                    return false;
+            }
+            return true;
         }
         catch (Exception error) when (error is IOException or JsonException or InvalidOperationException or KeyNotFoundException or ArgumentException)
         {

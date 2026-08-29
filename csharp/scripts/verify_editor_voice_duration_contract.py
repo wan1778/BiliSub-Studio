@@ -104,6 +104,16 @@ class VoiceDurationContract(unittest.TestCase):
             with self.assertRaises(ValueError):
                 worker.validate_manifest(manifest | {"cues": [self.cue() | change]}, worker.VOICE_NAME)
 
+    def test_failed_whisper_window_has_one_explicit_full_srt_fallback(self):
+        cue = self.cue()
+        fallback = worker.srt_fallback_cue(cue)
+        self.assertEqual(fallback["voice_start"], cue["cue_start"])
+        self.assertEqual(fallback["voice_end"], cue["cue_end"])
+        self.assertEqual(fallback["timing_source"], "srt-fallback")
+        self.assertNotEqual(worker.cache_identity(cue, cue["text"], "worker-sha"),
+                            worker.cache_identity(fallback, cue["text"], "worker-sha"))
+        self.assertIsNone(worker.srt_fallback_cue(fallback))
+
     def test_production_uses_native_whole_cue_retries_not_audio_speed_filters(self):
         fit = inspect.getsource(worker.fit_cue)
         self.assertIn("range(1, MAX_SYNTHESIS_ATTEMPTS + 1)", fit)
@@ -123,9 +133,10 @@ class VoiceDurationContract(unittest.TestCase):
         main = inspect.getsource(worker.main)
         self.assertIn('end_sample = start_sample + record["frames"]', main)
         self.assertNotIn("end_sample = min(", main)
-        self.assertIn('"synthesis_calls": 0 if cache_hit else record["synthesis_attempts"]', main)
+        self.assertIn('candidate_cues.append(fallback)', main)
+        self.assertIn('"synthesis_calls": synthesis_calls', main)
         self.assertIn('"event": "attempt"', main)
-        self.assertEqual(worker.TIMING_ALGORITHM, "whole-cue-piper-rate-v5")
+        self.assertEqual(worker.TIMING_ALGORITHM, "whole-cue-piper-rate-v6")
         self.assertIn("biên giữ chất giọng 0,85–1,20×", source)
         self.assertIn('cue["timing_source"] == "srt-fallback"', source)
         self.assertIn('output_status = "review"', source)
@@ -137,14 +148,14 @@ class VoiceDurationContract(unittest.TestCase):
         self.assertIn("await HashAsync(cue.ClipPath, cancellationToken) != cue.ClipSha256", service)
         self.assertIn("ValidateNativeSynthesis(cue, targetFrames, naturalSample, expectedSampleRate)", service)
         self.assertIn('fallback ? "srt-fallback" : "whisper"', service)
-        self.assertIn('expected.TimingSource == "srt-fallback"', service)
+        self.assertIn('expected.TimingSource == "whisper" && cue.TimingSource == "srt-fallback"', service)
         self.assertIn('kind == "attempt"', service)
         self.assertIn("(index - 1) / (double)total * 53", service)
         timing = (ROOT / "csharp/src/BiliSubStudio.Core/Editor/LocalTtsService.Timing.cs").read_text(encoding="utf-8")
         self.assertIn("relativeScale is < .85 or > 1.20", timing)
         self.assertIn("return relativeScale is < .90 or > 1.15;", timing)
         installer = (ROOT / "csharp/src/BiliSubStudio.Core/Editor/LocalTtsInstaller.cs").read_text(encoding="utf-8")
-        self.assertIn('TimingAlgorithm = "whole-cue-piper-rate-v5"', installer)
+        self.assertIn('TimingAlgorithm = "whole-cue-piper-rate-v6"', installer)
 
 
 if __name__ == "__main__":

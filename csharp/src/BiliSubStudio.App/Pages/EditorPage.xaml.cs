@@ -39,6 +39,8 @@ public sealed partial class EditorPage : Page
     private string? _ttsJobId;
     private IReadOnlyList<EditorCueSpeechTiming> _cueSpeechTiming = [];
     private EditorVoiceTrack? _voiceTrack;
+    private IReadOnlyDictionary<string, EditorTtsCueWindow> _voiceCueWindows =
+        new Dictionary<string, EditorTtsCueWindow>(StringComparer.Ordinal);
     private bool _syncingTimeline;
     private bool _syncingInputs;
     private bool _syncingList;
@@ -58,6 +60,12 @@ public sealed partial class EditorPage : Page
     private bool _projectSaveFlushInProgress;
     private int _previewRevision;
     private bool EditorBusy => _jobId is not null || _asrJobId is not null || _ttsJobId is not null || _playback.IsRendering;
+
+    private void ClearVoiceTrackState()
+    {
+        _voiceTrack = null;
+        _voiceCueWindows = new Dictionary<string, EditorTtsCueWindow>(StringComparer.Ordinal);
+    }
 
     public EditorPage(BiliSubApplication application, IFilePickerService picker)
     {
@@ -372,7 +380,7 @@ public sealed partial class EditorPage : Page
                     },
                     Tts = null,
                 };
-                _voiceTrack = null;
+                ClearVoiceTrackState();
             }
             _subtitlePlacement = saved.Placement ?? EditorSubtitlePlacement.Default;
             _syncingVoice = true;
@@ -394,7 +402,7 @@ public sealed partial class EditorPage : Page
     private async Task RestoreSpeechAndVoiceAsync()
     {
         _cueSpeechTiming = [];
-        _voiceTrack = null;
+        ClearVoiceTrackState();
         if (_project?.Speech is not { Status: "complete" } speech)
         {
             AsrStatusText.Text = "Whisper chưa phân tích video. Vào Âm thanh để lấy word timing và khoảng lặng.";
@@ -417,6 +425,8 @@ public sealed partial class EditorPage : Page
         if (_project.Tts is { Status: "complete" } tts && File.Exists(tts.VoiceTrack.Path))
         {
             _voiceTrack = tts.VoiceTrack;
+            _voiceCueWindows = (tts.CueWindows ?? [])
+                .ToDictionary(window => window.Id, StringComparer.Ordinal);
             VoiceStatusText.Text = tts.ReviewCount == 0
                 ? $"Voice Việt local đã sẵn sàng · {tts.CueCount} câu · Preview/Export dùng cùng track."
                 : $"Voice Việt local đã sẵn sàng · {tts.CueCount} câu · {tts.ReviewCount} câu cần xem lại.";
@@ -482,7 +492,7 @@ public sealed partial class EditorPage : Page
         if (_project is not null)
         {
             // SUB-03 / PROJECT-06: a new SRT invalidates TTS and cue-keyed voice overrides from the old SRT.
-            _voiceTrack = null;
+            ClearVoiceTrackState();
             _project = _project with
             {
                 Tts = null,
@@ -574,7 +584,7 @@ public sealed partial class EditorPage : Page
             {
                 if (snapshot.Result is EditorAsrResult result && _project is not null)
                 {
-                    _voiceTrack = null;
+                    ClearVoiceTrackState();
                     _project = _project with
                     {
                         Asr = null,
@@ -684,6 +694,7 @@ public sealed partial class EditorPage : Page
                 {
                     EnsureCurrentSubtitleFingerprint();
                     _voiceTrack = result.VoiceTrack;
+                    _voiceCueWindows = result.CueWindows.ToDictionary(window => window.Id, StringComparer.Ordinal);
                     _project = _project with
                     {
                         Tts = new EditorTtsProject(
@@ -696,7 +707,8 @@ public sealed partial class EditorPage : Page
                             result.ManifestSha256,
                             result.VoiceTrack,
                             result.Cues.Count,
-                            result.ReviewCount),
+                            result.ReviewCount,
+                            result.CueWindows),
                     };
                     VoiceStatusText.Text = result.ReviewCount == 0
                         ? $"Voice Việt hoàn tất · {result.Cues.Count} câu khớp thời lượng thoại gốc · đã vào Xem bản chỉnh."
