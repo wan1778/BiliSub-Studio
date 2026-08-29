@@ -186,14 +186,18 @@ internal static class EditorLicensedVoiceProfileContract
         var fixture = new Dictionary<string, object>
         {
             ["fit_method"] = "piper-length-scale", ["raw_duration"] = 2.4, ["frames"] = 44100L,
-            ["generated_frames"] = 43800L, ["padding_frames"] = 300L, ["base_length_scale"] = 1d,
+            ["source_frames"] = 43800L, ["generated_frames"] = 43800L,
+            ["trimmed_silence_frames"] = 0L, ["padding_frames"] = 300L, ["base_length_scale"] = 1d,
             ["length_scale"] = .95, ["synthesis_attempts"] = 2, ["synthesis_calls"] = 2, ["cache_hit"] = false,
         };
         object Cue(Dictionary<string, object> values) => System.Text.Json.JsonSerializer.Deserialize(
             System.Text.Json.JsonSerializer.Serialize(values), cueType, json)!;
         Equal(false, validate.Invoke(null, [Cue(fixture), 44100L, false, 22050]));
         Equal(true, validate.Invoke(null, [Cue(new(fixture) { ["length_scale"] = .88 }), 44100L, false, 22050]));
-        Equal(true, validate.Invoke(null, [Cue(new(fixture) { ["generated_frames"] = 43100L, ["padding_frames"] = 1000L }), 44100L, false, 22050]));
+        Equal(true, validate.Invoke(null, [Cue(new(fixture) { ["source_frames"] = 43100L,
+            ["generated_frames"] = 43100L, ["padding_frames"] = 1000L }), 44100L, false, 22050]));
+        Equal(true, validate.Invoke(null, [Cue(new(fixture) { ["source_frames"] = 45000L,
+            ["generated_frames"] = 44100L, ["trimmed_silence_frames"] = 900L, ["padding_frames"] = 0L }), 44100L, false, 22050]));
         Equal(false, validate.Invoke(null, [Cue(new(fixture) { ["synthesis_calls"] = 12 }), 44100L, false, 22050]));
         Equal(false, validate.Invoke(null, [Cue(new(fixture) { ["cache_hit"] = true, ["synthesis_calls"] = 0 }), 44100L, false, 22050]));
         var invalid = new Dictionary<string, object>[]
@@ -201,6 +205,7 @@ internal static class EditorLicensedVoiceProfileContract
             new(fixture) { ["fit_method"] = "atempo" },
             new(fixture) { ["generated_frames"] = 0L, ["padding_frames"] = 44100L },
             new(fixture) { ["generated_frames"] = 43700L },
+            new(fixture) { ["source_frames"] = 45000L, ["trimmed_silence_frames"] = 899L },
             new(fixture) { ["base_length_scale"] = 0d },
             new(fixture) { ["length_scale"] = .84 },
             new(fixture) { ["synthesis_attempts"] = 11, ["synthesis_calls"] = 11 },

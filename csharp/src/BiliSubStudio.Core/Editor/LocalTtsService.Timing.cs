@@ -10,16 +10,19 @@ internal sealed partial class LocalTtsService
         var relativeScale = cue.LengthScale / cue.BaseLengthScale;
         if (cue.FitMethod != "piper-length-scale" || !double.IsFinite(cue.BaseLengthScale) || cue.BaseLengthScale <= 0
             || !double.IsFinite(cue.LengthScale) || !double.IsFinite(relativeScale) || relativeScale is < .85 or > 1.20
-            || cue.GeneratedFrames <= 0 || cue.GeneratedFrames > cue.Frames
+            || cue.SourceFrames <= 0 || cue.GeneratedFrames <= 0 || cue.GeneratedFrames > cue.Frames
+            || cue.TrimmedSilenceFrames < 0 || cue.TrimmedSilenceFrames >= cue.SourceFrames
+            || cue.SourceFrames - cue.TrimmedSilenceFrames != cue.GeneratedFrames
             || cue.PaddingFrames < 0 || cue.PaddingFrames >= targetFrames || cue.GeneratedFrames != cue.Frames - cue.PaddingFrames
             || cue.SynthesisAttempts is < 1 or > 10
             || (cue.CacheHit ? cue.SynthesisCalls != 0
                 : cue.SynthesisCalls < cue.SynthesisAttempts || cue.SynthesisCalls > cue.SynthesisAttempts + 10)
             || (cue.SynthesisAttempts == 1 && (cue.LengthScale != cue.BaseLengthScale
-                || Math.Abs(cue.RawDuration - cue.GeneratedFrames / (double)sampleRate) > 1e-9))
-            || (naturalSample && (cue.PaddingFrames != 0 || cue.SynthesisAttempts != 1)))
+                || Math.Abs(cue.RawDuration - cue.SourceFrames / (double)sampleRate) > 1e-9))
+            || (naturalSample && (cue.TrimmedSilenceFrames != 0 || cue.PaddingFrames != 0 || cue.SynthesisAttempts != 1)))
             throw new InvalidDataException("Voice không có metadata nhịp đọc Piper hợp lệ; không nhận master này.");
-        return relativeScale is < .90 or > 1.15 || cue.PaddingFrames > precisionPaddingBudget;
+        return relativeScale is < .90 or > 1.15 || cue.TrimmedSilenceFrames > 0
+            || cue.PaddingFrames > precisionPaddingBudget;
     }
 
     // Verify PCM frame count from the actual WAV, not only the worker's duration.

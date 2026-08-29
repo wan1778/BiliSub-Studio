@@ -15,12 +15,14 @@ ENGINE = "nghi-tts"
 ENGINE_VERSION = "nghi-tts-1.0.0"
 MODEL_SHA256 = "2140977786d76d834736c059dacfa553d4931dac2b2c7aaaea438bb2aa9da697"
 CONFIG_SHA256 = "971f57f8d504223fee5b40d664f503cf769baf7db21f7d2ae0554a75d07de2f8"
-TIMING_ALGORITHM = "whole-cue-piper-rate-v7"
+TIMING_ALGORITHM = "whole-cue-piper-rate-v8"
 VOICE_REVISION = MODEL_SHA256 + ":" + CONFIG_SHA256 + ":" + TIMING_ALGORITHM
 VOICE_NAME = "ngoc_huyen"
 SAMPLE_RATE = 22050
 FIT_METHOD = "piper-length-scale"
 MAX_SYNTHESIS_ATTEMPTS = 10
+SILENCE_AMPLITUDE = 32
+SILENCE_GUARD_FRAMES = round(.05 * SAMPLE_RATE)
 # Preserve Vietnamese voice identity instead of forcing arbitrary slots. Rates
 # outside the preferred range are review-only; rates outside the accepted range
 # fail closed and require shorter SRT text or a wider source timecode.
@@ -99,18 +101,22 @@ def needs_rate_review(length_scale: float, base_length_scale: float) -> bool:
 
 def native_record_valid(record: dict, target_frames: int, natural_sample: bool) -> bool:
     base, scale = record["base_length_scale"], record["length_scale"]
-    generated, padding, attempts = record["generated_frames"], record["padding_frames"], record["synthesis_attempts"]
+    source, generated = record["source_frames"], record["generated_frames"]
+    trimmed, padding = record["trimmed_silence_frames"], record["padding_frames"]
+    attempts = record["synthesis_attempts"]
     if (record["fit_method"] != FIT_METHOD or not math.isfinite(base) or base <= 0
             or not math.isfinite(scale) or not MIN_RATE_SCALE <= scale / base <= MAX_RATE_SCALE
-            or type(generated) is not int or generated <= 0 or type(padding) is not int
+            or type(source) is not int or source <= 0 or type(generated) is not int or generated <= 0
+            or type(trimmed) is not int or not 0 <= trimmed < source or source - trimmed != generated
+            or type(padding) is not int
             or not 0 <= padding < target_frames or generated + padding != record["frames"]
             or not natural_sample and record["frames"] != target_frames
             or type(attempts) is not int or not 1 <= attempts <= MAX_SYNTHESIS_ATTEMPTS):
         return False
-    if (attempts == 1 and (scale != base or abs(record["raw_duration"] - generated / SAMPLE_RATE) > 1e-9)
-            or natural_sample and (padding != 0 or attempts != 1)):
+    if (attempts == 1 and (scale != base or abs(record["raw_duration"] - source / SAMPLE_RATE) > 1e-9)
+            or natural_sample and (trimmed != 0 or padding != 0 or attempts != 1)):
         return False
-    needs_review = needs_rate_review(scale, base) or padding > padding_budget(target_frames)
+    needs_review = needs_rate_review(scale, base) or trimmed > 0 or padding > padding_budget(target_frames)
     return record["status"] == ("review" if needs_review else "fit")
 
 
@@ -178,6 +184,27 @@ def pad_exact_clip(source_path: Path, output_path: Path, target_frames: int):
             output.writeframes(b"\0\0" * (target_frames - frames))
 
 
+def trim_trailing_silence_to_fit(source_path: Path, output_path: Path, target_frames: int) -> int:
+    # Piper may append sentence-final silence after punctuation. Remove it only
+    # when every sample beyond the target is below -60 dBFS and the target keeps
+    # an additional 50 ms guard after the final active sample.
+    import numpy as np
+    with wave.open(str(source_path), "rb") as source:
+        frames = source.getnframes()
+        data = source.readframes(frames)
+        params = source.getparams()
+    if frames <= target_frames or target_frames <= 0 or len(data) != frames * 2:
+        return 0
+    samples = np.frombuffer(data, dtype="<i2").astype(np.int32)
+    active = np.flatnonzero(np.abs(samples) > SILENCE_AMPLITUDE)
+    if len(active) == 0 or int(active[-1]) + 1 + SILENCE_GUARD_FRAMES > target_frames:
+        return 0
+    with wave.open(str(output_path), "wb") as output:
+        output.setparams(params)
+        output.writeframes(data[:target_frames * 2])
+    return frames - target_frames
+
+
 def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str, timing_source: str, on_attempt):
     if target_frames <= 0:
         raise ValueError("Source speech duration must contain at least one sample")
@@ -189,19 +216,23 @@ def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str, timi
     aim_frames = max(1, target_frames - padding_budget(target_frames) // 2)
     lower, upper = None, None
     candidate = run_root / (key + "-native.wav")
+    silence_fitted = run_root / (key + "-silence-fit.wav")
     final_path = run_root / (key + "-fit.wav")
     for attempt in range(1, MAX_SYNTHESIS_ATTEMPTS + 1):
         on_attempt(attempt, scale)
         synthesize_cue(voice, text, candidate, scale)
-        frames = len(read_wav(candidate))
+        source_frames = len(read_wav(candidate))
         if attempt == 1:
-            raw_frames = frames
+            raw_frames = source_frames
+        trimmed_silence = trim_trailing_silence_to_fit(candidate, silence_fitted, target_frames)
+        frames = source_frames - trimmed_silence
+        fitted_source = silence_fitted if trimmed_silence else candidate
         natural_sample = timing_source == "sample" and attempt == 1 and frames <= target_frames
         if natural_sample or frames <= target_frames:
             padding = 0 if natural_sample else target_frames - frames
-            output_path = candidate
+            output_path = fitted_source
             if padding:
-                pad_exact_clip(candidate, final_path, target_frames)
+                pad_exact_clip(fitted_source, final_path, target_frames)
                 output_path = final_path
             output_frames = len(read_wav(output_path))
             if output_frames != frames + padding:
@@ -209,9 +240,11 @@ def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str, timi
             record = {"raw_duration": raw_frames / SAMPLE_RATE, "fitted_duration": output_frames / SAMPLE_RATE,
                       "frames": output_frames, "target_frames": target_frames, "timing_source": timing_source,
                       "fit_method": FIT_METHOD, "base_length_scale": base, "length_scale": scale,
-                      "generated_frames": frames, "padding_frames": padding, "synthesis_attempts": attempt,
+                      "source_frames": source_frames, "generated_frames": frames,
+                      "trimmed_silence_frames": trimmed_silence, "padding_frames": padding,
+                      "synthesis_attempts": attempt,
                       "status": "review" if needs_rate_review(scale, base)
-                      or padding > padding_budget(target_frames) else "fit"}
+                      or trimmed_silence or padding > padding_budget(target_frames) else "fit"}
             return output_path, record
         if frames > target_frames:
             upper = scale if upper is None else min(upper, scale)
@@ -439,7 +472,9 @@ def main() -> int:
                         "clipped": False, "timing_source": active_cue["timing_source"], "target_frames": target_frames,
                         "frames": record["frames"], "clip_start_sample": start_sample, "clip_end_sample": end_sample,
                         "fit_method": record["fit_method"], "base_length_scale": record["base_length_scale"],
-                        "length_scale": record["length_scale"], "generated_frames": record["generated_frames"],
+                        "length_scale": record["length_scale"], "source_frames": record["source_frames"],
+                        "generated_frames": record["generated_frames"],
+                        "trimmed_silence_frames": record["trimmed_silence_frames"],
                         "padding_frames": record["padding_frames"], "synthesis_attempts": record["synthesis_attempts"],
                         "synthesis_calls": synthesis_calls})
         emit({"event": "cue", "index": index + 1, "total": len(cues), "id": cue["id"],

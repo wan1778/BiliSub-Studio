@@ -52,19 +52,26 @@ class VoiceDurationContract(unittest.TestCase):
 
     def test_native_metadata_keeps_whole_speech_and_reviews_long_tail_silence(self):
         record = {"fit_method": "piper-length-scale", "raw_duration": 2.4, "frames": 44100,
-                  "generated_frames": 43800, "padding_frames": 300, "base_length_scale": 1,
+                  "source_frames": 43800, "generated_frames": 43800,
+                  "trimmed_silence_frames": 0, "padding_frames": 300, "base_length_scale": 1,
                   "length_scale": .95, "synthesis_attempts": 2, "status": "fit"}
         self.assertTrue(worker.native_record_valid(record, 44100, False))
         self.assertTrue(worker.native_record_valid(record | {"length_scale": .88, "status": "review"}, 44100, False))
-        long_tail = record | {"padding_frames": 1000, "generated_frames": 43100, "status": "review"}
+        long_tail = record | {"source_frames": 43100, "padding_frames": 1000,
+                              "generated_frames": 43100, "status": "review"}
         self.assertTrue(worker.native_record_valid(long_tail, 44100, False))
         self.assertFalse(worker.native_record_valid(long_tail | {"status": "fit"}, 44100, False))
+        trimmed_tail = record | {"source_frames": 45000, "generated_frames": 44100,
+                                 "trimmed_silence_frames": 900, "padding_frames": 0,
+                                 "status": "review"}
+        self.assertTrue(worker.native_record_valid(trimmed_tail, 44100, False))
         for change in ({"fit_method": "atempo"}, {"padding_frames": 44100, "generated_frames": 0},
                        {"generated_frames": 43700}, {"base_length_scale": 0}, {"length_scale": .84},
                        {"length_scale": float("nan")}, {"synthesis_attempts": 0}, {"synthesis_attempts": 11},
                        {"synthesis_attempts": 1}, {"status": "review"}):
             self.assertFalse(worker.native_record_valid(record | change, 44100, False))
-        sample = record | {"raw_duration": 2, "generated_frames": 44100, "padding_frames": 0,
+        sample = record | {"raw_duration": 2, "source_frames": 44100, "generated_frames": 44100,
+                           "trimmed_silence_frames": 0, "padding_frames": 0,
                            "length_scale": 1, "synthesis_attempts": 1}
         self.assertTrue(worker.native_record_valid(sample, 220500, True))
         self.assertFalse(worker.native_record_valid(sample | {"synthesis_attempts": 2}, 220500, True))
@@ -91,6 +98,27 @@ class VoiceDurationContract(unittest.TestCase):
             with wave.open(str(long_tail), "rb") as source:
                 self.assertEqual(source.getnframes(), 44100)
                 self.assertEqual(source.readframes(4), pcm)
+
+    def test_only_trailing_silence_beyond_guard_can_be_trimmed(self):
+        guard = worker.SILENCE_GUARD_FRAMES
+        with tempfile.TemporaryDirectory(prefix="bilisub-silence-trim-") as directory:
+            raw, fitted = Path(directory) / "raw.wav", Path(directory) / "fitted.wav"
+            target = guard + 4
+            pcm = b"\xff\x7f" * 4 + b"\0\0" * (target + 100)
+            with wave.open(str(raw), "wb") as output:
+                output.setparams((1, 2, worker.SAMPLE_RATE, 0, "NONE", "not compressed"))
+                output.writeframes(pcm)
+            self.assertEqual(worker.trim_trailing_silence_to_fit(raw, fitted, target), 104)
+            with wave.open(str(fitted), "rb") as source:
+                self.assertEqual(source.getnframes(), target)
+                self.assertEqual(source.readframes(4), b"\xff\x7f" * 4)
+
+            unsafe = Path(directory) / "unsafe.wav"
+            unsafe_pcm = b"\0\0" * target + b"\xff\x7f" + b"\0\0" * 99
+            with wave.open(str(unsafe), "wb") as output:
+                output.setparams((1, 2, worker.SAMPLE_RATE, 0, "NONE", "not compressed"))
+                output.writeframes(unsafe_pcm)
+            self.assertEqual(worker.trim_trailing_silence_to_fit(unsafe, fitted, target), 0)
 
     def test_changed_whisper_window_invalidates_same_srt_cache(self):
         cue = self.cue()
@@ -141,7 +169,8 @@ class VoiceDurationContract(unittest.TestCase):
         self.assertIn('candidate_cues.append(fallback)', main)
         self.assertIn('"synthesis_calls": synthesis_calls', main)
         self.assertIn('"event": "attempt"', main)
-        self.assertEqual(worker.TIMING_ALGORITHM, "whole-cue-piper-rate-v7")
+        self.assertEqual(worker.TIMING_ALGORITHM, "whole-cue-piper-rate-v8")
+        self.assertIn("trim_trailing_silence_to_fit", fit)
         self.assertIn("biên giữ chất giọng 0,85–1,20×", source)
         self.assertIn('cue["timing_source"] == "srt-fallback"', source)
         self.assertIn('output_status = "review"', source)
@@ -160,7 +189,7 @@ class VoiceDurationContract(unittest.TestCase):
         self.assertIn("relativeScale is < .85 or > 1.20", timing)
         self.assertIn("cue.PaddingFrames > precisionPaddingBudget", timing)
         installer = (ROOT / "csharp/src/BiliSubStudio.Core/Editor/LocalTtsInstaller.cs").read_text(encoding="utf-8")
-        self.assertIn('TimingAlgorithm = "whole-cue-piper-rate-v7"', installer)
+        self.assertIn('TimingAlgorithm = "whole-cue-piper-rate-v8"', installer)
 
 
 if __name__ == "__main__":

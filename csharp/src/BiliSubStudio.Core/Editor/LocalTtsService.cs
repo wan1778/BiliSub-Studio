@@ -390,7 +390,8 @@ internal sealed partial class LocalTtsService : IDisposable
     private sealed record TtsWorkerCue(string Id, string Voice, bool VoiceReview, double RawDuration, double FittedDuration, string Status,
         string TimingSource, long TargetFrames, long Frames, long ClipStartSample, long ClipEndSample, bool? Clipped,
         string ClipPath, string ClipSha256, string FitMethod, double BaseLengthScale, double LengthScale,
-        long GeneratedFrames, long PaddingFrames, int SynthesisAttempts, int SynthesisCalls, bool CacheHit);
+        long SourceFrames, long GeneratedFrames, long TrimmedSilenceFrames, long PaddingFrames,
+        int SynthesisAttempts, int SynthesisCalls, bool CacheHit);
     private sealed record TtsWorkerTrack(string Path, double Start, double Duration, string Sha256);
     private sealed record TtsWorkerResult(int Schema, string Engine, string EngineVersion, string Voice, string VoiceRevision,
         IReadOnlyList<TtsWorkerCue> Cues, TtsWorkerTrack Master, int ReviewCount, int SampleRate);

@@ -141,13 +141,16 @@ internal static class EditorNghiTtsRuntimeContract
                     && !cues[index].GetProperty("clipped").GetBoolean(), "complete voice clip matches real source duration without tail clipping");
                 var attempts = cues[index].GetProperty("synthesis_attempts").GetInt32();
                 var frames = cues[index].GetProperty("frames").GetInt64();
+                var sourceFrames = cues[index].GetProperty("source_frames").GetInt64();
                 var generated = cues[index].GetProperty("generated_frames").GetInt64();
+                var trimmed = cues[index].GetProperty("trimmed_silence_frames").GetInt64();
                 var padding = cues[index].GetProperty("padding_frames").GetInt64();
                 var scale = cues[index].GetProperty("length_scale").GetDouble() / cues[index].GetProperty("base_length_scale").GetDouble();
                 var calls = cues[index].GetProperty("synthesis_calls").GetInt32();
                 Check(cues[index].GetProperty("fit_method").GetString() == "piper-length-scale"
                     && attempts is >= 1 and <= 10 && calls >= attempts && calls <= attempts + 10
-                    && scale is >= .85 and <= 1.20 && generated > 0 && generated + padding == frames
+                    && scale is >= .85 and <= 1.20 && sourceFrames > 0 && trimmed >= 0
+                    && sourceFrames - trimmed == generated && generated > 0 && generated + padding == frames
                     && padding >= 0 && padding < frames,
                     "native Piper rate/retry evidence and trailing silence only; no playback speed fitting");
                 File.Copy(clip, Path.Combine(paths.Root, $"sentence-{index + 1}.wav"), overwrite: true);
