@@ -47,7 +47,9 @@ require(sum(isinstance(c.func, ast.Attribute) and c.func.attr == "synthesize" fo
         "worker must use one whole-cue synthesize call site, reused for native-rate attempts")
 require("voice.synthesize(text, syn_config=syn_config)" in worker and
         "SynthesisConfig(length_scale=length_scale)" in worker,
-        "duration fitting must control Piper synthesis, not playback speed")
+        "primary duration fitting must control Piper synthesis")
+require("tempo_fit_clip" in worker and '"piper-atempo"' in worker and "atempo_filter(factor)" in worker,
+        "overlong cues must have a pitch-preserving complete-speech fallback instead of aborting the job")
 main = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "main")
 loop = next(node for node in ast.walk(main) if isinstance(node, ast.For)
             and "zip(cues, ordered_entries)" in ast.unparse(node.iter))

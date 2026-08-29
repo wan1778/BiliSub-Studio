@@ -149,12 +149,19 @@ internal static class EditorNghiTtsRuntimeContract
                 var timingSource = cues[index].GetProperty("timing_source").GetString();
                 var minimumScale = timingSource == "sentence-group" ? .45 : .85;
                 var calls = cues[index].GetProperty("synthesis_calls").GetInt32();
-                Check(cues[index].GetProperty("fit_method").GetString() == "piper-length-scale"
+                var fitMethod = cues[index].GetProperty("fit_method").GetString();
+                var nativeMetadata = fitMethod == "piper-length-scale" && sourceFrames - trimmed == generated;
+                var tempoMetadata = fitMethod == "piper-atempo"
+                    && cues[index].GetProperty("tempo_input_frames").GetInt64() == sourceFrames - trimmed
+                    && cues[index].GetProperty("tempo_factor").GetDouble() > 1
+                    && cues[index].GetProperty("tempo_attempts").GetInt32() is >= 1 and <= 12
+                    && generated <= sourceFrames - trimmed;
+                Check((nativeMetadata || tempoMetadata)
                     && attempts is >= 1 and <= 10 && calls >= attempts && calls <= attempts + 10
                     && scale >= minimumScale && scale <= 1.20 && sourceFrames > 0 && trimmed >= 0
-                    && sourceFrames - trimmed == generated && generated > 0 && generated + padding == frames
+                    && generated > 0 && generated + padding == frames
                     && padding >= 0 && padding < frames,
-                    "native Piper rate/retry evidence and trailing silence only; no playback speed fitting");
+                    "native Piper fit or complete-speech tempo fallback has verified frame metadata");
                 File.Copy(clip, Path.Combine(paths.Root, $"sentence-{index + 1}.wav"), overwrite: true);
             }
         }

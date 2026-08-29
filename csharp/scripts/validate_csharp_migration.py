@@ -847,8 +847,8 @@ for marker in (
 for retired in ("Kokoro", "synth_sine", "DummyModelBytes", "MirrorModelUrl"):
     require(retired not in tts_installer + tts_service + tts_worker,
             f"unverified/retired TTS returned to production: {retired}")
-require('TimingAlgorithm = "whole-cue-piper-sentence-group-v9"' in tts_installer
-        and 'TIMING_ALGORITHM = "whole-cue-piper-sentence-group-v9"' in tts_worker,
+require('TimingAlgorithm = "whole-cue-piper-tempo-fallback-v10"' in tts_installer
+        and 'TIMING_ALGORITHM = "whole-cue-piper-tempo-fallback-v10"' in tts_worker,
         "Whisper duration policy/cache identity drifted")
 for marker in ("LocalTtsInstaller.TimingAlgorithm", "BuildWholeCue", "GenerateSampleAsync", "OwnedProcessGroup",
                "SamePath(reportedResult, resultPath)", "await processes.StopAsync()"):
@@ -856,8 +856,10 @@ for marker in ("LocalTtsInstaller.TimingAlgorithm", "BuildWholeCue", "GenerateSa
 for marker in ("PiperVoice.load", "voice.synthesize(text, syn_config=syn_config)", "cache_identity", "sha256",
                "SynthesisConfig(length_scale=length_scale)", "voice-master.flac", '"event": "cue"', '"event": "block"'):
     require(marker in tts_worker, f"NGHI worker contract missing {marker}")
-for forbidden in ("atempo=", "asetrate=", "rubberband=", "atrim="):
+for forbidden in ("asetrate=", "rubberband=", "atrim="):
     require(forbidden not in tts_worker, f"post-synthesis speed/cut filter returned: {forbidden}")
+require('"piper-atempo"' in tts_worker and "tempo_fit_clip" in tts_worker,
+        "complete-speech tempo fallback is missing")
 
 main_xaml = read(CSHARP / "src/BiliSubStudio.App/MainWindow.xaml")
 main_code = read(CSHARP / "src/BiliSubStudio.App/MainWindow.xaml.cs")

@@ -185,6 +185,14 @@ internal sealed partial class LocalTtsService : IDisposable
                                 job.Set("tts-generate", 38 + index / (double)total * 53,
                                     $"Đang tạo voice nguyên câu · {index}/{total}...");
                             }
+                            else if (kind == "fallback")
+                            {
+                                var index = GetInt(root, "index");
+                                var total = Math.Max(1, GetInt(root, "total"));
+                                if (index >= 1 && index <= total)
+                                    job.Set("tts-generate", 38 + (index - 1) / (double)total * 53,
+                                        $"Cue {index}/{total} quá chật · đang nén nhịp có giữ cao độ để bảo toàn đủ lời...");
+                            }
                             else if (kind == "block")
                             {
                                 var total = Math.Max(1d, root.GetProperty("total").GetDouble());
@@ -219,7 +227,7 @@ internal sealed partial class LocalTtsService : IDisposable
                 job.CancellationToken.ThrowIfCancellationRequested();
                 job.Set("tts-final", 99, parsedResult.ReviewCount == 0
                     ? $"Voice Việt hoàn tất · {cueResults.Length} câu đã canh thời lượng, không cắt đuôi."
-                    : $"Voice Việt đã canh thời lượng · {parsedResult.ReviewCount} câu dùng nhịp model khác nhiều, cần nghe lại; không kéo tốc độ file.");
+                    : $"Voice Việt đã canh thời lượng · {parsedResult.ReviewCount} câu cần nghe lại; câu quá chật đã được nén nhịp nhưng giữ đủ lời.");
                 accepted = true;
                 return new EditorTtsResult(resultPath, manifestSha,
                     new EditorVoiceTrack(masterPath, 0, duration), cueResults, parsedResult.ReviewCount,
@@ -399,7 +407,8 @@ internal sealed partial class LocalTtsService : IDisposable
         string TimingSource, long TargetFrames, long Frames, long ClipStartSample, long ClipEndSample, bool? Clipped,
         string ClipPath, string ClipSha256, string FitMethod, double BaseLengthScale, double LengthScale,
         long SourceFrames, long GeneratedFrames, long TrimmedSilenceFrames, long PaddingFrames,
-        int SynthesisAttempts, int SynthesisCalls, bool CacheHit);
+        int SynthesisAttempts, int SynthesisCalls, bool CacheHit,
+        double TempoFactor, long TempoInputFrames, int TempoAttempts);
     private sealed record TtsWorkerTrack(string Path, double Start, double Duration, string Sha256);
     private sealed record TtsWorkerResult(int Schema, string Engine, string EngineVersion, string Voice, string VoiceRevision,
         IReadOnlyList<TtsWorkerCue> Cues, TtsWorkerTrack Master, int ReviewCount, int SampleRate);

@@ -12,21 +12,33 @@ internal sealed partial class LocalTtsService
     {
         var precisionPaddingBudget = Math.Max(1L, Math.Min((long)Math.Round(.04 * sampleRate), targetFrames / 50));
         var relativeScale = cue.LengthScale / cue.BaseLengthScale;
+        var tempoFallback = cue.FitMethod == "piper-atempo";
         var minimumScale = cue.TimingSource == "sentence-group" ? .45 : .85;
-        if (cue.FitMethod != "piper-length-scale" || !double.IsFinite(cue.BaseLengthScale) || cue.BaseLengthScale <= 0
+        if (cue.FitMethod is not ("piper-length-scale" or "piper-atempo")
+            || !double.IsFinite(cue.BaseLengthScale) || cue.BaseLengthScale <= 0
             || !double.IsFinite(cue.LengthScale) || !double.IsFinite(relativeScale) || relativeScale < minimumScale || relativeScale > 1.20
             || cue.SourceFrames <= 0 || cue.GeneratedFrames <= 0 || cue.GeneratedFrames > cue.Frames
             || cue.TrimmedSilenceFrames < 0 || cue.TrimmedSilenceFrames >= cue.SourceFrames
-            || cue.SourceFrames - cue.TrimmedSilenceFrames != cue.GeneratedFrames
             || cue.PaddingFrames < 0 || cue.PaddingFrames >= targetFrames || cue.GeneratedFrames != cue.Frames - cue.PaddingFrames
             || cue.SynthesisAttempts is < 1 or > 10
             || (cue.CacheHit ? cue.SynthesisCalls != 0
                 : cue.SynthesisCalls < cue.SynthesisAttempts || cue.SynthesisCalls > cue.SynthesisAttempts + 10)
-            || (cue.SynthesisAttempts == 1 && (cue.LengthScale != cue.BaseLengthScale
-                || Math.Abs(cue.RawDuration - cue.SourceFrames / (double)sampleRate) > 1e-9))
             || (naturalSample && (cue.TrimmedSilenceFrames != 0 || cue.PaddingFrames != 0 || cue.SynthesisAttempts != 1)))
             throw new InvalidDataException("Voice không có metadata nhịp đọc Piper hợp lệ; không nhận master này.");
-        return cue.TimingSource == "sentence-group" || relativeScale is < .90 or > 1.15 || cue.TrimmedSilenceFrames > 0
+        if (tempoFallback)
+        {
+            if (cue.LengthScale != cue.BaseLengthScale
+                || Math.Abs(cue.RawDuration - cue.SourceFrames / (double)sampleRate) > 1e-9
+                || cue.TempoInputFrames <= 0 || cue.SourceFrames - cue.TrimmedSilenceFrames != cue.TempoInputFrames
+                || cue.GeneratedFrames > cue.TempoInputFrames || !double.IsFinite(cue.TempoFactor) || cue.TempoFactor <= 1
+                || cue.TempoAttempts is < 1 or > 12 || cue.Status != "review")
+                throw new InvalidDataException("Voice fallback không có metadata nén thời lượng hợp lệ.");
+        }
+        else if (cue.SourceFrames - cue.TrimmedSilenceFrames != cue.GeneratedFrames
+            || (cue.SynthesisAttempts == 1 && (cue.LengthScale != cue.BaseLengthScale
+                || Math.Abs(cue.RawDuration - cue.SourceFrames / (double)sampleRate) > 1e-9)))
+            throw new InvalidDataException("Voice không bảo toàn mẫu PCM do Piper tạo.");
+        return tempoFallback || cue.TimingSource == "sentence-group" || relativeScale is < .90 or > 1.15 || cue.TrimmedSilenceFrames > 0
             || cue.PaddingFrames > precisionPaddingBudget;
     }
 

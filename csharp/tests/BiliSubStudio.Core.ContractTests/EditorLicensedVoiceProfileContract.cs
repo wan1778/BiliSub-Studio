@@ -201,6 +201,16 @@ internal static class EditorLicensedVoiceProfileContract
             ["generated_frames"] = 44100L, ["trimmed_silence_frames"] = 900L, ["padding_frames"] = 0L }), 44100L, false, 22050]));
         Equal(true, validate.Invoke(null, [Cue(new(fixture) { ["timing_source"] = "sentence-group",
             ["length_scale"] = .5 }), 44100L, false, 22050]));
+        var tempo = new Dictionary<string, object>
+        {
+            ["fit_method"] = "piper-atempo", ["raw_duration"] = 90000d / 22050,
+            ["frames"] = 44100L, ["source_frames"] = 90000L, ["tempo_input_frames"] = 88000L,
+            ["generated_frames"] = 43000L, ["trimmed_silence_frames"] = 2000L, ["padding_frames"] = 1100L,
+            ["base_length_scale"] = 1d, ["length_scale"] = 1d, ["tempo_factor"] = 2.1,
+            ["tempo_attempts"] = 1, ["synthesis_attempts"] = 1, ["synthesis_calls"] = 1,
+            ["cache_hit"] = false, ["status"] = "review", ["timing_source"] = "srt-fallback",
+        };
+        Equal(true, validate.Invoke(null, [Cue(tempo), 44100L, false, 22050]));
         Equal(false, validate.Invoke(null, [Cue(new(fixture) { ["synthesis_calls"] = 12 }), 44100L, false, 22050]));
         Equal(false, validate.Invoke(null, [Cue(new(fixture) { ["cache_hit"] = true, ["synthesis_calls"] = 0 }), 44100L, false, 22050]));
         var invalid = new Dictionary<string, object>[]
@@ -223,6 +233,21 @@ internal static class EditorLicensedVoiceProfileContract
             {
                 validate.Invoke(null, [Cue(values), 44100L, false, 22050]);
                 throw new InvalidOperationException("Invalid native synthesis metadata was accepted");
+            }
+            catch (TargetInvocationException error) when (error.InnerException is InvalidDataException) { }
+        }
+        foreach (var values in new[]
+        {
+            new Dictionary<string, object>(tempo) { ["tempo_factor"] = 1d },
+            new Dictionary<string, object>(tempo) { ["tempo_input_frames"] = 87999L },
+            new Dictionary<string, object>(tempo) { ["tempo_attempts"] = 0 },
+            new Dictionary<string, object>(tempo) { ["status"] = "fit" },
+        })
+        {
+            try
+            {
+                validate.Invoke(null, [Cue(values), 44100L, false, 22050]);
+                throw new InvalidOperationException("Invalid tempo fallback metadata was accepted");
             }
             catch (TargetInvocationException error) when (error.InnerException is InvalidDataException) { }
         }

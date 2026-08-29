@@ -84,6 +84,17 @@ class VoiceDurationContract(unittest.TestCase):
         self.assertFalse(worker.native_record_valid(grouped | {"length_scale": .44}, 44100, False))
         self.assertFalse(worker.native_record_valid(grouped | {"status": "fit"}, 44100, False))
 
+        tempo = {"fit_method": "piper-atempo", "raw_duration": 90000 / worker.SAMPLE_RATE,
+                 "frames": 44100, "source_frames": 90000, "tempo_input_frames": 88000,
+                 "generated_frames": 43000, "trimmed_silence_frames": 2000, "padding_frames": 1100,
+                 "base_length_scale": 1, "length_scale": 1, "tempo_factor": 2.1,
+                 "tempo_attempts": 1, "synthesis_attempts": 1, "status": "review",
+                 "timing_source": "srt-fallback"}
+        self.assertTrue(worker.native_record_valid(tempo, 44100, False))
+        for change in ({"tempo_factor": 1}, {"tempo_input_frames": 87999}, {"generated_frames": 88001},
+                       {"tempo_attempts": 0}, {"status": "fit"}, {"length_scale": .9}):
+            self.assertFalse(worker.native_record_valid(tempo | change, 44100, False))
+
     def test_padding_copies_every_pcm_byte_and_refuses_cutting(self):
         # Tiny byte fixture only: no mock model or generated-speech claim.
         pcm = b"\x01\x00\xff\x7f\x00\x80\x02\x00"
@@ -104,6 +115,19 @@ class VoiceDurationContract(unittest.TestCase):
             with wave.open(str(long_tail), "rb") as source:
                 self.assertEqual(source.getnframes(), 44100)
                 self.assertEqual(source.readframes(4), pcm)
+
+    def test_tempo_fallback_chains_pitch_preserving_supported_factors(self):
+        self.assertEqual(worker.atempo_filter(1.5), "atempo=1.5")
+        self.assertEqual(worker.atempo_filter(4), "atempo=2,atempo=2")
+        stages = [float(value.split("=")[1]) for value in worker.atempo_filter(9.5).split(",")]
+        self.assertTrue(all(1 < stage <= 2 for stage in stages))
+        product = 1
+        for stage in stages:
+            product *= stage
+        self.assertAlmostEqual(product, 9.5)
+        for factor in (1, 0, float("nan"), float("inf")):
+            with self.assertRaises(ValueError):
+                worker.atempo_filter(factor)
 
     def test_only_trailing_silence_beyond_guard_can_be_trimmed(self):
         guard = worker.SILENCE_GUARD_FRAMES
@@ -234,7 +258,7 @@ class VoiceDurationContract(unittest.TestCase):
         self.assertIn("voice.synthesize(text, syn_config=syn_config)", synthesis)
         self.assertNotIn("split(", synthesis)
         source = inspect.getsource(worker)
-        for forbidden in ('"-t"', '"-af"', "atempo=", "asetrate=", "rubberband=", "atrim="):
+        for forbidden in ('"-t"', "asetrate=", "rubberband=", "atrim="):
             self.assertNotIn(forbidden, source)
         main = inspect.getsource(worker.main)
         self.assertIn('end_sample = start_sample + record["frames"]', main)
@@ -242,7 +266,9 @@ class VoiceDurationContract(unittest.TestCase):
         self.assertIn('candidate_cues.append(fallback)', main)
         self.assertIn('"synthesis_calls": synthesis_calls', main)
         self.assertIn('"event": "attempt"', main)
-        self.assertEqual(worker.TIMING_ALGORITHM, "whole-cue-piper-sentence-group-v9")
+        self.assertEqual(worker.TIMING_ALGORITHM, "whole-cue-piper-tempo-fallback-v10")
+        self.assertIn('"piper-atempo"', source)
+        self.assertIn("resolve_tempo", main)
         self.assertIn("trim_trailing_silence_to_fit", fit)
         self.assertIn("biên giữ chất giọng 0,85–1,20×", source)
         self.assertIn('cue["timing_source"] == "srt-fallback"', source)
@@ -262,9 +288,11 @@ class VoiceDurationContract(unittest.TestCase):
         self.assertIn("(index - 1) / (double)total * 53", service)
         timing = (ROOT / "csharp/src/BiliSubStudio.Core/Editor/LocalTtsService.Timing.cs").read_text(encoding="utf-8")
         self.assertIn('cue.TimingSource == "sentence-group" ? .45 : .85', timing)
+        self.assertIn('cue.FitMethod == "piper-atempo"', timing)
+        self.assertIn("cue.TempoInputFrames", timing)
         self.assertIn("cue.PaddingFrames > precisionPaddingBudget", timing)
         installer = (ROOT / "csharp/src/BiliSubStudio.Core/Editor/LocalTtsInstaller.cs").read_text(encoding="utf-8")
-        self.assertIn('TimingAlgorithm = "whole-cue-piper-sentence-group-v9"', installer)
+        self.assertIn('TimingAlgorithm = "whole-cue-piper-tempo-fallback-v10"', installer)
 
 
 if __name__ == "__main__":
