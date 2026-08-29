@@ -153,24 +153,20 @@ def hybrid_project(result, lower, upper, start, end):
         # of a segment after dropping its overlap words.
         text = " ".join("".join(word.get("raw", word["text"]) for word in selected).strip().split())
         projected = dict(segment, start=clipped[0]["start"], end=clipped[-1]["end"], text=text, words=clipped)
-        if output and projected["start"] < output[-1]["end"]:
-            # Faster-Whisper can return adjacent segments whose boundary words
-            # overlap slightly even though their text is distinct. Split that
-            # jitter at one shared boundary; never discard either real word.
-            previous = output[-1]
-            left, right = previous["words"][-1], projected["words"][0]
-            epsilon = 0.001
-            earliest = max(left["start"] + epsilon,
-                           max((word["end"] for word in previous["words"][:-1]), default=left["start"]))
-            latest = min(right["end"] - epsilon,
-                         min((word["start"] for word in projected["words"][1:]), default=right["end"]))
-            if earliest > latest:
-                raise RuntimeError("Hybrid adjacent segments have irreconcilable word timing; uncommitted chunk was not saved")
-            boundary = min(latest, max(earliest, (left["end"] + right["start"]) / 2))
-            previous["words"][-1] = dict(left, end=boundary)
-            previous["end"] = boundary
-            projected["words"][0] = dict(right, start=boundary)
-            projected["start"] = boundary
+        while output and projected["start"] < output[-1]["end"]:
+            # Faster-Whisper can assign deeply overlapping timestamps to two
+            # adjacent segments even though all recognized words are usable.
+            # Keep the original word clocks and merge the connected overlap
+            # cluster into one chronological cue instead of dropping text or
+            # inventing a boundary that may not exist.
+            previous = output.pop()
+            merged_words = sorted(previous["words"] + projected["words"], key=lambda word: (word["start"], word["end"]))
+            merged_text = " ".join("".join(word.get("raw", word["text"]) for word in merged_words).strip().split())
+            projected = dict(previous,
+                             start=merged_words[0]["start"], end=max(word["end"] for word in merged_words),
+                             text=merged_text, words=merged_words,
+                             avg_logprob=min(previous.get("avg_logprob", 0.0), projected.get("avg_logprob", 0.0)),
+                             no_speech_prob=max(previous.get("no_speech_prob", 0.0), projected.get("no_speech_prob", 0.0)))
         output.append(projected)
     return output
 

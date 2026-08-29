@@ -51,19 +51,22 @@ class HybridContract(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             worker.hybrid_project(reading([("字", 59, 59.2)]), 0, 1, 60, 61)
 
-    def test_adjacent_segment_jitter_keeps_both_words_at_one_boundary(self):
+    def test_adjacent_segment_jitter_merges_without_losing_words(self):
         result = reading([("前", 10, 11.2)]) + reading([("后", 11.1, 12)])
         projected = worker.hybrid_project(result, 0, 2, 10, 12)
-        self.assertEqual("".join(item["text"] for item in projected), "前后")
-        self.assertEqual(projected[0]["end"], projected[1]["start"])
-        self.assertEqual(projected[0]["words"][-1]["end"], projected[1]["words"][0]["start"])
-        self.assertGreater(projected[0]["words"][-1]["end"], projected[0]["words"][-1]["start"])
-        self.assertGreater(projected[1]["words"][0]["end"], projected[1]["words"][0]["start"])
+        self.assertEqual(len(projected), 1)
+        self.assertEqual(projected[0]["text"], "前后")
+        self.assertEqual([(word["start"], word["end"]) for word in projected[0]["words"]],
+                         [(10, 11.2), (11.1, 12)])
 
-    def test_deep_adjacent_segment_conflict_still_fails_closed(self):
+    def test_deep_adjacent_segment_conflict_is_sorted_and_kept(self):
         result = reading([("甲", 10, 11), ("前", 11, 11.2)]) + reading([("后", 10.2, 10.8)])
-        with self.assertRaises(RuntimeError):
-            worker.hybrid_project(result, 0, 3, 10, 12)
+        projected = worker.hybrid_project(result, 0, 3, 10, 12)
+        self.assertEqual(len(projected), 1)
+        self.assertEqual(projected[0]["text"], "甲后前")
+        self.assertEqual([word["raw"] for word in projected[0]["words"]], ["甲", "后", "前"])
+        self.assertEqual(projected[0]["start"], 10)
+        self.assertEqual(projected[0]["end"], 11.2)
 
     def test_bounded_dynamic_scheduler_and_model_reuse(self):
         source = inspect.getsource(worker.run_hybrid)
