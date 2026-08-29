@@ -165,14 +165,16 @@ def main() -> int:
             "? result.Cues.OrderBy(cue => cue.Start).ToArray()" in page and
             "ExportOcrAsync(_cues" in page and "ExportButton.IsEnabled = false;" in page,
             "provisional live active cues can leak into export instead of being replaced by the final authoritative scan result")
-    require("TakeLast(120)" not in page and
-            "ScrollViewer.SetVerticalScrollBarVisibility(CueList, ScrollBarVisibility.Auto)" in page and
-            'Text = "Phụ đề OCR đã quét"' in page and
-            'ToString(@"hh\\:mm\\:ss\\,fff")' in page and " --> " in page,
-            "OCR page does not retain a full scrollable SRT-style start/end subtitle history")
-    require('HorizontalContentAlignment" Value="Stretch"' in page_xaml and
-            'Text="{Binding}" TextWrapping="Wrap"' in page_xaml,
-            "OCR cue rows can clip long recognized text instead of wrapping it inside the list")
+    require("TakeLast(120)" not in page and "Take(10)" not in page and
+            '_visibleCues = _cues.OrderBy(cue => cue.Start).ToArray();' in page and
+            'ToString(@"hh\\:mm\\:ss\\,fff")' in page and " → " in page,
+            "OCR page does not retain the complete compact start/end subtitle history")
+    require('Height="372"' in page_xaml and 'Text="Phụ đề OCR đã quét · 10 câu mỗi lượt xem"' in page_xaml and
+            'ScrollViewer.VerticalScrollBarVisibility="Auto"' in page_xaml and
+            '<Setter Property="Height" Value="32" />' in page_xaml and
+            'HorizontalContentAlignment" Value="Stretch"' in page_xaml and
+            'TextTrimming="CharacterEllipsis"' in page_xaml and 'ToolTipService.ToolTip="{Binding}"' in page_xaml,
+            "OCR cue history is not isolated in a fixed ten-row scrollable compact viewport")
 
     require("private OcrScanRequest? _checkpointRequest;" in page and
             "private OcrScanRequest? _activeRequest;" in page,

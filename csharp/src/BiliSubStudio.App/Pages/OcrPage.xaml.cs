@@ -5,7 +5,6 @@ using BiliSubStudio.Core.Ocr;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
-using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Windows.Foundation;
 using Windows.Media.Core;
@@ -19,7 +18,6 @@ public sealed partial class OcrPage : Page
 {
     private readonly BiliSubApplication _application;
     private readonly IFilePickerService _picker;
-    private readonly TextBlock _cueCountText;
     private string? _path;
     private MediaPreviewInfo? _media;
     private string? _jobId;
@@ -46,58 +44,6 @@ public sealed partial class OcrPage : Page
         _picker = picker;
         InitializeComponent();
         PreviewCanvas.SizeChanged += (_, _) => ApplyRegionVisual();
-
-        _cueCountText = new TextBlock
-        {
-            Text = "0 câu",
-            FontSize = 11,
-            HorizontalAlignment = HorizontalAlignment.Right,
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-        if (CueList.Parent is Grid footerGrid)
-        {
-            footerGrid.Children.Remove(CueList);
-
-            var cueHeader = new Grid();
-            cueHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            cueHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            cueHeader.Children.Add(new TextBlock
-            {
-                Text = "Phụ đề OCR đã quét",
-                FontSize = 12,
-                VerticalAlignment = VerticalAlignment.Center,
-            });
-            Grid.SetColumn(_cueCountText, 1);
-            cueHeader.Children.Add(_cueCountText);
-
-            var cueGrid = new Grid { RowSpacing = 8 };
-            cueGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            cueGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-            cueGrid.Children.Add(cueHeader);
-
-            Grid.SetColumn(CueList, 0);
-            Grid.SetRow(CueList, 1);
-            CueList.MinHeight = 0;
-            CueList.Padding = new Thickness(0);
-            CueList.VerticalAlignment = VerticalAlignment.Stretch;
-            ScrollViewer.SetVerticalScrollBarVisibility(CueList, ScrollBarVisibility.Auto);
-            ScrollViewer.SetHorizontalScrollBarVisibility(CueList, ScrollBarVisibility.Disabled);
-            cueGrid.Children.Add(CueList);
-
-            var cueFrame = new Border
-            {
-                Height = 260,
-                Padding = new Thickness(10),
-                Background = (Brush)Application.Current.Resources["RaisedSurfaceBrush"],
-                BorderBrush = (Brush)Application.Current.Resources["StrongBorderBrush"],
-                BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(8),
-                Child = cueGrid,
-            };
-            AutomationProperties.SetName(cueFrame, "Khung phụ đề OCR đã quét");
-            Grid.SetColumn(cueFrame, 1);
-            footerGrid.Children.Add(cueFrame);
-        }
 
         ApplyConfiguration();
         Unloaded += (_, _) => _player?.Pause();
@@ -141,7 +87,7 @@ public sealed partial class OcrPage : Page
             _nextCueRenderAt = default;
             _cueViewDirty = false;
             CueList.Items.Clear();
-            _cueCountText.Text = "0 câu";
+            CueCountText.Text = "0 câu";
             CancelButton.IsEnabled = false;
             ScanButton.Content = "Quét từ đầu";
             RestartButton.Visibility = Visibility.Collapsed;
@@ -330,7 +276,7 @@ public sealed partial class OcrPage : Page
         _nextCueRenderAt = default;
         _cueViewDirty = false;
         CueList.Items.Clear();
-        _cueCountText.Text = "0 câu";
+        CueCountText.Text = "0 câu";
         ExportButton.IsEnabled = false;
         Progress.Value = 0;
         TelemetryText.Text = "Đang chờ kết quả OCR...";
@@ -519,7 +465,7 @@ public sealed partial class OcrPage : Page
         _nextCueRenderAt = default;
         _cueViewDirty = false;
         CueList.Items.Clear();
-        _cueCountText.Text = "0 câu";
+        CueCountText.Text = "0 câu";
         Progress.Value = 0;
         TelemetryText.Text = "Chưa có telemetry.";
         OcrResultText.Text = string.Empty;
@@ -629,7 +575,8 @@ public sealed partial class OcrPage : Page
             var cue = _visibleCues[index];
             var start = TimeSpan.FromSeconds(Math.Max(0, cue.Start));
             var end = TimeSpan.FromSeconds(Math.Max(cue.Start, cue.End));
-            var row = $"{index + 1}\n{start.ToString(@"hh\:mm\:ss\,fff")} --> {end.ToString(@"hh\:mm\:ss\,fff")}\n{cue.Text}";
+            var text = string.Join(" / ", cue.Text.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries));
+            var row = $"{index + 1}.  {start.ToString(@"hh\:mm\:ss\,fff")} → {end.ToString(@"hh\:mm\:ss\,fff")}  ·  {text}";
             if (index < CueList.Items.Count)
             {
                 if (!string.Equals(CueList.Items[index]?.ToString(), row, StringComparison.Ordinal))
@@ -642,7 +589,7 @@ public sealed partial class OcrPage : Page
         }
         while (CueList.Items.Count > _visibleCues.Count)
             CueList.Items.RemoveAt(CueList.Items.Count - 1);
-        _cueCountText.Text = $"{_visibleCues.Count} câu";
+        CueCountText.Text = $"{_visibleCues.Count} câu";
         SyncCueSelection(Timeline.Value);
     }
 
