@@ -18,8 +18,10 @@ internal sealed class OcrCheckpointStore
     // Schema 7 can also contain weak one-glyph misreads and fragmented captions
     // from the old recognition policy. Schema 8 OCR'd every decoded frame. The
     // adaptive scanner keeps native PTS coverage while OCR'ing only periodic
-    // samples and transition windows, so neither older checkpoint can resume.
-    private const int Schema = 9;
+    // samples and transition windows. Schema 9 can retain tiny non-Chinese
+    // companion boxes and CJK whitespace fragments, so older checkpoints must
+    // not resume into the corrected normalization pipeline.
+    private const int Schema = 10;
     private readonly AppPaths _paths;
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -85,7 +87,7 @@ internal sealed class OcrCheckpointStore
 
     public async Task RemoveAsync(OcrScanRequest request, CancellationToken cancellationToken)
     {
-        foreach (var schema in new[] { 9, 8, 7, 6, 5, 4, 3 })
+        foreach (var schema in new[] { 10, 9, 8, 7, 6, 5, 4, 3 })
         {
             var key = await KeyAsync(request, schema, cancellationToken);
             var path = Path.Combine(DirectoryPath, key + ".json");

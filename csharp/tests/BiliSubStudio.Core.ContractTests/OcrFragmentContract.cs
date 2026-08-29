@@ -15,6 +15,10 @@ internal static class OcrFragmentContract
             "real blank between repeated one-glyph captions was erased");
         Check(OcrCueReconciler.MergeTouchingIdentical([new(0, 1, "你走吧", .99), new(1, 2, "走", .99), new(2, 3, "啊", .99)]).Count == 3,
             "different or genuine short captions were merged");
+        var spaced = OcrCueReconciler.MergeTouchingIdentical(
+            [new(22.633, 22.7, "一 万年前", .87), new(22.7, 23.3, "一万年前", 1)]);
+        Check(spaced.Count == 1 && spaced[0].Text == "一万年前" && spaced[0].Start == 22.633 && spaced[0].End == 23.3,
+            "touching CJK whitespace variants were not normalized into one cue");
         var assembly = typeof(OcrResult).Assembly;
         var segmentType = assembly.GetType("BiliSubStudio.Core.Ocr.OcrScanSegment")!;
         var laneType = assembly.GetType("BiliSubStudio.Core.Ocr.OcrLaneCheckpoint")!;
@@ -25,7 +29,7 @@ internal static class OcrFragmentContract
         var final = (IReadOnlyList<OcrCue>)reconcile.Invoke(null, [lanes, 0])!;
         Check(final.SequenceEqual(merged), "final same-lane SRT retains duplicated cues");
         var store = assembly.GetType("BiliSubStudio.Core.Ocr.OcrCheckpointStore")!;
-        Check((int)store.GetField("Schema", BindingFlags.Static | BindingFlags.NonPublic)!.GetRawConstantValue()! >= 8,
+        Check((int)store.GetField("Schema", BindingFlags.Static | BindingFlags.NonPublic)!.GetRawConstantValue()! == 10,
             "old misrecognized checkpoint is still resume-compatible");
         return Task.CompletedTask;
     }

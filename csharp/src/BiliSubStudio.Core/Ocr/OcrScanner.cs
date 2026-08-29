@@ -1015,6 +1015,7 @@ public sealed class OcrScanner
         var baseline = result.Lines
             .Where(line => line.Box.Length >= 4
                 && line.Confidence >= .90
+                && ChineseSubtitleNormalizer.TryNormalize(line.Text, out _)
                 && Math.Abs(line.Box[2] - line.Box[0]) >= Math.Abs(line.Box[3] - line.Box[1]) * .8)
             .OrderByDescending(line => line.Box[3])
             .ThenByDescending(line => line.Confidence)
@@ -1022,6 +1023,8 @@ public sealed class OcrScanner
         if (baseline is null) return result;
 
         var baselineHeight = Math.Max(1, Math.Abs(baseline.Box[3] - baseline.Box[1]));
+        var baselineWidth = Math.Max(1, Math.Abs(baseline.Box[2] - baseline.Box[0]));
+        var baselineArea = (long)baselineWidth * baselineHeight;
         var baselineCenter = baseline.Box[1] + baseline.Box[3];
         var retained = result.Lines.Where(line =>
         {
@@ -1030,7 +1033,11 @@ public sealed class OcrScanner
             var height = Math.Abs(line.Box[3] - line.Box[1]);
             var vertical = height > width * 1.5;
             var farAbove = baselineCenter - (line.Box[1] + line.Box[3]) > baselineHeight * 3;
-            return !(vertical || farAbove);
+            var area = (long)Math.Max(1, width) * Math.Max(1, height);
+            var weakTinyNonChinese = line.Confidence < .80
+                && area * 8 < baselineArea
+                && !ChineseSubtitleNormalizer.TryNormalize(line.Text, out _);
+            return !(vertical || farAbove || weakTinyNonChinese);
         }).ToArray();
         if (retained.Length == result.Lines.Count) return result;
         return result with

@@ -7,8 +7,10 @@ public static class OcrCueReconciler
     public static IReadOnlyList<OcrCue> MergeTouchingIdentical(IEnumerable<OcrCue> cues)
     {
         var output = new List<OcrCue>();
-        foreach (var cue in cues.OrderBy(cue => cue.Start))
+        foreach (var rawCue in cues.OrderBy(cue => cue.Start))
         {
+            if (!ChineseSubtitleNormalizer.TryNormalize(rawCue.Text, out var normalized)) continue;
+            var cue = rawCue with { Text = normalized };
             if (output.Count > 0 && string.Equals(output[^1].Text, cue.Text, StringComparison.Ordinal)
                 && cue.Start <= output[^1].End + .001)
             {

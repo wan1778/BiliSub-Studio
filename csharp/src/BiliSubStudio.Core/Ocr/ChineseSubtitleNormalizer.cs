@@ -22,7 +22,7 @@ public static partial class ChineseSubtitleNormalizer
             else if (value is >= 0xFF41 and <= 0xFF5A) value = 'a' + (value - 0xFF41);
             folded.Append(new Rune(value).ToString());
         }
-        text = folded.ToString();
+        text = CollapseWhitespaceBetweenHan(folded.ToString());
         text = RepeatedPunctuation().Replace(text, "$1");
 
         var hanCount = 0;
@@ -71,6 +71,23 @@ public static partial class ChineseSubtitleNormalizer
         >= 0x4E00 and <= 0x9FFF or
         >= 0xF900 and <= 0xFAFF or
         >= 0x20000 and <= 0x323AF;
+
+    private static string CollapseWhitespaceBetweenHan(string text)
+    {
+        var runes = text.EnumerateRunes().ToArray();
+        if (runes.Length < 3) return text;
+
+        var output = new StringBuilder(text.Length);
+        for (var index = 0; index < runes.Length; index++)
+        {
+            var rune = runes[index];
+            if (rune.Value == ' ' && index > 0 && index + 1 < runes.Length
+                && IsHan(runes[index - 1].Value) && IsHan(runes[index + 1].Value))
+                continue;
+            output.Append(rune.ToString());
+        }
+        return output.ToString();
+    }
 
     private static bool IsForbiddenLetter(int value)
     {
