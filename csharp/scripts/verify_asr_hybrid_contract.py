@@ -51,6 +51,20 @@ class HybridContract(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             worker.hybrid_project(reading([("字", 59, 59.2)]), 0, 1, 60, 61)
 
+    def test_adjacent_segment_jitter_keeps_both_words_at_one_boundary(self):
+        result = reading([("前", 10, 11.2)]) + reading([("后", 11.1, 12)])
+        projected = worker.hybrid_project(result, 0, 2, 10, 12)
+        self.assertEqual("".join(item["text"] for item in projected), "前后")
+        self.assertEqual(projected[0]["end"], projected[1]["start"])
+        self.assertEqual(projected[0]["words"][-1]["end"], projected[1]["words"][0]["start"])
+        self.assertGreater(projected[0]["words"][-1]["end"], projected[0]["words"][-1]["start"])
+        self.assertGreater(projected[1]["words"][0]["end"], projected[1]["words"][0]["start"])
+
+    def test_deep_adjacent_segment_conflict_still_fails_closed(self):
+        result = reading([("甲", 10, 11), ("前", 11, 11.2)]) + reading([("后", 10.2, 10.8)])
+        with self.assertRaises(RuntimeError):
+            worker.hybrid_project(result, 0, 3, 10, 12)
+
     def test_bounded_dynamic_scheduler_and_model_reuse(self):
         source = inspect.getsource(worker.run_hybrid)
         self.assertEqual(source.count("WhisperModel("), 2)

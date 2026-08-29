@@ -152,7 +152,26 @@ def hybrid_project(result, lower, upper, start, end):
         # Rebuild text from the retained real words, never retain the full text
         # of a segment after dropping its overlap words.
         text = " ".join("".join(word.get("raw", word["text"]) for word in selected).strip().split())
-        output.append(dict(segment, start=clipped[0]["start"], end=clipped[-1]["end"], text=text, words=clipped))
+        projected = dict(segment, start=clipped[0]["start"], end=clipped[-1]["end"], text=text, words=clipped)
+        if output and projected["start"] < output[-1]["end"]:
+            # Faster-Whisper can return adjacent segments whose boundary words
+            # overlap slightly even though their text is distinct. Split that
+            # jitter at one shared boundary; never discard either real word.
+            previous = output[-1]
+            left, right = previous["words"][-1], projected["words"][0]
+            epsilon = 0.001
+            earliest = max(left["start"] + epsilon,
+                           max((word["end"] for word in previous["words"][:-1]), default=left["start"]))
+            latest = min(right["end"] - epsilon,
+                         min((word["start"] for word in projected["words"][1:]), default=right["end"]))
+            if earliest > latest:
+                raise RuntimeError("Hybrid adjacent segments have irreconcilable word timing; uncommitted chunk was not saved")
+            boundary = min(latest, max(earliest, (left["end"] + right["start"]) / 2))
+            previous["words"][-1] = dict(left, end=boundary)
+            previous["end"] = boundary
+            projected["words"][0] = dict(right, start=boundary)
+            projected["start"] = boundary
+        output.append(projected)
     return output
 
 
