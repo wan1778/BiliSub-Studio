@@ -93,11 +93,14 @@ class VoiceDurationContract(unittest.TestCase):
         for changed in (cue | {"voice_start": 1.6}, cue | {"voice_end": 3.6}, cue | {"timing_source": "sample"}):
             self.assertNotEqual(worker.cache_identity(changed, "Xin chào.", "worker-sha"), original)
 
-    def test_missing_source_window_is_not_silently_invented(self):
+    def test_srt_fallback_is_explicit_and_must_use_the_complete_cue(self):
         manifest = {"schema": 2, "engine_version": worker.ENGINE_VERSION, "voice": worker.VOICE_NAME,
                     "timing_algorithm": worker.TIMING_ALGORITHM, "duration": 6, "cues": [self.cue()]}
         self.assertEqual(worker.validate_manifest(manifest, worker.VOICE_NAME), manifest["cues"])
-        for change in ({"voice_end": 1.5}, {"timing_source": "sample"}, {"timing_source": "srt-fallback"}):
+        fallback = self.cue() | {"voice_start": 1, "voice_end": 5, "timing_source": "srt-fallback"}
+        self.assertEqual(worker.validate_manifest(manifest | {"cues": [fallback]}, worker.VOICE_NAME), [fallback])
+        for change in ({"voice_end": 1.5}, {"timing_source": "sample"}, {"timing_source": "unknown"},
+                       {"timing_source": "srt-fallback"}):
             with self.assertRaises(ValueError):
                 worker.validate_manifest(manifest | {"cues": [self.cue() | change]}, worker.VOICE_NAME)
 
@@ -124,6 +127,8 @@ class VoiceDurationContract(unittest.TestCase):
         self.assertIn('"event": "attempt"', main)
         self.assertEqual(worker.TIMING_ALGORITHM, "whole-cue-piper-rate-v5")
         self.assertIn("biên giữ chất giọng 0,85–1,20×", source)
+        self.assertIn('cue["timing_source"] == "srt-fallback"', source)
+        self.assertIn('output_status = "review"', source)
         service = (ROOT / "csharp/src/BiliSubStudio.Core/Editor/LocalTtsService.cs").read_text(encoding="utf-8")
         self.assertIn("BuildWholeCue(cue, voice, cueTiming[cue.Id])", service)
         self.assertIn("cue.Frames != targetFrames", service)
@@ -131,6 +136,8 @@ class VoiceDurationContract(unittest.TestCase):
         self.assertIn("ReadClipFrames(cue.ClipPath, expectedSampleRate) != cue.Frames", service)
         self.assertIn("await HashAsync(cue.ClipPath, cancellationToken) != cue.ClipSha256", service)
         self.assertIn("ValidateNativeSynthesis(cue, targetFrames, naturalSample, expectedSampleRate)", service)
+        self.assertIn('fallback ? "srt-fallback" : "whisper"', service)
+        self.assertIn('expected.TimingSource == "srt-fallback"', service)
         self.assertIn('kind == "attempt"', service)
         self.assertIn("(index - 1) / (double)total * 53", service)
         timing = (ROOT / "csharp/src/BiliSubStudio.Core/Editor/LocalTtsService.Timing.cs").read_text(encoding="utf-8")

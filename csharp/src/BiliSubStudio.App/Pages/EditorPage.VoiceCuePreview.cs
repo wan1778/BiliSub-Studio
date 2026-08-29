@@ -78,14 +78,14 @@ public sealed partial class EditorPage
         EditorVoiceTrack track)
     {
         if (!string.Equals(timing.CueId, cue.Id, StringComparison.Ordinal)
-            || timing.CueStart != cue.Start || timing.CueEnd != cue.End
-            || timing.Words.Count == 0)
+            || timing.CueStart != cue.Start || timing.CueEnd != cue.End)
             return null;
 
         // Keep this envelope identical to LocalTtsService.BuildWholeCue: the preview
-        // seeks the generated master, so it must use the same Whisper word window.
-        var voiceStart = Math.Max(cue.Start, timing.Words.Min(word => word.Start));
-        var voiceEnd = Math.Min(cue.End, timing.Words.Max(word => word.End));
+        // seeks the generated master, including the explicit full-SRT fallback.
+        var fallback = timing.Words.Count == 0;
+        var voiceStart = fallback ? cue.Start : Math.Max(cue.Start, timing.Words.Min(word => word.Start));
+        var voiceEnd = fallback ? cue.End : Math.Min(cue.End, timing.Words.Max(word => word.End));
         if (!double.IsFinite(voiceStart) || !double.IsFinite(voiceEnd) || voiceEnd <= voiceStart
             || Math.Round(voiceEnd * 22050) <= Math.Round(voiceStart * 22050))
             return null;
@@ -102,7 +102,7 @@ public sealed partial class EditorPage
             cue.Id,
             $"{cue.Number}. {text.Trim()}",
             $"{FormatVoiceCueTime(voiceStart)} → {FormatVoiceCueTime(voiceStart + duration)}",
-            $"Đọc {duration:0.###} giây",
+            fallback ? $"Đọc {duration:0.###} giây · theo timecode SRT" : $"Đọc {duration:0.###} giây",
             sourceStart,
             duration);
     }

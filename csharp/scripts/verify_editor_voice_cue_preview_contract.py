@@ -41,6 +41,11 @@ require("timing.Words.Min(word => word.Start)" in preview
         and "Math.Max(cue.Start" in preview
         and "Math.Min(cue.End" in preview,
         "cue preview must use the same Whisper word envelope as whole-cue TTS")
+require("var fallback = timing.Words.Count == 0;" in preview
+        and "fallback ? cue.Start" in preview
+        and "fallback ? cue.End" in preview
+        and "theo timecode SRT" in preview,
+        "cue preview must expose the exact full-SRT fallback used by TTS")
 require("track.Path" in preview and "MediaSource.CreateFromStorageFile(file)" in preview,
         "cue preview must read the completed master voice track")
 require("sender.PlaybackSession.Position = TimeSpan.FromSeconds(item.SourceStart)" in preview

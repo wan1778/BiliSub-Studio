@@ -700,7 +700,7 @@ public sealed partial class EditorPage : Page
                     };
                     VoiceStatusText.Text = result.ReviewCount == 0
                         ? $"Voice Việt hoàn tất · {result.Cues.Count} câu khớp thời lượng thoại gốc · đã vào Xem bản chỉnh."
-                        : $"Voice Việt đã canh thời lượng · {result.ReviewCount} câu dùng nhịp model khác nhiều, cần nghe lại trong Xem bản chỉnh.";
+                        : $"Voice Việt đã canh thời lượng · {result.ReviewCount} câu cần nghe lại do nhịp model hoặc fallback timecode SRT.";
                     await SaveProjectNowAsync();
                     QueuePreviewRefresh();
                 }

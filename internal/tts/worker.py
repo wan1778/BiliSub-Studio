@@ -241,8 +241,11 @@ def validate_manifest(manifest: dict, voice: str) -> list[dict]:
             raise ValueError("TTS cue time is outside source duration")
         voice_start, voice_end = cue["voice_start"], cue["voice_end"]
         if (not math.isfinite(voice_start) or not math.isfinite(voice_end)
-                or not start <= voice_start < voice_end <= end or cue["timing_source"] not in ("whisper", "sample")):
+                or not start <= voice_start < voice_end <= end
+                or cue["timing_source"] not in ("whisper", "srt-fallback", "sample")):
             raise ValueError("Missing or invalid source speech window")
+        if cue["timing_source"] == "srt-fallback" and (voice_start != start or voice_end != end):
+            raise ValueError("SRT fallback must use the complete external cue window")
         if cue["timing_source"] == "sample" and (len(cues) != 1 or cue["id"] != "voice-demo-cue"):
             raise ValueError("Natural sample mode is not valid for project subtitles")
         cue_window(cue)
@@ -373,9 +376,10 @@ def main() -> int:
             raise ValueError("Fitted voice exceeds the source speech window")
         clips.append({"path": cached_path, "start": cue["voice_start"], "frames": record["frames"],
                       "start_sample": start_sample, "end_sample": end_sample})
-        results.append({"id": cue["id"], "voice": VOICE_NAME, "voice_review": record["status"] != "fit",
+        output_status = "review" if record["status"] != "fit" or cue["timing_source"] == "srt-fallback" else "fit"
+        results.append({"id": cue["id"], "voice": VOICE_NAME, "voice_review": output_status == "review",
                         "raw_duration": record["raw_duration"], "fitted_duration": record["fitted_duration"],
-                        "status": record["status"], "cache_hit": cache_hit,
+                        "status": output_status, "cache_hit": cache_hit,
                         "clip_path": str(cached_path), "clip_sha256": record["sha256"],
                         "clipped": False, "timing_source": cue["timing_source"], "target_frames": target_frames,
                         "frames": record["frames"], "clip_start_sample": start_sample, "clip_end_sample": end_sample,
@@ -384,7 +388,7 @@ def main() -> int:
                         "padding_frames": record["padding_frames"], "synthesis_attempts": record["synthesis_attempts"],
                         "synthesis_calls": 0 if cache_hit else record["synthesis_attempts"]})
         emit({"event": "cue", "index": index + 1, "total": len(cues), "id": cue["id"],
-              "status": record["status"], "cache_hit": cache_hit,
+              "status": output_status, "cache_hit": cache_hit,
               "synthesis_calls": 0 if cache_hit else record["synthesis_attempts"]})
     build_master(Path(options.ffmpeg), clips, manifest["duration"], run_root, master_path)
     result = {"schema": 2, "engine": ENGINE, "engine_version": ENGINE_VERSION, "voice": VOICE_NAME,

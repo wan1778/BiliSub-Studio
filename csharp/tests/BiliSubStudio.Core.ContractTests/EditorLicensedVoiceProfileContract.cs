@@ -70,15 +70,19 @@ internal static class EditorLicensedVoiceProfileContract
         Equal("whisper", type.GetProperty("TimingSource")!.GetValue(whole));
         Equal(cue.VietnameseText, type.GetProperty("Text")!.GetValue(whole));
         True(type.GetProperty("Groups") is null, "whole cue must not encode Whisper pause groups");
+        var fallback = method.Invoke(null, [cue, "ngoc_huyen", timing with { Words = [] }])!;
+        Equal(1d, type.GetProperty("VoiceStart")!.GetValue(fallback));
+        Equal(5d, type.GetProperty("VoiceEnd")!.GetValue(fallback));
+        Equal("srt-fallback", type.GetProperty("TimingSource")!.GetValue(fallback));
         VerifyVoiceWavFrames(service);
         VerifyNativeRateMetadata(service);
-        foreach (var invalid in new[] { timing with { Words = [] }, timing with { CueId = "different-cue" },
+        foreach (var invalid in new[] { timing with { CueId = "different-cue" },
             timing with { Words = [new EditorWordTiming("outside", 6, 7, .9)] } })
         {
             try
             {
                 method.Invoke(null, [cue, "ngoc_huyen", invalid]);
-                throw new InvalidOperationException("Missing/mismatched Whisper timing was silently accepted");
+                throw new InvalidOperationException("Mismatched cue timing was silently accepted");
             }
             catch (TargetInvocationException error) when (error.InnerException is InvalidDataException) { }
         }

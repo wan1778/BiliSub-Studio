@@ -92,17 +92,19 @@ internal sealed partial class LocalTtsService : IDisposable
     {
         var text = VietnameseTtsTextNormalizer.Normalize(cue.VietnameseText);
         if (string.IsNullOrWhiteSpace(text)) throw new InvalidDataException($"Cue {cue.Number} chưa có câu Việt để tạo voice.");
-        if (timing is null || timing.CueId != cue.Id || timing.CueStart != cue.Start || timing.CueEnd != cue.End
-            || timing.Words.Count == 0)
-            throw new InvalidDataException($"Cue {cue.Number} chưa có timing thoại gốc từ Whisper; hãy kiểm tra mốc SRT hoặc phân tích nhịp lại.");
-        // Derive the real envelope from words, not MapToCues' display fallback
-        // to the SRT window when an edge mapping collapses.
-        var voiceStart = Math.Max(cue.Start, timing.Words.Min(word => word.Start));
-        var voiceEnd = Math.Min(cue.End, timing.Words.Max(word => word.End));
+        if (timing is null || timing.CueId != cue.Id || timing.CueStart != cue.Start || timing.CueEnd != cue.End)
+            throw new InvalidDataException($"Cue {cue.Number} không khớp dữ liệu timing của SRT hiện tại.");
+        // Prefer the real Whisper word envelope. If Whisper found no word in a
+        // valid external-SRT cue, preserve the user's full SRT interval under an
+        // explicit fallback identity instead of aborting every later cue.
+        var fallback = timing.Words.Count == 0;
+        var voiceStart = fallback ? cue.Start : Math.Max(cue.Start, timing.Words.Min(word => word.Start));
+        var voiceEnd = fallback ? cue.End : Math.Min(cue.End, timing.Words.Max(word => word.End));
         if (!double.IsFinite(voiceStart) || !double.IsFinite(voiceEnd) || voiceEnd <= voiceStart
             || Math.Round(voiceEnd * 22050) <= Math.Round(voiceStart * 22050))
-            throw new InvalidDataException($"Cue {cue.Number} có khoảng thoại Whisper rỗng hoặc không hợp lệ; không dùng mốc giả để tạo voice.");
-        return new TtsCueManifest(cue.Id, cue.Start, cue.End, voice, text, voiceStart, voiceEnd, "whisper");
+            throw new InvalidDataException($"Cue {cue.Number} có timecode SRT hoặc khoảng thoại Whisper rỗng.");
+        return new TtsCueManifest(cue.Id, cue.Start, cue.End, voice, text, voiceStart, voiceEnd,
+            fallback ? "srt-fallback" : "whisper");
     }
 
     private static string ResolveVoice(string? voice)
@@ -259,7 +261,8 @@ internal sealed partial class LocalTtsService : IDisposable
                 || (naturalSample && Math.Abs(cue.FittedDuration - cue.RawDuration) > 1d / expectedSampleRate)
                 || Math.Abs(cue.FittedDuration - cue.Frames / (double)expectedSampleRate) > 1e-9)
                 throw new InvalidDataException("Voice chưa khớp đủ thời lượng thoại gốc hoặc bị cắt đuôi; không nhận master này.");
-            var needsReview = ValidateNativeSynthesis(cue, targetFrames, naturalSample, expectedSampleRate);
+            var needsReview = ValidateNativeSynthesis(cue, targetFrames, naturalSample, expectedSampleRate)
+                || expected.TimingSource == "srt-fallback";
             if ((cue.Status == "review") != needsReview || cue.VoiceReview != needsReview)
                 throw new InvalidDataException("Result TTS báo sai trạng thái fit/review.");
             var clipRoot = Path.Combine(Path.GetDirectoryName(path)!, "clips") + Path.DirectorySeparatorChar;
