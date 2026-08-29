@@ -137,6 +137,32 @@ internal sealed class OcrWorkerClient : IAsyncDisposable
             cancellationToken);
     }
 
+    public async Task<IReadOnlyList<double>> ProbeVisualChangesAsync(
+        IReadOnlyList<string> imageBase64,
+        CancellationToken cancellationToken)
+    {
+        if (imageBase64.Count is < 2 or > 65 || imageBase64.Any(string.IsNullOrWhiteSpace))
+            throw new ArgumentException("Probe biến đổi phải có từ 2 đến 65 ảnh hợp lệ.", nameof(imageBase64));
+        return await RunRequestAsync(
+            new Dictionary<string, object?> { ["probe_images_base64"] = imageBase64 },
+            root =>
+            {
+                if (!root.TryGetProperty("ok", out var okNode) || !okNode.GetBoolean()
+                    || !root.TryGetProperty("change_scores", out var scoresNode)
+                    || scoresNode.ValueKind != JsonValueKind.Array)
+                {
+                    var error = root.TryGetProperty("error", out var errorNode) ? errorNode.GetString() : null;
+                    throw new InvalidDataException(error ?? "OCR worker trả probe biến đổi không hợp lệ.");
+                }
+                var scores = scoresNode.EnumerateArray().Select(score => score.GetDouble()).ToArray();
+                if (scores.Length != imageBase64.Count - 1
+                    || scores.Any(score => !double.IsFinite(score) || score is < 0 or > 1))
+                    throw new InvalidDataException($"OCR worker trả {scores.Length}/{imageBase64.Count - 1} điểm biến đổi hợp lệ.");
+                return scores;
+            },
+            cancellationToken);
+    }
+
     private async Task<T> RunRequestAsync<T>(
         IReadOnlyDictionary<string, object?> payload,
         Func<JsonElement, T> parse,

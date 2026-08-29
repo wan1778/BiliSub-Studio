@@ -195,6 +195,33 @@ public sealed class OcrManager : IAsyncDisposable
         }
     }
 
+    public async Task<IReadOnlyList<double>> ProbeVisualChangesAsync(
+        IReadOnlyList<string> imageBase64,
+        CancellationToken cancellationToken)
+    {
+        await EnsureAsync(cancellationToken);
+        var channel = _available ?? throw new InvalidOperationException("OCR worker pool chưa sẵn sàng.");
+        var worker = await channel.Reader.ReadAsync(cancellationToken);
+        try
+        {
+            return await worker.ProbeVisualChangesAsync(imageBase64, cancellationToken);
+        }
+        finally
+        {
+            if (worker.IsAlive) channel.Writer.TryWrite(worker);
+            else
+            {
+                var error = "OCR worker đã dừng; nhấn Chuẩn bị OCR để khởi tạo lại.";
+                channel.Writer.TryComplete(new InvalidOperationException(error));
+                if (ReferenceEquals(_available, channel))
+                {
+                    _state = "failed";
+                    _error = error;
+                }
+            }
+        }
+    }
+
     public async Task StopAsync(CancellationToken cancellationToken = default)
     {
         lock (_lifecycleSync)

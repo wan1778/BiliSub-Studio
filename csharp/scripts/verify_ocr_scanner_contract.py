@@ -36,6 +36,7 @@ def main() -> int:
     application = APPLICATION.read_text(encoding="utf-8")
     process_group = PROCESS_GROUP.read_text(encoding="utf-8")
     process_runner = PROCESS_RUNNER.read_text(encoding="utf-8")
+    worker = (ROOT / "internal" / "ocr" / "worker.py").read_text(encoding="utf-8")
 
     canonical_scan = "request = request with { Region = OcrCheckpointStore.CanonicalRegion(request.Region) };"
     require(canonical_scan in scanner, "scan request does not use restart-stable canonical ROI")
@@ -147,11 +148,19 @@ def main() -> int:
             "offset += 4" in live_lane and "images += batch.Length" in live_lane and
             "TimeSpan.FromMilliseconds(500)" in live_lane,
             "Accurate OCR does not sample steadily, batch only transition frames and throttle telemetry")
+    require("previousVisualAnchor" in live_lane and "ProbeVisualChangesAsync" in live_lane and
+            "IsAdaptiveVisualChange(scores[index])" in live_lane and "pendingVisualFollowups" in live_lane and
+            "nearby <= index + 2" in live_lane and 'request.get("probe_images_base64")' in worker and
+            "visual_change_scores" in worker and "cv2.Canny" in worker,
+            "stable adaptive intervals do not cheaply inspect every frame and nominate visual transitions")
     require('["images_base64"] = imageBase64' in worker_client and
             "resultsNode.EnumerateArray().Select(ParseResult)" in worker_client and
             "results.Length != imageBase64.Count" in worker_client and
             "RunBatchAsync(imageBase64" in manager,
             "C# OCR worker path does not validate and expose the existing four-image Paddle batch protocol")
+    require('["probe_images_base64"] = imageBase64' in worker_client and
+            "change_scores" in worker_client and "ProbeVisualChangesAsync(imageBase64" in manager,
+            "C# OCR worker path does not validate and expose the every-frame visual probe protocol")
     require("var authoritative = snapshot.Done" in page and
             "? result.Cues.OrderBy(cue => cue.Start).ToArray()" in page and
             "ExportOcrAsync(_cues" in page and "ExportButton.IsEnabled = false;" in page,

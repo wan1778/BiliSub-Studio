@@ -72,6 +72,33 @@ def decode_image(encoded):
     return image
 
 
+def visual_change_scores(images):
+    """Measure concentrated edge changes between consecutive decoded frames.
+
+    This is intentionally a cheap OpenCV probe, not OCR. Subtitle appearance and
+    disappearance change many edges inside a narrow horizontal band, so the C#
+    scanner can send only those nearby native frames through PaddleOCR.
+    """
+    signatures = []
+    for image in images:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        gray = cv2.resize(gray, (320, 80), interpolation=cv2.INTER_AREA)
+        gray = cv2.GaussianBlur(gray, (3, 3), 0)
+        signatures.append(cv2.Canny(gray, 50, 150))
+
+    scores = []
+    for before, after in zip(signatures, signatures[1:]):
+        changed = cv2.absdiff(before, after)
+        row_counts = np.count_nonzero(changed, axis=1)
+        band_height = max(4, changed.shape[0] // 8)
+        max_band = max(
+            int(np.sum(row_counts[start:start + band_height]))
+            for start in range(0, changed.shape[0] - band_height + 1)
+        )
+        scores.append(max_band / float(changed.shape[1] * band_height))
+    return scores
+
+
 def normalize_box(box):
     if hasattr(box, "tolist"):
         box = box.tolist()
@@ -209,6 +236,17 @@ def main():
         try:
             request = json.loads(raw_line)
             request_id = request.get("id")
+            encoded_probe = request.get("probe_images_base64")
+            if encoded_probe is not None:
+                if not isinstance(encoded_probe, list) or len(encoded_probe) < 2 or len(encoded_probe) > 65:
+                    raise ValueError("probe_images_base64 phải có từ 2 đến 65 ảnh")
+                probe_images = [decode_image(str(encoded or "").strip()) for encoded in encoded_probe]
+                emit({
+                    "id": request_id,
+                    "ok": True,
+                    "change_scores": visual_change_scores(probe_images),
+                })
+                continue
             encoded_batch = request.get("images_base64")
             if encoded_batch is not None:
                 if not isinstance(encoded_batch, list) or not encoded_batch or len(encoded_batch) > 4:

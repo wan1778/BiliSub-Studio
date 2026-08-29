@@ -68,6 +68,11 @@ def assert_rejected(worker, prediction, expected: str) -> None:
 
 def main() -> int:
     worker = load_worker()
+    source = WORKER.read_text(encoding="utf-8")
+    assert "def visual_change_scores(images):" in source
+    assert 'request.get("probe_images_base64")' in source
+    assert "len(encoded_probe) > 65" in source
+    assert '"change_scores": visual_change_scores(probe_images)' in source
 
     flat = {
         "rec_texts": ["你好"],

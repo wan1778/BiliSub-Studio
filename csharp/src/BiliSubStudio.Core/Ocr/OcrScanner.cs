@@ -12,6 +12,7 @@ namespace BiliSubStudio.Core.Ocr;
 
 public sealed class OcrScanner
 {
+    private const double AdaptiveVisualChangeThreshold = .02;
     private readonly ToolManager _tools;
     private readonly ProcessRunner _processes;
     private readonly OcrManager _ocr;
@@ -554,6 +555,8 @@ public sealed class OcrScanner
         var paused = false;
         var stoppedAtBoundary = false;
         var adaptiveWindow = new List<OcrBufferedFrame>();
+        OcrBufferedFrame? previousVisualAnchor = null;
+        var pendingVisualFollowups = 0;
         OcrResult? previousAdaptiveSample = mode.AdaptiveTiming && tracker.Active is { } restoredActive
             ? new OcrResult(true, true, restoredActive.Text, restoredActive.Confidence, [])
             : null;
@@ -631,6 +634,21 @@ public sealed class OcrScanner
             }).ToArray();
         }
 
+        async Task<IReadOnlyList<double>> ProbeVisualChangesAsync(IReadOnlyList<OcrBufferedFrame> probeFrames)
+        {
+            try
+            {
+                return await _ocr.ProbeVisualChangesAsync(
+                    probeFrames.Select(frame => Convert.ToBase64String(frame.Jpeg)).ToArray(),
+                    cancellationToken);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception error)
+            {
+                throw new OcrRecognitionException("OCR visual probe lỗi: " + error.Message, error);
+            }
+        }
+
         void PublishProgress(bool force = false)
         {
             var now = Stopwatch.GetTimestamp();
@@ -662,20 +680,47 @@ public sealed class OcrScanner
                     && NeedsAdaptiveRefinement(previousAdaptiveSample, sampleResult);
             }
 
-            if (transition && adaptiveWindow.Count > 1)
+            IReadOnlyList<OcrBufferedFrame> refinementFrames = [];
+            if (transition)
             {
-                var intermediate = adaptiveWindow.Take(adaptiveWindow.Count - 1).ToArray();
-                for (var offset = 0; offset < intermediate.Length; offset += 4)
+                refinementFrames = adaptiveWindow.Take(adaptiveWindow.Count - 1).ToArray();
+                pendingVisualFollowups = 0;
+            }
+            else if (previousVisualAnchor is not null)
+            {
+                // Every native frame is either already being refined by Paddle
+                // or compared here with its immediate predecessor. A subtitle
+                // that appears and disappears between stable 4-fps samples can
+                // therefore nominate its own frame plus two following frames.
+                var probeFrames = new[] { previousVisualAnchor }.Concat(adaptiveWindow).ToArray();
+                var scores = await ProbeVisualChangesAsync(probeFrames);
+                var candidateIndexes = new SortedSet<int>();
+                var availableFollowups = Math.Min(pendingVisualFollowups, adaptiveWindow.Count - 1);
+                for (var index = 0; index < availableFollowups; index++) candidateIndexes.Add(index);
+                pendingVisualFollowups -= availableFollowups;
+                for (var index = 0; index < scores.Count; index++)
                 {
-                    var batch = intermediate.Skip(offset).Take(4).ToArray();
-                    var results = await RecognizeBatchAsync(batch, recoverShortBlank: tracker.Active is not null);
-                    images += batch.Length;
-                    for (var index = 0; index < batch.Length; index++)
-                        tracker.Observe(batch[index].Timing.PresentationTime, batch[index].Timing.Duration, results[index]);
+                    if (!IsAdaptiveVisualChange(scores[index])) continue;
+                    for (var nearby = index; nearby <= index + 2 && nearby < adaptiveWindow.Count - 1; nearby++)
+                        candidateIndexes.Add(nearby);
+                    pendingVisualFollowups = Math.Max(
+                        pendingVisualFollowups,
+                        Math.Max(0, index + 2 - (adaptiveWindow.Count - 1)));
                 }
+                refinementFrames = candidateIndexes.Select(index => adaptiveWindow[index]).ToArray();
+            }
+
+            for (var offset = 0; offset < refinementFrames.Count; offset += 4)
+            {
+                var batch = refinementFrames.Skip(offset).Take(4).ToArray();
+                var results = await RecognizeBatchAsync(batch, recoverShortBlank: tracker.Active is not null);
+                images += batch.Length;
+                for (var index = 0; index < batch.Length; index++)
+                    tracker.Observe(batch[index].Timing.PresentationTime, batch[index].Timing.Duration, results[index]);
             }
             tracker.Observe(sample.Timing.PresentationTime, sample.Timing.Duration, sampleResult);
             previousAdaptiveSample = sampleResult;
+            previousVisualAnchor = sample;
             adaptiveWindow.Clear();
             PublishProgress();
         }
@@ -957,6 +1002,9 @@ public sealed class OcrScanner
         if (!previousDetected) return false;
         return Similarity(previousText, currentText) < .82;
     }
+
+    private static bool IsAdaptiveVisualChange(double score) =>
+        double.IsFinite(score) && score >= AdaptiveVisualChangeThreshold;
 
     private static OcrResult FilterOffBaselineOverlayLines(OcrResult result, OcrRegion region)
     {

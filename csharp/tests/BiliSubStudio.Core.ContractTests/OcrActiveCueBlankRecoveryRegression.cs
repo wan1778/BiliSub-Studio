@@ -13,6 +13,8 @@ internal static class OcrActiveCueBlankRecoveryRegression
             ?? throw new InvalidOperationException("missing OcrScanner");
         var needsRefinement = scanner.GetMethod("NeedsAdaptiveRefinement", BindingFlags.Static | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("missing adaptive OCR transition decision");
+        var isVisualChange = scanner.GetMethod("IsAdaptiveVisualChange", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing every-frame visual transition decision");
         var blank = new OcrResult(true, false, string.Empty, 0, []);
         var detected = new OcrResult(true, true, "整整一万年", .60, []);
         var same = new OcrResult(true, true, "整整一万年", .99, []);
@@ -26,6 +28,10 @@ internal static class OcrActiveCueBlankRecoveryRegression
             throw new InvalidOperationException("stable adaptive OCR samples incorrectly requested frame refinement");
         if (!Needs(blank, detected) || !Needs(detected, blank) || !Needs(detected, subtext) || !Needs(detected, changed))
             throw new InvalidOperationException("adaptive OCR missed a blank/text or changed-text transition");
+        bool Visual(double score) => (bool)(isVisualChange.Invoke(null, [score])
+            ?? throw new InvalidOperationException("visual transition decision returned null"));
+        if (Visual(.0199) || !Visual(.02) || Visual(double.NaN))
+            throw new InvalidOperationException("every-frame visual transition threshold is unstable");
 
         var trackerType = typeof(OcrResult).Assembly.GetType("BiliSubStudio.Core.Ocr.SubtitleTracker")
             ?? throw new InvalidOperationException("missing SubtitleTracker");
