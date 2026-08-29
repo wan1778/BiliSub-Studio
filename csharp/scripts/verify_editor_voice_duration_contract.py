@@ -31,30 +31,33 @@ class VoiceDurationContract(unittest.TestCase):
 
     def test_native_duration_controller_direction_and_bounds(self):
         # Frame-count arithmetic only; these are not pretend model outputs.
-        self.assertAlmostEqual(worker.next_length_scale(1, 52920, 44100, 1, None, None), 2 / 2.4)
-        self.assertAlmostEqual(worker.next_length_scale(1, 35280, 44100, 1, None, None), 2 / 1.6)
-        self.assertAlmostEqual(worker.next_length_scale(1.1, 52920, 44100, 1.1, None, None), 1.1 * 2 / 2.4)
+        self.assertEqual((worker.MIN_RATE_SCALE, worker.MAX_RATE_SCALE), (.85, 1.2))
+        self.assertEqual((worker.MIN_PREFERRED_RATE_SCALE, worker.MAX_PREFERRED_RATE_SCALE), (.9, 1.15))
+        self.assertAlmostEqual(worker.next_length_scale(1, 52920, 44100, 1, None, None), .85)
+        self.assertAlmostEqual(worker.next_length_scale(1, 35280, 44100, 1, None, None), 1.2)
+        self.assertAlmostEqual(worker.next_length_scale(1.1, 52920, 44100, 1.1, None, None), 1.1 * .85)
         self.assertAlmostEqual(worker.next_length_scale(1, 60000, 44100, 1, .8, 1), .9)
-        self.assertEqual(worker.next_length_scale(1, 1000000, 44100, 1, None, None), .5)
-        self.assertEqual(worker.next_length_scale(1, 1000, 44100, 1, None, None), 2)
+        self.assertEqual(worker.next_length_scale(1, 1000000, 44100, 1, None, None), .85)
+        self.assertEqual(worker.next_length_scale(1, 1000, 44100, 1, None, None), 1.2)
         for scale in (0, -1, float("nan"), float("inf")):
             with self.assertRaises(ValueError):
                 worker.next_length_scale(scale, 52920, 44100, 1, None, None)
 
     def test_review_reflects_actual_model_rate_not_playback_tempo(self):
-        self.assertFalse(worker.needs_rate_review(.8, 1))
-        self.assertFalse(worker.needs_rate_review(1.25, 1))
-        self.assertTrue(worker.needs_rate_review(.79, 1))
-        self.assertTrue(worker.needs_rate_review(1.26, 1))
+        self.assertFalse(worker.needs_rate_review(.9, 1))
+        self.assertFalse(worker.needs_rate_review(1.15, 1))
+        self.assertTrue(worker.needs_rate_review(.89, 1))
+        self.assertTrue(worker.needs_rate_review(1.16, 1))
         self.assertFalse(worker.needs_rate_review(1.5, 1.5))
 
     def test_native_metadata_rejects_old_method_and_excess_silence(self):
         record = {"fit_method": "piper-length-scale", "raw_duration": 2.4, "frames": 44100,
                   "generated_frames": 43800, "padding_frames": 300, "base_length_scale": 1,
-                  "length_scale": .83, "synthesis_attempts": 2, "status": "fit"}
+                  "length_scale": .95, "synthesis_attempts": 2, "status": "fit"}
         self.assertTrue(worker.native_record_valid(record, 44100, False))
+        self.assertTrue(worker.native_record_valid(record | {"length_scale": .88, "status": "review"}, 44100, False))
         for change in ({"fit_method": "atempo"}, {"padding_frames": 1000, "generated_frames": 43100},
-                       {"generated_frames": 43700}, {"base_length_scale": 0}, {"length_scale": .4},
+                       {"generated_frames": 43700}, {"base_length_scale": 0}, {"length_scale": .84},
                        {"length_scale": float("nan")}, {"synthesis_attempts": 0}, {"synthesis_attempts": 11},
                        {"synthesis_attempts": 1}, {"status": "review"}):
             self.assertFalse(worker.native_record_valid(record | change, 44100, False))
@@ -119,7 +122,8 @@ class VoiceDurationContract(unittest.TestCase):
         self.assertNotIn("end_sample = min(", main)
         self.assertIn('"synthesis_calls": 0 if cache_hit else record["synthesis_attempts"]', main)
         self.assertIn('"event": "attempt"', main)
-        self.assertEqual(worker.TIMING_ALGORITHM, "whole-cue-piper-rate-v4")
+        self.assertEqual(worker.TIMING_ALGORITHM, "whole-cue-piper-rate-v5")
+        self.assertIn("biên giữ chất giọng 0,85–1,20×", source)
         service = (ROOT / "csharp/src/BiliSubStudio.Core/Editor/LocalTtsService.cs").read_text(encoding="utf-8")
         self.assertIn("BuildWholeCue(cue, voice, cueTiming[cue.Id])", service)
         self.assertIn("cue.Frames != targetFrames", service)
@@ -129,6 +133,11 @@ class VoiceDurationContract(unittest.TestCase):
         self.assertIn("ValidateNativeSynthesis(cue, targetFrames, naturalSample, expectedSampleRate)", service)
         self.assertIn('kind == "attempt"', service)
         self.assertIn("(index - 1) / (double)total * 53", service)
+        timing = (ROOT / "csharp/src/BiliSubStudio.Core/Editor/LocalTtsService.Timing.cs").read_text(encoding="utf-8")
+        self.assertIn("relativeScale is < .85 or > 1.20", timing)
+        self.assertIn("return relativeScale is < .90 or > 1.15;", timing)
+        installer = (ROOT / "csharp/src/BiliSubStudio.Core/Editor/LocalTtsInstaller.cs").read_text(encoding="utf-8")
+        self.assertIn('TimingAlgorithm = "whole-cue-piper-rate-v5"', installer)
 
 
 if __name__ == "__main__":

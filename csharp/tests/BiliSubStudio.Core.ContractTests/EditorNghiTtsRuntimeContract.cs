@@ -146,7 +146,7 @@ internal static class EditorNghiTtsRuntimeContract
                 var scale = cues[index].GetProperty("length_scale").GetDouble() / cues[index].GetProperty("base_length_scale").GetDouble();
                 Check(cues[index].GetProperty("fit_method").GetString() == "piper-length-scale"
                     && attempts is >= 1 and <= 10 && cues[index].GetProperty("synthesis_calls").GetInt32() == attempts
-                    && scale is >= .5 and <= 2 && generated > 0 && generated + padding == frames
+                    && scale is >= .85 and <= 1.20 && generated > 0 && generated + padding == frames
                     && padding >= 0 && padding <= Math.Max(1L, Math.Min(882L, frames / 50)),
                     "native Piper rate/retry evidence and small padding only; no playback speed fitting");
                 File.Copy(clip, Path.Combine(paths.Root, $"sentence-{index + 1}.wav"), overwrite: true);

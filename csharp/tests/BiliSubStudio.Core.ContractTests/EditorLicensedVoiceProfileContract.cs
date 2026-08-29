@@ -50,6 +50,7 @@ internal static class EditorLicensedVoiceProfileContract
         var worker = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "tts-worker.py"));
         True(worker.Contains(Constant(installer, "ModelRevision"), StringComparison.Ordinal), "worker model SHA drifted");
         True(worker.Contains(Constant(installer, "ConfigSha256"), StringComparison.Ordinal), "worker config SHA drifted");
+        True(worker.Contains(Constant(installer, "TimingAlgorithm"), StringComparison.Ordinal), "worker voice timing revision drifted");
         True(!worker.Contains("Kokoro", StringComparison.Ordinal) && !worker.Contains("synth_sine", StringComparison.Ordinal),
             "retired or synthetic runtime entered production");
         var service = assembly.GetType("BiliSubStudio.Core.Editor.LocalTtsService")!;
@@ -126,12 +127,12 @@ internal static class EditorLicensedVoiceProfileContract
         {
             ["fit_method"] = "piper-length-scale", ["raw_duration"] = 2.4, ["frames"] = 44100L,
             ["generated_frames"] = 43800L, ["padding_frames"] = 300L, ["base_length_scale"] = 1d,
-            ["length_scale"] = .83, ["synthesis_attempts"] = 2, ["synthesis_calls"] = 2, ["cache_hit"] = false,
+            ["length_scale"] = .95, ["synthesis_attempts"] = 2, ["synthesis_calls"] = 2, ["cache_hit"] = false,
         };
         object Cue(Dictionary<string, object> values) => System.Text.Json.JsonSerializer.Deserialize(
             System.Text.Json.JsonSerializer.Serialize(values), cueType, json)!;
         Equal(false, validate.Invoke(null, [Cue(fixture), 44100L, false, 22050]));
-        Equal(true, validate.Invoke(null, [Cue(new(fixture) { ["length_scale"] = .7 }), 44100L, false, 22050]));
+        Equal(true, validate.Invoke(null, [Cue(new(fixture) { ["length_scale"] = .88 }), 44100L, false, 22050]));
         Equal(false, validate.Invoke(null, [Cue(new(fixture) { ["cache_hit"] = true, ["synthesis_calls"] = 0 }), 44100L, false, 22050]));
         var invalid = new Dictionary<string, object>[]
         {
@@ -139,7 +140,7 @@ internal static class EditorLicensedVoiceProfileContract
             new(fixture) { ["generated_frames"] = 43100L, ["padding_frames"] = 1000L },
             new(fixture) { ["generated_frames"] = 43700L },
             new(fixture) { ["base_length_scale"] = 0d },
-            new(fixture) { ["length_scale"] = .4 },
+            new(fixture) { ["length_scale"] = .84 },
             new(fixture) { ["synthesis_attempts"] = 11, ["synthesis_calls"] = 11 },
             new(fixture) { ["synthesis_attempts"] = 1, ["synthesis_calls"] = 1 },
             new(fixture) { ["cache_hit"] = true },

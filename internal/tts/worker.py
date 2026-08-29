@@ -15,15 +15,19 @@ ENGINE = "nghi-tts"
 ENGINE_VERSION = "nghi-tts-1.0.0"
 MODEL_SHA256 = "2140977786d76d834736c059dacfa553d4931dac2b2c7aaaea438bb2aa9da697"
 CONFIG_SHA256 = "971f57f8d504223fee5b40d664f503cf769baf7db21f7d2ae0554a75d07de2f8"
-TIMING_ALGORITHM = "whole-cue-piper-rate-v4"
+TIMING_ALGORITHM = "whole-cue-piper-rate-v5"
 VOICE_REVISION = MODEL_SHA256 + ":" + CONFIG_SHA256 + ":" + TIMING_ALGORITHM
 VOICE_NAME = "ngoc_huyen"
 SAMPLE_RATE = 22050
 FIT_METHOD = "piper-length-scale"
 MAX_SYNTHESIS_ATTEMPTS = 10
-# Engineering bounds, not a claim of perceptually safe rates.
-MIN_RATE_SCALE = 0.5
-MAX_RATE_SCALE = 2.0
+# Preserve Vietnamese voice identity instead of forcing arbitrary slots. Rates
+# outside the preferred range are review-only; rates outside the accepted range
+# fail closed and require shorter SRT text or a wider source timecode.
+MIN_RATE_SCALE = 0.85
+MAX_RATE_SCALE = 1.20
+MIN_PREFERRED_RATE_SCALE = 0.90
+MAX_PREFERRED_RATE_SCALE = 1.15
 PACKAGES = {"piper-tts": "1.7.0", "onnxruntime": "1.22.1", "vietnormalizer": "0.2.3", "numpy": "2.5.2"}
 
 
@@ -89,7 +93,7 @@ def padding_budget(target_frames: int) -> int:
 
 
 def needs_rate_review(length_scale: float, base_length_scale: float) -> bool:
-    return not 0.8 <= length_scale / base_length_scale <= 1.25
+    return not MIN_PREFERRED_RATE_SCALE <= length_scale / base_length_scale <= MAX_PREFERRED_RATE_SCALE
 
 
 def native_record_valid(record: dict, target_frames: int, natural_sample: bool) -> bool:
@@ -217,7 +221,7 @@ def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str, timi
         if math.isclose(corrected, scale, rel_tol=0, abs_tol=1e-7):
             break
         scale = corrected
-    raise RuntimeError("Piper chưa đọc vừa thời lượng trong giới hạn nhịp/lượt thử; hãy kiểm tra lời Việt hoặc timing. Không kéo tốc độ file hay cắt chữ để ép vừa")
+    raise RuntimeError("Piper không thể đọc vừa timecode trong biên giữ chất giọng 0,85–1,20×; hãy rút gọn câu SRT Việt hoặc nới timecode. Không ép giọng, kéo tốc độ file hay cắt chữ")
 
 
 def validate_manifest(manifest: dict, voice: str) -> list[dict]:
