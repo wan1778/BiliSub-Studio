@@ -11,21 +11,21 @@ internal static class OcrActiveCueBlankRecoveryRegression
     {
         var scanner = typeof(OcrResult).Assembly.GetType("BiliSubStudio.Core.Ocr.OcrScanner")
             ?? throw new InvalidOperationException("missing OcrScanner");
-        var needsRecovery = scanner.GetMethod("NeedsActiveCueBlankRecovery", BindingFlags.Static | BindingFlags.NonPublic)
-            ?? throw new InvalidOperationException("missing active-cue blank recovery decision");
+        var needsRefinement = scanner.GetMethod("NeedsAdaptiveRefinement", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing adaptive OCR transition decision");
         var blank = new OcrResult(true, false, string.Empty, 0, []);
         var detected = new OcrResult(true, true, "整整一万年", .60, []);
-        var failed = new OcrResult(false, false, string.Empty, 0, [], "worker failed");
+        var same = new OcrResult(true, true, "整整一万年", .99, []);
+        var subtext = new OcrResult(true, true, "一万年", .99, []);
+        var changed = new OcrResult(true, true, "你走吧", .99, []);
 
-        bool Needs(OcrResult result, bool active) => (bool)(needsRecovery.Invoke(null, [result, active])
-            ?? throw new InvalidOperationException("blank recovery decision returned null"));
+        bool Needs(OcrResult previous, OcrResult current) => (bool)(needsRefinement.Invoke(null, [previous, current])
+            ?? throw new InvalidOperationException("adaptive transition decision returned null"));
 
-        if (Needs(blank, false))
-            throw new InvalidOperationException("background blank OCR frame incorrectly requested enhanced recovery");
-        if (!Needs(blank, true))
-            throw new InvalidOperationException("single blank OCR frame during an active cue did not request recovery");
-        if (Needs(detected, true) || Needs(failed, true))
-            throw new InvalidOperationException("blank recovery retried detected or failed OCR result");
+        if (Needs(blank, blank) || Needs(detected, same))
+            throw new InvalidOperationException("stable adaptive OCR samples incorrectly requested frame refinement");
+        if (!Needs(blank, detected) || !Needs(detected, blank) || !Needs(detected, subtext) || !Needs(detected, changed))
+            throw new InvalidOperationException("adaptive OCR missed a blank/text or changed-text transition");
 
         var trackerType = typeof(OcrResult).Assembly.GetType("BiliSubStudio.Core.Ocr.SubtitleTracker")
             ?? throw new InvalidOperationException("missing SubtitleTracker");

@@ -5,7 +5,7 @@ using BiliSubStudio.Core.Configuration;
 
 namespace BiliSubStudio.Core.Ocr;
 
-internal sealed record OcrScanMode(double Fps, double Guard, double ActiveGuard, double DiffTrigger, double LowConfidence, bool EveryFrame = false);
+internal sealed record OcrScanMode(double Fps, double Guard, double ActiveGuard, double DiffTrigger, double LowConfidence, bool AdaptiveTiming = false);
 internal sealed record OcrScanSegment(int Index, double CoreStart, double CoreEnd, double ScanStart, double ScanEnd);
 internal sealed record OcrLaneCheckpoint(OcrScanSegment Segment, double MediaSeconds, List<OcrCue> Cues, OcrCue? Active, int Frames, int OcrImages, bool Completed);
 internal sealed record OcrParallelCheckpoint(int Schema, string Key, int SelectedParallelism, List<OcrLaneCheckpoint> Lanes, int BoundaryMerges = 0);
@@ -16,8 +16,10 @@ internal sealed class OcrCheckpointStore
     // the overlap. Their stored CoreEnd is not evidence of scanned coverage.
     // Keep old files on disk, but do not resume those falsely-completed lanes.
     // Schema 7 can also contain weak one-glyph misreads and fragmented captions
-    // from the old recognition policy. Preserve those files, but require rescan.
-    private const int Schema = 8;
+    // from the old recognition policy. Schema 8 OCR'd every decoded frame. The
+    // adaptive scanner keeps native PTS coverage while OCR'ing only periodic
+    // samples and transition windows, so neither older checkpoint can resume.
+    private const int Schema = 9;
     private readonly AppPaths _paths;
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -83,7 +85,7 @@ internal sealed class OcrCheckpointStore
 
     public async Task RemoveAsync(OcrScanRequest request, CancellationToken cancellationToken)
     {
-        foreach (var schema in new[] { 8, 7, 6, 5, 4, 3 })
+        foreach (var schema in new[] { 9, 8, 7, 6, 5, 4, 3 })
         {
             var key = await KeyAsync(request, schema, cancellationToken);
             var path = Path.Combine(DirectoryPath, key + ".json");
@@ -122,8 +124,9 @@ internal sealed class OcrCheckpointStore
     {
         var result = mode.Trim().ToLowerInvariant() switch
         {
-            // Accurate means every decoded source frame, never a fixed-rate sample.
-            "accurate" or "precise" or "chinh-xac" => new OcrScanMode(4, 3, 12, 0.10, 0.68, EveryFrame: true),
+            // Accurate keeps every source-frame PTS available, but PaddleOCR is
+            // invoked at 4 fps until a text transition requires frame refinement.
+            "accurate" or "precise" or "chinh-xac" => new OcrScanMode(4, 3, 12, 0.10, 0.68, AdaptiveTiming: true),
             "fast" or "nhanh" => new OcrScanMode(1.5, 8, 24, 0.22, 0.58),
             _ => new OcrScanMode(2.5, 5, 16, 0.16, 0.62),
         };
@@ -139,9 +142,16 @@ internal sealed class OcrCheckpointStore
         if (!file.Exists || file.Length <= 0) throw new FileNotFoundException("Video nguồn không tồn tại hoặc rỗng.", path);
         var region = CanonicalRegion(request.Region);
         var mode = ModeFor(request.Mode, request.Sensitivity);
-        var identity = new CheckpointIdentity(
-            schema, path, file.Length, (file.LastWriteTimeUtc - DateTime.UnixEpoch).Ticks * 100,
-            region, request.Mode.Trim().ToLowerInvariant(), mode.Fps, mode.Guard, mode.ActiveGuard, mode.DiffTrigger, 1280, 320);
+        var modUnixNano = (file.LastWriteTimeUtc - DateTime.UnixEpoch).Ticks * 100;
+        object identity = schema >= 9
+            ? new CheckpointIdentity(
+                schema, path, file.Length, modUnixNano,
+                region, request.Mode.Trim().ToLowerInvariant(), mode.Fps, mode.Guard, mode.ActiveGuard, mode.DiffTrigger,
+                mode.AdaptiveTiming, 1280, 320)
+            : new LegacyCheckpointIdentity(
+                schema, path, file.Length, modUnixNano,
+                region, request.Mode.Trim().ToLowerInvariant(), mode.Fps, mode.Guard, mode.ActiveGuard, mode.DiffTrigger,
+                1280, 320);
         var json = JsonSerializer.SerializeToUtf8Bytes(identity, JsonOptions);
         return Convert.ToHexStringLower(SHA256.HashData(json));
     }
@@ -213,6 +223,21 @@ internal sealed class OcrCheckpointStore
     private static void TryDelete(string path) { try { File.Delete(path); } catch { } }
 
     private sealed record CheckpointIdentity(
+        [property: JsonPropertyName("schema")] int Schema,
+        [property: JsonPropertyName("path")] string Path,
+        [property: JsonPropertyName("size")] long Size,
+        [property: JsonPropertyName("mtime_ns")] long ModUnixNano,
+        [property: JsonPropertyName("region")] OcrRegion Region,
+        [property: JsonPropertyName("mode")] string Mode,
+        [property: JsonPropertyName("fps")] double Fps,
+        [property: JsonPropertyName("guard")] double Guard,
+        [property: JsonPropertyName("active_guard")] double ActiveGuard,
+        [property: JsonPropertyName("diff")] double Diff,
+        [property: JsonPropertyName("adaptive_timing")] bool AdaptiveTiming,
+        [property: JsonPropertyName("width")] int Width,
+        [property: JsonPropertyName("height")] int Height);
+
+    private sealed record LegacyCheckpointIdentity(
         [property: JsonPropertyName("schema")] int Schema,
         [property: JsonPropertyName("path")] string Path,
         [property: JsonPropertyName("size")] long Size,

@@ -88,11 +88,11 @@ internal static class OcrTrackerModeRegression
         observeExact.Invoke(exact, [10d + 1d / 30d, 1d / 30d, singleRune]);
         observeExact.Invoke(exact, [10d + 2d / 30d, 1d / 30d, singleRune]);
         var exactCue = (OcrCue)(exactActive.GetValue(exact)
-            ?? throw new InvalidOperationException("every-frame OCR did not preserve a short one-rune cue"));
+            ?? throw new InvalidOperationException("exact-frame tracker did not preserve a short one-rune cue"));
         if (Math.Abs(exactCue.Start - 10d) > .000001)
-            throw new InvalidOperationException("every-frame OCR did not retain the first source-frame PTS as cue start");
+            throw new InvalidOperationException("exact-frame tracker did not retain the first refined PTS as cue start");
         if (Math.Abs(exactCue.End - (10d + 3d / 30d)) > .000001)
-            throw new InvalidOperationException("every-frame OCR did not retain source-frame duration as cue end");
+            throw new InvalidOperationException("exact-frame tracker did not retain refined frame duration as cue end");
 
         var cues = trackerType.GetProperty("Cues", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("missing tracker cue list");
@@ -210,6 +210,8 @@ internal static class OcrTrackerModeRegression
             ?? throw new InvalidOperationException("missing OCR scan mode selector");
         var accurateMode = modeFor.Invoke(null, ["accurate", 1d])
             ?? throw new InvalidOperationException("accurate OCR mode unavailable");
+        if (accurateMode.GetType().GetProperty("AdaptiveTiming")?.GetValue(accurateMode) is not true)
+            throw new InvalidOperationException("accurate OCR does not enable adaptive frame refinement");
         var scannerType = typeof(OcrResult).Assembly.GetType("BiliSubStudio.Core.Ocr.OcrScanner")
             ?? throw new InvalidOperationException("missing OcrScanner");
         var filterOverlayLines = scannerType.GetMethod("FilterOffBaselineOverlayLines", BindingFlags.Static | BindingFlags.NonPublic)
@@ -245,7 +247,7 @@ internal static class OcrTrackerModeRegression
             ?? throw new InvalidOperationException("accurate OCR FFmpeg arguments unavailable"));
         if (!args.Contains("-copyts") || !args.Contains("info") || args.SkipWhile(x => x != "-vf").Skip(1).FirstOrDefault() is not { } filter
             || !filter.Contains("showinfo", StringComparison.Ordinal) || filter.Contains("fps=", StringComparison.Ordinal))
-            throw new InvalidOperationException("accurate OCR is still sampled instead of preserving every frame PTS");
+            throw new InvalidOperationException("adaptive OCR decoder no longer preserves every source-frame PTS");
 
         var balancedMode = modeFor.Invoke(null, ["balanced", 1d])
             ?? throw new InvalidOperationException("balanced OCR mode unavailable");

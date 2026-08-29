@@ -28,6 +28,9 @@ public sealed partial class OcrPage : Page
     private bool _cancelInProgress;
     private IReadOnlyList<OcrCue> _cues = [];
     private IReadOnlyList<OcrCue> _visibleCues = [];
+    private readonly SortedDictionary<long, OcrCue> _liveCuesByStart = [];
+    private DateTimeOffset _nextCueRenderAt;
+    private bool _cueViewDirty;
     private OcrRegion _region = new(0.05, 0.65, 0.90, 0.29);
     private OcrRegion _dragOriginRegion = new(0.05, 0.65, 0.90, 0.29);
     private Point? _dragStart;
@@ -134,6 +137,9 @@ public sealed partial class OcrPage : Page
             _activeRequest = null;
             _cues = [];
             _visibleCues = [];
+            _liveCuesByStart.Clear();
+            _nextCueRenderAt = default;
+            _cueViewDirty = false;
             CueList.Items.Clear();
             _cueCountText.Text = "0 câu";
             CancelButton.IsEnabled = false;
@@ -320,6 +326,9 @@ public sealed partial class OcrPage : Page
     {
         _cues = [];
         _visibleCues = [];
+        _liveCuesByStart.Clear();
+        _nextCueRenderAt = default;
+        _cueViewDirty = false;
         CueList.Items.Clear();
         _cueCountText.Text = "0 câu";
         ExportButton.IsEnabled = false;
@@ -354,18 +363,13 @@ public sealed partial class OcrPage : Page
                 var authoritative = snapshot.Done
                     && !string.Equals(snapshot.Status, "cancelled", StringComparison.OrdinalIgnoreCase)
                     && string.IsNullOrWhiteSpace(snapshot.Error);
-                _cues = authoritative
-                    ? result.Cues.OrderBy(cue => cue.Start).ToArray()
-                    : OcrCueReconciler.MergeTouchingIdentical(_cues.Concat(result.Cues)
-                        .GroupBy(cue => Math.Round(cue.Start, 3))
-                        .Select(group => group
-                            .OrderByDescending(cue => cue.Text.EnumerateRunes().Count())
-                            .ThenByDescending(cue => cue.Confidence)
-                            .ThenByDescending(cue => cue.End)
-                            .First())
-                        .OrderBy(cue => cue.Start)
-                        .ToArray());
-                RenderCues();
+                if (authoritative)
+                    ApplyAuthoritativeCues(result.Cues);
+                else
+                {
+                    MergeLiveCueSnapshot(result.Cues);
+                    RefreshLiveCueView(force: snapshot.Done);
+                }
                 TelemetryText.Text = $"{result.ParallelismSelected} FFmpeg lane · {result.WorkerCount} worker ({result.WorkerKinds}) · {result.CompletedLanes}/{result.ParallelismSelected} lane xong · {result.Frames} frames · {result.OcrImages} OCR · {result.RealtimeSpeed:0.00}× · frontier {FormatClock(result.SafeFrontierSeconds)}";
             }
             else if (snapshot.Result is OcrScanTelemetry telemetry)
@@ -511,6 +515,9 @@ public sealed partial class OcrPage : Page
     {
         _cues = [];
         _visibleCues = [];
+        _liveCuesByStart.Clear();
+        _nextCueRenderAt = default;
+        _cueViewDirty = false;
         CueList.Items.Clear();
         _cueCountText.Text = "0 câu";
         Progress.Value = 0;
@@ -555,6 +562,63 @@ public sealed partial class OcrPage : Page
             return item.Tag?.ToString() ?? item.Content?.ToString() ?? string.Empty;
         }
         return box.SelectedItem?.ToString() ?? string.Empty;
+    }
+
+    private bool MergeLiveCueSnapshot(IReadOnlyList<OcrCue> incoming)
+    {
+        var changed = false;
+        foreach (var cue in incoming)
+        {
+            var key = checked((long)Math.Round(cue.Start * 1000, MidpointRounding.AwayFromZero));
+            if (!_liveCuesByStart.TryGetValue(key, out var existing))
+            {
+                _liveCuesByStart[key] = cue;
+                changed = true;
+                continue;
+            }
+            var preferred = PreferLiveCue(existing, cue);
+            if (preferred == existing) continue;
+            _liveCuesByStart[key] = preferred;
+            changed = true;
+        }
+        _cueViewDirty |= changed;
+        return changed;
+    }
+
+    private void RefreshLiveCueView(bool force)
+    {
+        var now = DateTimeOffset.UtcNow;
+        if (!_cueViewDirty || !force && now < _nextCueRenderAt) return;
+        _cues = OcrCueReconciler.MergeTouchingIdentical(_liveCuesByStart.Values.ToArray());
+        RenderCues();
+        _cueViewDirty = false;
+        _nextCueRenderAt = now.AddSeconds(2);
+    }
+
+    private void ApplyAuthoritativeCues(IReadOnlyList<OcrCue> cues)
+    {
+        _liveCuesByStart.Clear();
+        foreach (var cue in cues.OrderBy(cue => cue.Start))
+        {
+            var key = checked((long)Math.Round(cue.Start * 1000, MidpointRounding.AwayFromZero));
+            _liveCuesByStart[key] = _liveCuesByStart.TryGetValue(key, out var existing)
+                ? PreferLiveCue(existing, cue)
+                : cue;
+        }
+        _cues = OcrCueReconciler.MergeTouchingIdentical(_liveCuesByStart.Values.ToArray());
+        RenderCues();
+        _cueViewDirty = false;
+        _nextCueRenderAt = DateTimeOffset.UtcNow.AddSeconds(2);
+    }
+
+    private static OcrCue PreferLiveCue(OcrCue current, OcrCue candidate)
+    {
+        var currentRunes = current.Text.EnumerateRunes().Count();
+        var candidateRunes = candidate.Text.EnumerateRunes().Count();
+        if (candidateRunes != currentRunes) return candidateRunes > currentRunes ? candidate : current;
+        if (Math.Abs(candidate.Confidence - current.Confidence) > .000001)
+            return candidate.Confidence > current.Confidence ? candidate : current;
+        return candidate.End > current.End ? candidate : current;
     }
 
     private void RenderCues()

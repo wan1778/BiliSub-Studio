@@ -93,6 +93,55 @@ internal sealed class OcrWorkerClient : IAsyncDisposable
 
     public async Task<OcrResult> RunAsync(string imageBase64, CancellationToken cancellationToken, bool recoverShortBlank = false, string? activeShortText = null)
     {
+        if (string.IsNullOrWhiteSpace(imageBase64)) throw new ArgumentException("Ảnh OCR rỗng.", nameof(imageBase64));
+        return await RunRequestAsync(
+            new Dictionary<string, object?>
+            {
+                ["image_base64"] = imageBase64,
+                ["recover_short_blank"] = recoverShortBlank,
+                ["active_short_text"] = activeShortText,
+            },
+            ParseResult,
+            cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<OcrResult>> RunBatchAsync(
+        IReadOnlyList<string> imageBase64,
+        CancellationToken cancellationToken,
+        bool recoverShortBlank = false,
+        string? activeShortText = null)
+    {
+        if (imageBase64.Count is < 1 or > 4 || imageBase64.Any(string.IsNullOrWhiteSpace))
+            throw new ArgumentException("Batch OCR phải có từ 1 đến 4 ảnh hợp lệ.", nameof(imageBase64));
+        return await RunRequestAsync(
+            new Dictionary<string, object?>
+            {
+                ["images_base64"] = imageBase64,
+                ["recover_short_blank"] = recoverShortBlank,
+                ["active_short_text"] = activeShortText,
+            },
+            root =>
+            {
+                if (!root.TryGetProperty("ok", out var okNode) || !okNode.GetBoolean()
+                    || !root.TryGetProperty("results", out var resultsNode)
+                    || resultsNode.ValueKind != JsonValueKind.Array)
+                {
+                    var error = root.TryGetProperty("error", out var errorNode) ? errorNode.GetString() : null;
+                    throw new InvalidDataException(error ?? "OCR worker trả batch không hợp lệ.");
+                }
+                var results = resultsNode.EnumerateArray().Select(ParseResult).ToArray();
+                if (results.Length != imageBase64.Count)
+                    throw new InvalidDataException($"OCR worker trả {results.Length}/{imageBase64.Count} kết quả batch.");
+                return results;
+            },
+            cancellationToken);
+    }
+
+    private async Task<T> RunRequestAsync<T>(
+        IReadOnlyDictionary<string, object?> payload,
+        Func<JsonElement, T> parse,
+        CancellationToken cancellationToken)
+    {
         await _requestGate.WaitAsync(cancellationToken);
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(RequestTimeout);
@@ -101,7 +150,9 @@ internal sealed class OcrWorkerClient : IAsyncDisposable
         {
             if (!IsAlive || _input is null || _output is null) throw new InvalidOperationException("OCR worker chưa sẵn sàng.");
             var id = Interlocked.Increment(ref _requestId);
-            var request = JsonSerializer.Serialize(new { id, image_base64 = imageBase64, recover_short_blank = recoverShortBlank, active_short_text = activeShortText });
+            var requestFields = payload.ToDictionary(pair => pair.Key, pair => pair.Value);
+            requestFields["id"] = id;
+            var request = JsonSerializer.Serialize(requestFields);
             await _input.WriteLineAsync(request.AsMemory(), requestToken);
             await _input.FlushAsync(requestToken);
             using var registration = requestToken.Register(() => Kill());
@@ -121,26 +172,7 @@ internal sealed class OcrWorkerClient : IAsyncDisposable
                         throw new InvalidOperationException(string.IsNullOrWhiteSpace(fatal) ? "OCR worker báo lỗi nghiêm trọng." : fatal);
                     }
                     if (!root.TryGetProperty("id", out var idNode) || !idNode.TryGetInt64(out var responseId) || responseId != id) continue;
-                    var ok = root.TryGetProperty("ok", out var okNode) && okNode.GetBoolean();
-                    var detected = root.TryGetProperty("detected", out var detectedNode) && detectedNode.GetBoolean();
-                    var text = root.TryGetProperty("text", out var textNode) ? textNode.GetString() ?? string.Empty : string.Empty;
-                    var confidence = root.TryGetProperty("confidence", out var confidenceNode) ? confidenceNode.GetDouble() : 0;
-                    var error = root.TryGetProperty("error", out var errorNode) ? errorNode.GetString() : null;
-                    var lines = new List<OcrLine>();
-                    if (root.TryGetProperty("lines", out var linesNode) && linesNode.ValueKind == JsonValueKind.Array)
-                    {
-                        foreach (var item in linesNode.EnumerateArray())
-                        {
-                            var box = item.TryGetProperty("box", out var boxNode) && boxNode.ValueKind == JsonValueKind.Array
-                                ? boxNode.EnumerateArray().Select(x => x.TryGetInt32(out var coordinate) ? coordinate : checked((int)Math.Round(x.GetDouble()))).ToArray()
-                                : [];
-                            lines.Add(new OcrLine(
-                                item.TryGetProperty("text", out var lineText) ? lineText.GetString() ?? string.Empty : string.Empty,
-                                item.TryGetProperty("confidence", out var lineConfidence) ? lineConfidence.GetDouble() : 0,
-                                box));
-                        }
-                    }
-                    return new OcrResult(ok, detected, text, confidence, lines, error);
+                    return parse(root);
                 }
             }
         }
@@ -149,6 +181,30 @@ internal sealed class OcrWorkerClient : IAsyncDisposable
             throw new TimeoutException($"OCR worker không phản hồi trong {RequestTimeout.TotalSeconds:0} giây; worker đã được dừng để tránh treo tác vụ.");
         }
         finally { _requestGate.Release(); }
+    }
+
+    private static OcrResult ParseResult(JsonElement root)
+    {
+        var ok = root.TryGetProperty("ok", out var okNode) && okNode.GetBoolean();
+        var detected = root.TryGetProperty("detected", out var detectedNode) && detectedNode.GetBoolean();
+        var text = root.TryGetProperty("text", out var textNode) ? textNode.GetString() ?? string.Empty : string.Empty;
+        var confidence = root.TryGetProperty("confidence", out var confidenceNode) ? confidenceNode.GetDouble() : 0;
+        var error = root.TryGetProperty("error", out var errorNode) ? errorNode.GetString() : null;
+        var lines = new List<OcrLine>();
+        if (root.TryGetProperty("lines", out var linesNode) && linesNode.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in linesNode.EnumerateArray())
+            {
+                var box = item.TryGetProperty("box", out var boxNode) && boxNode.ValueKind == JsonValueKind.Array
+                    ? boxNode.EnumerateArray().Select(x => x.TryGetInt32(out var coordinate) ? coordinate : checked((int)Math.Round(x.GetDouble()))).ToArray()
+                    : [];
+                lines.Add(new OcrLine(
+                    item.TryGetProperty("text", out var lineText) ? lineText.GetString() ?? string.Empty : string.Empty,
+                    item.TryGetProperty("confidence", out var lineConfidence) ? lineConfidence.GetDouble() : 0,
+                    box));
+            }
+        }
+        return new OcrResult(ok, detected, text, confidence, lines, error);
     }
 
     private void ValidateReady(string line)

@@ -9,6 +9,7 @@ CHECKPOINT = ROOT / "csharp" / "src" / "BiliSubStudio.Core" / "Ocr" / "OcrCheckp
 OCR_PAGE = ROOT / "csharp" / "src" / "BiliSubStudio.App" / "Pages" / "OcrPage.xaml.cs"
 OCR_PAGE_XAML = ROOT / "csharp" / "src" / "BiliSubStudio.App" / "Pages" / "OcrPage.xaml"
 MANAGER = ROOT / "csharp" / "src" / "BiliSubStudio.Core" / "Ocr" / "OcrManager.cs"
+WORKER_CLIENT = ROOT / "csharp" / "src" / "BiliSubStudio.Core" / "Ocr" / "OcrWorkerClient.cs"
 TOPOLOGY = ROOT / "csharp" / "src" / "BiliSubStudio.Core" / "Ocr" / "OcrTopologyBenchmark.cs"
 RESOURCE_POLICY = ROOT / "csharp" / "src" / "BiliSubStudio.Core" / "Ocr" / "OcrAutoResourcePolicy.cs"
 HARDWARE = ROOT / "csharp" / "src" / "BiliSubStudio.Core" / "Hardware" / "HardwareService.cs"
@@ -28,6 +29,7 @@ def main() -> int:
     page = OCR_PAGE.read_text(encoding="utf-8")
     page_xaml = OCR_PAGE_XAML.read_text(encoding="utf-8")
     manager = MANAGER.read_text(encoding="utf-8")
+    worker_client = WORKER_CLIENT.read_text(encoding="utf-8")
     topology = TOPOLOGY.read_text(encoding="utf-8")
     resource_policy = RESOURCE_POLICY.read_text(encoding="utf-8")
     hardware = HARDWARE.read_text(encoding="utf-8")
@@ -104,7 +106,7 @@ def main() -> int:
     require("benchmark xong, khóa {selected} pipeline" in scanner and
             "{selected} FFmpeg lane + {configuredWorkers} Python worker" in scanner,
             "scanner commit log does not expose the benchmark-selected full topology")
-    require("new SubtitleTracker(mode.Fps, mode.LowConfidence, exactFrameTiming: mode.EveryFrame)" in scanner,
+    require("new SubtitleTracker(mode.Fps, mode.LowConfidence, exactFrameTiming: mode.AdaptiveTiming)" in scanner,
             "scan mode low-confidence threshold or exact-frame timing policy is not applied to subtitle tracking")
     require("var overlap = Math.Max(scanMode.Guard, scanMode.ActiveGuard);" in checkpoint,
             "scan mode guard is not applied to lane overlap")
@@ -131,14 +133,25 @@ def main() -> int:
             "tracker.Active" in live_lane and "onProgress(at, frames, images, committedCues, tracker.Active)" in live_lane,
             "tracker-confirmed committed/active OCR text is not streamed while scanning")
     require("snapshot.Result is OcrScanResult result" in page and
-            "GroupBy(cue => Math.Round(cue.Start, 3))" in page and "RenderCues();" in page,
-            "OCR page does not accumulate live OcrScanResult cue snapshots into visible history")
+            "MergeLiveCueSnapshot(result.Cues)" in page and "_liveCuesByStart" in page and
+            "RefreshLiveCueView(force: snapshot.Done)" in page and "now.AddSeconds(2)" in page,
+            "OCR page does not incrementally retain and throttle live cue rendering")
     require("OcrCueReconciler.MergeTouchingIdentical" in page and
             "OcrCueReconciler.MergeTouchingIdentical" in live_publish and
             "OcrCueReconciler.MergeTouchingIdentical(output.Select(item => item.Cue))" in scanner,
             "identical touching OCR fragments are not reconciled consistently in live history and final SRT")
     require("recoverShortBlank: tracker.Active is not null" in live_lane,
             "active short-caption recovery no longer requests a bounded tighter-box retry")
+    require("adaptiveWindow" in live_lane and "NeedsAdaptiveRefinement" in live_lane and
+            "ProcessAdaptiveWindowAsync" in live_lane and "RunBatchAsync" in live_lane and
+            "offset += 4" in live_lane and "images += batch.Length" in live_lane and
+            "TimeSpan.FromMilliseconds(500)" in live_lane,
+            "Accurate OCR does not sample steadily, batch only transition frames and throttle telemetry")
+    require('["images_base64"] = imageBase64' in worker_client and
+            "resultsNode.EnumerateArray().Select(ParseResult)" in worker_client and
+            "results.Length != imageBase64.Count" in worker_client and
+            "RunBatchAsync(imageBase64" in manager,
+            "C# OCR worker path does not validate and expose the existing four-image Paddle batch protocol")
     require("var authoritative = snapshot.Done" in page and
             "? result.Cues.OrderBy(cue => cue.Start).ToArray()" in page and
             "ExportOcrAsync(_cues" in page and "ExportButton.IsEnabled = false;" in page,
@@ -184,6 +197,9 @@ def main() -> int:
 
     require("File.Delete(path);" in checkpoint and "if (File.Exists(path)" in checkpoint,
             "checkpoint removal still swallows delete errors or skips absence verification")
+    require("private const int Schema = 9;" in checkpoint and "schema >= 9" in checkpoint and
+            "LegacyCheckpointIdentity" in checkpoint and "new[] { 9, 8, 7, 6, 5, 4, 3 }" in checkpoint,
+            "adaptive OCR checkpoint identity cannot safely reject and explicitly remove legacy checkpoint files")
     require("Where(x => x.Start <= media + 0.001)" in checkpoint,
             "paused checkpoint cues are not restricted to the contiguous safe frontier")
 

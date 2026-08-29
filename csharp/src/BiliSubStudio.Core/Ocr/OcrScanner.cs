@@ -524,7 +524,7 @@ public sealed class OcrScanner
     {
         var segment = saved.Segment;
         var startAt = Math.Clamp(saved.MediaSeconds, segment.ScanStart, segment.ScanEnd);
-        var tracker = new SubtitleTracker(mode.Fps, mode.LowConfidence, exactFrameTiming: mode.EveryFrame);
+        var tracker = new SubtitleTracker(mode.Fps, mode.LowConfidence, exactFrameTiming: mode.AdaptiveTiming);
         tracker.Restore(saved.Cues, saved.Active);
         var publishedCueCount = tracker.Cues.Count;
         var args = BuildLaneArguments(source, request.Region, mode, startAt, segment.ScanEnd, nvdec);
@@ -550,64 +550,180 @@ public sealed class OcrScanner
         var frames = saved.Frames;
         var images = saved.OcrImages;
         var mediaSeconds = startAt;
-        var lastFrameDuration = mode.EveryFrame ? 0 : 1 / mode.Fps;
+        var lastFrameDuration = mode.AdaptiveTiming ? 0 : 1 / mode.Fps;
         var paused = false;
         var stoppedAtBoundary = false;
+        var adaptiveWindow = new List<OcrBufferedFrame>();
+        OcrResult? previousAdaptiveSample = mode.AdaptiveTiming && tracker.Active is { } restoredActive
+            ? new OcrResult(true, true, restoredActive.Text, restoredActive.Confidence, [])
+            : null;
+        var nextAdaptiveSample = startAt;
+        var lastProgressPublish = Stopwatch.GetTimestamp();
+
+        async Task<OcrResult> RecognizeSingleAsync(
+            OcrBufferedFrame frame,
+            bool recoverShortBlank,
+            bool allowEnhanced = false)
+        {
+            OcrResult result;
+            var activeShortText = tracker.Active?.Text is { } activeText && activeText.EnumerateRunes().Count() == 1
+                ? activeText
+                : null;
+            try
+            {
+                result = FilterOffBaselineOverlayLines(await _ocr.RunAsync(
+                    Convert.ToBase64String(frame.Jpeg), cancellationToken,
+                    recoverShortBlank, activeShortText), request.Region);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception error)
+            {
+                throw new OcrRecognitionException("OCR worker lỗi: " + error.Message, error);
+            }
+            if (!result.Ok)
+                throw new OcrRecognitionException(result.Error ?? "OCR worker trả kết quả lỗi.");
+            if (!allowEnhanced || !NeedsEnhancedRecognition(result, Math.Max(.78, mode.LowConfidence + .10))) return result;
+            try
+            {
+                var enhanced = await CaptureFrameWithFfmpegAsync(
+                    ffmpeg, source, frame.Timing.PresentationTime, request.Region,
+                    enhanced: true, processes, cancellationToken);
+                var alternate = FilterOffBaselineOverlayLines(await _ocr.RunAsync(
+                    Convert.ToBase64String(enhanced), cancellationToken,
+                    recoverShortBlank, activeShortText), request.Region);
+                if (alternate.Ok && PreferRecognition(alternate, result)) result = alternate;
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception error)
+            {
+                // A second-pass sample is optional. Never discard the valid
+                // first pass or stop a long scan because refinement failed.
+                job.Log($"OCR frame {frame.Timing.PresentationTime:0.000}s: enhanced retry skipped ({Compact(error.Message)}).");
+            }
+            return result;
+        }
+
+        async Task<IReadOnlyList<OcrResult>> RecognizeBatchAsync(
+            IReadOnlyList<OcrBufferedFrame> batch,
+            bool recoverShortBlank)
+        {
+            if (batch.Count == 0) return [];
+            var activeShortText = tracker.Active?.Text is { } activeText && activeText.EnumerateRunes().Count() == 1
+                ? activeText
+                : null;
+            IReadOnlyList<OcrResult> results;
+            try
+            {
+                results = await _ocr.RunBatchAsync(
+                    batch.Select(frame => Convert.ToBase64String(frame.Jpeg)).ToArray(),
+                    cancellationToken, recoverShortBlank, activeShortText);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception error)
+            {
+                throw new OcrRecognitionException("OCR worker batch lỗi: " + error.Message, error);
+            }
+            return results.Select(result =>
+            {
+                result = FilterOffBaselineOverlayLines(result, request.Region);
+                if (!result.Ok) throw new OcrRecognitionException(result.Error ?? "OCR worker trả kết quả batch lỗi.");
+                return result;
+            }).ToArray();
+        }
+
+        void PublishProgress(bool force = false)
+        {
+            var now = Stopwatch.GetTimestamp();
+            if (!force && Stopwatch.GetElapsedTime(lastProgressPublish, now) < TimeSpan.FromMilliseconds(500)) return;
+            lastProgressPublish = now;
+            var committedCues = tracker.Cues.Count > publishedCueCount
+                ? tracker.Cues.Skip(publishedCueCount).ToArray()
+                : Array.Empty<OcrCue>();
+            publishedCueCount = tracker.Cues.Count;
+            onProgress(mediaSeconds, frames, images, committedCues, tracker.Active);
+        }
+
+        async Task ProcessAdaptiveWindowAsync()
+        {
+            if (adaptiveWindow.Count == 0) return;
+            var sample = adaptiveWindow[^1];
+            var sampleResult = await RecognizeSingleAsync(sample, recoverShortBlank: false);
+            images++;
+            var transition = previousAdaptiveSample is not null
+                && NeedsAdaptiveRefinement(previousAdaptiveSample, sampleResult);
+
+            // The short-glyph recovery policy is deliberately bounded to one
+            // sampled transition. It no longer retries every blank source frame.
+            if (transition && tracker.Active is not null && !sampleResult.Detected)
+            {
+                var recovered = await RecognizeSingleAsync(sample, recoverShortBlank: true);
+                if (recovered.Detected) sampleResult = recovered;
+                transition = previousAdaptiveSample is not null
+                    && NeedsAdaptiveRefinement(previousAdaptiveSample, sampleResult);
+            }
+
+            if (transition && adaptiveWindow.Count > 1)
+            {
+                var intermediate = adaptiveWindow.Take(adaptiveWindow.Count - 1).ToArray();
+                for (var offset = 0; offset < intermediate.Length; offset += 4)
+                {
+                    var batch = intermediate.Skip(offset).Take(4).ToArray();
+                    var results = await RecognizeBatchAsync(batch, recoverShortBlank: tracker.Active is not null);
+                    images += batch.Length;
+                    for (var index = 0; index < batch.Length; index++)
+                        tracker.Observe(batch[index].Timing.PresentationTime, batch[index].Timing.Duration, results[index]);
+                }
+            }
+            tracker.Observe(sample.Timing.PresentationTime, sample.Timing.Duration, sampleResult);
+            previousAdaptiveSample = sampleResult;
+            adaptiveWindow.Clear();
+            PublishProgress();
+        }
+
         try
         {
             while (await reader.ReadAsync(cancellationToken) is { } jpeg)
             {
                 var timing = await timestamps.ReadAsync(cancellationToken);
                 var at = timing.PresentationTime;
-                if (at > segment.ScanEnd + 0.001) { stoppedAtBoundary = true; break; }
+                if (at > segment.ScanEnd + 0.001)
+                {
+                    if (mode.AdaptiveTiming) await ProcessAdaptiveWindowAsync();
+                    stoppedAtBoundary = true;
+                    break;
+                }
                 frames++;
-                images++;
                 mediaSeconds = Math.Min(segment.ScanEnd, at + timing.Duration);
                 lastFrameDuration = timing.Duration;
-                OcrResult result;
-                var activeShortText = tracker.Active?.Text is { } activeText && activeText.EnumerateRunes().Count() == 1 ? activeText : null;
-                try
+                var frame = new OcrBufferedFrame(timing, jpeg);
+                if (mode.AdaptiveTiming)
                 {
-                    result = FilterOffBaselineOverlayLines(await _ocr.RunAsync(Convert.ToBase64String(jpeg), cancellationToken,
-                        recoverShortBlank: tracker.Active is not null, activeShortText: activeShortText), request.Region);
+                    adaptiveWindow.Add(frame);
+                    var sampleDue = previousAdaptiveSample is null
+                        || at + timing.Duration / 2 >= nextAdaptiveSample
+                        || adaptiveWindow.Count >= 64
+                        || job.IsPauseRequested;
+                    if (!sampleDue) continue;
+                    await ProcessAdaptiveWindowAsync();
+                    do nextAdaptiveSample += 1 / mode.Fps;
+                    while (nextAdaptiveSample <= at + .000001);
                 }
-                catch (OperationCanceledException) { throw; }
-                catch (Exception error)
+                else
                 {
-                    throw new OcrRecognitionException("OCR worker lỗi: " + error.Message, error);
+                    var result = await RecognizeSingleAsync(frame, recoverShortBlank: false, allowEnhanced: true);
+                    images++;
+                    tracker.Observe(at, timing.Duration, result);
+                    PublishProgress();
                 }
-                if (!result.Ok)
-                    throw new OcrRecognitionException(result.Error ?? "OCR worker trả kết quả lỗi.");
-                if (NeedsEnhancedRecognition(result, Math.Max(.78, mode.LowConfidence + .10))
-                    || NeedsActiveCueBlankRecovery(result, tracker.Active is not null))
-                {
-                    try
-                    {
-                        var enhanced = await CaptureFrameWithFfmpegAsync(ffmpeg, source, at, request.Region, enhanced: true, processes, cancellationToken);
-                        var alternate = FilterOffBaselineOverlayLines(await _ocr.RunAsync(Convert.ToBase64String(enhanced), cancellationToken,
-                            recoverShortBlank: tracker.Active is not null, activeShortText: activeShortText), request.Region);
-                        if (alternate.Ok && PreferRecognition(alternate, result)) result = alternate;
-                    }
-                    catch (OperationCanceledException) { throw; }
-                    catch (Exception error)
-                    {
-                        // A second-pass frame is an accuracy enhancement, never a reason
-                        // to discard the valid first OCR result or stop a long scan.
-                        job.Log($"OCR frame {at:0.000}s: enhanced retry skipped ({Compact(error.Message)}).");
-                    }
-                }
-                tracker.Observe(at, timing.Duration, result);
-                var committedCues = tracker.Cues.Count > publishedCueCount
-                    ? tracker.Cues.Skip(publishedCueCount).ToArray()
-                    : Array.Empty<OcrCue>();
-                publishedCueCount = tracker.Cues.Count;
-                onProgress(at, frames, images, committedCues, tracker.Active);
                 if (job.IsPauseRequested && tracker.CanCheckpoint)
                 {
                     paused = true;
                     break;
                 }
             }
+            if (mode.AdaptiveTiming && !paused && !stoppedAtBoundary)
+                await ProcessAdaptiveWindowAsync();
+            PublishProgress(force: true);
         }
         finally
         {
@@ -784,10 +900,10 @@ public sealed class OcrScanner
             region.Width, region.Height, region.X, region.Y);
         var fps = mode.Fps.ToString("0.######", CultureInfo.InvariantCulture);
         var filter = nvdec
-            ? mode.EveryFrame
+            ? mode.AdaptiveTiming
                 ? $"hwdownload,format=nv12|p010le|p016le,{crop},showinfo"
                 : $"hwdownload,format=nv12|p010le|p016le,fps={fps},{crop},showinfo"
-            : mode.EveryFrame ? $"{crop},showinfo" : $"fps={fps},{crop},showinfo";
+            : mode.AdaptiveTiming ? $"{crop},showinfo" : $"fps={fps},{crop},showinfo";
         args.AddRange(["-map", "0:v:0", "-an", "-sn", "-dn", "-vf", filter, "-q:v", "4", "-c:v", "mjpeg", "-f", "image2pipe", "pipe:1"]);
         return args;
     }
@@ -829,8 +945,18 @@ public sealed class OcrScanner
     private static bool NeedsEnhancedRecognition(OcrResult result, double threshold) =>
         result.Ok && result.Detected && result.Confidence < threshold;
 
-    private static bool NeedsActiveCueBlankRecovery(OcrResult result, bool hasActiveCue) =>
-        hasActiveCue && result.Ok && !result.Detected;
+    private static bool NeedsAdaptiveRefinement(OcrResult previous, OcrResult current)
+    {
+        var previousText = string.Empty;
+        var currentText = string.Empty;
+        var previousDetected = previous.Ok && previous.Detected
+            && ChineseSubtitleNormalizer.TryNormalize(previous.Text, out previousText);
+        var currentDetected = current.Ok && current.Detected
+            && ChineseSubtitleNormalizer.TryNormalize(current.Text, out currentText);
+        if (previousDetected != currentDetected) return true;
+        if (!previousDetected) return false;
+        return Similarity(previousText, currentText) < .82;
+    }
 
     private static OcrResult FilterOffBaselineOverlayLines(OcrResult result, OcrRegion region)
     {
@@ -890,6 +1016,7 @@ public sealed class OcrScanner
 
     private sealed record OcrTopologyProbe(double Throughput);
     private sealed class OcrRecognitionException(string message, Exception? inner = null) : Exception(message, inner);
+    private sealed record OcrBufferedFrame(FrameTiming Timing, byte[] Jpeg);
     private readonly record struct FrameTiming(double PresentationTime, double Duration);
 
     // FFmpeg writes showinfo before it emits the matching JPEG. Keep only a small
