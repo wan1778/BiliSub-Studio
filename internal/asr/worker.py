@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 import time
@@ -140,19 +141,36 @@ def hybrid_seam(left, right, boundary, lower):
 
 
 def hybrid_project(result, lower, upper, start, end):
+    if not math.isfinite(start) or not math.isfinite(end) or end <= start:
+        raise RuntimeError("Hybrid ownership window is invalid; uncommitted chunk was not saved")
+    minimum_word_duration = min(0.001, (end - start) / 2)
+
+    def clip_word(word):
+        raw_start = float(word["start"])
+        raw_end = float(word["end"])
+        if not math.isfinite(raw_start):
+            raw_start = start
+        if not math.isfinite(raw_end):
+            raw_end = raw_start + minimum_word_duration
+        clipped_start = max(start, min(end - minimum_word_duration, raw_start))
+        clipped_end = min(end, max(clipped_start + minimum_word_duration, raw_end))
+        return dict(word, start=clipped_start, end=clipped_end)
+
     output, cursor = [], 0
     for segment in result:
         selected = [word for index, word in enumerate(segment["words"], cursor) if lower <= index < upper]
         cursor += len(segment["words"])
         if not selected:
             continue
-        clipped = [dict(word, start=max(start, word["start"]), end=min(end, word["end"])) for word in selected]
-        if any(word["end"] <= word["start"] for word in clipped):
-            raise RuntimeError("Hybrid seam has conflicting word timing; uncommitted chunk was not saved")
+        # A selected word may carry a contradictory timestamp entirely outside
+        # this ownership window. Keep its text and pin only that impossible
+        # clock to the nearest edge instead of aborting an hours-long scan.
+        clipped = sorted((clip_word(word) for word in selected), key=lambda word: (word["start"], word["end"]))
         # Rebuild text from the retained real words, never retain the full text
-        # of a segment after dropping its overlap words.
-        text = " ".join("".join(word.get("raw", word["text"]) for word in selected).strip().split())
-        projected = dict(segment, start=clipped[0]["start"], end=clipped[-1]["end"], text=text, words=clipped)
+        # of a segment after dropping its overlap words. Chronological sorting
+        # also repairs model outputs whose adjacent word starts run backwards.
+        text = " ".join("".join(word.get("raw", word["text"]) for word in clipped).strip().split())
+        projected = dict(segment, start=clipped[0]["start"], end=max(word["end"] for word in clipped), text=text, words=clipped)
         while output and projected["start"] < output[-1]["end"]:
             # Faster-Whisper can assign deeply overlapping timestamps to two
             # adjacent segments even though all recognized words are usable.

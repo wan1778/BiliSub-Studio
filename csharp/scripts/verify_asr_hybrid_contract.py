@@ -2,6 +2,7 @@
 """Offline word-seam/control-flow regression; never imports Whisper or runs inference."""
 import importlib.util
 import inspect
+import random
 from pathlib import Path
 import unittest
 
@@ -47,9 +48,11 @@ class HybridContract(unittest.TestCase):
         self.assertEqual(projected[0]["text"], "Hello world")
         self.assertEqual(len(projected[0]["words"]), 2)
 
-    def test_conflicting_word_is_not_silently_dropped(self):
-        with self.assertRaises(RuntimeError):
-            worker.hybrid_project(reading([("字", 59, 59.2)]), 0, 1, 60, 61)
+    def test_out_of_window_word_is_pinned_not_dropped(self):
+        projected = worker.hybrid_project(reading([("字", 59, 59.2)]), 0, 1, 60, 61)
+        self.assertEqual(projected[0]["text"], "字")
+        self.assertEqual(projected[0]["words"][0]["start"], 60)
+        self.assertGreater(projected[0]["words"][0]["end"], 60)
 
     def test_adjacent_segment_jitter_merges_without_losing_words(self):
         result = reading([("前", 10, 11.2)]) + reading([("后", 11.1, 12)])
@@ -67,6 +70,28 @@ class HybridContract(unittest.TestCase):
         self.assertEqual([word["raw"] for word in projected[0]["words"]], ["甲", "后", "前"])
         self.assertEqual(projected[0]["start"], 10)
         self.assertEqual(projected[0]["end"], 11.2)
+
+    def test_random_overlap_fuzz_never_loses_words_or_emits_overlapping_cues(self):
+        rng = random.Random(20260829)
+        for case in range(2_000):
+            result, expected = [], []
+            for segment_index in range(rng.randint(1, 10)):
+                words = []
+                for word_index in range(rng.randint(1, 8)):
+                    identity = f"{case}:{segment_index}:{word_index}"
+                    start = rng.uniform(-5, 35)
+                    end = start + rng.uniform(.00001, 8)
+                    words.append((identity, start, end))
+                    expected.append(identity)
+                result += reading(words)
+            projected = worker.hybrid_project(result, 0, len(expected), 0, 30)
+            actual = [word["raw"] for cue in projected for word in cue["words"]]
+            self.assertCountEqual(actual, expected)
+            self.assertFalse(any(right["start"] < left["end"] for left, right in zip(projected, projected[1:])))
+            for cue in projected:
+                self.assertGreater(cue["end"], cue["start"])
+                self.assertTrue(all(cue["start"] <= word["start"] < word["end"] <= cue["end"] for word in cue["words"]))
+                self.assertFalse(any(right["start"] < left["start"] for left, right in zip(cue["words"], cue["words"][1:])))
 
     def test_bounded_dynamic_scheduler_and_model_reuse(self):
         source = inspect.getsource(worker.run_hybrid)
