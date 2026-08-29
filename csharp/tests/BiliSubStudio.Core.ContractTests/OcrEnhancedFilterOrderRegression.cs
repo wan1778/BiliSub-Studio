@@ -40,13 +40,13 @@ internal static class OcrEnhancedFilterOrderRegression
         if ((bool)(prefer.Invoke(null, [shorterEnhanced, completePrimary]) ?? true))
             throw new InvalidOperationException("higher-confidence enhanced retry erased a glyph from the fuller primary reading");
 
-        var digitNoise = new OcrResult(true, true, "万年\n8", .74310483,
-            [new OcrLine("万年", .999969065, [610, 140, 720, 202]),
-             new OcrLine("8", .486240596, [505, 154, 518, 170])]);
+        var digitNoise = new OcrResult(true, true, "万年\n8", .9820100367,
+            [new OcrLine("万年", .999976337, [602, 135, 714, 200]),
+             new OcrLine("8", .964043736, [496, 151, 509, 170])]);
         var filteredDigitNoise = (OcrResult)(filter.Invoke(null, [digitNoise, lowerRegion])
             ?? throw new InvalidOperationException("digit-noise filtering returned null"));
         if (!filteredDigitNoise.Detected || filteredDigitNoise.Text != "万年" || filteredDigitNoise.Lines.Count != 1)
-            throw new InvalidOperationException("tiny low-confidence digit companion survived beside a strong Chinese subtitle");
+            throw new InvalidOperationException("tiny high-confidence digit companion survived beside a strong Chinese subtitle");
 
         var legitimateDigit = new OcrResult(true, true, "第8集", .99,
             [new OcrLine("第8集", .99, [500, 140, 700, 202])]);
@@ -54,5 +54,13 @@ internal static class OcrEnhancedFilterOrderRegression
             ?? throw new InvalidOperationException("legitimate-digit filtering returned null"));
         if (!retainedDigit.Detected || retainedDigit.Text != "第8集")
             throw new InvalidOperationException("a legitimate digit inside a Chinese subtitle was removed");
+
+        var fullHeightDigit = new OcrResult(true, true, "万年\n8", .99,
+            [new OcrLine("万年", .99, [602, 135, 714, 200]),
+             new OcrLine("8", .99, [530, 136, 580, 200])]);
+        var retainedFullHeightDigit = (OcrResult)(filter.Invoke(null, [fullHeightDigit, lowerRegion])
+            ?? throw new InvalidOperationException("full-height-digit filtering returned null"));
+        if (retainedFullHeightDigit.Lines.Count != 2)
+            throw new InvalidOperationException("a separate full-height digit was treated as tiny OCR debris");
     }
 }

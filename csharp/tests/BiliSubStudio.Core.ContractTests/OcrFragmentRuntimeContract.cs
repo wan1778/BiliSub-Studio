@@ -16,7 +16,9 @@ internal static class OcrFragmentRuntimeContract
         paths.EnsureBootstrapDirectories();
         // Do not dispose the app's process-containing Windows job before errors print.
         var app = new BiliSubApplication(paths);
-        var request = new OcrScanRequest(video, new(.05, .83, .90, .13), "accurate", "gpu", "1", 1, 26);
+        // Exact persisted ROI from the field failure: the thinner crop makes
+        // Paddle confidently misread the leading 一 as a tiny standalone 8/4.
+        var request = new OcrScanRequest(video, new(.05, .84, .91, .12), "accurate", "gpu", "1", 1, 26);
         var checks = new List<string>();
         void Check(bool valid, string message)
         {

@@ -560,6 +560,7 @@ public sealed class OcrScanner
         OcrResult? previousAdaptiveSample = mode.AdaptiveTiming && tracker.Active is { } restoredActive
             ? new OcrResult(true, true, restoredActive.Text, restoredActive.Confidence, [])
             : null;
+        var pendingTinyGlyphRecovery = 0;
         var nextAdaptiveSample = startAt;
         var lastProgressPublish = Stopwatch.GetTimestamp();
 
@@ -574,9 +575,12 @@ public sealed class OcrScanner
                 : null;
             try
             {
-                result = FilterOffBaselineOverlayLines(await _ocr.RunAsync(
+                var raw = await _ocr.RunAsync(
                     Convert.ToBase64String(frame.Jpeg), cancellationToken,
-                    recoverShortBlank, activeShortText), request.Region);
+                    recoverShortBlank, activeShortText);
+                if (HasTinyNonChineseCompanion(raw))
+                    pendingTinyGlyphRecovery = Math.Max(pendingTinyGlyphRecovery, 4);
+                result = FilterOffBaselineOverlayLines(raw, request.Region);
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception error)
@@ -585,7 +589,10 @@ public sealed class OcrScanner
             }
             if (!result.Ok)
                 throw new OcrRecognitionException(result.Error ?? "OCR worker trả kết quả lỗi.");
-            if (!allowEnhanced || !NeedsEnhancedRecognition(result, Math.Max(.78, mode.LowConfidence + .10))) return result;
+            var tinyGlyphRecovery = pendingTinyGlyphRecovery > 0;
+            if (!tinyGlyphRecovery && (!allowEnhanced || !NeedsEnhancedRecognition(result, Math.Max(.78, mode.LowConfidence + .10))))
+                return result;
+            if (tinyGlyphRecovery) pendingTinyGlyphRecovery--;
             try
             {
                 var enhanced = await CaptureFrameWithFfmpegAsync(
@@ -594,7 +601,12 @@ public sealed class OcrScanner
                 var alternate = FilterOffBaselineOverlayLines(await _ocr.RunAsync(
                     Convert.ToBase64String(enhanced), cancellationToken,
                     recoverShortBlank, activeShortText), request.Region);
-                if (alternate.Ok && PreferRecognition(alternate, result)) result = alternate;
+                if (alternate.Ok && PreferRecognition(alternate, result))
+                {
+                    var recoveredMoreText = alternate.Text.EnumerateRunes().Count() > result.Text.EnumerateRunes().Count();
+                    result = alternate;
+                    if (recoveredMoreText) pendingTinyGlyphRecovery = 0;
+                }
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception error)
@@ -626,9 +638,11 @@ public sealed class OcrScanner
             {
                 throw new OcrRecognitionException("OCR worker batch lỗi: " + error.Message, error);
             }
-            return results.Select(result =>
+            return results.Select(raw =>
             {
-                result = FilterOffBaselineOverlayLines(result, request.Region);
+                if (HasTinyNonChineseCompanion(raw))
+                    pendingTinyGlyphRecovery = Math.Max(pendingTinyGlyphRecovery, 4);
+                var result = FilterOffBaselineOverlayLines(raw, request.Region);
                 if (!result.Ok) throw new OcrRecognitionException(result.Error ?? "OCR worker trả kết quả batch lỗi.");
                 return result;
             }).ToArray();
@@ -1012,19 +1026,10 @@ public sealed class OcrScanner
         if (result.Lines.Count == 1 && IsUpperOffBaselineOverlay(result.Lines[0], region))
             return result with { Detected = false, Text = string.Empty, Confidence = 0, Lines = [] };
         if (result.Lines.Count < 2) return result;
-        var baseline = result.Lines
-            .Where(line => line.Box.Length >= 4
-                && line.Confidence >= .90
-                && ChineseSubtitleNormalizer.TryNormalize(line.Text, out _)
-                && Math.Abs(line.Box[2] - line.Box[0]) >= Math.Abs(line.Box[3] - line.Box[1]) * .8)
-            .OrderByDescending(line => line.Box[3])
-            .ThenByDescending(line => line.Confidence)
-            .FirstOrDefault();
+        var baseline = FindSubtitleBaseline(result);
         if (baseline is null) return result;
 
         var baselineHeight = Math.Max(1, Math.Abs(baseline.Box[3] - baseline.Box[1]));
-        var baselineWidth = Math.Max(1, Math.Abs(baseline.Box[2] - baseline.Box[0]));
-        var baselineArea = (long)baselineWidth * baselineHeight;
         var baselineCenter = baseline.Box[1] + baseline.Box[3];
         var retained = result.Lines.Where(line =>
         {
@@ -1033,11 +1038,7 @@ public sealed class OcrScanner
             var height = Math.Abs(line.Box[3] - line.Box[1]);
             var vertical = height > width * 1.5;
             var farAbove = baselineCenter - (line.Box[1] + line.Box[3]) > baselineHeight * 3;
-            var area = (long)Math.Max(1, width) * Math.Max(1, height);
-            var weakTinyNonChinese = line.Confidence < .80
-                && area * 8 < baselineArea
-                && !ChineseSubtitleNormalizer.TryNormalize(line.Text, out _);
-            return !(vertical || farAbove || weakTinyNonChinese);
+            return !(vertical || farAbove || IsTinyNonChineseCompanion(line, baseline));
         }).ToArray();
         if (retained.Length == result.Lines.Count) return result;
         return result with
@@ -1046,6 +1047,35 @@ public sealed class OcrScanner
             Confidence = retained.Average(line => line.Confidence),
             Lines = retained,
         };
+    }
+
+    private static bool HasTinyNonChineseCompanion(OcrResult result)
+    {
+        if (!result.Ok || result.Lines.Count < 2) return false;
+        var baseline = FindSubtitleBaseline(result);
+        return baseline is not null && result.Lines.Any(line =>
+            !ReferenceEquals(line, baseline) && IsTinyNonChineseCompanion(line, baseline));
+    }
+
+    private static OcrLine? FindSubtitleBaseline(OcrResult result) => result.Lines
+        .Where(line => line.Box.Length >= 4
+            && line.Confidence >= .90
+            && ChineseSubtitleNormalizer.TryNormalize(line.Text, out _)
+            && Math.Abs(line.Box[2] - line.Box[0]) >= Math.Abs(line.Box[3] - line.Box[1]) * .8)
+        .OrderByDescending(line => line.Box[3])
+        .ThenByDescending(line => line.Confidence)
+        .FirstOrDefault();
+
+    private static bool IsTinyNonChineseCompanion(OcrLine line, OcrLine baseline)
+    {
+        if (line.Box.Length < 4 || ReferenceEquals(line, baseline)
+            || ChineseSubtitleNormalizer.TryNormalize(line.Text, out _)) return false;
+        var width = Math.Max(1, Math.Abs(line.Box[2] - line.Box[0]));
+        var height = Math.Max(1, Math.Abs(line.Box[3] - line.Box[1]));
+        var baselineWidth = Math.Max(1, Math.Abs(baseline.Box[2] - baseline.Box[0]));
+        var baselineHeight = Math.Max(1, Math.Abs(baseline.Box[3] - baseline.Box[1]));
+        return (long)width * height * 8 < (long)baselineWidth * baselineHeight
+            && height * 2 < baselineHeight;
     }
 
     private static bool IsUpperOffBaselineOverlay(OcrLine line, OcrRegion region)
