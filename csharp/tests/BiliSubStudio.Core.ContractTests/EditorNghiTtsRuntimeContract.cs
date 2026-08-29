@@ -148,8 +148,8 @@ internal static class EditorNghiTtsRuntimeContract
                 Check(cues[index].GetProperty("fit_method").GetString() == "piper-length-scale"
                     && attempts is >= 1 and <= 10 && calls >= attempts && calls <= attempts + 10
                     && scale is >= .85 and <= 1.20 && generated > 0 && generated + padding == frames
-                    && padding >= 0 && padding <= Math.Max(1L, Math.Min(882L, frames / 50)),
-                    "native Piper rate/retry evidence and small padding only; no playback speed fitting");
+                    && padding >= 0 && padding < frames,
+                    "native Piper rate/retry evidence and trailing silence only; no playback speed fitting");
                 File.Copy(clip, Path.Combine(paths.Root, $"sentence-{index + 1}.wav"), overwrite: true);
             }
         }

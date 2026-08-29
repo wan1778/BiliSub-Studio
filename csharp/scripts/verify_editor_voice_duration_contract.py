@@ -50,13 +50,16 @@ class VoiceDurationContract(unittest.TestCase):
         self.assertTrue(worker.needs_rate_review(1.16, 1))
         self.assertFalse(worker.needs_rate_review(1.5, 1.5))
 
-    def test_native_metadata_rejects_old_method_and_excess_silence(self):
+    def test_native_metadata_keeps_whole_speech_and_reviews_long_tail_silence(self):
         record = {"fit_method": "piper-length-scale", "raw_duration": 2.4, "frames": 44100,
                   "generated_frames": 43800, "padding_frames": 300, "base_length_scale": 1,
                   "length_scale": .95, "synthesis_attempts": 2, "status": "fit"}
         self.assertTrue(worker.native_record_valid(record, 44100, False))
         self.assertTrue(worker.native_record_valid(record | {"length_scale": .88, "status": "review"}, 44100, False))
-        for change in ({"fit_method": "atempo"}, {"padding_frames": 1000, "generated_frames": 43100},
+        long_tail = record | {"padding_frames": 1000, "generated_frames": 43100, "status": "review"}
+        self.assertTrue(worker.native_record_valid(long_tail, 44100, False))
+        self.assertFalse(worker.native_record_valid(long_tail | {"status": "fit"}, 44100, False))
+        for change in ({"fit_method": "atempo"}, {"padding_frames": 44100, "generated_frames": 0},
                        {"generated_frames": 43700}, {"base_length_scale": 0}, {"length_scale": .84},
                        {"length_scale": float("nan")}, {"synthesis_attempts": 0}, {"synthesis_attempts": 11},
                        {"synthesis_attempts": 1}, {"status": "review"}):
@@ -68,7 +71,7 @@ class VoiceDurationContract(unittest.TestCase):
         self.assertEqual(worker.padding_budget(44100), 882)
         self.assertEqual(worker.padding_budget(22050), 441)
 
-    def test_padding_copies_every_pcm_byte_and_refuses_overflow(self):
+    def test_padding_copies_every_pcm_byte_and_refuses_cutting(self):
         # Tiny byte fixture only: no mock model or generated-speech claim.
         pcm = b"\x01\x00\xff\x7f\x00\x80\x02\x00"
         with tempfile.TemporaryDirectory(prefix="bilisub-duration-") as directory:
@@ -83,9 +86,11 @@ class VoiceDurationContract(unittest.TestCase):
             with self.assertRaises(ValueError):
                 worker.pad_exact_clip(raw, Path(directory) / "must-not-cut.wav", 3)
             self.assertFalse((Path(directory) / "must-not-cut.wav").exists())
-            with self.assertRaises(ValueError):
-                worker.pad_exact_clip(raw, Path(directory) / "must-not-pad-seconds.wav", 44100)
-            self.assertFalse((Path(directory) / "must-not-pad-seconds.wav").exists())
+            long_tail = Path(directory) / "long-tail.wav"
+            worker.pad_exact_clip(raw, long_tail, 44100)
+            with wave.open(str(long_tail), "rb") as source:
+                self.assertEqual(source.getnframes(), 44100)
+                self.assertEqual(source.readframes(4), pcm)
 
     def test_changed_whisper_window_invalidates_same_srt_cache(self):
         cue = self.cue()
@@ -136,7 +141,7 @@ class VoiceDurationContract(unittest.TestCase):
         self.assertIn('candidate_cues.append(fallback)', main)
         self.assertIn('"synthesis_calls": synthesis_calls', main)
         self.assertIn('"event": "attempt"', main)
-        self.assertEqual(worker.TIMING_ALGORITHM, "whole-cue-piper-rate-v6")
+        self.assertEqual(worker.TIMING_ALGORITHM, "whole-cue-piper-rate-v7")
         self.assertIn("biên giữ chất giọng 0,85–1,20×", source)
         self.assertIn('cue["timing_source"] == "srt-fallback"', source)
         self.assertIn('output_status = "review"', source)
@@ -153,9 +158,9 @@ class VoiceDurationContract(unittest.TestCase):
         self.assertIn("(index - 1) / (double)total * 53", service)
         timing = (ROOT / "csharp/src/BiliSubStudio.Core/Editor/LocalTtsService.Timing.cs").read_text(encoding="utf-8")
         self.assertIn("relativeScale is < .85 or > 1.20", timing)
-        self.assertIn("return relativeScale is < .90 or > 1.15;", timing)
+        self.assertIn("cue.PaddingFrames > precisionPaddingBudget", timing)
         installer = (ROOT / "csharp/src/BiliSubStudio.Core/Editor/LocalTtsInstaller.cs").read_text(encoding="utf-8")
-        self.assertIn('TimingAlgorithm = "whole-cue-piper-rate-v6"', installer)
+        self.assertIn('TimingAlgorithm = "whole-cue-piper-rate-v7"', installer)
 
 
 if __name__ == "__main__":

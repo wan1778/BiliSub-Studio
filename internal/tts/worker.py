@@ -15,7 +15,7 @@ ENGINE = "nghi-tts"
 ENGINE_VERSION = "nghi-tts-1.0.0"
 MODEL_SHA256 = "2140977786d76d834736c059dacfa553d4931dac2b2c7aaaea438bb2aa9da697"
 CONFIG_SHA256 = "971f57f8d504223fee5b40d664f503cf769baf7db21f7d2ae0554a75d07de2f8"
-TIMING_ALGORITHM = "whole-cue-piper-rate-v6"
+TIMING_ALGORITHM = "whole-cue-piper-rate-v7"
 VOICE_REVISION = MODEL_SHA256 + ":" + CONFIG_SHA256 + ":" + TIMING_ALGORITHM
 VOICE_NAME = "ngoc_huyen"
 SAMPLE_RATE = 22050
@@ -87,8 +87,9 @@ def cue_window(cue: dict):
 
 
 def padding_budget(target_frames: int) -> int:
-    # Native model durations are quantized and may vary between passes. Accept
-    # only a small short: at most 40 ms AND 2% of the target (minimum one frame).
+    # A short remainder is considered a precise fit. Larger trailing silence is
+    # still safe because every model-produced PCM sample is retained, but the
+    # cue is marked for review instead of rejecting valid speech.
     return max(1, min(round(.04 * SAMPLE_RATE), target_frames // 50))
 
 
@@ -102,13 +103,15 @@ def native_record_valid(record: dict, target_frames: int, natural_sample: bool) 
     if (record["fit_method"] != FIT_METHOD or not math.isfinite(base) or base <= 0
             or not math.isfinite(scale) or not MIN_RATE_SCALE <= scale / base <= MAX_RATE_SCALE
             or type(generated) is not int or generated <= 0 or type(padding) is not int
-            or not 0 <= padding <= padding_budget(target_frames) or generated + padding != record["frames"]
+            or not 0 <= padding < target_frames or generated + padding != record["frames"]
+            or not natural_sample and record["frames"] != target_frames
             or type(attempts) is not int or not 1 <= attempts <= MAX_SYNTHESIS_ATTEMPTS):
         return False
     if (attempts == 1 and (scale != base or abs(record["raw_duration"] - generated / SAMPLE_RATE) > 1e-9)
             or natural_sample and (padding != 0 or attempts != 1)):
         return False
-    return record["status"] == ("review" if needs_rate_review(scale, base) else "fit")
+    needs_review = needs_rate_review(scale, base) or padding > padding_budget(target_frames)
+    return record["status"] == ("review" if needs_review else "fit")
 
 
 def load_clip(path: Path, key: str, cue: dict):
@@ -162,13 +165,13 @@ def next_length_scale(scale: float, frames: int, aim_frames: int, base: float,
 
 
 def pad_exact_clip(source_path: Path, output_path: Path, target_frames: int):
-    # Copy all model-produced PCM unchanged; only a small trailing remainder may
-    # be silence. This is not stretching, resampling or cutting spoken audio.
+    # Copy all model-produced PCM unchanged and fill only the unused tail with
+    # silence. This is not stretching, resampling or cutting spoken audio.
     with wave.open(str(source_path), "rb") as source:
         frames = source.getnframes()
         data = source.readframes(frames)
-        if not 0 <= target_frames - frames <= padding_budget(target_frames) or len(data) != frames * 2:
-            raise ValueError("Refusing to cut speech or hide a duration mismatch with silence")
+        if not 0 <= target_frames - frames or frames <= 0 or len(data) != frames * 2:
+            raise ValueError("Refusing to cut or alter model-produced speech")
         with wave.open(str(output_path), "wb") as output:
             output.setparams(source.getparams())
             output.writeframes(data)
@@ -194,7 +197,7 @@ def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str, timi
         if attempt == 1:
             raw_frames = frames
         natural_sample = timing_source == "sample" and attempt == 1 and frames <= target_frames
-        if natural_sample or 0 <= target_frames - frames <= padding_budget(target_frames):
+        if natural_sample or frames <= target_frames:
             padding = 0 if natural_sample else target_frames - frames
             output_path = candidate
             if padding:
@@ -207,7 +210,8 @@ def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str, timi
                       "frames": output_frames, "target_frames": target_frames, "timing_source": timing_source,
                       "fit_method": FIT_METHOD, "base_length_scale": base, "length_scale": scale,
                       "generated_frames": frames, "padding_frames": padding, "synthesis_attempts": attempt,
-                      "status": "review" if needs_rate_review(scale, base) else "fit"}
+                      "status": "review" if needs_rate_review(scale, base)
+                      or padding > padding_budget(target_frames) else "fit"}
             return output_path, record
         if frames > target_frames:
             upper = scale if upper is None else min(upper, scale)

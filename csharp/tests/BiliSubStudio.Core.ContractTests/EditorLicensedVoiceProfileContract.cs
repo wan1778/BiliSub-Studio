@@ -193,12 +193,13 @@ internal static class EditorLicensedVoiceProfileContract
             System.Text.Json.JsonSerializer.Serialize(values), cueType, json)!;
         Equal(false, validate.Invoke(null, [Cue(fixture), 44100L, false, 22050]));
         Equal(true, validate.Invoke(null, [Cue(new(fixture) { ["length_scale"] = .88 }), 44100L, false, 22050]));
+        Equal(true, validate.Invoke(null, [Cue(new(fixture) { ["generated_frames"] = 43100L, ["padding_frames"] = 1000L }), 44100L, false, 22050]));
         Equal(false, validate.Invoke(null, [Cue(new(fixture) { ["synthesis_calls"] = 12 }), 44100L, false, 22050]));
         Equal(false, validate.Invoke(null, [Cue(new(fixture) { ["cache_hit"] = true, ["synthesis_calls"] = 0 }), 44100L, false, 22050]));
         var invalid = new Dictionary<string, object>[]
         {
             new(fixture) { ["fit_method"] = "atempo" },
-            new(fixture) { ["generated_frames"] = 43100L, ["padding_frames"] = 1000L },
+            new(fixture) { ["generated_frames"] = 0L, ["padding_frames"] = 44100L },
             new(fixture) { ["generated_frames"] = 43700L },
             new(fixture) { ["base_length_scale"] = 0d },
             new(fixture) { ["length_scale"] = .84 },
