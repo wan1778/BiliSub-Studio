@@ -86,6 +86,8 @@ def main() -> int:
     require("Math.Min(explicitValue" not in selector and
             "ProbeTopologyLevelAsync(ffmpeg, request, explicitValue" in selector,
             "manual OCR topology is still silently downgraded instead of probing the exact request")
+    require('<ComboBox Grid.Column="2" x:Name="LanesBox" Header="Luồng OCR" SelectedIndex="0"><x:String>auto</x:String><x:String>1</x:String><x:String>2</x:String><x:String>3</x:String><x:String>4</x:String><x:String>5</x:String><x:String>6</x:String><x:String>7</x:String><x:String>8</x:String><x:String>16</x:String></ComboBox>' in page_xaml,
+            "manual OCR topology selector does not expose auto, every level 1..8, and 16")
     require("ConfigureWorkerPoolAsync(level" in probe and "actual != level" in probe and
             "Enumerable.Range(0, level)" in probe and "CaptureFrameWithFfmpegAsync" in probe and
             "_ocr.RunAsync" in probe and "RunRoundAsync(0)" in probe and "RunRoundAsync(2)" in probe and

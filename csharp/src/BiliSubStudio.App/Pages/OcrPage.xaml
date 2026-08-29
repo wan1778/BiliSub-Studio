@@ -29,7 +29,7 @@
                             <TextBlock FontSize="10" Foreground="{ThemeResource SuccessBrush}" Text="Checkpoint" />
                         </Border>
                     </StackPanel>
-                    <TextBlock Style="{StaticResource MutedTextStyle}" Text="CPU/GPU/Hybrid · topology 1/2/4/8/16 · checkpoint schema 4" />
+                    <TextBlock Style="{StaticResource MutedTextStyle}" Text="CPU/GPU/Hybrid · topology 1–8/16 · checkpoint schema 4" />
                 </StackPanel>
                 <Button
                     x:Name="PickVideoButton"
@@ -128,7 +128,7 @@
                                         <ComboBoxItem Content="Chính xác" Tag="accurate" />
                                         <ComboBoxItem Content="Nhanh" Tag="fast" />
                                     </ComboBox>
-                                    <ComboBox Grid.Column="2" x:Name="LanesBox" Header="Luồng OCR" SelectedIndex="0"><x:String>auto</x:String><x:String>1</x:String><x:String>2</x:String><x:String>4</x:String><x:String>8</x:String><x:String>16</x:String></ComboBox>
+                                    <ComboBox Grid.Column="2" x:Name="LanesBox" Header="Luồng OCR" SelectedIndex="0"><x:String>auto</x:String><x:String>1</x:String><x:String>2</x:String><x:String>3</x:String><x:String>4</x:String><x:String>5</x:String><x:String>6</x:String><x:String>7</x:String><x:String>8</x:String><x:String>16</x:String></ComboBox>
                                 </Grid>
                                 <StackPanel Orientation="Horizontal" Spacing="7">
                                     <Button x:Name="PrepareOcrButton" Click="Prepare_Click" Content="Chuẩn bị OCR" />
