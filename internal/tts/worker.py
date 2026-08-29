@@ -15,12 +15,17 @@ ENGINE = "nghi-tts"
 ENGINE_VERSION = "nghi-tts-1.0.0"
 MODEL_SHA256 = "2140977786d76d834736c059dacfa553d4931dac2b2c7aaaea438bb2aa9da697"
 CONFIG_SHA256 = "971f57f8d504223fee5b40d664f503cf769baf7db21f7d2ae0554a75d07de2f8"
-TIMING_ALGORITHM = "whole-cue-piper-rate-v8"
+TIMING_ALGORITHM = "whole-cue-piper-sentence-group-v9"
 VOICE_REVISION = MODEL_SHA256 + ":" + CONFIG_SHA256 + ":" + TIMING_ALGORITHM
 VOICE_NAME = "ngoc_huyen"
 SAMPLE_RATE = 22050
 FIT_METHOD = "piper-length-scale"
 MAX_SYNTHESIS_ATTEMPTS = 10
+MAX_GROUP_SYNTHESIS_ATTEMPTS = 10
+MIN_GROUP_RATE_SCALE = 0.45
+MAX_GROUP_GAP_FRAMES = round(.12 * SAMPLE_RATE)
+MAX_GROUP_DURATION_FRAMES = 12 * SAMPLE_RATE
+MAX_GROUP_CUES = 12
 SILENCE_AMPLITUDE = 32
 SILENCE_GUARD_FRAMES = round(.05 * SAMPLE_RATE)
 # Preserve Vietnamese voice identity instead of forcing arbitrary slots. Rates
@@ -104,8 +109,9 @@ def native_record_valid(record: dict, target_frames: int, natural_sample: bool) 
     source, generated = record["source_frames"], record["generated_frames"]
     trimmed, padding = record["trimmed_silence_frames"], record["padding_frames"]
     attempts = record["synthesis_attempts"]
+    minimum_rate = MIN_GROUP_RATE_SCALE if record.get("timing_source") == "sentence-group" else MIN_RATE_SCALE
     if (record["fit_method"] != FIT_METHOD or not math.isfinite(base) or base <= 0
-            or not math.isfinite(scale) or not MIN_RATE_SCALE <= scale / base <= MAX_RATE_SCALE
+            or not math.isfinite(scale) or not minimum_rate <= scale / base <= MAX_RATE_SCALE
             or type(source) is not int or source <= 0 or type(generated) is not int or generated <= 0
             or type(trimmed) is not int or not 0 <= trimmed < source or source - trimmed != generated
             or type(padding) is not int
@@ -116,7 +122,8 @@ def native_record_valid(record: dict, target_frames: int, natural_sample: bool) 
     if (attempts == 1 and (scale != base or abs(record["raw_duration"] - source / SAMPLE_RATE) > 1e-9)
             or natural_sample and (trimmed != 0 or padding != 0 or attempts != 1)):
         return False
-    needs_review = needs_rate_review(scale, base) or trimmed > 0 or padding > padding_budget(target_frames)
+    needs_review = (record.get("timing_source") == "sentence-group" or needs_rate_review(scale, base)
+                    or trimmed > 0 or padding > padding_budget(target_frames))
     return record["status"] == ("review" if needs_review else "fit")
 
 
@@ -203,6 +210,183 @@ def trim_trailing_silence_to_fit(source_path: Path, output_path: Path, target_fr
         output.setparams(params)
         output.writeframes(data[:target_frames * 2])
     return frames - target_frames
+
+
+def trim_trailing_silence(source_path: Path, output_path: Path, guard_frames: int) -> int:
+    import numpy as np
+    with wave.open(str(source_path), "rb") as source:
+        frames = source.getnframes()
+        data = source.readframes(frames)
+        params = source.getparams()
+    if frames <= 0 or len(data) != frames * 2:
+        raise ValueError("NGHI group clip is empty or truncated")
+    samples = np.frombuffer(data, dtype="<i2").astype(np.int32)
+    active = np.flatnonzero(np.abs(samples) > SILENCE_AMPLITUDE)
+    if len(active) == 0:
+        raise ValueError("NGHI group clip has no active speech")
+    if type(guard_frames) is not int or guard_frames < 0:
+        raise ValueError("Invalid sentence-group silence guard")
+    retained = min(frames, int(active[-1]) + 1 + guard_frames)
+    if retained == frames:
+        return 0
+    with wave.open(str(output_path), "wb") as output:
+        output.setparams(params)
+        output.writeframes(data[:retained * 2])
+    return frames - retained
+
+
+def ends_sentence(text: str) -> bool:
+    value = text.rstrip()
+    while value and value[-1] in "\"'”’)]}":
+        value = value[:-1].rstrip()
+    return bool(value) and value[-1] in ".!?…"
+
+
+def sentence_groups(cues: list[dict], texts: list[str]) -> list[list[int]]:
+    if len(cues) != len(texts):
+        raise ValueError("TTS sentence grouping input mismatch")
+    groups, current = [], []
+    for index, cue in enumerate(cues):
+        if current:
+            previous = cues[current[-1]]
+            gap_frames = round(cue["cue_start"] * SAMPLE_RATE) - round(previous["cue_end"] * SAMPLE_RATE)
+            group_start = round(cues[current[0]]["cue_start"] * SAMPLE_RATE)
+            candidate_end = round(cue["cue_end"] * SAMPLE_RATE)
+            if (previous["timing_source"] == "sample" or cue["timing_source"] == "sample"
+                    or gap_frames < 0 or gap_frames > MAX_GROUP_GAP_FRAMES
+                    or ends_sentence(texts[current[-1]]) or len(current) >= MAX_GROUP_CUES
+                    or candidate_end - group_start > MAX_GROUP_DURATION_FRAMES):
+                groups.append(current)
+                current = []
+        current.append(index)
+    if current:
+        groups.append(current)
+    return groups
+
+
+def group_plan_identity(cues: list[dict], texts: list[str], worker_sha: str) -> str:
+    value = [VOICE_REVISION, PACKAGES, worker_sha,
+             [[cue["id"], cue["cue_start"], cue["cue_end"], text] for cue, text in zip(cues, texts)]]
+    return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def load_group_plan(path: Path, key: str, cues: list[dict]) -> list[dict] | None:
+    try:
+        plan = json.loads(path.read_text(encoding="utf-8"))
+        if plan.get("schema") != 1 or plan.get("key") != key or plan.get("timing_source") != "sentence-group":
+            return None
+        windows = plan["windows"]
+        if len(windows) != len(cues):
+            return None
+        cursor = round(cues[0]["cue_start"] * SAMPLE_RATE)
+        group_end = round(cues[-1]["cue_end"] * SAMPLE_RATE)
+        result = []
+        for cue, window in zip(cues, windows):
+            if (window["id"] != cue["id"] or window["start_sample"] != cursor
+                    or type(window["target_frames"]) is not int or window["target_frames"] <= 0):
+                return None
+            active = dict(cue)
+            active["voice_start"] = cursor / SAMPLE_RATE
+            cursor += window["target_frames"]
+            active["voice_end"] = cursor / SAMPLE_RATE
+            active["timing_source"] = "sentence-group"
+            result.append(active)
+        return result if cursor == group_end else None
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def synthesize_sentence_group(voice, cues: list[dict], texts: list[str], run_root: Path,
+                              clip_root: Path, worker_sha: str, plan_path: Path, plan_key: str,
+                              on_attempt):
+    base = float(voice.config.length_scale)
+    if not math.isfinite(base) or base <= 0:
+        raise ValueError("Invalid length_scale in verified model config")
+    group_start = round(cues[0]["cue_start"] * SAMPLE_RATE)
+    group_end = round(cues[-1]["cue_end"] * SAMPLE_RATE)
+    group_frames = group_end - group_start
+    if group_frames <= 0:
+        raise ValueError("Sentence group has no source time")
+    scale = base
+    raw_frames = [0] * len(cues)
+    selected = None
+    for attempt in range(1, MAX_GROUP_SYNTHESIS_ATTEMPTS + 1):
+        measurements = []
+        for local_index, (cue, text) in enumerate(zip(cues, texts)):
+            on_attempt(local_index, attempt, scale)
+            raw_path = run_root / f"group-{plan_key}-{local_index}-native.wav"
+            trimmed_path = run_root / f"group-{plan_key}-{local_index}-trimmed.wav"
+            synthesize_cue(voice, text, raw_path, scale)
+            source_frames = len(read_wav(raw_path))
+            if attempt == 1:
+                raw_frames[local_index] = source_frames
+            guard = SILENCE_GUARD_FRAMES if local_index == len(cues) - 1 else round(.01 * SAMPLE_RATE)
+            trimmed = trim_trailing_silence(raw_path, trimmed_path, guard)
+            retained = source_frames - trimmed
+            measurements.append({"source_path": trimmed_path if trimmed else raw_path,
+                                 "source_frames": source_frames, "trimmed": trimmed, "retained": retained})
+        total_retained = sum(item["retained"] for item in measurements)
+        if total_retained <= group_frames:
+            selected = (attempt, scale, measurements)
+            break
+        corrected = max(base * MIN_GROUP_RATE_SCALE, scale * group_frames / total_retained)
+        if corrected >= scale:
+            corrected = max(base * MIN_GROUP_RATE_SCALE, scale * .9)
+        if math.isclose(corrected, scale, rel_tol=0, abs_tol=1e-7):
+            break
+        scale = corrected
+    if selected is None:
+        raise RuntimeError(
+            f"Nhóm câu {cues[0]['id']}..{cues[-1]['id']} vẫn dài hơn tổng timecode ở tốc độ model-native thấp nhất")
+
+    attempt, scale, measurements = selected
+    retained_suffix = [0] * (len(measurements) + 1)
+    for index in range(len(measurements) - 1, -1, -1):
+        retained_suffix[index] = retained_suffix[index + 1] + measurements[index]["retained"]
+    cursor = group_start
+    entries, windows = [], []
+    for index, (cue, text, measurement) in enumerate(zip(cues, texts, measurements)):
+        if index == len(cues) - 1:
+            window_end = group_end
+        else:
+            desired_end = round(cue["cue_end"] * SAMPLE_RATE)
+            earliest_end = cursor + measurement["retained"]
+            latest_end = group_end - retained_suffix[index + 1]
+            window_end = max(earliest_end, min(desired_end, latest_end))
+        target_frames = window_end - cursor
+        padding = target_frames - measurement["retained"]
+        if target_frames <= 0 or padding < 0:
+            raise RuntimeError("Sentence group could not allocate every complete speech clip")
+        active = dict(cue)
+        active["voice_start"] = cursor / SAMPLE_RATE
+        cursor = window_end
+        active["voice_end"] = cursor / SAMPLE_RATE
+        active["timing_source"] = "sentence-group"
+        key = cache_identity(active, text, worker_sha)
+        cached_path = clip_root / (key + ".wav")
+        final_path = measurement["source_path"]
+        if padding:
+            padded = run_root / (key + "-group-fit.wav")
+            pad_exact_clip(final_path, padded, target_frames)
+            final_path = padded
+        record = {"raw_duration": raw_frames[len(entries)] / SAMPLE_RATE,
+                  "fitted_duration": target_frames / SAMPLE_RATE, "frames": target_frames,
+                  "target_frames": target_frames, "timing_source": "sentence-group",
+                  "fit_method": FIT_METHOD, "base_length_scale": base, "length_scale": scale,
+                  "source_frames": measurement["source_frames"], "generated_frames": measurement["retained"],
+                  "trimmed_silence_frames": measurement["trimmed"], "padding_frames": padding,
+                  "synthesis_attempts": attempt, "status": "review", "key": key,
+                  "sha256": sha256(final_path)}
+        final_path.replace(cached_path)
+        atomic_json(cached_path.with_suffix(".json"), record)
+        windows.append({"id": cue["id"], "start_sample": cursor - target_frames,
+                        "target_frames": target_frames})
+        entries.append((active, key, cached_path, record, False, attempt))
+    if cursor != group_end:
+        raise RuntimeError("Sentence group allocation did not preserve its source boundary")
+    atomic_json(plan_path, {"schema": 1, "key": plan_key, "timing_source": "sentence-group",
+                            "windows": windows})
+    return entries
 
 
 def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str, timing_source: str, on_attempt):
@@ -397,11 +581,16 @@ def main() -> int:
         raise ValueError("NGHI model sample rate mismatch")
     emit({"event": "ready", "cues": len(cues), "voice": VOICE_NAME, "model_loads": 1,
           "engine": ENGINE, "sample_rate": SAMPLE_RATE, "voice_revision": VOICE_REVISION})
-    clips, results = [], []
-    for index, cue in enumerate(cues):
-        text = normalizer.normalize(cue["text"]).strip()
-        if not text:
-            raise ValueError("Vietnamese normalization returned empty text")
+    texts = [normalizer.normalize(cue["text"]).strip() for cue in cues]
+    if any(not text for text in texts):
+        raise ValueError("Vietnamese normalization returned empty text")
+
+    def emit_attempt(index: int, cue: dict, attempt: int, maximum: int, timing_source: str, scale: float):
+        emit({"event": "attempt", "index": index + 1, "total": len(cues), "id": cue["id"],
+              "attempt": attempt, "max_attempts": maximum,
+              "timing_source": timing_source, "length_scale": scale})
+
+    def resolve_individual(index: int, cue: dict, text: str):
         candidate_cues = [cue]
         fallback = srt_fallback_cue(cue)
         if fallback is not None:
@@ -411,51 +600,80 @@ def main() -> int:
             candidate_key = cache_identity(candidate_cue, text, worker_sha)
             candidate_path = clip_root / (candidate_key + ".wav")
             candidates.append((candidate_cue, candidate_key, candidate_path))
-
-        active_cue = key = cached_path = record = None
-        cache_hit = False
-        synthesis_calls = 0
-        # Check both the precise Whisper window and its deterministic full-SRT
-        # fallback before synthesizing. A fallback cache must remain reusable.
         for candidate_cue, candidate_key, candidate_path in candidates:
             candidate_record = load_clip(candidate_path, candidate_key, candidate_cue)
             if candidate_record is not None:
-                active_cue, key, cached_path, record = candidate_cue, candidate_key, candidate_path, candidate_record
-                cache_hit = True
-                break
-        if record is None:
-            failures = []
-            for candidate_cue, candidate_key, candidate_path in candidates:
-                _, candidate_target_frames = cue_window(candidate_cue)
-                phase_calls = 0
+                return candidate_cue, candidate_key, candidate_path, candidate_record, True, 0
+        failures = []
+        synthesis_calls = 0
+        for candidate_cue, candidate_key, candidate_path in candidates:
+            _, candidate_target_frames = cue_window(candidate_cue)
+            phase_calls = 0
 
-                def on_attempt(attempt, scale):
-                    nonlocal synthesis_calls, phase_calls
-                    synthesis_calls += 1
-                    phase_calls += 1
-                    emit({"event": "attempt", "index": index + 1, "total": len(cues), "id": cue["id"],
-                          "attempt": attempt, "max_attempts": MAX_SYNTHESIS_ATTEMPTS,
-                          "timing_source": candidate_cue["timing_source"], "length_scale": scale})
+            def on_attempt(attempt, scale):
+                nonlocal synthesis_calls, phase_calls
+                synthesis_calls += 1
+                phase_calls += 1
+                emit_attempt(index, cue, attempt, MAX_SYNTHESIS_ATTEMPTS, candidate_cue["timing_source"], scale)
+            try:
+                final_path, candidate_record = fit_cue(
+                    voice, text, candidate_target_frames, run_root, candidate_key,
+                    candidate_cue["timing_source"], on_attempt)
+            except (ValueError, RuntimeError) as error:
+                failures.append(f"{candidate_cue['timing_source']}: {error}")
+                continue
+            if phase_calls != candidate_record["synthesis_attempts"]:
+                raise RuntimeError("TTS attempt accounting mismatch")
+            candidate_record.update({"key": candidate_key, "sha256": sha256(final_path)})
+            final_path.replace(candidate_path)
+            atomic_json(candidate_path.with_suffix(".json"), candidate_record)
+            return candidate_cue, candidate_key, candidate_path, candidate_record, False, synthesis_calls
+        raise RuntimeError(
+            f"Cue {index + 1} ({cue['id']}): không thể đọc vừa cả nhịp Whisper lẫn toàn timecode SRT. "
+            + " | ".join(failures))
+
+    ordered_entries = []
+    for group_indices in sentence_groups(cues, texts):
+        group_cues = [cues[index] for index in group_indices]
+        group_texts = [texts[index] for index in group_indices]
+        plan_key = group_plan_identity(group_cues, group_texts, worker_sha)
+        plan_path = clip_root / (plan_key + ".group.json")
+        group_entries = []
+        if len(group_indices) > 1:
+            planned_cues = load_group_plan(plan_path, plan_key, group_cues)
+            if planned_cues is not None:
+                for active_cue, text in zip(planned_cues, group_texts):
+                    key = cache_identity(active_cue, text, worker_sha)
+                    cached_path = clip_root / (key + ".wav")
+                    record = load_clip(cached_path, key, active_cue)
+                    if record is None:
+                        group_entries = []
+                        break
+                    group_entries.append((active_cue, key, cached_path, record, True, 0))
+        if not group_entries:
+            try:
+                group_entries = [resolve_individual(index, cues[index], texts[index]) for index in group_indices]
+            except RuntimeError as individual_error:
+                if len(group_indices) == 1:
+                    raise
+
+                def on_group_attempt(local_index, attempt, scale):
+                    index = group_indices[local_index]
+                    emit_attempt(index, cues[index], attempt, MAX_GROUP_SYNTHESIS_ATTEMPTS, "sentence-group", scale)
                 try:
-                    final_path, candidate_record = fit_cue(
-                        voice, text, candidate_target_frames, run_root, candidate_key,
-                        candidate_cue["timing_source"], on_attempt)
-                except (ValueError, RuntimeError) as error:
-                    failures.append(f"{candidate_cue['timing_source']}: {error}")
-                    continue
-                if phase_calls != candidate_record["synthesis_attempts"]:
-                    raise RuntimeError("TTS attempt accounting mismatch")
-                candidate_record.update({"key": candidate_key, "sha256": sha256(final_path)})
-                final_path.replace(candidate_path)
-                atomic_json(candidate_path.with_suffix(".json"), candidate_record)
-                active_cue, key, cached_path, record = candidate_cue, candidate_key, candidate_path, candidate_record
-                break
-            if record is None:
-                detail = " | ".join(failures)
-                raise RuntimeError(
-                    f"Cue {index + 1} ({cue['id']}): không thể đọc vừa cả nhịp Whisper lẫn toàn timecode SRT. "
-                    f"{detail}")
+                    group_entries = synthesize_sentence_group(
+                        voice, group_cues, group_texts, run_root, clip_root, worker_sha,
+                        plan_path, plan_key, on_group_attempt)
+                except (ValueError, RuntimeError) as group_error:
+                    raise RuntimeError(f"{individual_error} | sentence-group: {group_error}") from group_error
+        ordered_entries.extend(group_entries)
 
+    if len(ordered_entries) != len(cues):
+        raise RuntimeError("TTS sentence grouping lost or duplicated cues")
+
+    clips, results = [], []
+    for index, (cue, entry) in enumerate(zip(cues, ordered_entries)):
+        active_cue, key, cached_path, record, cache_hit, synthesis_calls = entry
         start_sample, target_frames = cue_window(active_cue)
         # The clip already has the required length. Place ALL its samples;
         # never hide a timing failure by truncating the clip at the SRT boundary.
@@ -464,7 +682,8 @@ def main() -> int:
             raise ValueError("Fitted voice exceeds the source speech window")
         clips.append({"path": cached_path, "start": active_cue["voice_start"], "frames": record["frames"],
                       "start_sample": start_sample, "end_sample": end_sample})
-        output_status = "review" if record["status"] != "fit" or active_cue["timing_source"] == "srt-fallback" else "fit"
+        output_status = ("review" if record["status"] != "fit"
+                         or active_cue["timing_source"] in ("srt-fallback", "sentence-group") else "fit")
         results.append({"id": cue["id"], "voice": VOICE_NAME, "voice_review": output_status == "review",
                         "raw_duration": record["raw_duration"], "fitted_duration": record["fitted_duration"],
                         "status": output_status, "cache_hit": cache_hit,

@@ -48,8 +48,9 @@ require("var fallback = timing.Words.Count == 0;" in preview
         "cue preview must expose the exact full-SRT fallback used by TTS")
 require("_voiceCueWindows.TryGetValue(cue.Id, out var actualWindow)" in preview
         and "EditorTtsCueWindow window" in preview
-        and 'window.TimingSource == "srt-fallback"' in preview,
-        "cue preview must use the worker-selected fallback window, including after project reopen")
+        and '"srt-fallback" =>' in preview
+        and '"sentence-group" =>' in preview,
+        "cue preview must use every worker-selected fallback/group window, including after project reopen")
 require("track.Path" in preview and "MediaSource.CreateFromStorageFile(file)" in preview,
         "cue preview must read the completed master voice track")
 require("sender.PlaybackSession.Position = TimeSpan.FromSeconds(item.SourceStart)" in preview

@@ -518,7 +518,7 @@ public sealed class EditorProjectStore
             if (id.Length == 0 || !ids.Add(id)
                 || !double.IsFinite(window.VoiceStart) || !double.IsFinite(window.VoiceEnd)
                 || window.VoiceStart < trackStart || window.VoiceEnd <= window.VoiceStart || window.VoiceEnd > trackEnd + .001
-                || timingSource is not ("whisper" or "srt-fallback") || status is not ("fit" or "review"))
+                || timingSource is not ("whisper" or "srt-fallback" or "sentence-group") || status is not ("fit" or "review"))
                 throw new InvalidDataException("Project Editor chứa cửa sổ timing voice không hợp lệ.");
             result[index] = window with { Id = id, TimingSource = timingSource, Status = status };
         }

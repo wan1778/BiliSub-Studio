@@ -172,9 +172,11 @@ internal sealed partial class LocalTtsService : IDisposable
                                 var index = GetInt(root, "index");
                                 var total = GetInt(root, "total");
                                 var attempt = GetInt(root, "attempt");
-                                if (total == cues.Count && index >= 1 && index <= total && attempt is >= 1 and <= 10)
+                                var maximum = GetInt(root, "max_attempts");
+                                if (total == cues.Count && index >= 1 && index <= total && attempt >= 1
+                                    && maximum is >= 1 and <= 10 && attempt <= maximum)
                                     job.Set("tts-generate", 38 + (index - 1) / (double)total * 53,
-                                        $"Model đang đọc nguyên câu {index}/{total} · lượt {attempt}/10 để canh thời lượng · không kéo tốc độ file...");
+                                        $"Model đang đọc nguyên câu {index}/{total} · lượt {attempt}/{maximum} để canh thời lượng · không kéo tốc độ file...");
                             }
                             else if (kind == "cue")
                             {
@@ -259,6 +261,7 @@ internal sealed partial class LocalTtsService : IDisposable
             || result.VoiceRevision != LocalTtsInstaller.VoiceRevision || result.Voice != voice
             || result.SampleRate != expectedSampleRate || result.Cues.Count != expectedCues.Count)
             throw new InvalidDataException("Result TTS sai schema/model/voice/cue count.");
+        ValidateSentenceGroupWindows(result.Cues, expectedCues, expectedSampleRate);
         for (var index = 0; index < expectedCues.Count; index++)
         {
             var cue = result.Cues[index];
@@ -268,12 +271,17 @@ internal sealed partial class LocalTtsService : IDisposable
                 || !double.IsFinite(cue.FittedDuration) || cue.FittedDuration <= 0)
                 throw new InvalidDataException("Result TTS chứa cue sai hoặc bị thay thứ tự.");
             var usedSrtFallback = expected.TimingSource == "whisper" && cue.TimingSource == "srt-fallback";
-            if (cue.TimingSource != expected.TimingSource && !usedSrtFallback)
+            var usedSentenceGroup = cue.TimingSource == "sentence-group" && expected.TimingSource != "sample";
+            if (cue.TimingSource != expected.TimingSource && !usedSrtFallback && !usedSentenceGroup)
                 throw new InvalidDataException("Worker TTS tự đổi nguồn timing không hợp lệ.");
             var effectiveStart = usedSrtFallback ? expected.CueStart : expected.VoiceStart;
             var effectiveEnd = usedSrtFallback ? expected.CueEnd : expected.VoiceEnd;
-            var startSample = checked((long)Math.Round(effectiveStart * expectedSampleRate));
-            var targetFrames = checked((long)Math.Round(effectiveEnd * expectedSampleRate)) - startSample;
+            var startSample = usedSentenceGroup
+                ? cue.ClipStartSample
+                : checked((long)Math.Round(effectiveStart * expectedSampleRate));
+            var targetFrames = usedSentenceGroup
+                ? cue.TargetFrames
+                : checked((long)Math.Round(effectiveEnd * expectedSampleRate)) - startSample;
             var target = targetFrames / (double)expectedSampleRate;
             var naturalSample = expected.TimingSource == "sample" && cue.RawDuration <= target;
             if (targetFrames <= 0 || cue.TargetFrames != targetFrames
@@ -284,7 +292,7 @@ internal sealed partial class LocalTtsService : IDisposable
                 || Math.Abs(cue.FittedDuration - cue.Frames / (double)expectedSampleRate) > 1e-9)
                 throw new InvalidDataException("Voice chưa khớp đủ thời lượng thoại gốc hoặc bị cắt đuôi; không nhận master này.");
             var needsReview = ValidateNativeSynthesis(cue, targetFrames, naturalSample, expectedSampleRate)
-                || cue.TimingSource == "srt-fallback";
+                || cue.TimingSource is "srt-fallback" or "sentence-group";
             if ((cue.Status == "review") != needsReview || cue.VoiceReview != needsReview)
                 throw new InvalidDataException("Result TTS báo sai trạng thái fit/review.");
             var clipRoot = Path.Combine(Path.GetDirectoryName(path)!, "clips") + Path.DirectorySeparatorChar;

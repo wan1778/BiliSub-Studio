@@ -119,9 +119,12 @@ public sealed partial class EditorPage
             cue.Id,
             $"{cue.Number}. {text.Trim()}",
             $"{FormatVoiceCueTime(voiceStart)} → {FormatVoiceCueTime(voiceStart + duration)}",
-            window.TimingSource == "srt-fallback"
-                ? $"Đọc {duration:0.###} giây · theo timecode SRT"
-                : $"Đọc {duration:0.###} giây",
+            window.TimingSource switch
+            {
+                "srt-fallback" => $"Đọc {duration:0.###} giây · theo timecode SRT",
+                "sentence-group" => $"Đọc {duration:0.###} giây · dùng nhịp chung của câu",
+                _ => $"Đọc {duration:0.###} giây",
+            },
             sourceStart,
             duration);
     }

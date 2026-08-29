@@ -26,8 +26,10 @@ for marker in ('record["sha256"] != sha256(path)', "read_wav(path)", 'record["ra
     require(marker in cache, "cache validation missing " + marker)
 require("final_path.replace(cached_path)" in worker and 'atomic_json(cached_path.with_suffix(".json"), record)' in worker,
         "only fully written clips and matching metadata may be reused")
-require('cache_hit = record is not None' in worker, "worker must report real cache hits")
-require("if record is None:" in worker and "fit_cue(voice, text, target_frames" in worker
+require("candidate_record is not None" in worker and "candidate_record, True, 0" in worker
+        and '"cache_hit": cache_hit' in worker,
+        "worker must report real individual and sentence-group cache hits")
+require("if record is None:" in worker and "fit_cue(" in worker
         and "synthesize_cue(voice, text, candidate, scale)" in worker,
         "missing/corrupt clips must run real inference again")
 require("File.Delete(masterPath)" in service and "if (!accepted)" in service,

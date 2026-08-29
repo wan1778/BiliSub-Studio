@@ -4,6 +4,7 @@ import importlib.util
 import inspect
 from pathlib import Path
 import tempfile
+import types
 import unittest
 import wave
 
@@ -78,6 +79,11 @@ class VoiceDurationContract(unittest.TestCase):
         self.assertEqual(worker.padding_budget(44100), 882)
         self.assertEqual(worker.padding_budget(22050), 441)
 
+        grouped = record | {"timing_source": "sentence-group", "length_scale": .5, "status": "review"}
+        self.assertTrue(worker.native_record_valid(grouped, 44100, False))
+        self.assertFalse(worker.native_record_valid(grouped | {"length_scale": .44}, 44100, False))
+        self.assertFalse(worker.native_record_valid(grouped | {"status": "fit"}, 44100, False))
+
     def test_padding_copies_every_pcm_byte_and_refuses_cutting(self):
         # Tiny byte fixture only: no mock model or generated-speech claim.
         pcm = b"\x01\x00\xff\x7f\x00\x80\x02\x00"
@@ -147,6 +153,73 @@ class VoiceDurationContract(unittest.TestCase):
                             worker.cache_identity(fallback, cue["text"], "worker-sha"))
         self.assertIsNone(worker.srt_fallback_cue(fallback))
 
+    def test_contiguous_subtitle_fragments_form_bounded_sentence_groups(self):
+        def cue(index, start, end, timing_source="srt-fallback"):
+            return {"id": f"cue-{index}", "cue_start": start, "cue_end": end,
+                    "voice_start": start, "voice_end": end, "timing_source": timing_source,
+                    "voice": worker.VOICE_NAME, "text": f"fragment {index}"}
+
+        cues = [cue(9, 14.4, 15.2), cue(10, 15.2, 16.4), cue(11, 16.4, 17.2), cue(12, 17.2, 18.4)]
+        texts = ["Có đệ tử bầu bạn,", "sư phụ không còn cô độc,",
+                 "đương nhiên ngày nào cũng vui vẻ,", "luôn được hạnh phúc vây quanh."]
+        self.assertEqual(worker.sentence_groups(cues, texts), [[0, 1, 2, 3]])
+        self.assertEqual(worker.sentence_groups(cues, [texts[0] + ".", *texts[1:]]), [[0], [1, 2, 3]])
+        self.assertEqual(worker.sentence_groups([cues[0], cues[1] | {"cue_start": 15.4, "voice_start": 15.4}], texts[:2]),
+                         [[0], [1]])
+        self.assertEqual(worker.sentence_groups([cues[0], cues[1] | {"timing_source": "sample"}], texts[:2]),
+                         [[0], [1]])
+
+    def test_sentence_group_borrows_time_without_cutting_pcm_or_crossing_sentence_boundary(self):
+        cues = [
+            {"id": "cue-9", "cue_start": 0, "cue_end": .8, "voice_start": 0, "voice_end": .8,
+             "timing_source": "srt-fallback", "voice": worker.VOICE_NAME, "text": "a"},
+            {"id": "cue-10", "cue_start": .8, "cue_end": 2, "voice_start": .8, "voice_end": 2,
+             "timing_source": "srt-fallback", "voice": worker.VOICE_NAME, "text": "b"},
+            {"id": "cue-11", "cue_start": 2, "cue_end": 2.8, "voice_start": 2, "voice_end": 2.8,
+             "timing_source": "srt-fallback", "voice": worker.VOICE_NAME, "text": "c"},
+            {"id": "cue-12", "cue_start": 2.8, "cue_end": 4, "voice_start": 2.8, "voice_end": 4,
+             "timing_source": "srt-fallback", "voice": worker.VOICE_NAME, "text": "d"},
+        ]
+        native_frames = {"a": 26000, "b": 33000, "c": 39000, "d": 35000}
+        original = worker.synthesize_cue
+
+        def fake_synthesize(_voice, text, path, scale):
+            active = max(1, round(native_frames[text] * scale))
+            with wave.open(str(path), "wb") as output:
+                output.setparams((1, 2, worker.SAMPLE_RATE, 0, "NONE", "not compressed"))
+                output.writeframes(b"\xff\x7f" * active + b"\0\0" * 2000)
+
+        attempts = []
+        worker.synthesize_cue = fake_synthesize
+        try:
+            with tempfile.TemporaryDirectory(prefix="bilisub-sentence-group-") as directory:
+                root = Path(directory)
+                (root / "clips").mkdir()
+                entries = worker.synthesize_sentence_group(
+                    types.SimpleNamespace(config=types.SimpleNamespace(length_scale=1.0)),
+                    cues, ["a", "b", "c", "d"], root, root / "clips", "worker-sha",
+                    root / "plan.json", "plan-key",
+                    lambda local, attempt, scale: attempts.append((local, attempt, scale)))
+                self.assertEqual(len(entries), 4)
+                windows = [entry[0] for entry in entries]
+                self.assertEqual(round(windows[0]["voice_start"] * worker.SAMPLE_RATE), 0)
+                self.assertEqual(round(windows[-1]["voice_end"] * worker.SAMPLE_RATE), 4 * worker.SAMPLE_RATE)
+                for previous, current in zip(windows, windows[1:]):
+                    self.assertEqual(round(previous["voice_end"] * worker.SAMPLE_RATE),
+                                     round(current["voice_start"] * worker.SAMPLE_RATE))
+                self.assertTrue(any(round(window["voice_end"] * worker.SAMPLE_RATE)
+                                    != round(cue["cue_end"] * worker.SAMPLE_RATE)
+                                    for window, cue in zip(windows[:-1], cues[:-1])))
+                for active, _key, clip, record, cache_hit, calls in entries:
+                    _start, target = worker.cue_window(active)
+                    self.assertTrue(worker.native_record_valid(record, target, False))
+                    self.assertEqual(worker.read_wav(clip).shape[0], target)
+                    self.assertFalse(cache_hit)
+                    self.assertEqual(calls, record["synthesis_attempts"])
+                self.assertGreater(len(attempts), 4)
+        finally:
+            worker.synthesize_cue = original
+
     def test_production_uses_native_whole_cue_retries_not_audio_speed_filters(self):
         fit = inspect.getsource(worker.fit_cue)
         self.assertIn("range(1, MAX_SYNTHESIS_ATTEMPTS + 1)", fit)
@@ -169,11 +242,11 @@ class VoiceDurationContract(unittest.TestCase):
         self.assertIn('candidate_cues.append(fallback)', main)
         self.assertIn('"synthesis_calls": synthesis_calls', main)
         self.assertIn('"event": "attempt"', main)
-        self.assertEqual(worker.TIMING_ALGORITHM, "whole-cue-piper-rate-v8")
+        self.assertEqual(worker.TIMING_ALGORITHM, "whole-cue-piper-sentence-group-v9")
         self.assertIn("trim_trailing_silence_to_fit", fit)
         self.assertIn("biên giữ chất giọng 0,85–1,20×", source)
         self.assertIn('cue["timing_source"] == "srt-fallback"', source)
-        self.assertIn('output_status = "review"', source)
+        self.assertIn('active_cue["timing_source"] in ("srt-fallback", "sentence-group")', source)
         service = (ROOT / "csharp/src/BiliSubStudio.Core/Editor/LocalTtsService.cs").read_text(encoding="utf-8")
         self.assertIn("BuildWholeCue(cue, voice, cueTiming[cue.Id])", service)
         self.assertIn("cue.Frames != targetFrames", service)
@@ -183,13 +256,15 @@ class VoiceDurationContract(unittest.TestCase):
         self.assertIn("ValidateNativeSynthesis(cue, targetFrames, naturalSample, expectedSampleRate)", service)
         self.assertIn('fallback ? "srt-fallback" : "whisper"', service)
         self.assertIn('expected.TimingSource == "whisper" && cue.TimingSource == "srt-fallback"', service)
+        self.assertIn('cue.TimingSource == "sentence-group"', service)
+        self.assertIn("ValidateSentenceGroupWindows(result.Cues, expectedCues, expectedSampleRate)", service)
         self.assertIn('kind == "attempt"', service)
         self.assertIn("(index - 1) / (double)total * 53", service)
         timing = (ROOT / "csharp/src/BiliSubStudio.Core/Editor/LocalTtsService.Timing.cs").read_text(encoding="utf-8")
-        self.assertIn("relativeScale is < .85 or > 1.20", timing)
+        self.assertIn('cue.TimingSource == "sentence-group" ? .45 : .85', timing)
         self.assertIn("cue.PaddingFrames > precisionPaddingBudget", timing)
         installer = (ROOT / "csharp/src/BiliSubStudio.Core/Editor/LocalTtsInstaller.cs").read_text(encoding="utf-8")
-        self.assertIn('TimingAlgorithm = "whole-cue-piper-rate-v8"', installer)
+        self.assertIn('TimingAlgorithm = "whole-cue-piper-sentence-group-v9"', installer)
 
 
 if __name__ == "__main__":

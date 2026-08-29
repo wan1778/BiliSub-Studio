@@ -49,11 +49,14 @@ require("voice.synthesize(text, syn_config=syn_config)" in worker and
         "SynthesisConfig(length_scale=length_scale)" in worker,
         "duration fitting must control Piper synthesis, not playback speed")
 main = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "main")
-loop = next(node for node in main.body if isinstance(node, ast.For) and ast.unparse(node.target) == "(index, cue)")
+loop = next(node for node in ast.walk(main) if isinstance(node, ast.For)
+            and "zip(cues, ordered_entries)" in ast.unparse(node.iter))
 require(not any(isinstance(node, ast.Attribute) and node.attr == "load" for node in ast.walk(loop)),
         "model load must be outside the cue loop")
 require('normalizer.normalize(cue["text"])' in worker and 'cue.get("groups")' not in worker,
         "worker must normalize and speak complete cue text")
+require("sentence_groups(cues, texts)" in worker and "synthesize_sentence_group(" in worker,
+        "contiguous fragments of one sentence must share their bounded source time when one cue is too narrow")
 whole = service.split("internal static TtsCueManifest BuildWholeCue", 1)[1].split("private static string ResolveVoice", 1)[0]
 require("cue.Start, cue.End, voice, text" in whole and "Pauses" not in whole,
         "C# manifest must retain exact SRT interval and complete text")

@@ -77,6 +77,7 @@ internal static class EditorLicensedVoiceProfileContract
         Equal("srt-fallback", type.GetProperty("TimingSource")!.GetValue(fallback));
         VerifyVoiceWavFrames(service);
         VerifyNativeRateMetadata(service);
+        VerifySentenceGroupMetadata(service);
         foreach (var invalid in new[] { timing with { CueId = "different-cue" },
             timing with { Words = [new EditorWordTiming("outside", 6, 7, .9)] } })
         {
@@ -198,6 +199,8 @@ internal static class EditorLicensedVoiceProfileContract
             ["generated_frames"] = 43100L, ["padding_frames"] = 1000L }), 44100L, false, 22050]));
         Equal(true, validate.Invoke(null, [Cue(new(fixture) { ["source_frames"] = 45000L,
             ["generated_frames"] = 44100L, ["trimmed_silence_frames"] = 900L, ["padding_frames"] = 0L }), 44100L, false, 22050]));
+        Equal(true, validate.Invoke(null, [Cue(new(fixture) { ["timing_source"] = "sentence-group",
+            ["length_scale"] = .5 }), 44100L, false, 22050]));
         Equal(false, validate.Invoke(null, [Cue(new(fixture) { ["synthesis_calls"] = 12 }), 44100L, false, 22050]));
         Equal(false, validate.Invoke(null, [Cue(new(fixture) { ["cache_hit"] = true, ["synthesis_calls"] = 0 }), 44100L, false, 22050]));
         var invalid = new Dictionary<string, object>[]
@@ -208,6 +211,7 @@ internal static class EditorLicensedVoiceProfileContract
             new(fixture) { ["source_frames"] = 45000L, ["trimmed_silence_frames"] = 899L },
             new(fixture) { ["base_length_scale"] = 0d },
             new(fixture) { ["length_scale"] = .84 },
+            new(fixture) { ["timing_source"] = "sentence-group", ["length_scale"] = .44 },
             new(fixture) { ["synthesis_attempts"] = 11, ["synthesis_calls"] = 11 },
             new(fixture) { ["synthesis_calls"] = 13 },
             new(fixture) { ["synthesis_attempts"] = 1, ["synthesis_calls"] = 1 },
@@ -222,6 +226,53 @@ internal static class EditorLicensedVoiceProfileContract
             }
             catch (TargetInvocationException error) when (error.InnerException is InvalidDataException) { }
         }
+    }
+
+    private static void VerifySentenceGroupMetadata(Type service)
+    {
+        var workerType = service.GetNestedType("TtsWorkerCue", BindingFlags.NonPublic)!;
+        var manifestType = service.GetNestedType("TtsCueManifest", BindingFlags.NonPublic)!;
+        var validate = service.GetMethod("ValidateSentenceGroupWindows", BindingFlags.Static | BindingFlags.NonPublic)!;
+        var json = new System.Text.Json.JsonSerializerOptions { PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.SnakeCaseLower };
+        var starts = new[] { 14.4, 15.2, 16.4, 17.2 };
+        var ends = new[] { 15.2, 16.4, 17.2, 18.4 };
+        var texts = new[] { "Có đệ tử bầu bạn,", "sư phụ không còn cô độc,",
+            "đương nhiên ngày nào cũng vui vẻ,", "luôn được hạnh phúc vây quanh." };
+        var frames = new long[] { 17640, 20812, 24866, 24882 };
+        var actual = Array.CreateInstance(workerType, 4);
+        var expected = Array.CreateInstance(manifestType, 4);
+        var cursor = 317520L;
+        for (var index = 0; index < 4; index++)
+        {
+            var values = new Dictionary<string, object>
+            {
+                ["id"] = $"cue-{index + 9}", ["timing_source"] = "sentence-group",
+                ["clip_start_sample"] = cursor, ["target_frames"] = frames[index],
+            };
+            actual.SetValue(System.Text.Json.JsonSerializer.Deserialize(
+                System.Text.Json.JsonSerializer.Serialize(values), workerType, json), index);
+            expected.SetValue(Activator.CreateInstance(manifestType,
+                [$"cue-{index + 9}", starts[index], ends[index], "ngoc_huyen", texts[index],
+                    starts[index] + .05, ends[index] - .05, "whisper"]), index);
+            cursor += frames[index];
+        }
+        validate.Invoke(null, [actual, expected, 22050]);
+
+        var broken = Array.CreateInstance(workerType, 4);
+        Array.Copy(actual, broken, 4);
+        var invalid = new Dictionary<string, object>
+        {
+            ["id"] = "cue-11", ["timing_source"] = "sentence-group",
+            ["clip_start_sample"] = 355973L, ["target_frames"] = frames[2],
+        };
+        broken.SetValue(System.Text.Json.JsonSerializer.Deserialize(
+            System.Text.Json.JsonSerializer.Serialize(invalid), workerType, json), 2);
+        try
+        {
+            validate.Invoke(null, [broken, expected, 22050]);
+            throw new InvalidOperationException("Discontinuous sentence-group timing was accepted");
+        }
+        catch (TargetInvocationException error) when (error.InnerException is InvalidDataException) { }
     }
 
     private static async Task VerifyEditorProjectAsync()
