@@ -6,6 +6,7 @@ namespace BiliSubStudio.Core.Ocr;
 
 internal sealed class OcrWorkerClient : IAsyncDisposable
 {
+    private const int StderrTailLimit = 16 * 1024;
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(90);
     private static readonly TimeSpan StartupTimeout = TimeSpan.FromMinutes(3);
     private readonly OcrRuntime _runtime;
@@ -13,12 +14,15 @@ internal sealed class OcrWorkerClient : IAsyncDisposable
     private Process? _process;
     private StreamWriter? _input;
     private StreamReader? _output;
-    private Task<string>? _stderr;
+    private readonly object _stderrSync = new();
+    private readonly StringBuilder _stderrTail = new();
+    private Task? _stderrCompletion;
     private long _requestId;
 
     public OcrWorkerClient(OcrRuntime runtime) => _runtime = runtime;
     public bool IsAlive => _process is { HasExited: false };
     public string Kind => _runtime.Kind;
+    internal OcrRuntime Runtime => _runtime;
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
@@ -51,15 +55,16 @@ internal sealed class OcrWorkerClient : IAsyncDisposable
         // Keep draining stderr for the whole worker lifetime so a noisy native runtime
         // cannot fill the pipe and hang. stdout is the JSON protocol, but Paddle/PaddleOCR
         // may still emit diagnostic text there; protocol readers deliberately ignore it.
-        _stderr = _process.StandardError.ReadToEndAsync(CancellationToken.None);
+        lock (_stderrSync) _stderrTail.Clear();
+        _stderrCompletion = PumpStderrAsync(_process.StandardError);
         using var startup = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         startup.CancelAfter(StartupTimeout);
         try
         {
             while (true)
             {
-                var line = await _output.ReadLineAsync(startup.Token)
-                    ?? throw new EndOfStreamException("OCR worker đóng trước khi Ready.");
+                var line = await _output.ReadLineAsync(startup.Token);
+                if (line is null) throw await ClosedExceptionAsync("OCR worker đóng trước khi Ready.");
                 JsonDocument document;
                 try { document = JsonDocument.Parse(line); }
                 catch (JsonException) { continue; }
@@ -71,7 +76,8 @@ internal sealed class OcrWorkerClient : IAsyncDisposable
                     if (string.Equals(type, "fatal", StringComparison.Ordinal))
                     {
                         var error = root.TryGetProperty("error", out var errorNode) ? errorNode.GetString() : null;
-                        throw new InvalidOperationException(string.IsNullOrWhiteSpace(error) ? "OCR worker báo lỗi nghiêm trọng khi khởi động." : error);
+                        Kill();
+                        throw await ClosedExceptionAsync(string.IsNullOrWhiteSpace(error) ? "OCR worker báo lỗi nghiêm trọng khi khởi động." : error);
                     }
                     if (!string.Equals(type, "ready", StringComparison.Ordinal)) continue;
                 }
@@ -184,8 +190,8 @@ internal sealed class OcrWorkerClient : IAsyncDisposable
             using var registration = requestToken.Register(() => Kill());
             while (true)
             {
-                var line = await _output.ReadLineAsync(requestToken)
-                    ?? throw new EndOfStreamException("OCR worker đóng khi đang xử lý.");
+                var line = await _output.ReadLineAsync(requestToken);
+                if (line is null) throw await ClosedExceptionAsync("OCR worker đóng khi đang xử lý.");
                 JsonDocument document;
                 try { document = JsonDocument.Parse(line); }
                 catch (JsonException) { continue; }
@@ -195,7 +201,8 @@ internal sealed class OcrWorkerClient : IAsyncDisposable
                     if (root.TryGetProperty("type", out var typeNode) && string.Equals(typeNode.GetString(), "fatal", StringComparison.Ordinal))
                     {
                         var fatal = root.TryGetProperty("error", out var fatalNode) ? fatalNode.GetString() : null;
-                        throw new InvalidOperationException(string.IsNullOrWhiteSpace(fatal) ? "OCR worker báo lỗi nghiêm trọng." : fatal);
+                        Kill();
+                        throw await ClosedExceptionAsync(string.IsNullOrWhiteSpace(fatal) ? "OCR worker báo lỗi nghiêm trọng." : fatal);
                     }
                     if (!root.TryGetProperty("id", out var idNode) || !idNode.TryGetInt64(out var responseId) || responseId != id) continue;
                     return parse(root);
@@ -264,16 +271,16 @@ internal sealed class OcrWorkerClient : IAsyncDisposable
                 }
                 if (IsAlive)
                     stopFailure = new IOException($"Không dừng được OCR Python worker PID {_process.Id} và cây tiến trình con.");
-                if (_stderr is not null)
+                if (_stderrCompletion is not null)
                 {
-                    try { _ = await _stderr.WaitAsync(TimeSpan.FromSeconds(1)); } catch { }
+                    try { await _stderrCompletion.WaitAsync(TimeSpan.FromSeconds(1)); } catch { }
                 }
                 _process.Dispose();
             }
             _process = null;
             _input = null;
             _output = null;
-            _stderr = null;
+            _stderrCompletion = null;
         }
         finally { _requestGate.Release(); }
         if (stopFailure is not null) throw stopFailure;
@@ -284,9 +291,56 @@ internal sealed class OcrWorkerClient : IAsyncDisposable
         try { if (_process is { HasExited: false }) _process.Kill(entireProcessTree: true); } catch { }
     }
 
+    private async Task PumpStderrAsync(StreamReader reader)
+    {
+        var buffer = new char[2048];
+        while (true)
+        {
+            var read = await reader.ReadAsync(buffer.AsMemory(), CancellationToken.None);
+            if (read == 0) return;
+            lock (_stderrSync)
+            {
+                _stderrTail.Append(buffer, 0, read);
+                if (_stderrTail.Length > StderrTailLimit)
+                    _stderrTail.Remove(0, _stderrTail.Length - StderrTailLimit);
+            }
+        }
+    }
+
+    private async Task<OcrWorkerUnavailableException> ClosedExceptionAsync(string message)
+    {
+        var process = _process;
+        var pid = process?.Id;
+        if (process is not null)
+        {
+            try { await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(1)); } catch { }
+        }
+        if (_stderrCompletion is not null)
+        {
+            try { await _stderrCompletion.WaitAsync(TimeSpan.FromSeconds(1)); } catch { }
+        }
+        int? exitCode = null;
+        try { if (process is { HasExited: true }) exitCode = process.ExitCode; } catch { }
+        string stderr;
+        lock (_stderrSync) stderr = Compact(_stderrTail.ToString());
+        var diagnostic = $"{message} Thiết bị={Kind.ToUpperInvariant()}"
+            + (pid is null ? string.Empty : $", PID={pid}")
+            + (exitCode is null ? string.Empty : $", exit={exitCode}")
+            + (stderr.Length == 0 ? string.Empty : $". stderr: {stderr}");
+        return new OcrWorkerUnavailableException(diagnostic);
+    }
+
+    private static string Compact(string value)
+    {
+        var text = string.Join(" ", value.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+        return text.Length > 1200 ? text[^1200..] : text;
+    }
+
     public async ValueTask DisposeAsync()
     {
         await StopAsync();
         _requestGate.Dispose();
     }
 }
+
+internal sealed class OcrWorkerUnavailableException(string message, Exception? inner = null) : IOException(message, inner);

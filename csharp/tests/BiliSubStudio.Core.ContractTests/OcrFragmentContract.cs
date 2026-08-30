@@ -80,6 +80,15 @@ internal static class OcrFragmentContract
         var reconcile = typeof(OcrScanner).GetMethod("Reconcile", BindingFlags.Static | BindingFlags.NonPublic)!;
         var final = (IReadOnlyList<OcrCue>)reconcile.Invoke(null, [lanes, 0])!;
         Check(final.SequenceEqual(merged), "final same-lane SRT retains duplicated cues");
+        Check((TimeSpan)typeof(OcrScanner).GetField("CheckpointInterval", BindingFlags.Static | BindingFlags.NonPublic)!.GetValue(null)!
+            == TimeSpan.FromSeconds(30), "long OCR scan is not checkpointed every 30 seconds");
+        var clone = typeof(OcrScanner).GetMethod("CloneLaneCheckpoint", BindingFlags.Static | BindingFlags.NonPublic)!;
+        var originalLane = lanes.GetValue(0)!;
+        var clonedLane = clone.Invoke(null, [originalLane])!;
+        var originalCues = (IList<OcrCue>)laneType.GetProperty("Cues")!.GetValue(originalLane)!;
+        var clonedCues = (IList<OcrCue>)laneType.GetProperty("Cues")!.GetValue(clonedLane)!;
+        originalCues.Add(new OcrCue(10, 11, "隔离", .9));
+        Check(clonedCues.Count + 1 == originalCues.Count, "checkpoint snapshot shares a mutable cue list with live OCR state");
         var store = assembly.GetType("BiliSubStudio.Core.Ocr.OcrCheckpointStore")!;
         Check((int)store.GetField("Schema", BindingFlags.Static | BindingFlags.NonPublic)!.GetRawConstantValue()! == 14,
             "fixed-FPS checkpoint is still resume-compatible");

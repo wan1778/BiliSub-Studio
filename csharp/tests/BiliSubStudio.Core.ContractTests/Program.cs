@@ -82,6 +82,7 @@ internal static class Program
         ("ASR private GPU package cache and driver policy reject unsafe state", EditorAsrGpuContract.RunAsync),
         ("Chinese OCR validator rejects foreign scripts", ChineseOcrContractAsync),
         ("OCR touching fragments merge without erasing real short or repeated captions", OcrFragmentContract.RunAsync),
+        ("OCR worker crash preserves diagnostics and auto-recovers one request", OcrWorkerRecoveryContract.RunAsync),
         ("Paddle GPU wheel follows numeric CUDA compatibility", OcrGpuWheelContractAsync),
         ("OCR Auto benchmarks 1 2 4 8 16 and restores last PASS", OcrAutoBenchmarkContractAsync),
         ("OCR Auto resource guard keeps safe 8 and rejects unsafe 16", OcrAutoResourceGuardContractAsync),
@@ -106,6 +107,8 @@ internal static class Program
 
     private static async Task<int> Main(string[] arguments)
     {
+        if (arguments is ["-u", "fake-ocr-worker", ..])
+            return await OcrWorkerRecoveryContract.RunFakeWorkerAsync(arguments);
         if (arguments is ["--ocr-fragments-runtime", var ocrRoot, var ocrVideo])
             return await OcrFragmentRuntimeContract.RunAsync(ocrRoot, ocrVideo);
         if (arguments is ["--asr-voice-runtime", var asrRoot, var asrVideo, var asrSrt])

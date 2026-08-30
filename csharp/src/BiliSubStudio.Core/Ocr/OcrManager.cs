@@ -142,84 +142,102 @@ public sealed class OcrManager : IAsyncDisposable
     }
 
     public async Task<OcrResult> RunAsync(string imageBase64, CancellationToken cancellationToken, bool recoverShortBlank = false, string? activeShortText = null)
-    {
-        await EnsureAsync(cancellationToken);
-        var channel = _available ?? throw new InvalidOperationException("OCR worker pool chưa sẵn sàng.");
-        var worker = await channel.Reader.ReadAsync(cancellationToken);
-        try
-        {
-            return await worker.RunAsync(imageBase64, cancellationToken, recoverShortBlank, activeShortText);
-        }
-        finally
-        {
-            if (worker.IsAlive) channel.Writer.TryWrite(worker);
-            else
-            {
-                var error = "OCR worker đã dừng; nhấn Chuẩn bị OCR để khởi tạo lại.";
-                channel.Writer.TryComplete(new InvalidOperationException(error));
-                if (ReferenceEquals(_available, channel))
-                {
-                    _state = "failed";
-                    _error = error;
-                }
-            }
-        }
-    }
+        => await RunWithRecoveryAsync(
+            worker => worker.RunAsync(imageBase64, cancellationToken, recoverShortBlank, activeShortText),
+            cancellationToken);
 
     public async Task<IReadOnlyList<OcrResult>> RunBatchAsync(
         IReadOnlyList<string> imageBase64,
         CancellationToken cancellationToken,
         bool recoverShortBlank = false,
         string? activeShortText = null)
-    {
-        await EnsureAsync(cancellationToken);
-        var channel = _available ?? throw new InvalidOperationException("OCR worker pool chưa sẵn sàng.");
-        var worker = await channel.Reader.ReadAsync(cancellationToken);
-        try
-        {
-            return await worker.RunBatchAsync(imageBase64, cancellationToken, recoverShortBlank, activeShortText);
-        }
-        finally
-        {
-            if (worker.IsAlive) channel.Writer.TryWrite(worker);
-            else
-            {
-                var error = "OCR worker đã dừng; nhấn Chuẩn bị OCR để khởi tạo lại.";
-                channel.Writer.TryComplete(new InvalidOperationException(error));
-                if (ReferenceEquals(_available, channel))
-                {
-                    _state = "failed";
-                    _error = error;
-                }
-            }
-        }
-    }
+        => await RunWithRecoveryAsync(
+            worker => worker.RunBatchAsync(imageBase64, cancellationToken, recoverShortBlank, activeShortText),
+            cancellationToken);
 
     public async Task<IReadOnlyList<double>> ProbeVisualChangesAsync(
         IReadOnlyList<string> imageBase64,
+        CancellationToken cancellationToken)
+        => await RunWithRecoveryAsync(
+            worker => worker.ProbeVisualChangesAsync(imageBase64, cancellationToken),
+            cancellationToken);
+
+    private async Task<T> RunWithRecoveryAsync<T>(
+        Func<OcrWorkerClient, Task<T>> operation,
         CancellationToken cancellationToken)
     {
         await EnsureAsync(cancellationToken);
         var channel = _available ?? throw new InvalidOperationException("OCR worker pool chưa sẵn sàng.");
         var worker = await channel.Reader.ReadAsync(cancellationToken);
+        Exception? firstFailure = null;
+        var recoveryCount = 0;
         try
         {
-            return await worker.ProbeVisualChangesAsync(imageBase64, cancellationToken);
-        }
-        finally
-        {
-            if (worker.IsAlive) channel.Writer.TryWrite(worker);
-            else
+            while (true)
             {
-                var error = "OCR worker đã dừng; nhấn Chuẩn bị OCR để khởi tạo lại.";
-                channel.Writer.TryComplete(new InvalidOperationException(error));
-                if (ReferenceEquals(_available, channel))
+                try { return await operation(worker); }
+                catch (Exception error) when (IsRecoverableWorkerFailure(worker, error, cancellationToken))
                 {
-                    _state = "failed";
-                    _error = error;
+                    firstFailure ??= error;
+                    recoveryCount++;
+                    worker = await ReplaceWorkerAsync(worker, channel, error, cancellationToken);
+                    if (recoveryCount <= 1) continue;
+                    throw new OcrWorkerUnavailableException(
+                        "OCR request vẫn làm worker dừng sau một lần tự khởi động lại. " + error.Message,
+                        new AggregateException(firstFailure, error));
                 }
             }
         }
+        finally
+        {
+            if (worker.IsAlive && ReferenceEquals(_available, channel))
+                channel.Writer.TryWrite(worker);
+        }
+    }
+
+    private static bool IsRecoverableWorkerFailure(
+        OcrWorkerClient worker,
+        Exception error,
+        CancellationToken cancellationToken) =>
+        !cancellationToken.IsCancellationRequested
+        && (error is OcrWorkerUnavailableException or TimeoutException || !worker.IsAlive);
+
+    private async Task<OcrWorkerClient> ReplaceWorkerAsync(
+        OcrWorkerClient failed,
+        Channel<OcrWorkerClient> channel,
+        Exception cause,
+        CancellationToken cancellationToken)
+    {
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            if (!ReferenceEquals(_available, channel))
+                throw new OperationCanceledException("OCR worker pool đã thay đổi trong lúc tự khôi phục.", cancellationToken);
+            var index = _workers.IndexOf(failed);
+            if (index < 0) throw new InvalidOperationException("OCR worker lỗi không còn thuộc pool hiện tại.", cause);
+            _workers.RemoveAt(index);
+            try { await failed.DisposeAsync(); } catch { }
+
+            var replacement = new OcrWorkerClient(failed.Runtime);
+            try
+            {
+                await replacement.StartAsync(cancellationToken);
+                _workers.Insert(index, replacement);
+                _state = "ready";
+                _error = null;
+                return replacement;
+            }
+            catch (Exception replacementError)
+            {
+                try { await replacement.DisposeAsync(); } catch { }
+                var error = "Không tự khởi động lại được OCR worker sau lỗi: " + cause.Message;
+                channel.Writer.TryComplete(new OcrWorkerUnavailableException(error, replacementError));
+                _state = "failed";
+                _error = error;
+                throw new OcrWorkerUnavailableException(error, replacementError);
+            }
+        }
+        finally { _gate.Release(); }
     }
 
     public async Task StopAsync(CancellationToken cancellationToken = default)

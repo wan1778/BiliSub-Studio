@@ -13,6 +13,7 @@ namespace BiliSubStudio.Core.Ocr;
 public sealed class OcrScanner
 {
     private const double AdaptiveVisualChangeThreshold = .02;
+    private static readonly TimeSpan CheckpointInterval = TimeSpan.FromSeconds(30);
     private readonly ToolManager _tools;
     private readonly ProcessRunner _processes;
     private readonly OcrManager _ocr;
@@ -154,8 +155,55 @@ public sealed class OcrScanner
                 : active.Start < lane.Segment.CoreEnd ? active : null;
         }).ToArray();
         var progressGate = new object();
+        var recoverableLanes = checkpoint.Lanes
+            .Select(CloneLaneCheckpoint)
+            .ToArray();
         Exception? laneFailure = null;
         using var laneCancellation = CancellationTokenSource.CreateLinkedTokenSource(token);
+
+        OcrParallelCheckpoint SnapshotRecoverableCheckpoint()
+        {
+            lock (progressGate)
+            {
+                return checkpoint with
+                {
+                    Lanes = recoverableLanes.Select(CloneLaneCheckpoint).ToList(),
+                };
+            }
+        }
+
+        async Task SaveRecoverableCheckpointAsync()
+        {
+            var snapshot = SnapshotRecoverableCheckpoint();
+            await _checkpoints.SaveAsync(request, snapshot, CancellationToken.None);
+        }
+
+        using var checkpointWriterCancellation = new CancellationTokenSource();
+        var checkpointWriter = Task.Run(async () =>
+        {
+            using var timer = new PeriodicTimer(CheckpointInterval);
+            try
+            {
+                while (await timer.WaitForNextTickAsync(checkpointWriterCancellation.Token))
+                    await SaveRecoverableCheckpointAsync();
+            }
+            catch (OperationCanceledException) when (checkpointWriterCancellation.IsCancellationRequested) { }
+            catch (Exception error)
+            {
+                Interlocked.CompareExchange(
+                    ref laneFailure,
+                    new IOException("Không lưu được checkpoint OCR định kỳ: " + error.Message, error),
+                    null);
+                laneCancellation.Cancel();
+            }
+        });
+
+        async Task StopCheckpointWriterAsync()
+        {
+            checkpointWriterCancellation.Cancel();
+            await checkpointWriter;
+        }
+
         async Task<OcrLaneCheckpoint> RunGuardedLaneAsync(OcrLaneCheckpoint lane)
         {
             OcrLaneCheckpoint? outcome = null;
@@ -163,13 +211,15 @@ public sealed class OcrScanner
             {
                 outcome = await RunLaneWithFallbackAsync(
                     ffmpeg, source, request, mode, lane, decoder,
-                    (at, frames, images, committedCues, activeCue) =>
+                    (laneSnapshot, committedCues, checkpointSafe) =>
                     {
                         lock (progressGate)
                         {
-                            progress[lane.Segment.Index] = at;
-                            frameProgress[lane.Segment.Index] = frames;
-                            imageProgress[lane.Segment.Index] = images;
+                            progress[lane.Segment.Index] = laneSnapshot.MediaSeconds;
+                            frameProgress[lane.Segment.Index] = laneSnapshot.Frames;
+                            imageProgress[lane.Segment.Index] = laneSnapshot.OcrImages;
+                            if (checkpointSafe)
+                                recoverableLanes[lane.Segment.Index] = CloneLaneCheckpoint(laneSnapshot);
                             var isLast = lane.Segment.Index == checkpoint.Lanes.Count - 1;
                             foreach (var cue in committedCues)
                             {
@@ -178,10 +228,10 @@ public sealed class OcrScanner
                                     || (isLast && cue.Start > lane.Segment.CoreEnd)) continue;
                                 liveCommitted.Add(cue);
                             }
-                            liveActive[lane.Segment.Index] = activeCue is not null
-                                && activeCue.Start >= lane.Segment.CoreStart
-                                && (isLast ? activeCue.Start <= lane.Segment.CoreEnd : activeCue.Start < lane.Segment.CoreEnd)
-                                    ? activeCue
+                            liveActive[lane.Segment.Index] = laneSnapshot.Active is not null
+                                && laneSnapshot.Active.Start >= lane.Segment.CoreStart
+                                && (isLast ? laneSnapshot.Active.Start <= lane.Segment.CoreEnd : laneSnapshot.Active.Start < lane.Segment.CoreEnd)
+                                    ? laneSnapshot.Active
                                     : null;
                             PublishTelemetry(
                                 job, checkpoint.Lanes, progress, frameProgress, imageProgress, completed,
@@ -208,6 +258,7 @@ public sealed class OcrScanner
                         frameProgress[lane.Segment.Index] = outcome.Frames;
                         imageProgress[lane.Segment.Index] = outcome.OcrImages;
                         completed[lane.Segment.Index] = outcome.Completed;
+                        recoverableLanes[lane.Segment.Index] = CloneLaneCheckpoint(outcome);
                     }
                     PublishTelemetry(
                         job, checkpoint.Lanes, progress, frameProgress, imageProgress, completed,
@@ -225,10 +276,28 @@ public sealed class OcrScanner
         }
         catch
         {
+            await StopCheckpointWriterAsync();
             if (!token.IsCancellationRequested && laneFailure is not null)
-                throw new InvalidOperationException("OCR lane lỗi: " + laneFailure.Message, laneFailure);
+            {
+                try
+                {
+                    await SaveRecoverableCheckpointAsync();
+                    var savedFrontier = OcrCheckpointStore.ContiguousFrontier(SnapshotRecoverableCheckpoint().Lanes);
+                    throw new InvalidOperationException(
+                        $"OCR lane lỗi: {laneFailure.Message} Đã lưu checkpoint an toàn tại {FormatClock(savedFrontier)}; có thể bấm Tiếp tục.",
+                        laneFailure);
+                }
+                catch (InvalidOperationException) { throw; }
+                catch (Exception checkpointError)
+                {
+                    throw new InvalidOperationException(
+                        $"OCR lane lỗi: {laneFailure.Message} Đồng thời không lưu được checkpoint: {checkpointError.Message}",
+                        new AggregateException(laneFailure, checkpointError));
+                }
+            }
             throw;
         }
+        await StopCheckpointWriterAsync();
 
         token.ThrowIfCancellationRequested();
         var paused = lanes.Any(x => !x.Completed) && job.IsPauseRequested;
@@ -491,7 +560,7 @@ public sealed class OcrScanner
         OcrScanMode mode,
         OcrLaneCheckpoint lane,
         string decoder,
-        Action<double, int, int, IReadOnlyList<OcrCue>, OcrCue?> onProgress,
+        Action<OcrLaneCheckpoint, IReadOnlyList<OcrCue>, bool> onProgress,
         AppJob job,
         OwnedProcessGroup processes,
         CancellationToken cancellationToken)
@@ -516,7 +585,7 @@ public sealed class OcrScanner
         OcrScanMode mode,
         OcrLaneCheckpoint saved,
         bool nvdec,
-        Action<double, int, int, IReadOnlyList<OcrCue>, OcrCue?> onProgress,
+        Action<OcrLaneCheckpoint, IReadOnlyList<OcrCue>, bool> onProgress,
         AppJob job,
         OwnedProcessGroup processes,
         CancellationToken cancellationToken)
@@ -670,7 +739,15 @@ public sealed class OcrScanner
                 ? tracker.Cues.Skip(publishedCueCount).ToArray()
                 : Array.Empty<OcrCue>();
             publishedCueCount = tracker.Cues.Count;
-            onProgress(mediaSeconds, frames, images, committedCues, tracker.Active);
+            onProgress(saved with
+            {
+                MediaSeconds = mediaSeconds,
+                Cues = tracker.Cues.ToList(),
+                Active = tracker.Active,
+                Frames = frames,
+                OcrImages = images,
+                Completed = false,
+            }, committedCues, tracker.CanCheckpoint);
         }
 
         async Task ProcessAdaptiveWindowAsync()
@@ -798,7 +875,15 @@ public sealed class OcrScanner
                 ? tracker.Cues.Skip(publishedCueCount).ToArray()
                 : Array.Empty<OcrCue>();
             publishedCueCount = tracker.Cues.Count;
-            onProgress(mediaSeconds, frames, images, finalCommitted, tracker.Active);
+            onProgress(saved with
+            {
+                MediaSeconds = mediaSeconds,
+                Cues = tracker.Cues.ToList(),
+                Active = tracker.Active,
+                Frames = frames,
+                OcrImages = images,
+                Completed = false,
+            }, finalCommitted, tracker.CanCheckpoint);
             mediaSeconds = segment.CoreEnd;
         }
         return saved with
@@ -823,6 +908,9 @@ public sealed class OcrScanner
                 $"đã quét tới {FormatClock(mediaSeconds)}, cần tới {FormatClock(segment.CoreEnd)}. " +
                 "Chưa quét đủ đoạn video; không thể báo hoàn tất OCR.");
     }
+
+    private static OcrLaneCheckpoint CloneLaneCheckpoint(OcrLaneCheckpoint lane) =>
+        lane with { Cues = lane.Cues.ToList() };
 
     private static IReadOnlyList<OcrCue> Reconcile(IReadOnlyList<OcrLaneCheckpoint> lanes, out int merges)
     {
