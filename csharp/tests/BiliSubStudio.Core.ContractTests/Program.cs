@@ -109,6 +109,10 @@ internal static class Program
     {
         if (arguments is ["-u", "fake-ocr-worker", ..])
             return await OcrWorkerRecoveryContract.RunFakeWorkerAsync(arguments);
+        if (arguments is ["--ocr-prepare-gpu", var appRootWithImage, var imagePath])
+            return await OcrGpuRuntimeContract.PrepareAsync(appRootWithImage, imagePath);
+        if (arguments is ["--ocr-prepare-gpu", var appRootOnly])
+            return await OcrGpuRuntimeContract.PrepareAsync(appRootOnly);
         if (arguments is ["--ocr-fragments-runtime", var ocrRoot, var ocrVideo])
             return await OcrFragmentRuntimeContract.RunAsync(ocrRoot, ocrVideo);
         if (arguments is ["--asr-voice-runtime", var asrRoot, var asrVideo, var asrSrt])
@@ -1859,9 +1863,11 @@ internal static class Program
         var runtimeSpec = installer.GetMethod("RuntimeSpec", BindingFlags.Static | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("missing OCR runtime selector");
         static HardwareSnapshot Hardware(string driver) => new("fixture", 16, 16L << 30, true, "NVIDIA fixture", driver, 8L << 30);
+        var cu133 = ((ValueTuple<string, string, string>)runtimeSpec.Invoke(null, ["gpu", Hardware("CUDA 13.3")])!).Item2;
         var cu128 = ((ValueTuple<string, string, string>)runtimeSpec.Invoke(null, ["gpu", Hardware("CUDA 12.8")])!).Item2;
         var cu125 = ((ValueTuple<string, string, string>)runtimeSpec.Invoke(null, ["gpu", Hardware("CUDA 12.5")])!).Item2;
-        True(cu128.EndsWith("/cu126/", StringComparison.Ordinal), "CUDA 12.8 must select cu126 wheels");
+        True(cu133.EndsWith("/cu129/", StringComparison.Ordinal), "CUDA 13.3 must select matching cu129/cuDNN 9.9 wheels");
+        True(cu128.EndsWith("/cu118/", StringComparison.Ordinal), "CUDA 12.8 must avoid the mismatched cu126 Windows wheel");
         True(cu125.EndsWith("/cu118/", StringComparison.Ordinal), "CUDA 12.5 must select compatible cu118 wheels");
         return Task.CompletedTask;
     }

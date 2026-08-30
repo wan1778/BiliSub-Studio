@@ -24,7 +24,7 @@ internal sealed class OcrInstaller
     private const string UvUrl = "https://github.com/astral-sh/uv/releases/download/0.12.0/uv-x86_64-pc-windows-msvc.zip";
     private const string CpuIndex = "https://www.paddlepaddle.org.cn/packages/stable/cpu/";
     private const string Gpu118Index = "https://www.paddlepaddle.org.cn/packages/stable/cu118/";
-    private const string Gpu126Index = "https://www.paddlepaddle.org.cn/packages/stable/cu126/";
+    private const string Gpu129Index = "https://www.paddlepaddle.org.cn/packages/stable/cu129/";
     private readonly AppPaths _paths;
     private readonly HttpClient _http;
     private readonly ProcessRunner _processes;
@@ -82,9 +82,15 @@ internal sealed class OcrInstaller
             var venvRoot = Path.Combine(runtimeRoot, "venv");
             var python = Path.Combine(venvRoot, "Scripts", "python.exe");
             var manifestPath = Path.Combine(runtimeRoot, "install.json");
-            var expected = new InstallManifest(3, UvVersion, PythonVersion, PaddleVersion, PaddleOcrVersion,
+            var expected = new InstallManifest(4, UvVersion, PythonVersion, PaddleVersion, PaddleOcrVersion,
                 DetectionModel, RecognitionModel, await Sha256Async(worker, cancellationToken), kind, spec.Package, spec.Index);
-            if (File.Exists(python) && await ManifestMatchesAsync(manifestPath, expected, cancellationToken))
+            var reusable = File.Exists(python) && await ManifestMatchesAsync(manifestPath, expected, cancellationToken);
+            if (reusable && kind == "gpu")
+            {
+                try { await ValidateGpuRuntimeAsync(python, cancellationToken); }
+                catch (Exception error) when (error is not OperationCanceledException) { reusable = false; }
+            }
+            if (reusable)
             {
                 await WriteManifestAsync(manifestPath, expected, cancellationToken);
                 return new OcrRuntime(python, worker, modelsRoot, spec.Device, kind);
@@ -109,6 +115,7 @@ internal sealed class OcrInstaller
                 ["pip", "install", "--python", python, "--no-python-downloads", $"paddleocr=={PaddleOcrVersion}", "--no-config"],
                 explicitEnvironment, "PaddleOCR", cancellationToken);
 
+            if (kind == "gpu") await ValidateGpuRuntimeAsync(python, cancellationToken);
             await WriteManifestAsync(manifestPath, expected, cancellationToken);
             if (!File.Exists(python)) throw new FileNotFoundException("Cài OCR không tạo private Python.", python);
             return new OcrRuntime(python, worker, modelsRoot, spec.Device, kind);
@@ -260,6 +267,35 @@ internal sealed class OcrInstaller
             throw new InvalidOperationException($"Cài OCR ({phase}): {result.StandardError.Trim()}");
     }
 
+    private async Task ValidateGpuRuntimeAsync(string python, CancellationToken cancellationToken)
+    {
+        const string probe = """
+            import json
+            import paddle
+            compiled = str(paddle.version.cudnn() or "")
+            runtime = int(paddle.get_cudnn_version() or 0)
+            compiled_parts = [int(part) for part in compiled.split(".") if part.isdigit()]
+            compiled_pair = compiled_parts[:2] if len(compiled_parts) >= 2 else []
+            runtime_pair = [runtime // 10000, (runtime // 100) % 100] if runtime > 0 else []
+            print("BILISUB_GPU_ABI=" + json.dumps({
+                "cuda": str(paddle.version.cuda() or ""),
+                "compiled_cudnn": compiled,
+                "runtime_cudnn": runtime,
+            }, separators=(",", ":")))
+            raise SystemExit(0 if compiled_pair == runtime_pair else 42)
+            """;
+        var result = await _processes.RunAsync(
+            python, ["-I", "-c", probe], cancellationToken, ExplicitPythonEnvironment());
+        var detail = result.StandardOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .LastOrDefault(line => line.StartsWith("BILISUB_GPU_ABI=", StringComparison.Ordinal))
+            ?.Trim() ?? "không có thông tin ABI";
+        if (result.ExitCode != 0)
+            throw new InvalidOperationException(
+                $"Paddle GPU runtime không tương thích ({detail}). " +
+                "Không cho phép OCR chạy với cuDNN khác phiên bản biên dịch. " +
+                result.StandardError.Trim());
+    }
+
     private static bool IsMinorVersionLinkFailure(string detail) =>
         detail.Contains("Failed to create Python minor version link directory", StringComparison.OrdinalIgnoreCase)
         || detail.Contains("untrusted mount point", StringComparison.OrdinalIgnoreCase)
@@ -364,8 +400,14 @@ internal sealed class OcrInstaller
         if (kind != "gpu" || !hardware.NvidiaDetected) throw new InvalidOperationException("Không có NVIDIA GPU tương thích cho PaddleOCR.");
         var match = Regex.Match(hardware.CudaDriver, @"\d+(?:\.\d+)?", RegexOptions.CultureInvariant);
         if (!match.Success || !Version.TryParse(match.Value, out var cuda)) throw new InvalidOperationException("Không đọc được CUDA driver cho PaddlePaddle GPU.");
-        var index = cuda >= new Version(12, 6)
-            ? Gpu126Index : cuda >= new Version(11, 8)
+        // The official Windows cu126 wheels for Paddle 3.2.x declare cuDNN
+        // 9.5.1.17 while their native binary reports it was compiled with 9.9.
+        // Use the official cu129 wheel on capable drivers (it resolves cuDNN
+        // 9.9.0.52), otherwise use the backwards-compatible cu118 wheel. The
+        // post-install ABI probe above is authoritative and rejects any future
+        // index/package drift before a worker can start.
+        var index = cuda >= new Version(12, 9)
+            ? Gpu129Index : cuda >= new Version(11, 8)
                 ? Gpu118Index : throw new InvalidOperationException("PaddlePaddle GPU cần CUDA driver 11.8+.");
         return ("paddlepaddle-gpu", index, "gpu:0");
     }
