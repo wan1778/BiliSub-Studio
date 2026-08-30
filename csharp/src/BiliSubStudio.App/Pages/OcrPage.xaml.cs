@@ -26,7 +26,7 @@ public sealed partial class OcrPage : Page
     private bool _cancelInProgress;
     private IReadOnlyList<OcrCue> _cues = [];
     private IReadOnlyList<OcrCue> _visibleCues = [];
-    private readonly SortedDictionary<long, OcrCue> _liveCuesByStart = [];
+    private readonly OcrLiveCueAccumulator _liveCues = new();
     private DateTimeOffset _nextCueRenderAt;
     private bool _cueViewDirty;
     private OcrRegion _region = new(0.05, 0.65, 0.90, 0.29);
@@ -83,7 +83,7 @@ public sealed partial class OcrPage : Page
             _activeRequest = null;
             _cues = [];
             _visibleCues = [];
-            _liveCuesByStart.Clear();
+            _liveCues.Clear();
             _nextCueRenderAt = default;
             _cueViewDirty = false;
             CueList.Items.Clear();
@@ -272,7 +272,7 @@ public sealed partial class OcrPage : Page
     {
         _cues = [];
         _visibleCues = [];
-        _liveCuesByStart.Clear();
+        _liveCues.Clear();
         _nextCueRenderAt = default;
         _cueViewDirty = false;
         CueList.Items.Clear();
@@ -461,7 +461,7 @@ public sealed partial class OcrPage : Page
     {
         _cues = [];
         _visibleCues = [];
-        _liveCuesByStart.Clear();
+        _liveCues.Clear();
         _nextCueRenderAt = default;
         _cueViewDirty = false;
         CueList.Items.Clear();
@@ -512,21 +512,7 @@ public sealed partial class OcrPage : Page
 
     private bool MergeLiveCueSnapshot(IReadOnlyList<OcrCue> incoming)
     {
-        var changed = false;
-        foreach (var cue in incoming)
-        {
-            var key = checked((long)Math.Round(cue.Start * 1000, MidpointRounding.AwayFromZero));
-            if (!_liveCuesByStart.TryGetValue(key, out var existing))
-            {
-                _liveCuesByStart[key] = cue;
-                changed = true;
-                continue;
-            }
-            var preferred = PreferLiveCue(existing, cue);
-            if (preferred == existing) continue;
-            _liveCuesByStart[key] = preferred;
-            changed = true;
-        }
+        var changed = _liveCues.Merge(incoming);
         _cueViewDirty |= changed;
         return changed;
     }
@@ -535,7 +521,7 @@ public sealed partial class OcrPage : Page
     {
         var now = DateTimeOffset.UtcNow;
         if (!_cueViewDirty || !force && now < _nextCueRenderAt) return;
-        _cues = OcrCueReconciler.MergeTouchingIdentical(_liveCuesByStart.Values.ToArray());
+        _cues = _liveCues.Cues;
         RenderCues();
         _cueViewDirty = false;
         _nextCueRenderAt = now.AddSeconds(2);
@@ -543,28 +529,12 @@ public sealed partial class OcrPage : Page
 
     private void ApplyAuthoritativeCues(IReadOnlyList<OcrCue> cues)
     {
-        _liveCuesByStart.Clear();
-        foreach (var cue in cues.OrderBy(cue => cue.Start))
-        {
-            var key = checked((long)Math.Round(cue.Start * 1000, MidpointRounding.AwayFromZero));
-            _liveCuesByStart[key] = _liveCuesByStart.TryGetValue(key, out var existing)
-                ? PreferLiveCue(existing, cue)
-                : cue;
-        }
-        _cues = OcrCueReconciler.MergeTouchingIdentical(_liveCuesByStart.Values.ToArray());
+        _liveCues.Clear();
+        _liveCues.Merge(cues);
+        _cues = _liveCues.Cues;
         RenderCues();
         _cueViewDirty = false;
         _nextCueRenderAt = DateTimeOffset.UtcNow.AddSeconds(2);
-    }
-
-    private static OcrCue PreferLiveCue(OcrCue current, OcrCue candidate)
-    {
-        var currentRunes = current.Text.EnumerateRunes().Count();
-        var candidateRunes = candidate.Text.EnumerateRunes().Count();
-        if (candidateRunes != currentRunes) return candidateRunes > currentRunes ? candidate : current;
-        if (Math.Abs(candidate.Confidence - current.Confidence) > .000001)
-            return candidate.Confidence > current.Confidence ? candidate : current;
-        return candidate.End > current.End ? candidate : current;
     }
 
     private void RenderCues()

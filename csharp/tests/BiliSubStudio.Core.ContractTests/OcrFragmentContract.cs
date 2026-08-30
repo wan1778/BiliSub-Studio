@@ -30,6 +30,22 @@ internal static class OcrFragmentContract
         Check(fieldFragments.Count == 1 && fieldFragments[0].Text == "少主……是不死丹帝，药逆命"
             && fieldFragments[0].Start == 24310.8 && fieldFragments[0].End == 24313.233313,
             "field punctuation and one-frame duplicated glyph still fragmented one rendered caption");
+        var live = new OcrLiveCueAccumulator();
+        live.Merge([new(24310.966688, 24311.966688, "少主……是不死丹帝， 药逆命", .99)]);
+        live.Merge([
+            new(24310.8, 24312.133313, "少主……是不死丹帝， 药逆命", .99),
+            new(24312.133313, 24312.266687, "少主……是是不死丹帝，药逆命", .999),
+            new(24312.266687, 24312.533312, "少主……是不死丹帝， 药逆命", .99),
+            new(24312.533312, 24313.233313, "少主……是不死丹帝，药逆命", .99),
+        ]);
+        Check(live.Cues.Count == 1 && live.Cues[0].Text == "少主……是不死丹帝，药逆命"
+            && live.Cues[0].Start == 24310.8 && live.Cues[0].End == 24313.233313,
+            "superseded active OCR snapshot remained as an overlapping ghost row");
+        var evolving = new OcrLiveCueAccumulator();
+        evolving.Merge([new(10, 10.5, "整整一万年", .90)]);
+        evolving.Merge([new(10, 10.8, "一万年", .99)]);
+        Check(evolving.Cues.Count == 1 && evolving.Cues[0].Text == "整整一万年" && evolving.Cues[0].End == 10.8,
+            "latest live timing did not replace the stale active end while preserving fuller text");
         var assembly = typeof(OcrResult).Assembly;
         var segmentType = assembly.GetType("BiliSubStudio.Core.Ocr.OcrScanSegment")!;
         var laneType = assembly.GetType("BiliSubStudio.Core.Ocr.OcrLaneCheckpoint")!;
