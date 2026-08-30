@@ -122,6 +122,76 @@ def normalize_box(box):
     return [int(round(min(xs))), int(round(min(ys))), int(round(max(xs))), int(round(max(ys)))]
 
 
+def _same_text_row(left, right):
+    left_box, right_box = left["box"], right["box"]
+    if len(left_box) != 4 or len(right_box) != 4:
+        return False
+    overlap = min(left_box[3], right_box[3]) - max(left_box[1], right_box[1])
+    left_height = max(1, left_box[3] - left_box[1])
+    right_height = max(1, right_box[3] - right_box[1])
+    return overlap >= min(left_height, right_height) * 0.55
+
+
+def _stitch_overlapping_text(left, right):
+    left, right = left.rstrip(), right.lstrip()
+    maximum = min(len(left), len(right))
+    for overlap in range(maximum, 0, -1):
+        if left[-overlap:] == right[:overlap]:
+            return left + right[overlap:]
+    return left + right
+
+
+def merge_inline_lines(lines):
+    """Join detector fragments that occupy one subtitle baseline.
+
+    PP-OCRv6 Small can return overlapping boxes such as ``少主……是`` and
+    ``是不死丹帝，药逆命``. Joining raw texts with a newline duplicates the shared
+    glyph after C# whitespace normalization. Geometry plus exact suffix/prefix
+    overlap removes only text that Paddle observed twice; it never invents text.
+    """
+    rows = []
+    for line in sorted(
+        lines,
+        key=lambda item: (
+            (item["box"][1] + item["box"][3]) / 2 if len(item["box"]) == 4 else 0,
+            item["box"][0] if len(item["box"]) == 4 else 0,
+        ),
+    ):
+        row = next((candidate for candidate in rows if any(_same_text_row(member, line) for member in candidate)), None)
+        if row is None:
+            rows.append([line])
+        else:
+            row.append(line)
+    rows.sort(key=lambda row: min(item["box"][1] if len(item["box"]) == 4 else 0 for item in row))
+
+    output = []
+    for row in rows:
+        row_output = []
+        for line in sorted(row, key=lambda item: item["box"][0] if len(item["box"]) == 4 else 0):
+            if not row_output:
+                row_output.append(line)
+                continue
+            before, after = row_output[-1], line
+            before_box, after_box = before["box"], after["box"]
+            row_height = max(before_box[3] - before_box[1], after_box[3] - after_box[1], 1)
+            horizontal_gap = after_box[0] - before_box[2]
+            if horizontal_gap > max(24, int(round(row_height * 0.45))):
+                row_output.append(line)
+                continue
+            row_output[-1] = {
+                "text": _stitch_overlapping_text(before["text"], after["text"]),
+                "confidence": min(before["confidence"], after["confidence"]),
+                "box": [
+                    min(before_box[0], after_box[0]),
+                    min(before_box[1], after_box[1]),
+                    max(before_box[2], after_box[2]),
+                    max(before_box[3], after_box[3]),
+                ],
+            }
+        output.extend(row_output)
+    return output
+
+
 def parse_prediction(prediction):
     lines = []
     result_count = 0
@@ -154,6 +224,7 @@ def parse_prediction(prediction):
             lines.append({"text": text, "confidence": confidence, "box": box})
     if result_count == 0:
         raise RuntimeError("PaddleOCR không trả kết quả cho ảnh")
+    lines = merge_inline_lines(lines)
     text = "\n".join(line["text"] for line in lines)
     confidence = sum(line["confidence"] for line in lines) / len(lines) if lines else 0.0
     return {

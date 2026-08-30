@@ -22,8 +22,9 @@ internal sealed class OcrCheckpointStore
     // companion boxes and CJK whitespace fragments. Schema 10 still trusted
     // high-confidence tiny companions. Schema 11 could immediately prefer a
     // one-frame longer hallucination, splitting stable captions around spaces
-    // or duplicated glyphs. None of those checkpoints can resume here.
-    private const int Schema = 12;
+    // or duplicated glyphs. Schema 12 can also retain an A/B/A one-glyph
+    // substitution as three final cues. None of those checkpoints can resume here.
+    private const int Schema = 13;
     private readonly AppPaths _paths;
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -89,7 +90,7 @@ internal sealed class OcrCheckpointStore
 
     public async Task RemoveAsync(OcrScanRequest request, CancellationToken cancellationToken)
     {
-        foreach (var schema in new[] { 12, 11, 10, 9, 8, 7, 6, 5, 4, 3 })
+        foreach (var schema in new[] { 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3 })
         {
             var key = await KeyAsync(request, schema, cancellationToken);
             var path = Path.Combine(DirectoryPath, key + ".json");

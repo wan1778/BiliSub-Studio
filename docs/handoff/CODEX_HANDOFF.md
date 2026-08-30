@@ -454,6 +454,21 @@ and another left/top label. Normal dialogue was centered in the lower band.
   `d5ab2df1724618f1772a0a8fb11e20e1817e99c9` are live. This is CI/package PASS,
   not a new full Editor ASR/TTS/OCR functional field-test PASS; no source media
   is changed.
+- OCR-ACCURACY-13 source/contract/build PASS: PP-OCRv6 detector fragments on
+  one baseline are now ordered geometrically and stitched with exact
+  suffix/prefix de-duplication; final cue reconciliation collapses only bounded
+  touching A/B/A one-rune substitutions such as `万年没出门` / `万年设出门` /
+  `万年没出门`; live snapshots retain cue history until they are filtered to
+  the contiguous safe frontier and then bounded to 120 rows. Checkpoint schema
+  13 rejects schema-12 cues produced before this policy, and the static schema-4
+  UI label was replaced with non-stale version wording. Targeted verification
+  PASS: OCR worker/scanner scripts, Core contracts 80/80, WinUI Release x64
+  build with 0 warnings/errors, and direct PP-OCRv6 Small GPU probes at
+  06:45:12.133 and 06:45:12.267 on the supplied video, both returning exactly
+  `少主……是不死丹帝，药逆命`. The already-running app and its paused schema-12
+  checkpoint were not mutated. A fresh post-build scan is required; no full
+  8-hour OCR accuracy PASS is claimed. The local Paddle runtime still warns
+  that its compiled cuDNN 9.9 differs from machine runtime 9.5.
 
 ## Constraints to preserve
 

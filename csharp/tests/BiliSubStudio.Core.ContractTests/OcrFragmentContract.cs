@@ -30,6 +30,31 @@ internal static class OcrFragmentContract
         Check(fieldFragments.Count == 1 && fieldFragments[0].Text == "少主……是不死丹帝，药逆命"
             && fieldFragments[0].Start == 24310.8 && fieldFragments[0].End == 24313.233313,
             "field punctuation and one-frame duplicated glyph still fragmented one rendered caption");
+        var substituted = OcrCueReconciler.MergeTouchingIdentical(
+        [
+            new(142.967, 143.133, "万年没出门", .99),
+            new(143.133, 143.967, "万年设出门", .999),
+            new(143.967, 144.167, "万年没出门", .99),
+        ]);
+        Check(substituted.Count == 1 && substituted[0].Text == "万年没出门"
+            && substituted[0].Start == 142.967 && substituted[0].End == 144.167,
+            "A/B/A one-glyph temporal substitution survived into final SRT cues");
+        var legitimateChange = OcrCueReconciler.MergeTouchingIdentical(
+        [
+            new(200, 200.5, "你要走吗", .99),
+            new(200.5, 201.1, "你要来吗", .99),
+            new(201.1, 202.0, "我不知道", .99),
+        ]);
+        Check(legitimateChange.Count == 3,
+            "one-way similar real captions were erased without A/B/A consensus");
+        var deliberateSandwich = OcrCueReconciler.MergeTouchingIdentical(
+        [
+            new(210, 210.5, "你要走吗", .99),
+            new(210.5, 211.0, "你要来吗", .99),
+            new(211.0, 211.5, "你要走吗", .99),
+        ]);
+        Check(deliberateSandwich.Count == 3,
+            "three sustained real A/B/A captions were treated as a frame-edge flicker");
         var live = new OcrLiveCueAccumulator();
         live.Merge([new(24310.966688, 24311.966688, "少主……是不死丹帝， 药逆命", .99)]);
         live.Merge([
@@ -56,7 +81,7 @@ internal static class OcrFragmentContract
         var final = (IReadOnlyList<OcrCue>)reconcile.Invoke(null, [lanes, 0])!;
         Check(final.SequenceEqual(merged), "final same-lane SRT retains duplicated cues");
         var store = assembly.GetType("BiliSubStudio.Core.Ocr.OcrCheckpointStore")!;
-        Check((int)store.GetField("Schema", BindingFlags.Static | BindingFlags.NonPublic)!.GetRawConstantValue()! == 12,
+        Check((int)store.GetField("Schema", BindingFlags.Static | BindingFlags.NonPublic)!.GetRawConstantValue()! == 13,
             "old misrecognized checkpoint is still resume-compatible");
         return Task.CompletedTask;
     }

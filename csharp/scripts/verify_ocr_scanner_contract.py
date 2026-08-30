@@ -130,17 +130,22 @@ def main() -> int:
     require("liveCommitted" in scanner and "liveActive" in scanner and
             "recentCues" in live_publish and "new OcrScanResult(" in live_publish,
             "running OCR does not publish a bounded live cue snapshot through AppJob.Result")
+    live_seed = scanner[scanner.find("var liveCommitted = checkpoint.Lanes"):scanner.find("var liveActive =", scanner.find("var liveCommitted = checkpoint.Lanes"))]
+    require("TakeLast(120)" not in live_seed and "liveCommitted.RemoveRange" not in scanner and
+            "TakeLast(120)" in live_publish,
+            "future-lane callbacks can evict safe-frontier cues before the bounded live snapshot is built")
     require(".Concat(liveActive.Where(cue => cue is not null).Select(cue => cue!))" in live_publish,
             "live OCR preview hides the tracker-confirmed active cue until a later subtitle commits it")
+    require(".Where(cue => cue.Start <= frontier + .001)" in live_publish,
+            "live OCR preview exposes speculative cues beyond the contiguous safe frontier")
     require("publishedCueCount" in live_lane and "tracker.Cues.Skip(publishedCueCount)" in live_lane and
-            "tracker.Active" in live_lane and "onProgress(at, frames, images, committedCues, tracker.Active)" in live_lane,
+            "tracker.Active" in live_lane and "onProgress(mediaSeconds, frames, images, committedCues, tracker.Active)" in live_lane,
             "tracker-confirmed committed/active OCR text is not streamed while scanning")
     require("snapshot.Result is OcrScanResult result" in page and
-            "MergeLiveCueSnapshot(result.Cues)" in page and "_liveCuesByStart" in page and
+            "MergeLiveCueSnapshot(result.Cues)" in page and "OcrLiveCueAccumulator _liveCues" in page and
             "RefreshLiveCueView(force: snapshot.Done)" in page and "now.AddSeconds(2)" in page,
             "OCR page does not incrementally retain and throttle live cue rendering")
-    require("OcrCueReconciler.MergeTouchingIdentical" in page and
-            "OcrCueReconciler.MergeTouchingIdentical" in live_publish and
+    require("OcrLiveCueAccumulator" in page and "OcrCueReconciler.MergeTouchingIdentical" in live_publish and
             "OcrCueReconciler.MergeTouchingIdentical(output.Select(item => item.Cue))" in scanner,
             "identical touching OCR fragments are not reconciled consistently in live history and final SRT")
     require("recoverShortBlank: tracker.Active is not null" in live_lane,
@@ -164,7 +169,7 @@ def main() -> int:
             "change_scores" in worker_client and "ProbeVisualChangesAsync(imageBase64" in manager,
             "C# OCR worker path does not validate and expose the every-frame visual probe protocol")
     require("var authoritative = snapshot.Done" in page and
-            "? result.Cues.OrderBy(cue => cue.Start).ToArray()" in page and
+            "ApplyAuthoritativeCues(result.Cues)" in page and
             "ExportOcrAsync(_cues" in page and "ExportButton.IsEnabled = false;" in page,
             "provisional live active cues can leak into export instead of being replaced by the final authoritative scan result")
     require("TakeLast(120)" not in page and "Take(10)" not in page and
@@ -210,8 +215,8 @@ def main() -> int:
 
     require("File.Delete(path);" in checkpoint and "if (File.Exists(path)" in checkpoint,
             "checkpoint removal still swallows delete errors or skips absence verification")
-    require("private const int Schema = 9;" in checkpoint and "schema >= 9" in checkpoint and
-            "LegacyCheckpointIdentity" in checkpoint and "new[] { 9, 8, 7, 6, 5, 4, 3 }" in checkpoint,
+    require("private const int Schema = 13;" in checkpoint and "schema >= 9" in checkpoint and
+            "LegacyCheckpointIdentity" in checkpoint and "new[] { 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3 }" in checkpoint,
             "adaptive OCR checkpoint identity cannot safely reject and explicitly remove legacy checkpoint files")
     require("Where(x => x.Start <= media + 0.001)" in checkpoint,
             "paused checkpoint cues are not restricted to the contiguous safe frontier")

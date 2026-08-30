@@ -29,7 +29,7 @@
                             <TextBlock FontSize="10" Foreground="{ThemeResource SuccessBrush}" Text="Checkpoint" />
                         </Border>
                     </StackPanel>
-                    <TextBlock Style="{StaticResource MutedTextStyle}" Text="CPU/GPU/Hybrid · topology 1–8/16 · checkpoint schema 4" />
+                    <TextBlock Style="{StaticResource MutedTextStyle}" Text="CPU/GPU/Hybrid · topology 1–8/16 · checkpoint tự kiểm tra phiên bản" />
                 </StackPanel>
                 <Button
                     x:Name="PickVideoButton"

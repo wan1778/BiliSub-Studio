@@ -99,6 +99,34 @@ def main() -> int:
 
     assert_result(worker.parse_prediction([ResultFixture()]), "测试", 0.95, [10, 20, 40, 55])
 
+    overlapping = {
+        "rec_texts": ["少主……是", "是不死丹帝，药逆命"],
+        "rec_scores": [0.85924, 0.99997],
+        "rec_boxes": [[313, 146, 531, 202], [501, 147, 953, 201]],
+    }
+    assert_result(
+        worker.parse_prediction([overlapping]),
+        "少主……是不死丹帝，药逆命",
+        0.85924,
+        [313, 146, 953, 202],
+    )
+    y_jittered = overlapping | {
+        "rec_boxes": [[313, 147, 531, 202], [501, 145, 953, 201]],
+    }
+    assert_result(
+        worker.parse_prediction([y_jittered]),
+        "少主……是不死丹帝，药逆命",
+        0.85924,
+        [313, 145, 953, 202],
+    )
+    separate_rows = {
+        "rec_texts": ["第一行", "第二行"],
+        "rec_scores": [0.9, 0.8],
+        "rec_boxes": [[10, 10, 100, 40], [10, 70, 100, 100]],
+    }
+    separated = worker.parse_prediction([separate_rows])
+    assert separated["text"] == "第一行\n第二行" and len(separated["lines"]) == 2
+
     empty = worker.parse_prediction([{"res": {"rec_texts": [], "rec_scores": [], "rec_boxes": []}}])
     assert empty["ok"] is True and empty["detected"] is False and empty["text"] == ""
 

@@ -144,7 +144,6 @@ public sealed class OcrScanner
                     ? cue.Start <= lane.Segment.CoreEnd
                     : cue.Start < lane.Segment.CoreEnd)))
             .OrderBy(cue => cue.Start)
-            .TakeLast(120)
             .ToList();
         var liveActive = checkpoint.Lanes.Select(lane =>
         {
@@ -179,8 +178,6 @@ public sealed class OcrScanner
                                     || (isLast && cue.Start > lane.Segment.CoreEnd)) continue;
                                 liveCommitted.Add(cue);
                             }
-                            if (liveCommitted.Count > 120)
-                                liveCommitted.RemoveRange(0, liveCommitted.Count - 120);
                             liveActive[lane.Segment.Index] = activeCue is not null
                                 && activeCue.Start >= lane.Segment.CoreStart
                                 && (isLast ? activeCue.Start <= lane.Segment.CoreEnd : activeCue.Start < lane.Segment.CoreEnd)
@@ -477,6 +474,7 @@ public sealed class OcrScanner
         var active = Math.Max(0, lanes.Count - completedCount);
         var recentCues = OcrCueReconciler.MergeTouchingIdentical(liveCommitted
             .Concat(liveActive.Where(cue => cue is not null).Select(cue => cue!)))
+            .Where(cue => cue.Start <= frontier + .001)
             .TakeLast(120)
             .ToArray();
         job.Set("scanning", percent, $"Đang quét OCR · {lanes.Count} FFmpeg lane · {workers} worker · {percent:0.0}%");
