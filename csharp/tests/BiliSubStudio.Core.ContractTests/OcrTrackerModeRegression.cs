@@ -208,10 +208,16 @@ internal static class OcrTrackerModeRegression
             ?? throw new InvalidOperationException("missing OCR checkpoint store");
         var modeFor = checkpointType.GetMethod("ModeFor", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("missing OCR scan mode selector");
-        var accurateMode = modeFor.Invoke(null, ["accurate", 1d])
-            ?? throw new InvalidOperationException("accurate OCR mode unavailable");
-        if (accurateMode.GetType().GetProperty("AdaptiveTiming")?.GetValue(accurateMode) is not true)
-            throw new InvalidOperationException("accurate OCR does not enable adaptive frame refinement");
+        var modes = new[] { "accurate", "balanced", "fast" }.ToDictionary(
+            name => name,
+            name => modeFor.Invoke(null, [name, 1d])
+                ?? throw new InvalidOperationException($"{name} OCR mode unavailable"));
+        foreach (var (name, mode) in modes)
+        {
+            if (mode.GetType().GetProperty("AdaptiveTiming")?.GetValue(mode) is not true)
+                throw new InvalidOperationException($"{name} OCR can quantize cue timing or drop short captions");
+        }
+        var accurateMode = modes["accurate"];
         var scannerType = typeof(OcrResult).Assembly.GetType("BiliSubStudio.Core.Ocr.OcrScanner")
             ?? throw new InvalidOperationException("missing OcrScanner");
         var filterOverlayLines = scannerType.GetMethod("FilterOffBaselineOverlayLines", BindingFlags.Static | BindingFlags.NonPublic)
@@ -249,13 +255,16 @@ internal static class OcrTrackerModeRegression
             || !filter.Contains("showinfo", StringComparison.Ordinal) || filter.Contains("fps=", StringComparison.Ordinal))
             throw new InvalidOperationException("adaptive OCR decoder no longer preserves every source-frame PTS");
 
-        var balancedMode = modeFor.Invoke(null, ["balanced", 1d])
-            ?? throw new InvalidOperationException("balanced OCR mode unavailable");
-        var sampledArgs = (IReadOnlyList<string>)(buildLane.Invoke(null, ["source.mp4", new OcrRegion(.05, .65, .90, .29), balancedMode, 1000.13d, 1002d, false])
-            ?? throw new InvalidOperationException("sampled OCR FFmpeg arguments unavailable"));
-        if (!sampledArgs.Contains("-copyts") || !sampledArgs.Contains("info") || sampledArgs.SkipWhile(x => x != "-vf").Skip(1).FirstOrDefault() is not { } sampledFilter
-            || !sampledFilter.Contains("fps=2.5", StringComparison.Ordinal) || !sampledFilter.Contains("showinfo", StringComparison.Ordinal))
-            throw new InvalidOperationException("sampled OCR still synthesizes timing instead of preserving filtered-frame PTS");
+        foreach (var (name, mode) in modes)
+        {
+            var nativeArgs = (IReadOnlyList<string>)(buildLane.Invoke(null, ["source.mp4", new OcrRegion(.05, .65, .90, .29), mode, 1000.13d, 1002d, false])
+                ?? throw new InvalidOperationException($"{name} OCR FFmpeg arguments unavailable"));
+            if (!nativeArgs.Contains("-copyts") || !nativeArgs.Contains("info")
+                || nativeArgs.SkipWhile(x => x != "-vf").Skip(1).FirstOrDefault() is not { } nativeFilter
+                || !nativeFilter.Contains("showinfo", StringComparison.Ordinal)
+                || nativeFilter.Contains("fps=", StringComparison.Ordinal))
+                throw new InvalidOperationException($"{name} OCR no longer preserves native-frame PTS for adaptive short-caption recovery");
+        }
 
         var buildSegments = checkpointType.GetMethod("BuildSegments", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("missing OCR lane segment builder");

@@ -129,7 +129,7 @@ internal static class OcrLaneCoverageRegression
             var tolerance = Math.Max(.1, duration);
             Check(Math.Abs(first - start) <= tolerance && covered >= end - tolerance && last < end + .001,
                 "JPEG timestamps do not cover the requested source-global interval");
-            Check(mode != "accurate" || frames >= 25, "accurate mode lost source frames in a 1-second 30fps window");
+            Check(frames >= 25, $"{mode} mode lost native frames needed for exact timing and short-caption recovery");
         }
         finally
         {

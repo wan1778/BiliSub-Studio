@@ -81,8 +81,8 @@ internal static class OcrFragmentContract
         var final = (IReadOnlyList<OcrCue>)reconcile.Invoke(null, [lanes, 0])!;
         Check(final.SequenceEqual(merged), "final same-lane SRT retains duplicated cues");
         var store = assembly.GetType("BiliSubStudio.Core.Ocr.OcrCheckpointStore")!;
-        Check((int)store.GetField("Schema", BindingFlags.Static | BindingFlags.NonPublic)!.GetRawConstantValue()! == 13,
-            "old misrecognized checkpoint is still resume-compatible");
+        Check((int)store.GetField("Schema", BindingFlags.Static | BindingFlags.NonPublic)!.GetRawConstantValue()! == 14,
+            "fixed-FPS checkpoint is still resume-compatible");
         return Task.CompletedTask;
     }
 

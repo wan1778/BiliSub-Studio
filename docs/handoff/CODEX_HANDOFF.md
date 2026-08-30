@@ -469,6 +469,22 @@ and another left/top label. Normal dialogue was centered in the lower band.
   checkpoint were not mutated. A fresh post-build scan is required; no full
   8-hour OCR accuracy PASS is claimed. The local Paddle runtime still warns
   that its compiled cuDNN 9.9 differs from machine runtime 9.5.
+- OCR-TIMING-14 targeted and real-field PASS: the field schema-13 Balanced scan proved that fixed 2.5-fps
+  sampling quantized every cue to a 400-ms grid and dropped genuine short
+  captions that could not satisfy the tracker's two-hit requirement. Balanced
+  and Fast now keep their lower steady Paddle sample rates but decode native
+  frame PTS, cheaply probe every frame for visual changes, and OCR only bounded
+  transition batches. This routes LIVE, paused checkpoint reconciliation and
+  final SRT through the same exact-frame tracker. Schema 14 rejects affected
+  schema-13 checkpoints. Verification PASS: scanner static contract, Core
+  contracts 80/80, Release x64 build with 0 warnings/errors, and 18/18 real
+  NVDEC/FFmpeg windows across Accurate/Balanced/Fast preserving all 30 native
+  frames and source PTS. The public Balanced Paddle GPU regression on the first
+  26 seconds of the supplied video produced 22 cues (instead of the broken
+  fixed-grid run's 18), retained 0.53-second `走`, 0.63-second `当然知晓`,
+  0.93-second `幸福`, and 0.70-second `一万年前`, then proved fresh versus
+  pause/resume sequence/timing parity and exported all 22 cues to real SRT.
+  This is not a full 8-hour OCR accuracy PASS.
 
 ## Constraints to preserve
 

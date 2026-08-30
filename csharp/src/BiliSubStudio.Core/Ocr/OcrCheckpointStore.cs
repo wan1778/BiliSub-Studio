@@ -23,8 +23,11 @@ internal sealed class OcrCheckpointStore
     // high-confidence tiny companions. Schema 11 could immediately prefer a
     // one-frame longer hallucination, splitting stable captions around spaces
     // or duplicated glyphs. Schema 12 can also retain an A/B/A one-glyph
-    // substitution as three final cues. None of those checkpoints can resume here.
-    private const int Schema = 13;
+    // substitution as three final cues. Schema 13 sampled Balanced/Fast modes
+    // on a fixed FPS grid, which quantized cue boundaries and dropped captions
+    // shorter than the tracker's two-hit window. None of those checkpoints can
+    // resume once every mode uses native-frame PTS plus adaptive OCR refinement.
+    private const int Schema = 14;
     private readonly AppPaths _paths;
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -90,7 +93,7 @@ internal sealed class OcrCheckpointStore
 
     public async Task RemoveAsync(OcrScanRequest request, CancellationToken cancellationToken)
     {
-        foreach (var schema in new[] { 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3 })
+        foreach (var schema in new[] { 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3 })
         {
             var key = await KeyAsync(request, schema, cancellationToken);
             var path = Path.Combine(DirectoryPath, key + ".json");
@@ -132,8 +135,12 @@ internal sealed class OcrCheckpointStore
             // Accurate keeps every source-frame PTS available, but PaddleOCR is
             // invoked at 4 fps until a text transition requires frame refinement.
             "accurate" or "precise" or "chinh-xac" => new OcrScanMode(4, 3, 12, 0.10, 0.68, AdaptiveTiming: true),
-            "fast" or "nhanh" => new OcrScanMode(1.5, 8, 24, 0.22, 0.58),
-            _ => new OcrScanMode(2.5, 5, 16, 0.16, 0.62),
+            // Balanced/Fast still reduce the steady Paddle sampling rate, but
+            // must retain every native-frame PTS and cheaply probe visual
+            // changes. Transition frames are then OCR'd in a small batch, so a
+            // short subtitle is not lost between two sparse baseline samples.
+            "fast" or "nhanh" => new OcrScanMode(1.5, 8, 24, 0.22, 0.58, AdaptiveTiming: true),
+            _ => new OcrScanMode(2.5, 5, 16, 0.16, 0.62, AdaptiveTiming: true),
         };
         sensitivity = sensitivity <= 0 ? 1 : Math.Clamp(sensitivity, 0.60, 1.50);
         return result with { DiffTrigger = result.DiffTrigger * sensitivity };

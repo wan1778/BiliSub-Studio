@@ -111,6 +111,9 @@ def main() -> int:
             "scanner commit log does not expose the benchmark-selected full topology")
     require("new SubtitleTracker(mode.Fps, mode.LowConfidence, exactFrameTiming: mode.AdaptiveTiming)" in scanner,
             "scan mode low-confidence threshold or exact-frame timing policy is not applied to subtitle tracking")
+    require('"fast" or "nhanh" => new OcrScanMode(1.5, 8, 24, 0.22, 0.58, AdaptiveTiming: true)' in checkpoint and
+            '_ => new OcrScanMode(2.5, 5, 16, 0.16, 0.62, AdaptiveTiming: true)' in checkpoint,
+            "Balanced/Fast OCR can still quantize timestamps or skip short captions between sampled frames")
     require("var overlap = Math.Max(scanMode.Guard, scanMode.ActiveGuard);" in checkpoint,
             "scan mode guard is not applied to lane overlap")
 
@@ -215,8 +218,8 @@ def main() -> int:
 
     require("File.Delete(path);" in checkpoint and "if (File.Exists(path)" in checkpoint,
             "checkpoint removal still swallows delete errors or skips absence verification")
-    require("private const int Schema = 13;" in checkpoint and "schema >= 9" in checkpoint and
-            "LegacyCheckpointIdentity" in checkpoint and "new[] { 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3 }" in checkpoint,
+    require("private const int Schema = 14;" in checkpoint and "schema >= 9" in checkpoint and
+            "LegacyCheckpointIdentity" in checkpoint and "new[] { 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3 }" in checkpoint,
             "adaptive OCR checkpoint identity cannot safely reject and explicitly remove legacy checkpoint files")
     require("Where(x => x.Start <= media + 0.001)" in checkpoint,
             "paused checkpoint cues are not restricted to the contiguous safe frontier")

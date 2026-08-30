@@ -7,7 +7,8 @@ using BiliSubStudio.Core.Ocr;
 namespace BiliSubStudio.Core.ContractTests;
 
 // Opt-in real field regression: first 26 seconds of the supplied Chinese video,
-// original frames, actual Paddle GPU, public scan/pause/resume/export APIs.
+// original frames, Balanced adaptive timing, actual Paddle GPU, and public
+// scan/pause/resume/export APIs.
 internal static class OcrFragmentRuntimeContract
 {
     public static async Task<int> RunAsync(string root, string video)
@@ -18,7 +19,7 @@ internal static class OcrFragmentRuntimeContract
         var app = new BiliSubApplication(paths);
         // Exact persisted ROI from the field failure: the thinner crop makes
         // Paddle confidently misread the leading 一 as a tiny standalone 8/4.
-        var request = new OcrScanRequest(video, new(.05, .84, .91, .12), "accurate", "gpu", "1", 1, 26);
+        var request = new OcrScanRequest(video, new(.05, .84, .91, .12), "balanced", "gpu", "1", 1, 26);
         var checks = new List<string>();
         void Check(bool valid, string message)
         {
@@ -62,7 +63,7 @@ internal static class OcrFragmentRuntimeContract
         void Validate(OcrScanResult result)
         {
             Console.WriteLine(JsonSerializer.Serialize(result.Cues));
-            Check(result.CompletedLanes == 1 && !result.Paused && result.Frames >= 779, "every real frame reached OCR to the bounded end");
+            Check(result.CompletedLanes == 1 && !result.Paused && result.Frames >= 779, "Balanced keeps every real frame for exact PTS and bounded transition OCR");
             var shortCue = result.Cues.Where(cue => cue.Start >= 3.5 && cue.End <= 4.5).ToArray();
             Check(shortCue.Length == 1 && shortCue[0].Text == "走", "genuine one-glyph subtitle survives as one correct cue, not 杰/徒");
             var repeated = result.Cues.Where(cue => cue.Start >= 7.7 && cue.Start < 9.6).ToArray();
