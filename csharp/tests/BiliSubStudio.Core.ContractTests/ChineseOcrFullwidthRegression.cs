@@ -27,6 +27,10 @@ internal static class ChineseOcrFullwidthRegression
             throw new InvalidOperationException("mixed fullwidth Latin case was not folded inside a Chinese token");
         if (!string.Equals(Normalize("一 万年前"), "一万年前", StringComparison.Ordinal))
             throw new InvalidOperationException("OCR whitespace split one continuous Chinese subtitle");
+        if (!string.Equals(Normalize("少主……是不死丹帝， 药逆命"), "少主……是不死丹帝，药逆命", StringComparison.Ordinal))
+            throw new InvalidOperationException("OCR whitespace after Chinese punctuation split one continuous subtitle");
+        if (!string.Equals(Normalize("少主……是不死丹帝 , 药逆命"), "少主……是不死丹帝,药逆命", StringComparison.Ordinal))
+            throw new InvalidOperationException("OCR whitespace around ASCII punctuation split Chinese text");
         if (!string.Equals(Normalize("OpenAI模型"), "OpenAI模型", StringComparison.Ordinal))
             throw new InvalidOperationException("mixed Latin-Chinese token spacing was changed");
         if (!string.Equals(Normalize("第 8 集"), "第 8 集", StringComparison.Ordinal))

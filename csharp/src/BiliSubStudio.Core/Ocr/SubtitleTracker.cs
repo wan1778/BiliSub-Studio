@@ -165,7 +165,7 @@ internal sealed class SubtitleTracker
             Confidence = Math.Max(_candidate.Confidence, result.Confidence),
             Hits = _candidate.Hits + 1,
             Required = Math.Max(_candidate.Required, required),
-            Text = PreferText(_candidate.Text, _candidate.Confidence, text, result.Confidence),
+            Text = PreferCandidateText(_candidate.Text, _candidate.Confidence, text, result.Confidence),
         };
         if (_candidate.Hits >= _candidate.Required) PromoteCandidate(frameDuration);
     }
@@ -274,12 +274,44 @@ internal sealed class SubtitleTracker
 
     private static string PreferText(string current, double currentConfidence, string candidate, double candidateConfidence)
     {
+        // A single longer reading can be a duplicated glyph or an edge
+        // hallucination. Keep it as evidence first; the active-cue path promotes
+        // the fuller spelling only after two matching reads inside its window.
+        if (candidate.EnumerateRunes().Count() > current.EnumerateRunes().Count()
+            && IsRuneSubsequence(current, candidate)) return current;
         if (candidateConfidence > currentConfidence + 0.035) return candidate;
-        // Paddle can recover an omitted CJK glyph on the next frame while reporting
-        // nearly the same line confidence. Do not require a two-character gain.
+        return current;
+    }
+
+    private static string PreferCandidateText(string current, double currentConfidence, string candidate, double candidateConfidence)
+    {
+        // Before promotion, two observations jointly establish the candidate.
+        // Prefer a genuine fuller read, but never let a one-frame adjacent
+        // duplicate become the initial spelling solely because it is longer.
+        if (IsSingleAdjacentDuplicateInsertion(current, candidate)) return current;
+        if (IsSingleAdjacentDuplicateInsertion(candidate, current)) return candidate;
+        if (candidateConfidence > currentConfidence + 0.035) return candidate;
         if (candidate.EnumerateRunes().Count() > current.EnumerateRunes().Count()
             && candidateConfidence >= currentConfidence - 0.08) return candidate;
         return current;
+    }
+
+    private static bool IsSingleAdjacentDuplicateInsertion(string shorter, string longer)
+    {
+        var shorterRunes = shorter.EnumerateRunes().ToArray();
+        var longerRunes = longer.EnumerateRunes().ToArray();
+        if (longerRunes.Length != shorterRunes.Length + 1) return false;
+        for (var removed = 0; removed < longerRunes.Length; removed++)
+        {
+            var adjacentDuplicate = removed > 0 && SameTrackingRune(longerRunes[removed].Value, longerRunes[removed - 1].Value)
+                || removed + 1 < longerRunes.Length && SameTrackingRune(longerRunes[removed].Value, longerRunes[removed + 1].Value);
+            if (!adjacentDuplicate) continue;
+            var candidate = longerRunes.Where((_, index) => index != removed).ToArray();
+            if (candidate.Length == shorterRunes.Length
+                && candidate.Zip(shorterRunes).All(pair => SameTrackingRune(pair.First.Value, pair.Second.Value)))
+                return true;
+        }
+        return false;
     }
 
     private static double Similarity(string left, string right)

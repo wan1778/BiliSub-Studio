@@ -20,9 +20,10 @@ internal sealed class OcrCheckpointStore
     // adaptive scanner keeps native PTS coverage while OCR'ing only periodic
     // samples and transition windows. Schema 9 can retain tiny non-Chinese
     // companion boxes and CJK whitespace fragments. Schema 10 still trusted
-    // high-confidence tiny companions and did not schedule bounded enhanced
-    // recovery for the omitted Chinese glyph, so neither can resume here.
-    private const int Schema = 11;
+    // high-confidence tiny companions. Schema 11 could immediately prefer a
+    // one-frame longer hallucination, splitting stable captions around spaces
+    // or duplicated glyphs. None of those checkpoints can resume here.
+    private const int Schema = 12;
     private readonly AppPaths _paths;
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -88,7 +89,7 @@ internal sealed class OcrCheckpointStore
 
     public async Task RemoveAsync(OcrScanRequest request, CancellationToken cancellationToken)
     {
-        foreach (var schema in new[] { 11, 10, 9, 8, 7, 6, 5, 4, 3 })
+        foreach (var schema in new[] { 12, 11, 10, 9, 8, 7, 6, 5, 4, 3 })
         {
             var key = await KeyAsync(request, schema, cancellationToken);
             var path = Path.Combine(DirectoryPath, key + ".json");

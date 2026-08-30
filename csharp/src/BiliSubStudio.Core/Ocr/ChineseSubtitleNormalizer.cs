@@ -22,7 +22,7 @@ public static partial class ChineseSubtitleNormalizer
             else if (value is >= 0xFF41 and <= 0xFF5A) value = 'a' + (value - 0xFF41);
             folded.Append(new Rune(value).ToString());
         }
-        text = CollapseWhitespaceBetweenHan(folded.ToString());
+        text = CollapseChineseWhitespace(folded.ToString());
         text = RepeatedPunctuation().Replace(text, "$1");
 
         var hanCount = 0;
@@ -72,7 +72,7 @@ public static partial class ChineseSubtitleNormalizer
         >= 0xF900 and <= 0xFAFF or
         >= 0x20000 and <= 0x323AF;
 
-    private static string CollapseWhitespaceBetweenHan(string text)
+    private static string CollapseChineseWhitespace(string text)
     {
         var runes = text.EnumerateRunes().ToArray();
         if (runes.Length < 3) return text;
@@ -81,13 +81,23 @@ public static partial class ChineseSubtitleNormalizer
         for (var index = 0; index < runes.Length; index++)
         {
             var rune = runes[index];
-            if (rune.Value == ' ' && index > 0 && index + 1 < runes.Length
-                && IsHan(runes[index - 1].Value) && IsHan(runes[index + 1].Value))
-                continue;
+            if (rune.Value == ' ' && index > 0 && index + 1 < runes.Length)
+            {
+                var previous = runes[index - 1].Value;
+                var next = runes[index + 1].Value;
+                if (IsHan(previous) && IsHan(next)
+                    || IsChinesePunctuation(previous) && (IsHan(next) || IsChinesePunctuation(next))
+                    || IsChinesePunctuation(next) && (IsHan(previous) || IsChinesePunctuation(previous)))
+                    continue;
+            }
             output.Append(rune.ToString());
         }
         return output.ToString();
     }
+
+    private static bool IsChinesePunctuation(int value) => value is
+        '，' or '。' or '！' or '？' or '、' or '；' or '：' or '…' or
+        ',' or '.' or '!' or '?' or ';' or ':';
 
     private static bool IsForbiddenLetter(int value)
     {

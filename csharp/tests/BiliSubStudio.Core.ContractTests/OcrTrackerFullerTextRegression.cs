@@ -91,5 +91,35 @@ internal static class OcrTrackerFullerTextRegression
             ?? throw new InvalidOperationException("tracker lost renewed fuller-text fixture"));
         if (expiredCue.Text != "吃我的喝我的")
             throw new InvalidOperationException("fresh fuller-text evidence after expiry did not recover the omitted glyph");
+
+        var punctuationAndDuplicate = constructor.Invoke([30d, .68d, true]);
+        var stableSpaced = new OcrResult(true, true, "少主……是不死丹帝， 药逆命", .99, []);
+        var stable = new OcrResult(true, true, "少主……是不死丹帝，药逆命", .99, []);
+        var duplicated = new OcrResult(true, true, "少主……是是不死丹帝，药逆命", .999, []);
+        observe.Invoke(punctuationAndDuplicate, [40d, frame, stableSpaced]);
+        observe.Invoke(punctuationAndDuplicate, [40d + frame, frame, stableSpaced]);
+        observe.Invoke(punctuationAndDuplicate, [40d + 2d * frame, frame, stable]);
+        observe.Invoke(punctuationAndDuplicate, [40d + 3d * frame, frame, duplicated]);
+        observe.Invoke(punctuationAndDuplicate, [40d + 4d * frame, frame, stable]);
+        observe.Invoke(punctuationAndDuplicate, [40d + 5d * frame, frame, stable]);
+        var stableCue = (OcrCue)(active.GetValue(punctuationAndDuplicate)
+            ?? throw new InvalidOperationException("tracker lost punctuation/duplicate fixture"));
+        var committed = (IReadOnlyList<OcrCue>)(trackerType.GetProperty("Cues")!.GetValue(punctuationAndDuplicate)
+            ?? throw new InvalidOperationException("tracker did not expose committed cues"));
+        if (stableCue.Text != "少主……是不死丹帝，药逆命" || committed.Count != 0)
+            throw new InvalidOperationException("one-frame duplicated glyph or punctuation spacing fragmented a stable caption");
+
+        var legitimateRepeat = constructor.Invoke([30d, .68d, true]);
+        var oneThanks = new OcrResult(true, true, "谢", .99, []);
+        var twoThanks = new OcrResult(true, true, "谢谢", .94, []);
+        observe.Invoke(legitimateRepeat, [50d, frame, oneThanks]);
+        observe.Invoke(legitimateRepeat, [50d + frame, frame, oneThanks]);
+        observe.Invoke(legitimateRepeat, [50d + 2d * frame, frame, oneThanks]);
+        observe.Invoke(legitimateRepeat, [50d + 3d * frame, frame, twoThanks]);
+        observe.Invoke(legitimateRepeat, [50d + 4d * frame, frame, twoThanks]);
+        var repeatedCue = (OcrCue)(active.GetValue(legitimateRepeat)
+            ?? throw new InvalidOperationException("tracker lost legitimate repeated-glyph fixture"));
+        if (repeatedCue.Text != "谢谢")
+            throw new InvalidOperationException("stable repeated Chinese glyph was rejected as a transient duplicate");
     }
 }
