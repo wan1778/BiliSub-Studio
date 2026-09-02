@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
+using BiliSubStudio.Core.Editor;
 using BiliSubStudio.Core.IO;
 using BiliSubStudio.Core.Jobs;
 using BiliSubStudio.Core.Processes;
@@ -28,7 +29,8 @@ internal sealed class EditorImageOverlayComposer(ToolManager tools, ProcessRunne
         int sourceHeight,
         double duration,
         IReadOnlyList<EditorImageOverlaySpec> images,
-        bool copyAudio)
+        bool copyAudio,
+        EditorExportSettings? exportSettings = null)
     {
         ArgumentNullException.ThrowIfNull(job);
         ArgumentNullException.ThrowIfNull(images);
@@ -56,6 +58,9 @@ internal sealed class EditorImageOverlayComposer(ToolManager tools, ProcessRunne
 
         var expectAudio = await HasAudioStreamAsync(input, job.CancellationToken);
         var ffmpeg = await tools.EnsureFfmpegAsync(job.CancellationToken);
+        var export = EditorExportPolicy.Normalize(exportSettings);
+        job.Set("image-encoder-probe", 1, "Đang kiểm tra bộ mã hóa video...");
+        var encoder = await EditorExportPolicy.ResolveEncoderAsync(ffmpeg, processes, export, job.CancellationToken, job.Log);
         var args = new List<string>
         {
             "-y", "-hide_banner", "-loglevel", "error", "-nostdin", "-i", input,
@@ -65,14 +70,16 @@ internal sealed class EditorImageOverlayComposer(ToolManager tools, ProcessRunne
             args.AddRange(["-loop", "1", "-framerate", "1", "-i", image.Path]);
         }
 
-        var graph = BuildGraph(normalized, sourceWidth, sourceHeight);
+        var graph = EditorExportPolicy.BuildVideoGraph(
+            BuildGraph(normalized, sourceWidth, sourceHeight), export, sourceWidth, sourceHeight);
         args.AddRange([
-            "-filter_complex", graph,
-            "-map", "[vout]", "-map", "0:a?", "-map_metadata", "0", "-sn", "-dn",
-            "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p",
+            "-filter_complex", graph.FilterGraph,
+            "-map", graph.OutputLabel, "-map", "0:a?", "-map_metadata", "0", "-sn", "-dn",
         ]);
+        args.AddRange(EditorExportPolicy.BuildVideoEncoderArguments(
+            export, encoder, string.Equals(extension, ".mp4", StringComparison.OrdinalIgnoreCase)));
         if (copyAudio) args.AddRange(["-c:a", "copy"]);
-        else args.AddRange(["-c:a", "aac", "-b:a", "192k"]);
+        else args.AddRange(["-c:a", "aac", "-b:a", export.AudioBitrateKbps.ToString(CultureInfo.InvariantCulture) + "k"]);
         if (string.Equals(extension, ".mp4", StringComparison.OrdinalIgnoreCase))
             args.AddRange(["-movflags", "+faststart"]);
         args.AddRange([
@@ -98,7 +105,9 @@ internal sealed class EditorImageOverlayComposer(ToolManager tools, ProcessRunne
                 throw new InvalidDataException("Video ghép ảnh/logo bị rỗng.");
 
             job.Set("image-validate", 97, "Đang kiểm tra stream, kích thước, audio và thời lượng...");
-            await ValidateAsync(temporary, sourceWidth, sourceHeight, duration, expectAudio, job.CancellationToken);
+            await ValidateAsync(
+                temporary, graph.Dimensions.Width, graph.Dimensions.Height, duration, expectAudio,
+                export.Codec, job.CancellationToken);
             File.Move(temporary, output);
             job.Set("image-complete", 99, "Đã ghép và xác minh ảnh/logo.");
             return output;
@@ -135,13 +144,14 @@ internal sealed class EditorImageOverlayComposer(ToolManager tools, ProcessRunne
         int expectedHeight,
         double expectedDuration,
         bool expectAudio,
+        string expectedCodec,
         CancellationToken cancellationToken)
     {
         var ffprobe = await tools.EnsureFfprobeAsync(cancellationToken);
         var probe = await processes.RunAsync(ffprobe,
         [
             "-v", "error",
-            "-show_entries", "stream=codec_type,width,height:format=duration,size",
+            "-show_entries", "stream=codec_type,codec_name,width,height:format=duration,size",
             "-of", "json", path,
         ], cancellationToken);
         if (probe.ExitCode != 0)
@@ -152,6 +162,7 @@ internal sealed class EditorImageOverlayComposer(ToolManager tools, ProcessRunne
         var videoStreams = 0;
         var audioStreams = 0;
         var validVideo = false;
+        var validCodec = false;
         if (root.TryGetProperty("streams", out var streams) && streams.ValueKind == JsonValueKind.Array)
         {
             foreach (var stream in streams.EnumerateArray())
@@ -163,12 +174,16 @@ internal sealed class EditorImageOverlayComposer(ToolManager tools, ProcessRunne
                     var width = stream.TryGetProperty("width", out var widthNode) && widthNode.TryGetInt32(out var parsedWidth) ? parsedWidth : 0;
                     var height = stream.TryGetProperty("height", out var heightNode) && heightNode.TryGetInt32(out var parsedHeight) ? parsedHeight : 0;
                     if (width == expectedWidth && height == expectedHeight) validVideo = true;
+                    var codec = stream.TryGetProperty("codec_name", out var codecNode) ? codecNode.GetString() : null;
+                    validCodec |= string.Equals(codec, expectedCodec == "hevc" ? "hevc" : "h264", StringComparison.Ordinal);
                 }
                 else if (type.GetString() == "audio") audioStreams++;
             }
         }
         if (videoStreams == 0 || !validVideo)
             throw new InvalidDataException("Kích thước video sau khi ghép ảnh/logo bị thay đổi ngoài dự kiến.");
+        if (!validCodec)
+            throw new InvalidDataException("Codec video sau khi ghép ảnh/logo không đúng lựa chọn xuất.");
         if (expectAudio && audioStreams == 0)
             throw new InvalidDataException("Video sau khi ghép ảnh/logo bị mất audio nguồn/base.");
         if (!expectAudio && audioStreams != 0)

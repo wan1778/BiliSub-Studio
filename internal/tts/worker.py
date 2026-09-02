@@ -6,8 +6,10 @@ import importlib.metadata
 import json
 import math
 import os
+import re
 import subprocess
 import sys
+import unicodedata
 import wave
 from pathlib import Path
 
@@ -15,32 +17,72 @@ ENGINE = "nghi-tts"
 ENGINE_VERSION = "nghi-tts-1.0.0"
 MODEL_SHA256 = "2140977786d76d834736c059dacfa553d4931dac2b2c7aaaea438bb2aa9da697"
 CONFIG_SHA256 = "971f57f8d504223fee5b40d664f503cf769baf7db21f7d2ae0554a75d07de2f8"
-TIMING_ALGORITHM = "whole-cue-piper-tempo-fallback-v10"
+TIMING_ALGORITHM = "whole-cue-piper-natural-first-v17"
 VOICE_REVISION = MODEL_SHA256 + ":" + CONFIG_SHA256 + ":" + TIMING_ALGORITHM
 VOICE_NAME = "ngoc_huyen"
 SAMPLE_RATE = 22050
 FIT_METHOD = "piper-length-scale"
-MAX_SYNTHESIS_ATTEMPTS = 10
-MAX_GROUP_SYNTHESIS_ATTEMPTS = 10
-MIN_GROUP_RATE_SCALE = 0.45
-MAX_GROUP_GAP_FRAMES = round(.12 * SAMPLE_RATE)
-MAX_GROUP_DURATION_FRAMES = 12 * SAMPLE_RATE
-MAX_GROUP_CUES = 12
-MAX_TEMPO_ATTEMPTS = 12
+MAX_SYNTHESIS_ATTEMPTS = 12
+MAX_GROUP_SYNTHESIS_ATTEMPTS = 12
+MAX_TEMPO_ATTEMPTS = 6
+# Audible speed is measured from Piper's own native-rate PCM. length_scale is
+# not treated as a linear speed multiplier. A natural-rate cue is accepted
+# immediately whenever it fits its SRT window. Only an actually overlong cue is
+# synthesized again toward the smallest measured speed that can fit. If Piper
+# saturates, bounded pitch-preserving atempo fits the complete waveform. Speech
+# cutting and pitch-shifting filters are never permitted.
+MIN_RATE_SCALE = .30
+MAX_RATE_SCALE = 1.20
+MIN_ACTUAL_SPEED = 1.0
+MAX_ACTUAL_SPEED = 100.0
+FIT_HEADROOM = .995
+TEMPO_RETRY_MARGIN = 1.001
+MIN_GROUP_RATE_SCALE = MIN_RATE_SCALE
+MAX_GROUP_ACTUAL_SPEED = MAX_ACTUAL_SPEED
+# A sentence group may share only a continuously visible subtitle interval.
+# Any positive gap means that the screen has no subtitle, so voice must not be
+# packed into it.
+MAX_GROUP_GAP_FRAMES = 0
+MAX_GROUP_DURATION_FRAMES = 300 * SAMPLE_RATE
+MAX_GROUP_CUES = 512
 SILENCE_AMPLITUDE = 32
 SILENCE_GUARD_FRAMES = round(.05 * SAMPLE_RATE)
-# Preserve Vietnamese voice identity instead of forcing arbitrary slots. Rates
-# outside the preferred range are review-only. If native limits and pooled
-# sentence time still cannot fit, the complete cue uses the verified tempo path.
-MIN_RATE_SCALE = 0.85
-MAX_RATE_SCALE = 1.20
-MIN_PREFERRED_RATE_SCALE = 0.90
-MAX_PREFERRED_RATE_SCALE = 1.15
+MIN_PREFERRED_RATE_SCALE = .70
+MAX_PREFERRED_RATE_SCALE = 1.0
 PACKAGES = {"piper-tts": "1.7.0", "onnxruntime": "1.22.1", "vietnormalizer": "0.2.3", "numpy": "2.5.2"}
+MIN_SPEECH_FRAMES = round(.10 * SAMPLE_RATE)
+MIN_SPEECH_FRAMES_PER_UNIT = round(.07 * SAMPLE_RATE)
 
 
 def emit(payload: dict) -> None:
     print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), flush=True)
+
+
+def normalize_vietnamese_text(normalizer, text: str) -> str:
+    if not isinstance(text, str):
+        raise ValueError("Vietnamese TTS text must be a string")
+    # Keep Vietnamese vowels and tone marks in canonical composed form before
+    # and after number/abbreviation normalization. This prevents equivalent
+    # decomposed input (for example u + dot-below) from taking a different
+    # phonemization/cache path.
+    source = unicodedata.normalize("NFC", text).strip()
+    normalized = unicodedata.normalize("NFC", normalizer.normalize(source)).strip()
+    if not normalized:
+        raise ValueError("Vietnamese normalization returned empty text")
+    return normalized
+
+
+def minimum_speech_frames(text: str) -> int:
+    """Reject clicks/truncated tails that cannot plausibly contain the text.
+
+    This deliberately uses a very permissive ceiling of roughly 14 Vietnamese
+    syllables per second. It is a corruption guard, not a speaking-rate control.
+    """
+    units = sum(1 for token in re.findall(r"\w+", text, flags=re.UNICODE)
+                if any(character.isalnum() for character in token))
+    if units <= 0:
+        raise ValueError("Vietnamese TTS text has no speakable units")
+    return max(MIN_SPEECH_FRAMES, units * MIN_SPEECH_FRAMES_PER_UNIT)
 
 
 def sha256(path: Path) -> str:
@@ -105,46 +147,66 @@ def needs_rate_review(length_scale: float, base_length_scale: float) -> bool:
     return not MIN_PREFERRED_RATE_SCALE <= length_scale / base_length_scale <= MAX_PREFERRED_RATE_SCALE
 
 
-def native_record_valid(record: dict, target_frames: int, natural_sample: bool) -> bool:
+def native_record_valid(record: dict, target_frames: int, natural_sample: bool,
+                        minimum_generated_frames: int = 1) -> bool:
     base, scale = record["base_length_scale"], record["length_scale"]
     source, generated = record["source_frames"], record["generated_frames"]
     trimmed, padding = record["trimmed_silence_frames"], record["padding_frames"]
     attempts = record["synthesis_attempts"]
+    maximum_attempts = (MAX_GROUP_SYNTHESIS_ATTEMPTS
+                        if record.get("timing_source") == "sentence-group" else MAX_SYNTHESIS_ATTEMPTS)
     fit_method = record["fit_method"]
     tempo_fallback = fit_method == "piper-atempo"
     minimum_rate = MIN_GROUP_RATE_SCALE if record.get("timing_source") == "sentence-group" else MIN_RATE_SCALE
     if (fit_method not in (FIT_METHOD, "piper-atempo") or not math.isfinite(base) or base <= 0
             or not math.isfinite(scale) or not minimum_rate <= scale / base <= MAX_RATE_SCALE
-            or type(source) is not int or source <= 0 or type(generated) is not int or generated <= 0
+            or type(source) is not int or source <= 0 or type(generated) is not int
+            or generated <= 0
             or type(trimmed) is not int or not 0 <= trimmed < source
             or type(padding) is not int
             or not 0 <= padding < target_frames or generated + padding != record["frames"]
             or not natural_sample and record["frames"] != target_frames
-            or type(attempts) is not int or not 1 <= attempts <= MAX_SYNTHESIS_ATTEMPTS):
+            or type(attempts) is not int or not 1 <= attempts <= maximum_attempts):
         return False
-    if tempo_fallback:
-        tempo_input = record.get("tempo_input_frames")
-        tempo_factor = record.get("tempo_factor")
-        tempo_attempts = record.get("tempo_attempts")
-        if (type(tempo_input) is not int or tempo_input <= 0 or source - trimmed != tempo_input
-                or generated > tempo_input or not isinstance(tempo_factor, (int, float))
-                or not math.isfinite(tempo_factor) or tempo_factor <= 1
-                or type(tempo_attempts) is not int or not 1 <= tempo_attempts <= MAX_TEMPO_ATTEMPTS
-                or record["status"] != "review"):
+    native_reference = record.get("native_reference_frames", 0)
+    group_native = record.get("group_native_frames", 0)
+    actual_speed = record.get("actual_speed_factor", 0)
+    if (type(native_reference) is not int or native_reference <= 0
+            or not isinstance(actual_speed, (int, float)) or not math.isfinite(actual_speed)
+            or not MIN_ACTUAL_SPEED <= actual_speed <= MAX_ACTUAL_SPEED):
+        return False
+    if record.get("timing_source") == "sentence-group":
+        if type(group_native) is not int or group_native != native_reference:
             return False
-    elif source - trimmed != generated:
+    elif group_native != 0 or abs(native_reference / generated - actual_speed) > 1e-9:
         return False
-    if (not tempo_fallback and attempts == 1 and (scale != base
-            or abs(record["raw_duration"] - source / SAMPLE_RATE) > 1e-9)
-            or tempo_fallback and (scale != base or abs(record["raw_duration"] - source / SAMPLE_RATE) > 1e-9)
-            or natural_sample and (trimmed != 0 or padding != 0 or attempts != 1)):
+    tempo_input = record.get("tempo_input_frames", 0)
+    tempo_factor = record.get("tempo_factor", 0)
+    tempo_attempts = record.get("tempo_attempts", 0)
+    if tempo_fallback:
+        if (type(tempo_input) is not int or tempo_input < minimum_generated_frames
+                or tempo_input != source - trimmed or tempo_input <= generated
+                or not isinstance(tempo_factor, (int, float)) or not math.isfinite(tempo_factor)
+                or tempo_factor <= 1 or abs(tempo_input / generated - tempo_factor) > 1e-9
+                or type(tempo_attempts) is not int or not 1 <= tempo_attempts <= MAX_TEMPO_ATTEMPTS):
+            return False
+    elif (generated < minimum_generated_frames or source - trimmed != generated
+          or tempo_input != 0 or tempo_factor != 0 or tempo_attempts != 0):
         return False
-    needs_review = (tempo_fallback or record.get("timing_source") == "sentence-group" or needs_rate_review(scale, base)
-                    or trimmed > 0 or padding > padding_budget(target_frames))
+    if attempts == 1:
+        if scale != base:
+            return False
+        if record.get("timing_source") != "sentence-group" and native_reference != generated:
+            return False
+    if natural_sample and record.get("timing_source") != "sample":
+        return False
+    needs_review = (tempo_fallback or record.get("timing_source") == "sentence-group"
+                    or needs_rate_review(scale, base) or trimmed > 0
+                    or padding > padding_budget(target_frames))
     return record["status"] == ("review" if needs_review else "fit")
 
 
-def load_clip(path: Path, key: str, cue: dict):
+def load_clip(path: Path, key: str, cue: dict, minimum_generated_frames: int = 1):
     try:
         record = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
         if record["key"] != key or record["sha256"] != sha256(path):
@@ -154,13 +216,12 @@ def load_clip(path: Path, key: str, cue: dict):
         _, target_frames = cue_window(cue)
         if not math.isfinite(record["raw_duration"]) or record["raw_duration"] <= 0:
             return None
-        natural_sample = cue["timing_source"] == "sample" and record["raw_duration"] <= target_frames / SAMPLE_RATE
+        natural_sample = cue["timing_source"] == "sample"
         if (record["frames"] != len(samples) or record["target_frames"] != target_frames
                 or record["timing_source"] != cue["timing_source"] or len(samples) > target_frames
-                or (not natural_sample and len(samples) != target_frames)
-                or (natural_sample and abs(record["raw_duration"] - duration) > 1 / SAMPLE_RATE)
+                or len(samples) != target_frames
                 or not math.isfinite(record["fitted_duration"]) or abs(record["fitted_duration"] - duration) > 1e-9
-                or not native_record_valid(record, target_frames, natural_sample)):
+                or not native_record_valid(record, target_frames, natural_sample, minimum_generated_frames)):
             return None
         return record
     except (OSError, ValueError, KeyError, TypeError, wave.Error):
@@ -254,89 +315,52 @@ def trim_trailing_silence(source_path: Path, output_path: Path, guard_frames: in
 
 def atempo_filter(factor: float) -> str:
     if not math.isfinite(factor) or factor <= 1:
-        raise ValueError("TTS tempo factor must be greater than one")
+        raise ValueError("FFmpeg tempo factor must be greater than one")
     stages = []
     remaining = factor
     while remaining > 2:
         stages.append(2.0)
         remaining /= 2
-    stages.append(remaining)
+    if remaining > 1 + 1e-9:
+        stages.append(remaining)
     return ",".join(f"atempo={stage:.12g}" for stage in stages)
 
 
-def tempo_fit_clip(ffmpeg: Path, source_path: Path, output_path: Path, target_frames: int, run_root: Path):
+def apply_atempo(ffmpeg: Path, source_path: Path, output_path: Path, factor: float) -> int:
+    temporary = output_path.with_name(output_path.name + ".tmp.wav")
+    temporary.unlink(missing_ok=True)
+    completed = subprocess.run(
+        [str(ffmpeg), "-hide_banner", "-loglevel", "error", "-y", "-i", str(source_path),
+         "-af", atempo_filter(factor), "-ac", "1", "-ar", str(SAMPLE_RATE),
+         "-c:a", "pcm_s16le", str(temporary)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if completed.returncode != 0 or not temporary.is_file():
+        temporary.unlink(missing_ok=True)
+        raise RuntimeError("FFmpeg atempo failed: " + completed.stderr.strip()[-1000:])
+    frames = len(read_wav(temporary))
+    temporary.replace(output_path)
+    return frames
+
+
+def tempo_fit_clip(ffmpeg: Path, source_path: Path, final_path: Path, target_frames: int,
+                   native_reference_frames: int, run_root: Path, key: str):
     input_frames = len(read_wav(source_path))
-    if target_frames <= 0 or input_frames <= target_frames:
-        raise ValueError("Tempo fallback requires an overlong complete speech clip")
-    factor = max(1.01, input_frames / target_frames * 1.03)
+    desired_frames = max(1, math.floor(target_frames * FIT_HEADROOM))
+    factor = max(1.000001, input_frames / desired_frames * TEMPO_RETRY_MARGIN)
     for attempt in range(1, MAX_TEMPO_ATTEMPTS + 1):
-        candidate = run_root / f"tempo-{output_path.stem}-{attempt}.wav"
-        result = subprocess.run(
-            [str(ffmpeg), "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-             "-i", str(source_path), "-af", atempo_filter(factor),
-             "-ar", str(SAMPLE_RATE), "-ac", "1", "-c:a", "pcm_s16le", str(candidate)],
-            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
-        if result.returncode:
-            raise RuntimeError("FFmpeg tempo fallback failed: " + result.stderr.strip())
-        generated_frames = len(read_wav(candidate))
-        if generated_frames <= target_frames:
-            padding = target_frames - generated_frames
-            if padding:
-                pad_exact_clip(candidate, output_path, target_frames)
+        tempo_path = run_root / f"{key}-tempo-{attempt}.wav"
+        generated = apply_atempo(ffmpeg, source_path, tempo_path, factor)
+        actual_speed = native_reference_frames / generated
+        if generated <= target_frames and MIN_ACTUAL_SPEED <= actual_speed <= MAX_ACTUAL_SPEED:
+            if generated < target_frames:
+                pad_exact_clip(tempo_path, final_path, target_frames)
+                output_path = final_path
             else:
-                candidate.replace(output_path)
-            return input_frames, generated_frames, padding, factor, attempt
-        factor *= max(1.05, generated_frames / target_frames * 1.03)
-    raise RuntimeError("FFmpeg tempo fallback could not converge to the complete cue window")
-
-
-def fit_cue_with_tempo(voice, text: str, target_frames: int, run_root: Path, key: str,
-                       timing_source: str, ffmpeg: Path, on_attempt):
-    if target_frames <= 0:
-        raise ValueError("Source speech duration must contain at least one sample")
-    base = float(voice.config.length_scale)
-    if not math.isfinite(base) or base <= 0:
-        raise ValueError("Invalid length_scale in verified model config")
-    on_attempt(1, base)
-    raw_path = run_root / (key + "-tempo-native.wav")
-    trimmed_path = run_root / (key + "-tempo-trimmed.wav")
-    final_path = run_root / (key + "-tempo-fit.wav")
-    synthesize_cue(voice, text, raw_path, base)
-    source_frames = len(read_wav(raw_path))
-    trimmed = trim_trailing_silence(raw_path, trimmed_path, SILENCE_GUARD_FRAMES)
-    retained_path = trimmed_path if trimmed else raw_path
-    retained_frames = source_frames - trimmed
-    if retained_frames <= target_frames:
-        padding = target_frames - retained_frames
-        if padding:
-            pad_exact_clip(retained_path, final_path, target_frames)
-        else:
-            retained_path.replace(final_path)
-        record = {"raw_duration": source_frames / SAMPLE_RATE, "fitted_duration": target_frames / SAMPLE_RATE,
-                  "frames": target_frames, "target_frames": target_frames, "timing_source": timing_source,
-                  "fit_method": FIT_METHOD, "base_length_scale": base, "length_scale": base,
-                  "source_frames": source_frames, "generated_frames": retained_frames,
-                  "trimmed_silence_frames": trimmed, "padding_frames": padding,
-                  "synthesis_attempts": 1,
-                  "status": "review" if trimmed or padding > padding_budget(target_frames) else "fit"}
-        return final_path, record
-    tempo_input, generated, padding, factor, tempo_attempts = tempo_fit_clip(
-        ffmpeg, retained_path, final_path, target_frames, run_root)
-    record = {"raw_duration": source_frames / SAMPLE_RATE, "fitted_duration": target_frames / SAMPLE_RATE,
-              "frames": target_frames, "target_frames": target_frames, "timing_source": timing_source,
-              "fit_method": "piper-atempo", "base_length_scale": base, "length_scale": base,
-              "source_frames": source_frames, "generated_frames": generated,
-              "trimmed_silence_frames": trimmed, "padding_frames": padding,
-              "tempo_input_frames": tempo_input, "tempo_factor": factor, "tempo_attempts": tempo_attempts,
-              "synthesis_attempts": 1, "status": "review"}
-    return final_path, record
-
-
-def ends_sentence(text: str) -> bool:
-    value = text.rstrip()
-    while value and value[-1] in "\"'”’)]}":
-        value = value[:-1].rstrip()
-    return bool(value) and value[-1] in ".!?…"
+                output_path = tempo_path
+            return output_path, input_frames, generated, input_frames / generated, attempt, actual_speed
+        factor *= max(generated / target_frames,
+                      MIN_ACTUAL_SPEED / max(actual_speed, 1e-9)) * TEMPO_RETRY_MARGIN
+    raise RuntimeError("FFmpeg atempo không thể khớp đủ nguyên câu vào timecode")
 
 
 def sentence_groups(cues: list[dict], texts: list[str]) -> list[list[int]]:
@@ -350,8 +374,8 @@ def sentence_groups(cues: list[dict], texts: list[str]) -> list[list[int]]:
             group_start = round(cues[current[0]]["cue_start"] * SAMPLE_RATE)
             candidate_end = round(cue["cue_end"] * SAMPLE_RATE)
             if (previous["timing_source"] == "sample" or cue["timing_source"] == "sample"
-                    or gap_frames < 0 or gap_frames > MAX_GROUP_GAP_FRAMES
-                    or ends_sentence(texts[current[-1]]) or len(current) >= MAX_GROUP_CUES
+                    or gap_frames < -round(.25 * SAMPLE_RATE) or gap_frames > MAX_GROUP_GAP_FRAMES
+                    or len(current) >= MAX_GROUP_CUES
                     or candidate_end - group_start > MAX_GROUP_DURATION_FRAMES):
                 groups.append(current)
                 current = []
@@ -395,7 +419,7 @@ def load_group_plan(path: Path, key: str, cues: list[dict]) -> list[dict] | None
 
 def synthesize_sentence_group(voice, cues: list[dict], texts: list[str], run_root: Path,
                               clip_root: Path, worker_sha: str, plan_path: Path, plan_key: str,
-                              on_attempt):
+                              ffmpeg: Path, on_attempt):
     base = float(voice.config.length_scale)
     if not math.isfinite(base) or base <= 0:
         raise ValueError("Invalid length_scale in verified model config")
@@ -407,6 +431,8 @@ def synthesize_sentence_group(voice, cues: list[dict], texts: list[str], run_roo
     scale = base
     raw_frames = [0] * len(cues)
     selected = None
+    native_retained_frames = 0
+    last_total_retained = 0
     for attempt in range(1, MAX_GROUP_SYNTHESIS_ATTEMPTS + 1):
         measurements = []
         for local_index, (cue, text) in enumerate(zip(cues, texts)):
@@ -420,23 +446,57 @@ def synthesize_sentence_group(voice, cues: list[dict], texts: list[str], run_roo
             guard = SILENCE_GUARD_FRAMES if local_index == len(cues) - 1 else round(.01 * SAMPLE_RATE)
             trimmed = trim_trailing_silence(raw_path, trimmed_path, guard)
             retained = source_frames - trimmed
+            if retained < minimum_speech_frames(text):
+                raise RuntimeError(
+                    f"NGHI returned only {retained / SAMPLE_RATE:.3f}s of active speech for a non-empty cue")
             measurements.append({"source_path": trimmed_path if trimmed else raw_path,
                                  "source_frames": source_frames, "trimmed": trimmed, "retained": retained})
         total_retained = sum(item["retained"] for item in measurements)
-        if total_retained <= group_frames:
-            selected = (attempt, scale, measurements)
+        if attempt == 1:
+            native_retained_frames = total_retained
+        actual_speed = native_retained_frames / total_retained
+        last_total_retained = total_retained
+        if (total_retained <= group_frames
+                and MIN_ACTUAL_SPEED <= actual_speed <= MAX_ACTUAL_SPEED):
+            selected = (attempt, scale, measurements, actual_speed)
             break
-        corrected = max(base * MIN_GROUP_RATE_SCALE, scale * group_frames / total_retained)
+        desired_frames = max(1, math.floor(group_frames * FIT_HEADROOM))
+        corrected = next_length_scale(scale, total_retained, desired_frames, base, None, None)
         if corrected >= scale:
             corrected = max(base * MIN_GROUP_RATE_SCALE, scale * .9)
+        corrected = max(base * MIN_GROUP_RATE_SCALE, min(base * MAX_RATE_SCALE, corrected))
         if math.isclose(corrected, scale, rel_tol=0, abs_tol=1e-7):
             break
         scale = corrected
+    tempo_used = False
+    if selected is None:
+        desired_frames = max(1, math.floor(group_frames * FIT_HEADROOM))
+        tempo_factor = max(1.000001, last_total_retained / desired_frames * TEMPO_RETRY_MARGIN)
+        for tempo_attempt in range(1, MAX_TEMPO_ATTEMPTS + 1):
+            transformed = []
+            for local_index, measurement in enumerate(measurements):
+                tempo_path = run_root / f"group-{plan_key}-{local_index}-tempo-{tempo_attempt}.wav"
+                generated = apply_atempo(ffmpeg, measurement["source_path"], tempo_path, tempo_factor)
+                transformed.append(measurement | {
+                    "source_path": tempo_path,
+                    "retained": generated,
+                    "tempo_input": measurement["retained"],
+                    "tempo_factor": measurement["retained"] / generated,
+                    "tempo_attempts": tempo_attempt,
+                })
+            transformed_total = sum(item["retained"] for item in transformed)
+            actual_speed = native_retained_frames / transformed_total
+            if transformed_total <= group_frames and MIN_ACTUAL_SPEED <= actual_speed <= MAX_ACTUAL_SPEED:
+                selected = (attempt, scale, transformed, actual_speed)
+                tempo_used = True
+                break
+            tempo_factor *= max(transformed_total / group_frames,
+                                MIN_ACTUAL_SPEED / max(actual_speed, 1e-9)) * TEMPO_RETRY_MARGIN
     if selected is None:
         raise RuntimeError(
-            f"Nhóm câu {cues[0]['id']}..{cues[-1]['id']} vẫn dài hơn tổng timecode ở tốc độ model-native thấp nhất")
+            f"Nhóm câu {cues[0]['id']}..{cues[-1]['id']} không thể nén đủ nguyên lời vào timecode")
 
-    attempt, scale, measurements = selected
+    attempt, scale, measurements, actual_speed = selected
     retained_suffix = [0] * (len(measurements) + 1)
     for index in range(len(measurements) - 1, -1, -1):
         retained_suffix[index] = retained_suffix[index + 1] + measurements[index]["retained"]
@@ -469,9 +529,15 @@ def synthesize_sentence_group(voice, cues: list[dict], texts: list[str], run_roo
         record = {"raw_duration": raw_frames[len(entries)] / SAMPLE_RATE,
                   "fitted_duration": target_frames / SAMPLE_RATE, "frames": target_frames,
                   "target_frames": target_frames, "timing_source": "sentence-group",
-                  "fit_method": FIT_METHOD, "base_length_scale": base, "length_scale": scale,
+                  "fit_method": "piper-atempo" if tempo_used else FIT_METHOD,
+                  "base_length_scale": base, "length_scale": scale,
                   "source_frames": measurement["source_frames"], "generated_frames": measurement["retained"],
                   "trimmed_silence_frames": measurement["trimmed"], "padding_frames": padding,
+                  "native_reference_frames": native_retained_frames,
+                  "group_native_frames": native_retained_frames, "actual_speed_factor": actual_speed,
+                  "tempo_input_frames": measurement.get("tempo_input", 0),
+                  "tempo_factor": measurement.get("tempo_factor", 0),
+                  "tempo_attempts": measurement.get("tempo_attempts", 0),
                   "synthesis_attempts": attempt, "status": "review", "key": key,
                   "sha256": sha256(final_path)}
         final_path.replace(cached_path)
@@ -486,7 +552,8 @@ def synthesize_sentence_group(voice, cues: list[dict], texts: list[str], run_roo
     return entries
 
 
-def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str, timing_source: str, on_attempt):
+def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str,
+            timing_source: str, ffmpeg: Path, on_attempt):
     if target_frames <= 0:
         raise ValueError("Source speech duration must contain at least one sample")
     base = float(voice.config.length_scale)
@@ -494,23 +561,27 @@ def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str, timi
         raise ValueError("Invalid length_scale in verified model config")
     scale = base
     raw_frames = 0
-    aim_frames = max(1, target_frames - padding_budget(target_frames) // 2)
-    lower, upper = None, None
+    native_reference_frames = 0
     candidate = run_root / (key + "-native.wav")
     silence_fitted = run_root / (key + "-silence-fit.wav")
     final_path = run_root / (key + "-fit.wav")
+    minimum_generated = minimum_speech_frames(text)
     for attempt in range(1, MAX_SYNTHESIS_ATTEMPTS + 1):
         on_attempt(attempt, scale)
         synthesize_cue(voice, text, candidate, scale)
         source_frames = len(read_wav(candidate))
-        if attempt == 1:
-            raw_frames = source_frames
-        trimmed_silence = trim_trailing_silence_to_fit(candidate, silence_fitted, target_frames)
+        trimmed_silence = trim_trailing_silence(candidate, silence_fitted, SILENCE_GUARD_FRAMES)
         frames = source_frames - trimmed_silence
         fitted_source = silence_fitted if trimmed_silence else candidate
-        natural_sample = timing_source == "sample" and attempt == 1 and frames <= target_frames
-        if natural_sample or frames <= target_frames:
-            padding = 0 if natural_sample else target_frames - frames
+        if attempt == 1:
+            raw_frames = source_frames
+            native_reference_frames = frames
+        actual_speed = native_reference_frames / frames
+        if frames < minimum_generated:
+            raise RuntimeError(
+                f"NGHI returned only {frames / SAMPLE_RATE:.3f}s of active speech for a non-empty cue")
+        if frames <= target_frames and MIN_ACTUAL_SPEED <= actual_speed <= MAX_ACTUAL_SPEED:
+            padding = target_frames - frames
             output_path = fitted_source
             if padding:
                 pad_exact_clip(fitted_source, final_path, target_frames)
@@ -523,23 +594,35 @@ def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str, timi
                       "fit_method": FIT_METHOD, "base_length_scale": base, "length_scale": scale,
                       "source_frames": source_frames, "generated_frames": frames,
                       "trimmed_silence_frames": trimmed_silence, "padding_frames": padding,
+                      "native_reference_frames": native_reference_frames,
+                      "group_native_frames": 0, "actual_speed_factor": actual_speed,
                       "synthesis_attempts": attempt,
                       "status": "review" if needs_rate_review(scale, base)
                       or trimmed_silence or padding > padding_budget(target_frames) else "fit"}
             return output_path, record
-        if frames > target_frames:
-            upper = scale if upper is None else min(upper, scale)
-        else:
-            lower = scale if lower is None else max(lower, scale)
-        # Model randomness can contradict an earlier bracket; never treat it as
-        # exact linear duration control. Measurements and the attempt cap decide.
-        if lower is not None and upper is not None and lower >= upper:
-            lower, upper = None, None
-        corrected = next_length_scale(scale, frames, aim_frames, base, lower, upper)
+        desired_frames = max(1, math.floor(target_frames * FIT_HEADROOM))
+        corrected = next_length_scale(scale, frames, desired_frames, base, None, None)
+        if corrected >= scale:
+            corrected = max(base * MIN_RATE_SCALE, scale * .9)
+        corrected = max(base * MIN_RATE_SCALE, min(base * MAX_RATE_SCALE, corrected))
         if math.isclose(corrected, scale, rel_tol=0, abs_tol=1e-7):
             break
         scale = corrected
-    raise RuntimeError("Piper không thể đọc vừa timecode trong biên giữ chất giọng 0,85–1,20×; chuyển sang nhánh bảo toàn toàn bộ lời đọc")
+    output_path, tempo_input, generated, tempo_factor, tempo_attempts, actual_speed = tempo_fit_clip(
+        ffmpeg, fitted_source, final_path, target_frames, native_reference_frames, run_root, key)
+    output_frames = len(read_wav(output_path))
+    padding = output_frames - generated
+    record = {"raw_duration": raw_frames / SAMPLE_RATE, "fitted_duration": output_frames / SAMPLE_RATE,
+              "frames": output_frames, "target_frames": target_frames, "timing_source": timing_source,
+              "fit_method": "piper-atempo", "base_length_scale": base, "length_scale": scale,
+              "source_frames": source_frames, "generated_frames": generated,
+              "trimmed_silence_frames": trimmed_silence, "padding_frames": padding,
+              "native_reference_frames": native_reference_frames,
+              "group_native_frames": 0, "actual_speed_factor": actual_speed,
+              "tempo_input_frames": tempo_input, "tempo_factor": tempo_factor,
+              "tempo_attempts": tempo_attempts,
+              "synthesis_attempts": attempt, "status": "review"}
+    return output_path, record
 
 
 def srt_fallback_cue(cue: dict):
@@ -678,9 +761,7 @@ def main() -> int:
         raise ValueError("NGHI model sample rate mismatch")
     emit({"event": "ready", "cues": len(cues), "voice": VOICE_NAME, "model_loads": 1,
           "engine": ENGINE, "sample_rate": SAMPLE_RATE, "voice_revision": VOICE_REVISION})
-    texts = [normalizer.normalize(cue["text"]).strip() for cue in cues]
-    if any(not text for text in texts):
-        raise ValueError("Vietnamese normalization returned empty text")
+    texts = [normalize_vietnamese_text(normalizer, cue["text"]) for cue in cues]
 
     def emit_attempt(index: int, cue: dict, attempt: int, maximum: int, timing_source: str, scale: float):
         emit({"event": "attempt", "index": index + 1, "total": len(cues), "id": cue["id"],
@@ -698,7 +779,8 @@ def main() -> int:
             candidate_path = clip_root / (candidate_key + ".wav")
             candidates.append((candidate_cue, candidate_key, candidate_path))
         for candidate_cue, candidate_key, candidate_path in candidates:
-            candidate_record = load_clip(candidate_path, candidate_key, candidate_cue)
+            candidate_record = load_clip(
+                candidate_path, candidate_key, candidate_cue, minimum_speech_frames(text))
             if candidate_record is not None:
                 return candidate_cue, candidate_key, candidate_path, candidate_record, True, 0
         failures = []
@@ -715,7 +797,7 @@ def main() -> int:
             try:
                 final_path, candidate_record = fit_cue(
                     voice, text, candidate_target_frames, run_root, candidate_key,
-                    candidate_cue["timing_source"], on_attempt)
+                    candidate_cue["timing_source"], Path(options.ffmpeg), on_attempt)
             except (ValueError, RuntimeError) as error:
                 failures.append(f"{candidate_cue['timing_source']}: {error}")
                 continue
@@ -728,31 +810,6 @@ def main() -> int:
         raise RuntimeError(
             f"Cue {index + 1} ({cue['id']}): không thể đọc vừa cả nhịp Whisper lẫn toàn timecode SRT. "
             + " | ".join(failures))
-
-    def resolve_tempo(index: int, cue: dict, text: str):
-        active_cue = dict(cue)
-        if active_cue["timing_source"] != "sample":
-            active_cue["voice_start"] = active_cue["cue_start"]
-            active_cue["voice_end"] = active_cue["cue_end"]
-            active_cue["timing_source"] = "srt-fallback"
-        emit({"event": "fallback", "index": index + 1, "total": len(cues), "id": cue["id"],
-              "timing_source": active_cue["timing_source"]})
-        key = cache_identity(active_cue, text, worker_sha)
-        cached_path = clip_root / (key + ".wav")
-        record = load_clip(cached_path, key, active_cue)
-        if record is not None:
-            return active_cue, key, cached_path, record, True, 0
-        _, target_frames = cue_window(active_cue)
-
-        def on_attempt(attempt, scale):
-            emit_attempt(index, cue, attempt, 1, active_cue["timing_source"], scale)
-        final_path, record = fit_cue_with_tempo(
-            voice, text, target_frames, run_root, key, active_cue["timing_source"],
-            Path(options.ffmpeg), on_attempt)
-        record.update({"key": key, "sha256": sha256(final_path)})
-        final_path.replace(cached_path)
-        atomic_json(cached_path.with_suffix(".json"), record)
-        return active_cue, key, cached_path, record, False, 1
 
     ordered_entries = []
     for group_indices in sentence_groups(cues, texts):
@@ -767,7 +824,8 @@ def main() -> int:
                 for active_cue, text in zip(planned_cues, group_texts):
                     key = cache_identity(active_cue, text, worker_sha)
                     cached_path = clip_root / (key + ".wav")
-                    record = load_clip(cached_path, key, active_cue)
+                    record = load_clip(
+                        cached_path, key, active_cue, minimum_speech_frames(text))
                     if record is None:
                         group_entries = []
                         break
@@ -777,10 +835,9 @@ def main() -> int:
                 group_entries = [resolve_individual(index, cues[index], texts[index]) for index in group_indices]
             except RuntimeError as individual_error:
                 if len(group_indices) == 1:
-                    index = group_indices[0]
-                    group_entries = [resolve_tempo(index, cues[index], texts[index])]
-                    ordered_entries.extend(group_entries)
-                    continue
+                    raise RuntimeError(
+                        f"Cue {group_indices[0] + 1} không thể xử lý đủ nguyên câu trong timecode: "
+                        f"{individual_error}") from individual_error
 
                 def on_group_attempt(local_index, attempt, scale):
                     index = group_indices[local_index]
@@ -788,9 +845,11 @@ def main() -> int:
                 try:
                     group_entries = synthesize_sentence_group(
                         voice, group_cues, group_texts, run_root, clip_root, worker_sha,
-                        plan_path, plan_key, on_group_attempt)
+                        plan_path, plan_key, Path(options.ffmpeg), on_group_attempt)
                 except (ValueError, RuntimeError) as group_error:
-                    group_entries = [resolve_tempo(index, cues[index], texts[index]) for index in group_indices]
+                    raise RuntimeError(
+                        f"Nhóm cue {group_indices[0] + 1}..{group_indices[-1] + 1} không đủ thời gian "
+                        f"để xử lý đủ nguyên lời kể cả sau tăng tốc động: {group_error}") from group_error
         ordered_entries.extend(group_entries)
 
     if len(ordered_entries) != len(cues):
@@ -817,10 +876,13 @@ def main() -> int:
                         "frames": record["frames"], "clip_start_sample": start_sample, "clip_end_sample": end_sample,
                         "fit_method": record["fit_method"], "base_length_scale": record["base_length_scale"],
                         "length_scale": record["length_scale"], "source_frames": record["source_frames"],
-                        "generated_frames": record["generated_frames"],
-                        "trimmed_silence_frames": record["trimmed_silence_frames"],
-                        "padding_frames": record["padding_frames"], "synthesis_attempts": record["synthesis_attempts"],
-                        "tempo_factor": record.get("tempo_factor", 0),
+                         "generated_frames": record["generated_frames"],
+                         "trimmed_silence_frames": record["trimmed_silence_frames"],
+                         "padding_frames": record["padding_frames"], "synthesis_attempts": record["synthesis_attempts"],
+                         "native_reference_frames": record["native_reference_frames"],
+                         "group_native_frames": record.get("group_native_frames", 0),
+                         "actual_speed_factor": record.get("actual_speed_factor", 0),
+                         "tempo_factor": record.get("tempo_factor", 0),
                         "tempo_input_frames": record.get("tempo_input_frames", 0),
                         "tempo_attempts": record.get("tempo_attempts", 0),
                         "synthesis_calls": synthesis_calls})

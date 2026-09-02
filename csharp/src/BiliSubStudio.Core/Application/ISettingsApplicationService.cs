@@ -10,6 +10,10 @@ public interface ISettingsApplicationService
         string path,
         CancellationToken cancellationToken = default);
 
+    Task<SettingsSnapshot> SetOcrOutputDirectoryAsync(
+        string path,
+        CancellationToken cancellationToken = default);
+
     Task<SettingsSnapshot> SetThemeAsync(
         string theme,
         CancellationToken cancellationToken = default);

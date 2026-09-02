@@ -616,13 +616,20 @@ public sealed partial class EditorPage
             return;
         }
 
-        EditorOutputTarget outputTarget;
+        EditorOutputTarget? outputTarget;
+        try { outputTarget = await ShowExportDialogAsync(); }
+        catch (Exception error)
+        {
+            StatusText.Text = "Không mở được thiết lập xuất video: " + error.Message;
+            return;
+        }
+        if (outputTarget is null) return;
+
         var exportProjectId = _project.Id;
         var exportSourcePath = _path;
         try
         {
             EnsureCurrentSourceFingerprint();
-            outputTarget = CaptureEditorOutputTarget();
         }
         catch (Exception error)
         {
@@ -650,7 +657,9 @@ public sealed partial class EditorPage
         }
 
         var subtitle = CompletedSubtitleBurn();
-        var hasBaseEdit = _document.Regions.Count > 0 || subtitle is not null || _audioSettings.SourceMode != "keep" || _voiceTrack is not null;
+        var trim = CurrentTrimRange();
+        var trimChanged = EditorProjectStore.HasTrim(trim, _media.Duration);
+        var hasBaseEdit = _document.Regions.Count > 0 || subtitle is not null || _audioSettings.SourceMode != "keep" || _voiceTrack is not null || trimChanged;
         var hasImages = _imageOverlays.Count > 0;
         if (!hasBaseEdit && !hasImages)
         {
@@ -672,6 +681,7 @@ public sealed partial class EditorPage
                 {
                     OutputDirectory = outputTarget.Directory,
                     FileName = outputTarget.FileName,
+                    Export = outputTarget.Settings,
                 };
                 _jobId = _application.StartEditor(request);
                 RefreshEditorActions();
@@ -706,7 +716,16 @@ public sealed partial class EditorPage
                 var temporaryDirectory = Path.Combine(_application.Paths.Temp, "Editor", "ImageBase");
                 Directory.CreateDirectory(temporaryDirectory);
                 var temporaryName = "editor-image-base-" + Guid.NewGuid().ToString("N") + ".mp4";
-                var request = CurrentEditRequest(subtitle) with { OutputDirectory = temporaryDirectory, FileName = temporaryName };
+                var intermediateExport = new EditorExportSettings(
+                    "h264", "high", null, null,
+                    outputTarget.Settings.PreferHardwareAcceleration,
+                    outputTarget.Settings.AudioBitrateKbps);
+                var request = CurrentEditRequest(subtitle) with
+                {
+                    OutputDirectory = temporaryDirectory,
+                    FileName = temporaryName,
+                    Export = intermediateExport,
+                };
                 _jobId = _application.StartEditor(request);
                 RefreshEditorActions();
                 while (_jobId is not null)
@@ -745,7 +764,8 @@ public sealed partial class EditorPage
                 image.Path, image.X, image.Y, image.Width, image.Height, image.Opacity)).ToArray();
             var output = await composer.RenderAsync(
                 imageJob, composerInput, outputTarget.Directory, outputTarget.FileName,
-                _media.Width, _media.Height, _media.Duration, specs, copyAudio: hasBaseEdit);
+                _media.Width, _media.Height, trimChanged ? trim.Duration : _media.Duration, specs,
+                copyAudio: hasBaseEdit, exportSettings: outputTarget.Settings);
             output = ValidateFinalEditorOutput(outputTarget, output);
             imageJob.Finish(null, "Đã xuất: " + output, new VideoEditResult(output));
             Progress.Value = 100;

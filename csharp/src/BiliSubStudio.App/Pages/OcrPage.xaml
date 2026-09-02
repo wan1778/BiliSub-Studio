@@ -125,7 +125,7 @@
                                     <ComboBox x:Name="DeviceBox" Header="Thiết bị" SelectedIndex="0"><x:String>auto</x:String><x:String>cpu</x:String><x:String>gpu</x:String><x:String>hybrid</x:String></ComboBox>
                                     <ComboBox Grid.Column="1" x:Name="ScanModeBox" Header="Chế độ" SelectedIndex="0">
                                         <ComboBoxItem Content="Cân bằng · PTS chuẩn" Tag="balanced" />
-                                        <ComboBoxItem Content="Chính xác · nhiều mẫu" Tag="accurate" />
+                                        <ComboBoxItem Content="Chính xác nhất · Medium · mọi khung hình" Tag="accurate" />
                                         <ComboBoxItem Content="Nhanh · PTS chuẩn" Tag="fast" />
                                     </ComboBox>
                                     <ComboBox Grid.Column="2" x:Name="LanesBox" Header="Luồng OCR" SelectedIndex="0"><x:String>auto</x:String><x:String>1</x:String><x:String>2</x:String><x:String>3</x:String><x:String>4</x:String><x:String>5</x:String><x:String>6</x:String><x:String>7</x:String><x:String>8</x:String><x:String>16</x:String></ComboBox>
@@ -155,7 +155,17 @@
                                 <Border Padding="10,8" Background="{ThemeResource SuccessSoftBrush}" CornerRadius="8">
                                     <TextBlock x:Name="StatusText" FontSize="11" Foreground="{ThemeResource SuccessBrush}" Text="Sẵn sàng." AutomationProperties.LiveSetting="Polite" TextWrapping="Wrap" />
                                 </Border>
-                                <Button x:Name="ExportButton" Click="Export_Click" Content="Xuất SRT tiếng Trung" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />
+                                <Grid ColumnSpacing="7">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <Button x:Name="ExportButton" Click="Export_Click" Content="Xuất SRT tiếng Trung" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />
+                                    <TextBox Grid.Column="1" x:Name="AutoSaveDirectoryBox" IsReadOnly="True" AutomationProperties.Name="Thư mục tự lưu SRT OCR" />
+                                    <Button Grid.Column="2" x:Name="AutoSaveFolderButton" Click="ChooseAutoSaveFolder_Click" Content="Chọn thư mục" Style="{StaticResource SecondaryButtonStyle}" />
+                                </Grid>
+                                <TextBlock FontSize="10" Foreground="{ThemeResource MutedTextBrush}" Text="OCR hoàn tất sẽ tự lưu SRT vào thư mục đã chọn." TextWrapping="Wrap" />
                             </StackPanel>
                         </Border>
                     </StackPanel>

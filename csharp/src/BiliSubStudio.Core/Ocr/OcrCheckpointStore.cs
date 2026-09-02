@@ -5,7 +5,14 @@ using BiliSubStudio.Core.Configuration;
 
 namespace BiliSubStudio.Core.Ocr;
 
-internal sealed record OcrScanMode(double Fps, double Guard, double ActiveGuard, double DiffTrigger, double LowConfidence, bool AdaptiveTiming = false);
+internal sealed record OcrScanMode(
+    double Fps,
+    double Guard,
+    double ActiveGuard,
+    double DiffTrigger,
+    double LowConfidence,
+    bool AdaptiveTiming = false,
+    bool ExhaustiveRecognition = false);
 internal sealed record OcrScanSegment(int Index, double CoreStart, double CoreEnd, double ScanStart, double ScanEnd);
 internal sealed record OcrLaneCheckpoint(OcrScanSegment Segment, double MediaSeconds, List<OcrCue> Cues, OcrCue? Active, int Frames, int OcrImages, bool Completed);
 internal sealed record OcrParallelCheckpoint(int Schema, string Key, int SelectedParallelism, List<OcrLaneCheckpoint> Lanes, int BoundaryMerges = 0);
@@ -25,9 +32,12 @@ internal sealed class OcrCheckpointStore
     // or duplicated glyphs. Schema 12 can also retain an A/B/A one-glyph
     // substitution as three final cues. Schema 13 sampled Balanced/Fast modes
     // on a fixed FPS grid, which quantized cue boundaries and dropped captions
-    // shorter than the tracker's two-hit window. None of those checkpoints can
-    // resume once every mode uses native-frame PTS plus adaptive OCR refinement.
-    private const int Schema = 14;
+    // shorter than the tracker's two-hit window. Schema 14 still used the Small
+    // detector/recognizer and allowed Accurate mode's visual-change probe to
+    // skip a complete short caption. Schema 15 binds the Medium model identity
+    // and exhaustive Accurate policy into the key, so old partial evidence can
+    // never be presented as a completed high-quality scan.
+    private const int Schema = 15;
     private readonly AppPaths _paths;
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -77,23 +87,24 @@ internal sealed class OcrCheckpointStore
     public async Task<OcrCheckpointInfo> InspectAsync(OcrScanRequest request, CancellationToken cancellationToken)
     {
         var checkpoint = await LoadAsync(request, cancellationToken);
-        if (checkpoint is null) return new OcrCheckpointInfo(false, 0, 0, 0, 0, 0, 0, 0, []);
+        if (checkpoint is null) return new OcrCheckpointInfo(false, 0, 0, 0, 0, 0, 0, 0, [], []);
         var completed = checkpoint.Lanes.Count(x => x.Completed);
         var media = ContiguousFrontier(checkpoint.Lanes);
-        var cues = checkpoint.Lanes
-            .SelectMany(x => x.Cues.Concat(x.Active is { } active ? new[] { active } : Array.Empty<OcrCue>()))
+        // Recovery export must contain only tracker-committed, lane-owned cues.
+        // Active cues are useful for the live preview but are still provisional.
+        var cues = OcrScanner.Reconcile(checkpoint.Lanes, out _)
             .Where(x => x.Start <= media + 0.001)
             .OrderBy(x => x.Start)
             .ToArray();
         return new OcrCheckpointInfo(
             true, Schema, media, cues.Length, checkpoint.SelectedParallelism, completed, checkpoint.Lanes.Count,
             request.Duration > 0 ? Math.Clamp(media / request.Duration * 100, 0, 100) : 0,
-            cues.TakeLast(120).ToArray());
+            cues.TakeLast(120).ToArray(), cues);
     }
 
     public async Task RemoveAsync(OcrScanRequest request, CancellationToken cancellationToken)
     {
-        foreach (var schema in new[] { 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3 })
+        foreach (var schema in new[] { 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3 })
         {
             var key = await KeyAsync(request, schema, cancellationToken);
             var path = Path.Combine(DirectoryPath, key + ".json");
@@ -132,9 +143,11 @@ internal sealed class OcrCheckpointStore
     {
         var result = mode.Trim().ToLowerInvariant() switch
         {
-            // Accurate keeps every source-frame PTS available, but PaddleOCR is
-            // invoked at 4 fps until a text transition requires frame refinement.
-            "accurate" or "precise" or "chinh-xac" => new OcrScanMode(4, 3, 12, 0.10, 0.68, AdaptiveTiming: true),
+            // Accurate sends every decoded source frame to PaddleOCR in batches.
+            // This is deliberately slower than the adaptive modes: a complete
+            // short caption must not depend on a visual-change heuristic firing.
+            "accurate" or "precise" or "chinh-xac" => new OcrScanMode(
+                4, 3, 12, 0.10, 0.68, AdaptiveTiming: true, ExhaustiveRecognition: true),
             // Balanced/Fast still reduce the steady Paddle sampling rate, but
             // must retain every native-frame PTS and cheaply probe visual
             // changes. Transition frames are then OCR'd in a small batch, so a
@@ -159,7 +172,8 @@ internal sealed class OcrCheckpointStore
             ? new CheckpointIdentity(
                 schema, path, file.Length, modUnixNano,
                 region, request.Mode.Trim().ToLowerInvariant(), mode.Fps, mode.Guard, mode.ActiveGuard, mode.DiffTrigger,
-                mode.AdaptiveTiming, 1280, 320)
+                mode.AdaptiveTiming, mode.ExhaustiveRecognition,
+                OcrInstaller.DetectionModel, OcrInstaller.RecognitionModel, 1280, 320)
             : new LegacyCheckpointIdentity(
                 schema, path, file.Length, modUnixNano,
                 region, request.Mode.Trim().ToLowerInvariant(), mode.Fps, mode.Guard, mode.ActiveGuard, mode.DiffTrigger,
@@ -246,6 +260,9 @@ internal sealed class OcrCheckpointStore
         [property: JsonPropertyName("active_guard")] double ActiveGuard,
         [property: JsonPropertyName("diff")] double Diff,
         [property: JsonPropertyName("adaptive_timing")] bool AdaptiveTiming,
+        [property: JsonPropertyName("exhaustive_recognition")] bool ExhaustiveRecognition,
+        [property: JsonPropertyName("detection_model")] string DetectionModel,
+        [property: JsonPropertyName("recognition_model")] string RecognitionModel,
         [property: JsonPropertyName("width")] int Width,
         [property: JsonPropertyName("height")] int Height);
 

@@ -18,6 +18,8 @@ public sealed partial class OcrPage : Page
 {
     private readonly BiliSubApplication _application;
     private readonly IFilePickerService _picker;
+    private readonly IFolderPickerService _folderPicker;
+    private string _ocrOutputDirectory = string.Empty;
     private string? _path;
     private MediaPreviewInfo? _media;
     private string? _jobId;
@@ -38,10 +40,11 @@ public sealed partial class OcrPage : Page
     private bool _syncingTimeline;
     private bool _syncingCue;
 
-    public OcrPage(BiliSubApplication application, IFilePickerService picker)
+    public OcrPage(BiliSubApplication application, IFilePickerService picker, IFolderPickerService folderPicker)
     {
         _application = application;
         _picker = picker;
+        _folderPicker = folderPicker;
         InitializeComponent();
         PreviewCanvas.SizeChanged += (_, _) => ApplyRegionVisual();
 
@@ -56,6 +59,7 @@ public sealed partial class OcrPage : Page
         var right = _application.Config.OcrRight / 100d;
         var bottom = _application.Config.OcrBottom / 100d;
         _region = OcrCheckpointStoreProxy.Normalize(new OcrRegion(left, top, right - left, bottom - top));
+        SetOcrOutputDirectory(_application.Config.OcrOutputDirectory);
         for (var index = 0; index < DeviceBox.Items.Count; index++)
         {
             if (string.Equals(DeviceBox.Items[index]?.ToString(), _application.Config.OcrDevice, StringComparison.OrdinalIgnoreCase))
@@ -115,8 +119,9 @@ public sealed partial class OcrPage : Page
             if (checkpoint.Exists)
             {
                 _checkpointRequest = checkpointRequest;
+                ApplyRecoverableCheckpointCues(checkpoint);
                 ApplyCheckpointUi();
-                StatusText.Text = $"Có checkpoint schema {checkpoint.Schema}: {checkpoint.ProgressPercent:0.0}% · {checkpoint.CueCount} câu.";
+                StatusText.Text = $"Có checkpoint schema {checkpoint.Schema}: {checkpoint.ProgressPercent:0.0}% · {checkpoint.CueCount} câu; có thể Tiếp tục hoặc Xuất SRT phục hồi.";
             }
         }
         catch (Exception error)
@@ -270,6 +275,7 @@ public sealed partial class OcrPage : Page
 
     private async Task StartScanAsync(OcrScanRequest request, OcrScanStartMode startMode)
     {
+        var autoSaveDirectory = _ocrOutputDirectory;
         _cues = [];
         _visibleCues = [];
         _liveCues.Clear();
@@ -278,6 +284,7 @@ public sealed partial class OcrPage : Page
         CueList.Items.Clear();
         CueCountText.Text = "0 câu";
         ExportButton.IsEnabled = false;
+        AutoSaveFolderButton.IsEnabled = false;
         Progress.Value = 0;
         TelemetryText.Text = "Đang chờ kết quả OCR...";
         _checkpointRequest = null;
@@ -354,8 +361,10 @@ public sealed partial class OcrPage : Page
                     if (checkpoint.Exists)
                     {
                         _checkpointRequest = request;
+                        ApplyRecoverableCheckpointCues(checkpoint);
                         ApplyCheckpointUi();
-                        StatusText.Text = snapshot.Error ?? snapshot.Message;
+                        StatusText.Text = (snapshot.Error ?? snapshot.Message)
+                            + " Checkpoint vẫn còn; có thể Tiếp tục hoặc Xuất SRT phục hồi.";
                     }
                     else
                     {
@@ -369,6 +378,15 @@ public sealed partial class OcrPage : Page
                     RestartButton.Visibility = Visibility.Collapsed;
                     ScanButton.Content = "Quét lại từ đầu";
                     ExportButton.IsEnabled = _cues.Count > 0;
+                    try
+                    {
+                        var path = await ExportCurrentSrtAsync(autoSaveDirectory, recovery: false);
+                        StatusText.Text = "Đã quét xong và tự lưu SRT: " + path;
+                    }
+                    catch (Exception error)
+                    {
+                        StatusText.Text = "OCR đã hoàn tất nhưng tự lưu SRT lỗi: " + error.Message;
+                    }
                 }
                 break;
             }
@@ -439,6 +457,7 @@ public sealed partial class OcrPage : Page
         ScanModeBox.IsEnabled = true;
         LanesBox.IsEnabled = true;
         PrepareOcrButton.IsEnabled = true;
+        AutoSaveFolderButton.IsEnabled = true;
         PauseButton.IsEnabled = false;
         RefreshRegionActions();
     }
@@ -454,7 +473,7 @@ public sealed partial class OcrPage : Page
         CancelButton.IsEnabled = true;
         RestartButton.Visibility = Visibility.Visible;
         RestartButton.IsEnabled = true;
-        ExportButton.IsEnabled = false;
+        ExportButton.IsEnabled = _cues.Count > 0;
     }
 
     private void ResetFreshUi(string message)
@@ -481,8 +500,9 @@ public sealed partial class OcrPage : Page
     {
         try
         {
-            var path = await _application.ExportOcrAsync(_cues, null, Path.GetFileNameWithoutExtension(_path) + "_Chinese.srt", CancellationToken.None);
-            StatusText.Text = "Đã xuất: " + path;
+            var recovery = _checkpointRequest is not null;
+            var path = await ExportCurrentSrtAsync(_ocrOutputDirectory, recovery);
+            StatusText.Text = recovery ? "Đã xuất SRT phục hồi chưa hoàn chỉnh: " + path : "Đã xuất: " + path;
         }
         catch (Exception error)
         {
@@ -510,6 +530,37 @@ public sealed partial class OcrPage : Page
         return box.SelectedItem?.ToString() ?? string.Empty;
     }
 
+    private async void ChooseAutoSaveFolder_Click(object sender, RoutedEventArgs e)
+    {
+        if (_jobId is not null) return;
+        try
+        {
+            var selected = await _folderPicker.PickFolderAsync(_ocrOutputDirectory);
+            if (selected is null) return;
+            var snapshot = await _application.Settings.SetOcrOutputDirectoryAsync(selected, CancellationToken.None);
+            SetOcrOutputDirectory(snapshot.Config.OcrOutputDirectory);
+            StatusText.Text = "Đã chọn thư mục tự lưu SRT: " + _ocrOutputDirectory;
+        }
+        catch (Exception error)
+        {
+            StatusText.Text = error.Message;
+        }
+    }
+
+    private Task<string> ExportCurrentSrtAsync(string outputDirectory, bool recovery)
+    {
+        var suffix = recovery ? "_Chinese.partial.srt" : "_Chinese.srt";
+        return _application.ExportOcrAsync(
+            _cues, outputDirectory, Path.GetFileNameWithoutExtension(_path) + suffix, CancellationToken.None);
+    }
+
+    private void SetOcrOutputDirectory(string path)
+    {
+        _ocrOutputDirectory = path;
+        AutoSaveDirectoryBox.Text = path;
+        ToolTipService.SetToolTip(AutoSaveDirectoryBox, path);
+    }
+
     private bool MergeLiveCueSnapshot(IReadOnlyList<OcrCue> incoming)
     {
         var changed = _liveCues.Merge(incoming);
@@ -535,6 +586,12 @@ public sealed partial class OcrPage : Page
         RenderCues();
         _cueViewDirty = false;
         _nextCueRenderAt = DateTimeOffset.UtcNow.AddSeconds(2);
+    }
+
+    private void ApplyRecoverableCheckpointCues(OcrCheckpointInfo checkpoint)
+    {
+        var cues = checkpoint.RecoverableCues ?? checkpoint.RecentCues;
+        ApplyAuthoritativeCues(cues);
     }
 
     private void RenderCues()

@@ -244,6 +244,103 @@
 
                                 <Border Style="{StaticResource CardBorderStyle}" Padding="12">
                                     <StackPanel Spacing="8">
+                                        <TextBlock Text="TEXT EFFECT" FontSize="10" FontWeight="SemiBold" Foreground="{ThemeResource MutedTextBrush}"/>
+                                        <Grid RowSpacing="8" ColumnSpacing="10">
+                                            <Grid.RowDefinitions><RowDefinition/><RowDefinition/><RowDefinition/><RowDefinition/></Grid.RowDefinitions>
+                                            <Grid.ColumnDefinitions><ColumnDefinition Width="58"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                            <TextBlock Text="Font" Foreground="{ThemeResource MutedTextBrush}" VerticalAlignment="Center"/>
+                                            <ComboBox Grid.Column="1" x:Name="SubtitleFontBox" HorizontalAlignment="Stretch" SelectionChanged="SubtitleStyleFont_SelectionChanged">
+                                                <ComboBoxItem Tag="Arial" Content="System · Arial"/>
+                                                <ComboBoxItem Tag="Segoe UI" Content="Segoe UI"/>
+                                                <ComboBoxItem Tag="Tahoma" Content="Tahoma"/>
+                                                <ComboBoxItem Tag="Verdana" Content="Verdana"/>
+                                                <ComboBoxItem Tag="Times New Roman" Content="Times New Roman"/>
+                                            </ComboBox>
+                                            <TextBlock Grid.Row="1" Text="Size" Foreground="{ThemeResource MutedTextBrush}" VerticalAlignment="Center"/>
+                                            <Grid Grid.Row="1" Grid.Column="1" ColumnSpacing="8">
+                                                <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                                <NumberBox x:Name="SubtitleFontScaleBox" Minimum="50" Maximum="200" SmallChange="5" LargeChange="10" SpinButtonPlacementMode="Inline" ValueChanged="SubtitleStyleNumber_ValueChanged" AutomationProperties.Name="Cỡ chữ phụ đề theo phần trăm"/>
+                                                <TextBlock Grid.Column="1" Text="%" Foreground="{ThemeResource MutedTextBrush}" VerticalAlignment="Center"/>
+                                            </Grid>
+                                            <TextBlock Grid.Row="2" Text="Format" Foreground="{ThemeResource MutedTextBrush}" VerticalAlignment="Center"/>
+                                            <StackPanel Grid.Row="2" Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                                                <ToggleButton x:Name="SubtitleBoldButton" Width="38" Height="36" Content="B" FontSize="16" FontWeight="Bold" Checked="SubtitleStyleFormat_Changed" Unchecked="SubtitleStyleFormat_Changed" ToolTipService.ToolTip="Chữ đậm"/>
+                                                <ToggleButton x:Name="SubtitleUnderlineButton" Width="38" Height="36" Content="U̲" FontSize="16" Checked="SubtitleStyleFormat_Changed" Unchecked="SubtitleStyleFormat_Changed" ToolTipService.ToolTip="Gạch chân"/>
+                                                <ToggleButton x:Name="SubtitleItalicButton" Width="38" Height="36" Content="I" FontSize="16" FontStyle="Italic" Checked="SubtitleStyleFormat_Changed" Unchecked="SubtitleStyleFormat_Changed" ToolTipService.ToolTip="Chữ nghiêng"/>
+                                            </StackPanel>
+                                            <TextBlock Grid.Row="3" Text="Color" Foreground="{ThemeResource MutedTextBrush}" VerticalAlignment="Center"/>
+                                            <Button Grid.Row="3" Grid.Column="1" x:Name="SubtitleTextColorButton" HorizontalAlignment="Left" Width="78" Height="36" Padding="5" ToolTipService.ToolTip="Chọn màu chữ">
+                                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                                    <Border x:Name="SubtitleTextColorSwatch" Width="42" Height="24" CornerRadius="2" Background="White" BorderBrush="#707070" BorderThickness="1"/>
+                                                    <FontIcon Glyph="&#xE70D;" FontSize="10"/>
+                                                </StackPanel>
+                                                <Button.Flyout>
+                                                    <Flyout Placement="Bottom">
+                                                        <ColorPicker x:Name="SubtitleTextColorPicker" IsAlphaEnabled="False" IsAlphaSliderVisible="False" IsAlphaTextInputVisible="False" ColorChanged="SubtitleTextColorPicker_ColorChanged"/>
+                                                    </Flyout>
+                                                </Button.Flyout>
+                                            </Button>
+                                        </Grid>
+                                        <TextBlock Text="STYLES" FontSize="10" FontWeight="SemiBold" Foreground="{ThemeResource MutedTextBrush}" Margin="0,4,0,0"/>
+                                        <Grid x:Name="SubtitleStylePresetGrid" ColumnSpacing="8" RowSpacing="8">
+                                            <Grid.Resources>
+                                                <Style x:Key="SubtitleStyleTileButtonStyle" TargetType="Button">
+                                                    <Setter Property="HorizontalAlignment" Value="Stretch"/>
+                                                    <Setter Property="VerticalAlignment" Value="Stretch"/>
+                                                    <Setter Property="HorizontalContentAlignment" Value="Center"/>
+                                                    <Setter Property="VerticalContentAlignment" Value="Center"/>
+                                                    <Setter Property="MinWidth" Value="0"/>
+                                                    <Setter Property="Height" Value="46"/>
+                                                    <Setter Property="Padding" Value="0"/>
+                                                    <Setter Property="CornerRadius" Value="7"/>
+                                                    <Setter Property="Background" Value="#121C29"/>
+                                                    <Setter Property="BorderBrush" Value="#2C3B4E"/>
+                                                    <Setter Property="BorderThickness" Value="1"/>
+                                                </Style>
+                                            </Grid.Resources>
+                                            <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
+                                            <Grid.RowDefinitions><RowDefinition/><RowDefinition/></Grid.RowDefinitions>
+                                            <Button Grid.Row="0" Grid.Column="0" Tag="plain" Click="SubtitleStylePreset_Click" Style="{StaticResource SubtitleStyleTileButtonStyle}" ToolTipService.ToolTip="Không hiệu ứng"><TextBlock Text="⊘" FontSize="24" Foreground="#52E4E8"/></Button>
+                                            <Button Grid.Row="0" Grid.Column="1" Tag="default" Click="SubtitleStylePreset_Click" Style="{StaticResource SubtitleStyleTileButtonStyle}" ToolTipService.ToolTip="Trắng viền đen"><TextBlock Text="T" FontSize="22" FontWeight="Bold" Foreground="White"/></Button>
+                                            <Button Grid.Row="0" Grid.Column="2" Tag="yellow" Click="SubtitleStylePreset_Click" Style="{StaticResource SubtitleStyleTileButtonStyle}" ToolTipService.ToolTip="Vàng nổi bật"><TextBlock Text="T" FontSize="22" FontWeight="Bold" Foreground="#FFE45C"/></Button>
+                                            <Button Grid.Row="0" Grid.Column="3" Tag="cinema" Click="SubtitleStylePreset_Click" Style="{StaticResource SubtitleStyleTileButtonStyle}" ToolTipService.ToolTip="Điện ảnh"><TextBlock Text="T" FontSize="22" FontWeight="Bold" Foreground="#FFF4D6"/></Button>
+                                            <Button Grid.Row="0" Grid.Column="4" Tag="cyan" Click="SubtitleStylePreset_Click" Style="{StaticResource SubtitleStyleTileButtonStyle}" ToolTipService.ToolTip="Cyan hiện đại"><TextBlock Text="T" FontSize="22" FontWeight="Bold" Foreground="#6EE7FF"/></Button>
+                                            <Button Grid.Row="0" Grid.Column="5" Tag="pink" Click="SubtitleStylePreset_Click" Style="{StaticResource SubtitleStyleTileButtonStyle}" ToolTipService.ToolTip="Hồng"><TextBlock Text="T" FontSize="22" FontWeight="Bold" Foreground="#FF73B9"/></Button>
+                                            <Button Grid.Row="1" Grid.Column="0" Tag="red" Click="SubtitleStylePreset_Click" Style="{StaticResource SubtitleStyleTileButtonStyle}" ToolTipService.ToolTip="Đỏ"><TextBlock Text="T" FontSize="22" FontWeight="Bold" Foreground="#FF5D63"/></Button>
+                                            <Button Grid.Row="1" Grid.Column="1" Tag="green" Click="SubtitleStylePreset_Click" Style="{StaticResource SubtitleStyleTileButtonStyle}" ToolTipService.ToolTip="Xanh lá"><TextBlock Text="T" FontSize="22" FontWeight="Bold" Foreground="#73E6A2"/></Button>
+                                            <Button Grid.Row="1" Grid.Column="2" Tag="black-box" Click="SubtitleStylePreset_Click" Style="{StaticResource SubtitleStyleTileButtonStyle}" ToolTipService.ToolTip="Hộp đen"><Border Background="#050505" CornerRadius="3" Padding="7,2"><TextBlock Text="T" FontSize="18" FontWeight="Bold" Foreground="White"/></Border></Button>
+                                            <Button Grid.Row="1" Grid.Column="3" Tag="light-box" Click="SubtitleStylePreset_Click" Style="{StaticResource SubtitleStyleTileButtonStyle}" ToolTipService.ToolTip="Hộp sáng"><Border Background="White" CornerRadius="3" Padding="7,2"><TextBlock Text="T" FontSize="18" FontWeight="Bold" Foreground="#111111"/></Border></Button>
+                                            <Button Grid.Row="1" Grid.Column="4" Tag="yellow-box" Click="SubtitleStylePreset_Click" Style="{StaticResource SubtitleStyleTileButtonStyle}" ToolTipService.ToolTip="Hộp vàng"><Border Background="#FFE13B" CornerRadius="3" Padding="7,2"><TextBlock Text="T" FontSize="18" FontWeight="Bold" Foreground="#111111"/></Border></Button>
+                                            <Button Grid.Row="1" Grid.Column="5" Tag="blue-box" Click="SubtitleStylePreset_Click" Style="{StaticResource SubtitleStyleTileButtonStyle}" ToolTipService.ToolTip="Hộp xanh"><Border Background="#164E9C" CornerRadius="3" Padding="7,2"><TextBlock Text="T" FontSize="18" FontWeight="Bold" Foreground="White"/></Border></Button>
+                                        </Grid>
+                                        <TextBlock Text="TINH CHỈNH" FontSize="10" FontWeight="SemiBold" Foreground="{ThemeResource MutedTextBrush}" Margin="0,4,0,0"/>
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
+                                            <ComboBox x:Name="SubtitleOutlineColorBox" Header="Màu viền" HorizontalAlignment="Stretch" SelectionChanged="SubtitleStyleCombo_SelectionChanged">
+                                                <ComboBoxItem Tag="#101010" Content="Đen mềm"/><ComboBoxItem Tag="#000000" Content="Đen"/><ComboBoxItem Tag="#FFFFFF" Content="Trắng"/><ComboBoxItem Tag="#062033" Content="Xanh đậm"/><ComboBoxItem Tag="#4A1700" Content="Nâu đỏ"/><ComboBoxItem Tag="#321124" Content="Tím đậm"/><ComboBoxItem Tag="#06351E" Content="Xanh rêu"/>
+                                            </ComboBox>
+                                            <ComboBox Grid.Column="1" x:Name="SubtitleBackgroundColorBox" Header="Màu nền" HorizontalAlignment="Stretch" SelectionChanged="SubtitleStyleCombo_SelectionChanged">
+                                                <ComboBoxItem Tag="#000000" Content="Đen"/><ComboBoxItem Tag="#001018" Content="Xanh đen"/><ComboBoxItem Tag="#FFFFFF" Content="Trắng"/><ComboBoxItem Tag="#3A0810" Content="Đỏ đen"/><ComboBoxItem Tag="#FFE13B" Content="Vàng"/><ComboBoxItem Tag="#164E9C" Content="Xanh"/>
+                                            </ComboBox>
+                                        </Grid>
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
+                                            <NumberBox x:Name="SubtitleOutlineWidthBox" Header="Độ dày viền" Minimum="0" Maximum="8" SmallChange="0.5" SpinButtonPlacementMode="Inline" ValueChanged="SubtitleStyleNumber_ValueChanged"/>
+                                            <NumberBox Grid.Column="1" x:Name="SubtitleShadowBox" Header="Bóng chữ" Minimum="0" Maximum="6" SmallChange="0.5" SpinButtonPlacementMode="Inline" ValueChanged="SubtitleStyleNumber_ValueChanged"/>
+                                        </Grid>
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
+                                            <NumberBox x:Name="SubtitleBackgroundOpacityBox" Header="Độ đậm nền (%)" Minimum="0" Maximum="100" SmallChange="5" SpinButtonPlacementMode="Inline" ValueChanged="SubtitleStyleNumber_ValueChanged"/>
+                                            <NumberBox Grid.Column="1" x:Name="SubtitleBackgroundPaddingBox" Header="Lề nền" Minimum="0" Maximum="12" SmallChange="1" SpinButtonPlacementMode="Inline" ValueChanged="SubtitleStyleNumber_ValueChanged"/>
+                                        </Grid>
+                                        <Border Padding="8,7" CornerRadius="7" Background="{ThemeResource InputSurfaceBrush}" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="1">
+                                            <TextBlock x:Name="SubtitleStyleSummaryText" Style="{StaticResource MutedTextStyle}" Text="Trắng viền đen · không nền" TextWrapping="Wrap" FontSize="10" Foreground="{ThemeResource SecondaryTextBrush}"/>
+                                        </Border>
+                                    </StackPanel>
+                                </Border>
+
+                                <Border Style="{StaticResource CardBorderStyle}" Padding="12">
+                                    <StackPanel Spacing="8">
                                         <Button x:Name="OpenTranslatedSrtButton" Click="OpenTranslatedSrt_Click" Content="Mở thư mục SRT đã lưu" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" HorizontalAlignment="Stretch" CornerRadius="8"/>
                                         <Button x:Name="SaveKaraokeAssButton" Click="SaveKaraokeAss_Click" Content="Lưu Caption ASS" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" HorizontalAlignment="Stretch" CornerRadius="8"/>
                                         <TextBlock x:Name="SubtitleStatusText" Style="{StaticResource MutedTextStyle}" Text="Thêm SRT Việt để bắt đầu." TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" FontSize="11" Foreground="{ThemeResource SecondaryTextBrush}"/>
@@ -367,21 +464,15 @@
                                 </Grid>
                                 <Border Style="{StaticResource CardBorderStyle}" Padding="12">
                                     <StackPanel Spacing="8">
-                                        <TextBlock Text="CHẾ ĐỘ" FontSize="10" FontWeight="SemiBold" Foreground="{ThemeResource MutedTextBrush}"/>
-                                        <ComboBox x:Name="SourceAudioModeBox" Header="Âm thanh gốc" SelectedIndex="0" SelectionChanged="SourceAudioMode_SelectionChanged" HorizontalAlignment="Stretch">
-                                            <ComboBoxItem Tag="keep" Content="Giữ nguyên" /><ComboBoxItem Tag="duck" Content="Giảm âm lượng" /><ComboBoxItem Tag="mute" Content="Tắt tiếng gốc" />
-                                        </ComboBox>
-                                        <TextBlock Text="File nguồn không bị thay đổi. Giữ/Duck/Mute áp dụng cho cả preview đã xử lý và bản xuất cuối." FontSize="10" Foreground="{ThemeResource MutedTextBrush}" TextWrapping="Wrap" LineHeight="14"/>
-                                    </StackPanel>
-                                </Border>
-                                <Border Style="{StaticResource CardBorderStyle}" Padding="12">
-                                    <StackPanel Spacing="8">
-                                        <TextBlock Text="MỨC GIẢM" FontSize="10" FontWeight="SemiBold" Foreground="{ThemeResource MutedTextBrush}"/>
-                                        <Slider x:Name="SourceAudioGainSlider" Header="Mức tiếng gốc khi giảm (%)" Minimum="5" Maximum="95" Value="35" IsEnabled="False" ValueChanged="SourceAudioGain_ValueChanged"/>
-                                        <Grid ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                                            <Border Padding="6,2" CornerRadius="6" Background="{ThemeResource StrongSurfaceBrush}" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="1"><TextBlock Text="5% ─ 95%" FontSize="9" Foreground="{ThemeResource MutedTextBrush}"/></Border>
-                                            <TextBlock Grid.Column="1" Text="Chỉ hiệu lực khi chọn Giảm âm lượng (Duck)." FontSize="10" Foreground="{ThemeResource MutedTextBrush}" VerticalAlignment="Center" TextWrapping="Wrap"/>
+                                        <TextBlock Text="ÂM LƯỢNG TRỰC TIẾP" FontSize="10" FontWeight="SemiBold" Foreground="{ThemeResource MutedTextBrush}"/>
+                                        <Slider x:Name="SourceAudioGainSlider" Header="Âm lượng gốc (%)" Minimum="0" Maximum="200" Value="100" StepFrequency="1" TickFrequency="25" SnapsTo="StepValues" ValueChanged="SourceAudioGain_ValueChanged"/>
+                                        <Grid ColumnSpacing="6">
+                                            <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
+                                            <TextBlock Text="0% · Tắt" FontSize="9" Foreground="{ThemeResource MutedTextBrush}"/>
+                                            <TextBlock Grid.Column="1" Text="100% · Nguyên bản" FontSize="9" Foreground="{ThemeResource MutedTextBrush}" HorizontalAlignment="Center"/>
+                                            <TextBlock Grid.Column="2" Text="200% · Tăng" FontSize="9" Foreground="{ThemeResource MutedTextBrush}" HorizontalAlignment="Right"/>
                                         </Grid>
+                                        <TextBlock Text="Kéo trực tiếp: dưới 100% là giảm, trên 100% là tăng. Preview đã xử lý và video xuất dùng cùng mức này; file nguồn không bị thay đổi." FontSize="10" Foreground="{ThemeResource MutedTextBrush}" TextWrapping="Wrap" LineHeight="14"/>
                                     </StackPanel>
                                 </Border>
                                 <Border Padding="8,7" CornerRadius="7" Background="{ThemeResource InputSurfaceBrush}" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="1">
@@ -569,6 +660,23 @@
 
                                 <Border Style="{StaticResource CardBorderStyle}" Padding="12">
                                     <StackPanel Spacing="8">
+                                        <TextBlock Text="CẮT VIDEO · GIỮ LẠI" FontSize="10" FontWeight="SemiBold" Foreground="{ThemeResource MutedTextBrush}"/>
+                                        <TextBlock Text="Đặt mốc đầu/cuối theo thời gian video nguồn. Muốn bỏ vài phút cuối: kéo timeline tới điểm cần kết thúc rồi bấm Đặt cuối." FontSize="10" Foreground="{ThemeResource MutedTextBrush}" TextWrapping="Wrap"/>
+                                        <Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
+                                            <NumberBox x:Name="TrimStartBox" Header="Bắt đầu (giây)" Minimum="0" SmallChange="1" SpinButtonPlacementMode="Inline" ValueChanged="TrimRange_ValueChanged"/>
+                                            <NumberBox Grid.Column="1" x:Name="TrimEndBox" Header="Kết thúc (giây)" Minimum="0" SmallChange="1" SpinButtonPlacementMode="Inline" ValueChanged="TrimRange_ValueChanged"/>
+                                        </Grid>
+                                        <Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
+                                            <Button x:Name="TrimUseCurrentStartButton" Click="TrimUseCurrentStart_Click" Content="Đặt đầu tại vị trí hiện tại" Style="{StaticResource SecondaryButtonStyle}" HorizontalAlignment="Stretch" CornerRadius="8"/>
+                                            <Button Grid.Column="1" x:Name="TrimUseCurrentEndButton" Click="TrimUseCurrentEnd_Click" Content="Đặt cuối tại vị trí hiện tại" Style="{StaticResource SecondaryButtonStyle}" HorizontalAlignment="Stretch" CornerRadius="8"/>
+                                        </Grid>
+                                        <Button x:Name="TrimResetButton" Click="TrimReset_Click" Content="Giữ toàn bộ video" Style="{StaticResource SecondaryButtonStyle}" HorizontalAlignment="Stretch" CornerRadius="8"/>
+                                        <TextBlock x:Name="TrimSummaryText" Text="Giữ toàn bộ video." FontSize="10" Foreground="{ThemeResource SecondaryTextBrush}" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite"/>
+                                    </StackPanel>
+                                </Border>
+
+                                <Border Style="{StaticResource CardBorderStyle}" Padding="12">
+                                    <StackPanel Spacing="8">
                                         <TextBlock Text="XUẤT VIDEO" FontSize="10" FontWeight="SemiBold" Foreground="{ThemeResource MutedTextBrush}"/>
                                         <Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
                                             <Button x:Name="RenderButton" Click="Render_Click" Content="⬆  Xuất video" IsEnabled="False" HorizontalAlignment="Stretch" MinHeight="40" CornerRadius="8" FontWeight="SemiBold" Background="{ThemeResource AccentPrimaryBrush}" Foreground="White" BorderThickness="0"/>
@@ -587,5 +695,119 @@
         <Border Grid.Row="2" Padding="10,7" Background="{ThemeResource RaisedSurfaceBrush}" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="1" CornerRadius="8">
             <TextBlock x:Name="StatusText" Style="{StaticResource MutedTextStyle}" Text="Sẵn sàng." TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
         </Border>
+
+    <ContentDialog x:Name="ExportVideoDialog" Width="844" MinWidth="844" MaxWidth="844" Padding="0" RequestedTheme="Dark" Opened="ExportVideoDialog_Opened">
+        <ContentDialog.Resources>
+            <x:Double x:Key="ContentDialogMinWidth">844</x:Double>
+            <x:Double x:Key="ContentDialogMaxWidth">844</x:Double>
+            <SolidColorBrush x:Key="ContentDialogBackground" Color="#101C2D" />
+            <SolidColorBrush x:Key="ContentDialogForeground" Color="#F5F8FC" />
+            <SolidColorBrush x:Key="ExportCardBrush" Color="#111E2D" />
+            <SolidColorBrush x:Key="ExportCardBorderBrush" Color="#2A3A52" />
+            <SolidColorBrush x:Key="ExportAccentBrush" Color="#24C5E5" />
+            <Style x:Key="ExportSectionTitleStyle" TargetType="TextBlock">
+                <Setter Property="FontSize" Value="12" />
+                <Setter Property="FontWeight" Value="SemiBold" />
+                <Setter Property="Foreground" Value="{StaticResource ExportAccentBrush}" />
+            </Style>
+            <Style x:Key="ExportActionButtonStyle" TargetType="Button">
+                <Setter Property="MinWidth" Value="138" />
+                <Setter Property="Height" Value="48" />
+                <Setter Property="CornerRadius" Value="7" />
+                <Setter Property="FontSize" Value="15" />
+                <Setter Property="FontWeight" Value="SemiBold" />
+                <Setter Property="HorizontalContentAlignment" Value="Center" />
+            </Style>
+        </ContentDialog.Resources>
+
+        <Grid Width="820" Background="#101C2D">
+            <Grid.RowDefinitions><RowDefinition Height="86" /><RowDefinition Height="*" /><RowDefinition Height="74" /></Grid.RowDefinitions>
+            <Grid Padding="24,18,20,12">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                <StackPanel Spacing="4">
+                    <TextBlock Text="Xuất video" FontSize="25" FontWeight="SemiBold" Foreground="#F5F8FC" />
+                    <TextBlock Text="Thiết lập file đầu ra" FontSize="14" Foreground="#AAB7C9" />
+                </StackPanel>
+                <Button Grid.Column="1" Width="36" Height="36" Padding="0" Content="&#xE711;" FontFamily="Segoe Fluent Icons" FontSize="14" Background="Transparent" BorderThickness="0" Foreground="#AAB7C9" Click="ExportDialogCancel_Click" ToolTipService.ToolTip="Đóng" />
+            </Grid>
+
+            <ScrollViewer Grid.Row="1" Margin="22,0,22,10" VerticalScrollBarVisibility="Auto" VerticalScrollMode="Auto" HorizontalScrollMode="Disabled" HorizontalScrollBarVisibility="Disabled">
+            <Grid ColumnSpacing="14">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="1.28*" /><ColumnDefinition Width="0.92*" /></Grid.ColumnDefinitions>
+                <StackPanel Spacing="10">
+                    <Border Padding="17,14" Background="{StaticResource ExportCardBrush}" BorderBrush="{StaticResource ExportCardBorderBrush}" BorderThickness="1" CornerRadius="9">
+                        <StackPanel Spacing="9">
+                            <TextBlock Text="FILE ĐẦU RA" Style="{StaticResource ExportSectionTitleStyle}" />
+                            <TextBox x:Name="ExportDialogFileNameBox" Header="Tên file" PlaceholderText="video_edited.mp4" />
+                            <Grid ColumnSpacing="9">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                <TextBox x:Name="ExportDialogDirectoryBox" Header="Thư mục lưu" IsReadOnly="True" TextWrapping="NoWrap" />
+                                <Button Grid.Column="1" x:Name="ExportDialogChooseDirectoryButton" Content="Chọn" Click="ExportDialogChooseDirectory_Click" VerticalAlignment="Bottom" MinHeight="34" Padding="17,6" Style="{StaticResource SecondaryButtonStyle}" />
+                            </Grid>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Padding="17,14" Background="{StaticResource ExportCardBrush}" BorderBrush="{StaticResource ExportCardBorderBrush}" BorderThickness="1" CornerRadius="9">
+                        <StackPanel Spacing="9">
+                            <TextBlock Text="VIDEO" Style="{StaticResource ExportSectionTitleStyle}" />
+                            <Grid ColumnSpacing="10">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                                <ComboBox x:Name="ExportDialogContainerBox" Header="Định dạng" SelectedIndex="0" HorizontalAlignment="Stretch" SelectionChanged="ExportDialogSetting_Changed"><ComboBoxItem Content="MP4" Tag="mp4" /><ComboBoxItem Content="MKV" Tag="mkv" /></ComboBox>
+                                <ComboBox Grid.Column="1" x:Name="ExportDialogCodecBox" Header="Mã hóa" SelectedIndex="0" HorizontalAlignment="Stretch" SelectionChanged="ExportDialogSetting_Changed"><ComboBoxItem Content="H.264 (Tương thích)" Tag="h264" /><ComboBoxItem Content="H.265 (Nhẹ hơn)" Tag="hevc" /></ComboBox>
+                            </Grid>
+                            <StackPanel Spacing="5">
+                                <TextBlock Text="Chất lượng" FontSize="13" Foreground="#DDE5F0" />
+                                <Grid ColumnSpacing="0">
+                                    <Grid.Resources>
+                                        <SolidColorBrush x:Key="ToggleButtonBackgroundChecked" Color="#24BFE0" /><SolidColorBrush x:Key="ToggleButtonBackgroundCheckedPointerOver" Color="#32CBEA" /><SolidColorBrush x:Key="ToggleButtonBackgroundCheckedPressed" Color="#1EABC9" />
+                                        <SolidColorBrush x:Key="ToggleButtonForegroundChecked" Color="#FFFFFF" /><SolidColorBrush x:Key="ToggleButtonForegroundCheckedPointerOver" Color="#FFFFFF" /><SolidColorBrush x:Key="ToggleButtonForegroundCheckedPressed" Color="#FFFFFF" />
+                                    </Grid.Resources>
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                                    <ToggleButton x:Name="ExportDialogQualityHighButton" Content="Cao" IsChecked="True" Click="ExportDialogQuality_Click" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" CornerRadius="7,0,0,7" />
+                                    <ToggleButton Grid.Column="1" x:Name="ExportDialogQualityStandardButton" Content="Chuẩn" Click="ExportDialogQuality_Click" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" CornerRadius="0" />
+                                    <ToggleButton Grid.Column="2" x:Name="ExportDialogQualityCompactButton" Content="Tiết kiệm" Click="ExportDialogQuality_Click" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" CornerRadius="0,7,7,0" />
+                                </Grid>
+                            </StackPanel>
+                            <ComboBox x:Name="ExportDialogResolutionBox" Header="Độ phân giải" SelectedIndex="0" HorizontalAlignment="Stretch" SelectionChanged="ExportDialogSetting_Changed"><ComboBoxItem Content="Giữ nguyên nguồn" Tag="source" /><ComboBoxItem Content="4K · 2160p" Tag="2160" /><ComboBoxItem Content="Full HD · 1080p" Tag="1080" /><ComboBoxItem Content="HD · 720p" Tag="720" /><ComboBoxItem Content="SD · 480p" Tag="480" /></ComboBox>
+                            <ComboBox x:Name="ExportDialogFpsBox" Header="FPS" SelectedIndex="0" HorizontalAlignment="Stretch" SelectionChanged="ExportDialogSetting_Changed"><ComboBoxItem Content="Giữ nguyên nguồn" Tag="source" /><ComboBoxItem Content="24 FPS" Tag="24" /><ComboBoxItem Content="25 FPS" Tag="25" /><ComboBoxItem Content="30 FPS" Tag="30" /><ComboBoxItem Content="50 FPS" Tag="50" /><ComboBoxItem Content="60 FPS" Tag="60" /></ComboBox>
+                            <ToggleSwitch x:Name="ExportDialogGpuToggle" Header="Tăng tốc GPU" IsOn="True" Toggled="ExportDialogSetting_Changed" />
+                            <TextBlock Text="Tự động dùng NVIDIA NVENC khi khả dụng" FontSize="11" Foreground="#92A2B8" />
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+
+                <Grid Grid.Column="1">
+                    <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                    <Border Padding="17,14" Background="{StaticResource ExportCardBrush}" BorderBrush="{StaticResource ExportCardBorderBrush}" BorderThickness="1" CornerRadius="9">
+                        <StackPanel Spacing="10">
+                            <TextBlock Text="ÂM THANH" Style="{StaticResource ExportSectionTitleStyle}" />
+                            <ComboBox Header="Định dạng" SelectedIndex="0" IsEnabled="False" HorizontalAlignment="Stretch"><x:String>AAC</x:String></ComboBox>
+                            <ComboBox x:Name="ExportDialogAudioBitrateBox" Header="Bitrate" SelectedIndex="1" HorizontalAlignment="Stretch" SelectionChanged="ExportDialogSetting_Changed"><ComboBoxItem Content="128 kbps" Tag="128" /><ComboBoxItem Content="192 kbps" Tag="192" /><ComboBoxItem Content="256 kbps" Tag="256" /><ComboBoxItem Content="320 kbps" Tag="320" /></ComboBox>
+                        </StackPanel>
+                    </Border>
+                    <Border Grid.Row="1" Margin="0,10,0,0" Padding="18" MinHeight="126" VerticalAlignment="Bottom" Background="#142236" BorderBrush="{StaticResource ExportCardBorderBrush}" BorderThickness="1" CornerRadius="9">
+                        <Grid ColumnSpacing="14">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="44" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                            <FontIcon Glyph="&#xEDA2;" FontSize="34" Foreground="{ThemeResource SuccessBrush}" VerticalAlignment="Center" />
+                            <StackPanel Grid.Column="1" Spacing="6" VerticalAlignment="Center">
+                                <TextBlock x:Name="ExportDialogEstimateText" Text="Ước tính: đang tính..." FontSize="15" FontWeight="SemiBold" Foreground="{ThemeResource SuccessBrush}" TextWrapping="Wrap" />
+                                <TextBlock x:Name="ExportDialogDurationText" Text="Thời lượng: --:--:--" FontSize="14" Foreground="#B3C0D2" />
+                                <TextBlock Text="Dung lượng thay đổi theo nội dung và chất lượng đã chọn." FontSize="10" Foreground="#8190A5" TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+                </Grid>
+                <TextBlock Grid.ColumnSpan="2" x:Name="ExportDialogValidationText" Margin="3,10,3,0" VerticalAlignment="Top" Foreground="{ThemeResource DangerBrush}" FontSize="11" TextWrapping="Wrap" AutomationProperties.LiveSetting="Assertive" />
+            </Grid>
+            </ScrollViewer>
+
+            <Border Grid.Row="2" BorderBrush="#2A3A52" BorderThickness="0,1,0,0" Background="#101B2A">
+                <StackPanel Orientation="Horizontal" Spacing="12" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="20,0">
+                    <Button x:Name="ExportDialogCancelButton" Content="Hủy" Click="ExportDialogCancel_Click" Style="{StaticResource ExportActionButtonStyle}" Background="Transparent" BorderBrush="#607089" BorderThickness="1" Foreground="#F0F4FA" />
+                    <Button x:Name="ExportDialogConfirmButton" Content="Bắt đầu xuất" Click="ExportDialogStart_Click" Style="{StaticResource ExportActionButtonStyle}" MinWidth="152" Background="{StaticResource ExportAccentBrush}" BorderThickness="0" Foreground="White" />
+                </StackPanel>
+            </Border>
+        </Grid>
+    </ContentDialog>
     </Grid>
 </Page>

@@ -20,36 +20,20 @@ public sealed class SettingsApplicationService(
         string path,
         CancellationToken cancellationToken = default)
     {
-        path = path?.Trim() ?? string.Empty;
-        if (path.Length == 0)
-        {
-            throw new ArgumentException("Thư mục xuất rỗng.", nameof(path));
-        }
-
-        Directory.CreateDirectory(path);
-        var probe = Path.Combine(path, $".bilisub-write-probe-{Guid.NewGuid():N}.tmp");
-        try
-        {
-            await File.WriteAllTextAsync(probe, "BiliSub Studio output write probe", cancellationToken).ConfigureAwait(false);
-        }
-        catch (Exception error) when (error is UnauthorizedAccessException or IOException)
-        {
-            throw new IOException("Thư mục đã chọn không cho phép BiliSub Studio ghi tệp.", error);
-        }
-        finally
-        {
-            try
-            {
-                if (File.Exists(probe)) File.Delete(probe);
-            }
-            catch
-            {
-                // A failed cleanup must not turn a successful write-access probe into a settings failure.
-            }
-        }
-
+        path = await ValidateWritableDirectoryAsync(path, cancellationToken).ConfigureAwait(false);
         await configStore.UpdateAsync(
             config => config with { OutputDirectory = path },
+            cancellationToken).ConfigureAwait(false);
+        return await BuildSnapshotAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<SettingsSnapshot> SetOcrOutputDirectoryAsync(
+        string path,
+        CancellationToken cancellationToken = default)
+    {
+        path = await ValidateWritableDirectoryAsync(path, cancellationToken).ConfigureAwait(false);
+        await configStore.UpdateAsync(
+            config => config with { OcrOutputDirectory = path },
             cancellationToken).ConfigureAwait(false);
         return await BuildSnapshotAsync(cancellationToken).ConfigureAwait(false);
     }
@@ -95,5 +79,35 @@ public sealed class SettingsApplicationService(
             configStore.Snapshot,
             storage,
             configStore.LastLoadWarning);
+    }
+
+    private static async Task<string> ValidateWritableDirectoryAsync(string path, CancellationToken cancellationToken)
+    {
+        path = path?.Trim() ?? string.Empty;
+        if (path.Length == 0) throw new ArgumentException("Thư mục xuất rỗng.", nameof(path));
+
+        path = Path.GetFullPath(path);
+        Directory.CreateDirectory(path);
+        var probe = Path.Combine(path, $".bilisub-write-probe-{Guid.NewGuid():N}.tmp");
+        try
+        {
+            await File.WriteAllTextAsync(probe, "BiliSub Studio output write probe", cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception error) when (error is UnauthorizedAccessException or IOException)
+        {
+            throw new IOException("Thư mục đã chọn không cho phép BiliSub Studio ghi tệp.", error);
+        }
+        finally
+        {
+            try
+            {
+                if (File.Exists(probe)) File.Delete(probe);
+            }
+            catch
+            {
+                // A failed cleanup must not turn a successful write-access probe into a settings failure.
+            }
+        }
+        return path;
     }
 }

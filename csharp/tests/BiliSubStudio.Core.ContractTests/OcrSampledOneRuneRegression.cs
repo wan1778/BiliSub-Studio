@@ -47,6 +47,6 @@ internal static class OcrSampledOneRuneRegression
             throw new InvalidOperationException("every-frame one-rune subtitle stopped requiring three source frames");
         Observe(accurateHigh, 1, high);
         if (active.GetValue(accurateHigh) is null)
-            throw new InvalidOperationException("every-frame one-rune subtitle did not promote after three source frames");
+            throw new InvalidOperationException("stable one-rune subtitle did not promote after sufficient evidence");
     }
 }

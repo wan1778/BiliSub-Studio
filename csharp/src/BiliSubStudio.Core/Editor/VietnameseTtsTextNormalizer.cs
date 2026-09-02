@@ -11,6 +11,30 @@ namespace BiliSubStudio.Core.Editor;
 /// </summary>
 public static class VietnameseTtsTextNormalizer
 {
+    public static bool HasSpeakableUnits(string? value)
+        => SpeakableUnitCount(value) > 0;
+
+    public static int SpeakableUnitCount(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return 0;
+        var count = 0;
+        var unitCounted = false;
+        foreach (var rune in value.Normalize(NormalizationForm.FormC).EnumerateRunes())
+        {
+            var speakable = Rune.IsLetter(rune) || Rune.IsNumber(rune);
+            if (speakable && !unitCounted)
+            {
+                count++;
+                unitCounted = true;
+            }
+            else if (!speakable && rune.Value != '_')
+            {
+                unitCounted = false;
+            }
+        }
+        return count;
+    }
+
     public static string Normalize(string value)
     {
         if (string.IsNullOrWhiteSpace(value)) return string.Empty;

@@ -172,7 +172,7 @@ POST /api/ocr/engine/ensure
             -> CPU: private python -u worker.py --model-cache Tools/OCR/models --device cpu
             -> GPU: private python -u worker.py --model-cache Tools/OCR/models --device gpu:0
             -> Hybrid: start GPU then CPU; both workers stay private/no HTTP
-            -> PP-OCRv6_small_det + PP-OCRv6_small_rec + requested-device ready handshake
+            -> PP-OCRv6_medium_det + PP-OCRv6_medium_rec + requested-device ready handshake
 
 POST /api/ocr
   -> api.Server.ocrHandler

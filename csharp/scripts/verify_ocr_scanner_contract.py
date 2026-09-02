@@ -6,6 +6,7 @@ import pathlib
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 SCANNER = ROOT / "csharp" / "src" / "BiliSubStudio.Core" / "Ocr" / "OcrScanner.cs"
 CHECKPOINT = ROOT / "csharp" / "src" / "BiliSubStudio.Core" / "Ocr" / "OcrCheckpointStore.cs"
+MODELS = ROOT / "csharp" / "src" / "BiliSubStudio.Core" / "Ocr" / "OcrModels.cs"
 OCR_PAGE = ROOT / "csharp" / "src" / "BiliSubStudio.App" / "Pages" / "OcrPage.xaml.cs"
 OCR_PAGE_XAML = ROOT / "csharp" / "src" / "BiliSubStudio.App" / "Pages" / "OcrPage.xaml"
 MANAGER = ROOT / "csharp" / "src" / "BiliSubStudio.Core" / "Ocr" / "OcrManager.cs"
@@ -26,6 +27,7 @@ def require(condition: bool, message: str) -> None:
 def main() -> int:
     scanner = SCANNER.read_text(encoding="utf-8")
     checkpoint = CHECKPOINT.read_text(encoding="utf-8")
+    models = MODELS.read_text(encoding="utf-8")
     page = OCR_PAGE.read_text(encoding="utf-8")
     page_xaml = OCR_PAGE_XAML.read_text(encoding="utf-8")
     manager = MANAGER.read_text(encoding="utf-8")
@@ -59,6 +61,9 @@ def main() -> int:
 
     require("Levels { get; } = [1, 2, 4, 8, 16]" in topology,
             "OCR Auto base benchmark ladder is not exactly 1/2/4/8/16")
+    require("HybridLevels { get; } = [2, 4, 8, 16]" in topology and
+            "SelectForModeAsync" in topology and "HybridLevels : Levels" in topology,
+            "OCR Hybrid benchmark can still commit a fake one-worker GPU-only topology")
     require("await restore(best, cancellationToken);" in topology and
             "rejected(level, best, error);" in topology and
             "Enumerable.Range(best + 1, level - best - 1).Reverse()" in topology and
@@ -69,7 +74,7 @@ def main() -> int:
     require(select_start >= 0 and probe_start > select_start, "missing full OCR topology benchmark selector/probe")
     selector = scanner[select_start:probe_start]
     probe = scanner[probe_start:scanner.find("private static void PublishTelemetry", probe_start)]
-    require("OcrTopologyBenchmark.SelectAsync" in selector and "EnsureResourceHeadroom" in selector and
+    require("OcrTopologyBenchmark.SelectForModeAsync" in selector and "EnsureResourceHeadroom" in selector and
             "HasUsefulThroughputGain" in selector,
             "OCR Auto does not execute Predict -> Probe -> throughput Commit across the base ladder and fallbacks")
     require("GlobalMemoryStatusEx" in hardware and "nvmlDeviceGetMemoryInfo" in hardware,
@@ -100,8 +105,30 @@ def main() -> int:
     require("ResizePoolLockedAsync" in manager and "var retained = _workers.Count;" in manager and
             "index >= retained" in manager and "RebuildAvailabilityLocked();" in manager,
             "worker scale-up failure does not transactionally preserve the prior PASS pool")
-    require('"hybrid" => target == 1' in manager and '? ["gpu"]' in manager,
-            "Hybrid mode cannot participate in the mandatory level-1 benchmark")
+    require("private int _committedWorkerTarget = 1;" in manager and
+            "Math.Max(_committedWorkerTarget, MinimumWorkerTarget(mode))" in manager and
+            'BuildPoolLockedAsync("cpu", _committedWorkerTarget' in manager and
+            "_committedWorkerTarget = target;" in manager,
+            "a failed OCR pool can silently rebuild one worker instead of the last committed topology")
+    require("private const int MaxLaneRecoveryAttempts = 2;" in scanner and
+            "recoveryAttempts < MaxLaneRecoveryAttempts" in scanner and
+            "laneRecoveryGate.WaitAsync(token)" in scanner and
+            "ConfigureWorkerPoolAsync(selected, token)" in scanner and
+            "restored != selected" in scanner and "SaveRecoverableCheckpointAsync();" in scanner and
+            "khôi phục PASS" in scanner,
+            "long OCR lanes do not retry from a safe checkpoint after restoring the exact worker topology")
+    require("checkpointSaveGate.WaitAsync(CancellationToken.None)" in scanner and
+            "checkpointSaveGate.Release();" in scanner,
+            "periodic and recovery checkpoint publications can race on the same temporary file")
+    require('"hybrid" when target >= 2' in manager and
+            'new[] { "gpu", "cpu" }' in manager and
+            '"hybrid" => throw new ArgumentOutOfRangeException' in manager and
+            'MinimumWorkerTarget(string mode) => mode == "hybrid" ? 2 : 1' in manager,
+            "Hybrid manager can still accept a GPU-only one-worker pool")
+    require("legacyHybridGpuResume" in scanner and
+            'ConfigureDeviceAsync(legacyHybridGpuResume ? "gpu" : request.Device' in scanner and
+            "SelectForModeAsync" in scanner and "không giữ nhãn Hybrid giả" in scanner,
+            "legacy checkpoint or failed Hybrid probe can still be mislabeled as Hybrid")
     require("checkpoint.Lanes.Count != selected" in scanner,
             "scanner does not verify the committed FFmpeg segment topology")
     require("Math.Clamp(parallelism, 1, 16)" in checkpoint and "duration / 120" not in checkpoint,
@@ -142,7 +169,7 @@ def main() -> int:
     require(".Where(cue => cue.Start <= frontier + .001)" in live_publish,
             "live OCR preview exposes speculative cues beyond the contiguous safe frontier")
     require("publishedCueCount" in live_lane and "tracker.Cues.Skip(publishedCueCount)" in live_lane and
-            "tracker.Active" in live_lane and "onProgress(mediaSeconds, frames, images, committedCues, tracker.Active)" in live_lane,
+            "Active = tracker.Active" in live_lane and "}, committedCues, tracker.CanCheckpoint);" in live_lane,
             "tracker-confirmed committed/active OCR text is not streamed while scanning")
     require("snapshot.Result is OcrScanResult result" in page and
             "MergeLiveCueSnapshot(result.Cues)" in page and "OcrLiveCueAccumulator _liveCues" in page and
@@ -173,8 +200,24 @@ def main() -> int:
             "C# OCR worker path does not validate and expose the every-frame visual probe protocol")
     require("var authoritative = snapshot.Done" in page and
             "ApplyAuthoritativeCues(result.Cues)" in page and
-            "ExportOcrAsync(_cues" in page and "ExportButton.IsEnabled = false;" in page,
+            "ExportCurrentSrtAsync" in page and "_cues, outputDirectory" in page and "ExportButton.IsEnabled = false;" in page,
             "provisional live active cues can leak into export instead of being replaced by the final authoritative scan result")
+    require("RecoverableCues" in page and "ApplyRecoverableCheckpointCues(checkpoint)" in page and
+            '"_Chinese.partial.srt"' in page and "ExportButton.IsEnabled = _cues.Count > 0;" in page,
+            "OCR checkpoint cannot be exported as an explicitly partial recovery SRT")
+    require("AutoSaveDirectoryBox" in page_xaml and "ChooseAutoSaveFolder_Click" in page_xaml and
+            "OCR hoàn tất sẽ tự lưu SRT" in page_xaml and "IFolderPickerService" in page and
+            "SetOcrOutputDirectoryAsync" in page and "ExportCurrentSrtAsync(autoSaveDirectory, recovery: false)" in page and
+            "Đã quét xong và tự lưu SRT" in page,
+            "OCR page does not expose and persist a dedicated auto-save folder or export final SRT automatically")
+    require('path + ".tmp-" + Guid.NewGuid().ToString("N")' in application and
+            "File.Move(temporary, path);" in application,
+            "OCR SRT publication is not atomic")
+    require("OcrScanner.Reconcile(checkpoint.Lanes" in checkpoint and "RecoverableCues" in models,
+            "OCR checkpoint inspection does not expose all committed safe-frontier cues")
+    require("catch (OperationCanceledException) when (job.CancellationToken.IsCancellationRequested)" in application and
+            "!laneCancellation.IsCancellationRequested" in scanner and "error is OperationCanceledException" in scanner,
+            "an internal OCR lane cancellation can still be mislabeled as a user cancel")
     require("TakeLast(120)" not in page and "Take(10)" not in page and
             '_visibleCues = _cues.OrderBy(cue => cue.Start).ToArray();' in page and
             'ToString(@"hh\\:mm\\:ss\\,fff")' in page and " → " in page,
@@ -218,8 +261,9 @@ def main() -> int:
 
     require("File.Delete(path);" in checkpoint and "if (File.Exists(path)" in checkpoint,
             "checkpoint removal still swallows delete errors or skips absence verification")
-    require("private const int Schema = 14;" in checkpoint and "schema >= 9" in checkpoint and
-            "LegacyCheckpointIdentity" in checkpoint and "new[] { 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3 }" in checkpoint,
+    require("private const int Schema = 15;" in checkpoint and "schema >= 9" in checkpoint and
+            "LegacyCheckpointIdentity" in checkpoint and "new[] { 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3 }" in checkpoint and
+            "OcrInstaller.DetectionModel, OcrInstaller.RecognitionModel" in checkpoint,
             "adaptive OCR checkpoint identity cannot safely reject and explicitly remove legacy checkpoint files")
     require("Where(x => x.Start <= media + 0.001)" in checkpoint,
             "paused checkpoint cues are not restricted to the contiguous safe frontier")

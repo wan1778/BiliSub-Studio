@@ -26,8 +26,8 @@ from paddleocr import PaddleOCR
 
 
 ENGINE_NAME = "PaddleOCR"
-DETECTION_MODEL = "PP-OCRv6_small_det"
-RECOGNITION_MODEL = "PP-OCRv6_small_rec"
+DETECTION_MODEL = "PP-OCRv6_medium_det"
+RECOGNITION_MODEL = "PP-OCRv6_medium_rec"
 
 
 def emit(payload):
@@ -144,7 +144,7 @@ def _stitch_overlapping_text(left, right):
 def merge_inline_lines(lines):
     """Join detector fragments that occupy one subtitle baseline.
 
-    PP-OCRv6 Small can return overlapping boxes such as ``少主……是`` and
+    PP-OCRv6 can return overlapping boxes such as ``少主……是`` and
     ``是不死丹帝，药逆命``. Joining raw texts with a newline duplicates the shared
     glyph after C# whitespace normalization. Geometry plus exact suffix/prefix
     overlap removes only text that Paddle observed twice; it never invents text.

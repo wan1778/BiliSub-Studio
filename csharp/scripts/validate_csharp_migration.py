@@ -847,8 +847,8 @@ for marker in (
 for retired in ("Kokoro", "synth_sine", "DummyModelBytes", "MirrorModelUrl"):
     require(retired not in tts_installer + tts_service + tts_worker,
             f"unverified/retired TTS returned to production: {retired}")
-require('TimingAlgorithm = "whole-cue-piper-tempo-fallback-v10"' in tts_installer
-        and 'TIMING_ALGORITHM = "whole-cue-piper-tempo-fallback-v10"' in tts_worker,
+require('TimingAlgorithm = "whole-cue-piper-natural-first-v17"' in tts_installer
+        and 'TIMING_ALGORITHM = "whole-cue-piper-natural-first-v17"' in tts_worker,
         "Whisper duration policy/cache identity drifted")
 for marker in ("LocalTtsInstaller.TimingAlgorithm", "BuildWholeCue", "GenerateSampleAsync", "OwnedProcessGroup",
                "SamePath(reportedResult, resultPath)", "await processes.StopAsync()"):
@@ -857,9 +857,18 @@ for marker in ("PiperVoice.load", "voice.synthesize(text, syn_config=syn_config)
                "SynthesisConfig(length_scale=length_scale)", "voice-master.flac", '"event": "cue"', '"event": "block"'):
     require(marker in tts_worker, f"NGHI worker contract missing {marker}")
 for forbidden in ("asetrate=", "rubberband=", "atrim="):
-    require(forbidden not in tts_worker, f"post-synthesis speed/cut filter returned: {forbidden}")
-require('"piper-atempo"' in tts_worker and "tempo_fit_clip" in tts_worker,
-        "complete-speech tempo fallback is missing")
+    require(forbidden not in tts_worker, f"speech-cutting or pitch-shifting filter returned: {forbidden}")
+for required in ("atempo=", '"piper-atempo"', "tempo_fit_clip", "MAX_TEMPO_ATTEMPTS = 6"):
+    require(required in tts_worker, f"bounded dynamic-tempo fallback missing: {required}")
+require("MIN_RATE_SCALE = .30" in tts_worker
+        and "MIN_ACTUAL_SPEED = 1.0" in tts_worker
+        and "FIT_HEADROOM = .995" in tts_worker
+        and "MAX_ACTUAL_SPEED = 100.0" in tts_worker
+        and "MAX_GROUP_GAP_FRAMES = 0" in tts_worker
+        and "minimum_speech_frames" in tts_worker
+        and "normalize_vietnamese_text" in tts_worker
+        and "MAX_GROUP_DURATION_FRAMES = 300 * SAMPLE_RATE" in tts_worker,
+        "dynamic Vietnamese pooled-timeline rate policy is missing")
 
 main_xaml = read(CSHARP / "src/BiliSubStudio.App/MainWindow.xaml")
 main_code = read(CSHARP / "src/BiliSubStudio.App/MainWindow.xaml.cs")

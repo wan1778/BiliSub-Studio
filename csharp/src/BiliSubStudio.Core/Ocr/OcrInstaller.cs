@@ -18,8 +18,8 @@ internal sealed class OcrInstaller
     public const string PythonVersion = "3.12";
     public const string PaddleVersion = "3.2.0";
     public const string PaddleOcrVersion = "3.7.0";
-    public const string DetectionModel = "PP-OCRv6_small_det";
-    public const string RecognitionModel = "PP-OCRv6_small_rec";
+    public const string DetectionModel = "PP-OCRv6_medium_det";
+    public const string RecognitionModel = "PP-OCRv6_medium_rec";
     private const string UvArchive = "uv-x86_64-pc-windows-msvc.zip";
     private const string UvUrl = "https://github.com/astral-sh/uv/releases/download/0.12.0/uv-x86_64-pc-windows-msvc.zip";
     private const string CpuIndex = "https://www.paddlepaddle.org.cn/packages/stable/cpu/";
@@ -82,7 +82,7 @@ internal sealed class OcrInstaller
             var venvRoot = Path.Combine(runtimeRoot, "venv");
             var python = Path.Combine(venvRoot, "Scripts", "python.exe");
             var manifestPath = Path.Combine(runtimeRoot, "install.json");
-            var expected = new InstallManifest(4, UvVersion, PythonVersion, PaddleVersion, PaddleOcrVersion,
+            var expected = new InstallManifest(5, UvVersion, PythonVersion, PaddleVersion, PaddleOcrVersion,
                 DetectionModel, RecognitionModel, await Sha256Async(worker, cancellationToken), kind, spec.Package, spec.Index);
             var reusable = File.Exists(python) && await ManifestMatchesAsync(manifestPath, expected, cancellationToken);
             if (reusable && kind == "gpu")

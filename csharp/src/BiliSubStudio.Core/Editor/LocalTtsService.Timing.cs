@@ -4,42 +4,52 @@ namespace BiliSubStudio.Core.Editor;
 
 internal sealed partial class LocalTtsService
 {
-    private const int MaxSentenceGroupCues = 12;
-    private const long MaxSentenceGroupGapFrames = 2646;
-    private const long MaxSentenceGroupDurationFrames = 264600;
+    private const int MaxSentenceGroupCues = 512;
+    private const long MaxSentenceGroupGapFrames = 0;
+    private const long MaxSentenceGroupOverlapFrames = 5512;
+    private const long MaxSentenceGroupDurationFrames = 6615000;
 
     private static bool ValidateNativeSynthesis(TtsWorkerCue cue, long targetFrames, bool naturalSample, int sampleRate)
     {
         var precisionPaddingBudget = Math.Max(1L, Math.Min((long)Math.Round(.04 * sampleRate), targetFrames / 50));
         var relativeScale = cue.LengthScale / cue.BaseLengthScale;
+        var sentenceGroup = cue.TimingSource == "sentence-group";
         var tempoFallback = cue.FitMethod == "piper-atempo";
-        var minimumScale = cue.TimingSource == "sentence-group" ? .45 : .85;
+        const double minimumScale = .30;
         if (cue.FitMethod is not ("piper-length-scale" or "piper-atempo")
             || !double.IsFinite(cue.BaseLengthScale) || cue.BaseLengthScale <= 0
             || !double.IsFinite(cue.LengthScale) || !double.IsFinite(relativeScale) || relativeScale < minimumScale || relativeScale > 1.20
             || cue.SourceFrames <= 0 || cue.GeneratedFrames <= 0 || cue.GeneratedFrames > cue.Frames
             || cue.TrimmedSilenceFrames < 0 || cue.TrimmedSilenceFrames >= cue.SourceFrames
             || cue.PaddingFrames < 0 || cue.PaddingFrames >= targetFrames || cue.GeneratedFrames != cue.Frames - cue.PaddingFrames
-            || cue.SynthesisAttempts is < 1 or > 10
+            || cue.SynthesisAttempts < 1 || cue.SynthesisAttempts > 12
             || (cue.CacheHit ? cue.SynthesisCalls != 0
                 : cue.SynthesisCalls < cue.SynthesisAttempts || cue.SynthesisCalls > cue.SynthesisAttempts + 10)
-            || (naturalSample && (cue.TrimmedSilenceFrames != 0 || cue.PaddingFrames != 0 || cue.SynthesisAttempts != 1)))
+            || (naturalSample && cue.TimingSource != "sample"))
             throw new InvalidDataException("Voice không có metadata nhịp đọc Piper hợp lệ; không nhận master này.");
-        if (tempoFallback)
-        {
-            if (cue.LengthScale != cue.BaseLengthScale
+        if (cue.NativeReferenceFrames <= 0 || !double.IsFinite(cue.ActualSpeedFactor)
+            || cue.ActualSpeedFactor < 1 || cue.ActualSpeedFactor > 100
+            || (sentenceGroup
+                ? cue.GroupNativeFrames != cue.NativeReferenceFrames
+                : cue.GroupNativeFrames != 0
+                    || Math.Abs(cue.NativeReferenceFrames / (double)cue.GeneratedFrames - cue.ActualSpeedFactor) > 1e-9))
+            throw new InvalidDataException("Voice không có giới hạn tốc độ đọc thực đo hợp lệ.");
+        if (cue.SynthesisAttempts == 1
+            && (cue.LengthScale != cue.BaseLengthScale
                 || Math.Abs(cue.RawDuration - cue.SourceFrames / (double)sampleRate) > 1e-9
-                || cue.TempoInputFrames <= 0 || cue.SourceFrames - cue.TrimmedSilenceFrames != cue.TempoInputFrames
-                || cue.GeneratedFrames > cue.TempoInputFrames || !double.IsFinite(cue.TempoFactor) || cue.TempoFactor <= 1
-                || cue.TempoAttempts is < 1 or > 12 || cue.Status != "review")
-                throw new InvalidDataException("Voice fallback không có metadata nén thời lượng hợp lệ.");
-        }
-        else if (cue.SourceFrames - cue.TrimmedSilenceFrames != cue.GeneratedFrames
-            || (cue.SynthesisAttempts == 1 && (cue.LengthScale != cue.BaseLengthScale
-                || Math.Abs(cue.RawDuration - cue.SourceFrames / (double)sampleRate) > 1e-9)))
-            throw new InvalidDataException("Voice không bảo toàn mẫu PCM do Piper tạo.");
-        return tempoFallback || cue.TimingSource == "sentence-group" || relativeScale is < .90 or > 1.15 || cue.TrimmedSilenceFrames > 0
-            || cue.PaddingFrames > precisionPaddingBudget;
+                || (!sentenceGroup && cue.NativeReferenceFrames != cue.GeneratedFrames)))
+            throw new InvalidDataException("Voice lượt tự nhiên không có metadata Piper gốc hợp lệ.");
+        if (tempoFallback
+            ? cue.TempoInputFrames != cue.SourceFrames - cue.TrimmedSilenceFrames
+                || cue.TempoInputFrames <= cue.GeneratedFrames || !double.IsFinite(cue.TempoFactor)
+                || cue.TempoFactor <= 1
+                || Math.Abs(cue.TempoInputFrames / (double)cue.GeneratedFrames - cue.TempoFactor) > 1e-9
+                || cue.TempoAttempts is < 1 or > 6
+            : cue.TempoFactor != 0 || cue.TempoInputFrames != 0 || cue.TempoAttempts != 0
+                || cue.SourceFrames - cue.TrimmedSilenceFrames != cue.GeneratedFrames)
+            throw new InvalidDataException("Voice không bảo toàn đầy đủ chuỗi thoại hoặc metadata thời lượng.");
+        return tempoFallback || sentenceGroup || relativeScale is < .70 or > 1
+            || cue.TrimmedSilenceFrames > 0 || cue.PaddingFrames > precisionPaddingBudget;
     }
 
     private static void ValidateSentenceGroupWindows(
@@ -57,7 +67,7 @@ internal sealed partial class LocalTtsService
                     - checked((long)Math.Round(expected[last].CueEnd * sampleRate));
                 var candidateEnd = checked((long)Math.Round(expected[last + 1].CueEnd * sampleRate));
                 if (expected[last].TimingSource == "sample" || expected[last + 1].TimingSource == "sample"
-                    || gap is < 0 or > MaxSentenceGroupGapFrames || EndsSentence(expected[last].Text)
+                    || gap < -MaxSentenceGroupOverlapFrames || gap > MaxSentenceGroupGapFrames
                     || candidateEnd - groupStart > MaxSentenceGroupDurationFrames)
                     break;
                 last++;
@@ -77,23 +87,23 @@ internal sealed partial class LocalTtsService
                 || actual[first].ClipStartSample != groupStart
                 || checked(actual[last].ClipStartSample + actual[last].TargetFrames) != groupEnd)
                 throw new InvalidDataException("Nhóm câu TTS vượt biên timecode nguồn.");
+            var generatedFrames = 0L;
             for (var item = first; item <= last; item++)
             {
                 if (actual[item].TargetFrames <= 0
                     || (item > first && actual[item].ClipStartSample
-                        != actual[item - 1].ClipStartSample + actual[item - 1].TargetFrames))
+                        != actual[item - 1].ClipStartSample + actual[item - 1].TargetFrames)
+                    || actual[item].GroupNativeFrames != actual[first].GroupNativeFrames
+                    || actual[item].ActualSpeedFactor != actual[first].ActualSpeedFactor)
                     throw new InvalidDataException("Nhóm câu TTS không phủ liên tục timecode nguồn.");
+                generatedFrames = checked(generatedFrames + actual[item].GeneratedFrames);
             }
+            var measuredSpeed = actual[first].GroupNativeFrames / (double)generatedFrames;
+            if (Math.Abs(measuredSpeed - actual[first].ActualSpeedFactor) > 1e-9
+                || measuredSpeed < 1 || measuredSpeed > 100)
+                throw new InvalidDataException("Nhóm câu TTS vượt giới hạn tốc độ đọc rõ.");
             first = last + 1;
         }
-    }
-
-    private static bool EndsSentence(string text)
-    {
-        var value = text.AsSpan().TrimEnd();
-        while (!value.IsEmpty && value[^1] is '"' or '\'' or '”' or '’' or ')' or ']' or '}')
-            value = value[..^1].TrimEnd();
-        return !value.IsEmpty && value[^1] is ('.' or '!' or '?' or '…');
     }
 
     // Verify PCM frame count from the actual WAV, not only the worker's duration.

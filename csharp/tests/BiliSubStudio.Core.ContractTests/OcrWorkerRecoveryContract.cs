@@ -21,8 +21,6 @@ internal static class OcrWorkerRecoveryContract
             var assembly = typeof(OcrManager).Assembly;
             var runtimeType = assembly.GetType("BiliSubStudio.Core.Ocr.OcrRuntime")
                 ?? throw new InvalidOperationException("missing OcrRuntime");
-            var runtime = Activator.CreateInstance(runtimeType, executable, "fake-ocr-worker", root, "gpu:0", "gpu")
-                ?? throw new InvalidOperationException("cannot create fake OcrRuntime");
             var workerType = assembly.GetType("BiliSubStudio.Core.Ocr.OcrWorkerClient")
                 ?? throw new InvalidOperationException("missing OcrWorkerClient");
 
@@ -50,9 +48,19 @@ internal static class OcrWorkerRecoveryContract
                 await ((IAsyncDisposable)diagnosticWorker).DisposeAsync();
             }
 
-            var worker = Activator.CreateInstance(workerType, runtime)
-                ?? throw new InvalidOperationException("cannot create fake OcrWorkerClient");
-            await InvokeTask(workerType.GetMethod("StartAsync")!, worker, CancellationToken.None);
+            var workerRoots = new[] { Path.Combine(root, "worker-a"), Path.Combine(root, "worker-b") };
+            var workersUnderTest = new List<object>();
+            foreach (var workerRoot in workerRoots)
+            {
+                Directory.CreateDirectory(workerRoot);
+                var runtime = Activator.CreateInstance(
+                    runtimeType, executable, "fake-ocr-worker", workerRoot, "gpu:0", "gpu")
+                    ?? throw new InvalidOperationException("cannot create fake OcrRuntime");
+                var worker = Activator.CreateInstance(workerType, runtime)
+                    ?? throw new InvalidOperationException("cannot create fake OcrWorkerClient");
+                await InvokeTask(workerType.GetMethod("StartAsync")!, worker, CancellationToken.None);
+                workersUnderTest.Add(worker);
+            }
 
             var paths = AppPaths.FromRoot(Path.Combine(root, "app"));
             var installerType = assembly.GetType("BiliSubStudio.Core.Ocr.OcrInstaller")
@@ -66,18 +74,24 @@ internal static class OcrWorkerRecoveryContract
                 ?? throw new InvalidOperationException("cannot create OcrManager"));
             var workers = (IList)(typeof(OcrManager).GetField("_workers", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(manager)
                 ?? throw new InvalidOperationException("missing OCR worker pool"));
-            workers.Add(worker);
+            foreach (var worker in workersUnderTest) workers.Add(worker);
             typeof(OcrManager).GetMethod("RebuildAvailabilityLocked", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(manager, null);
             typeof(OcrManager).GetField("_state", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(manager, "ready");
             typeof(OcrManager).GetField("_deviceMode", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(manager, "gpu");
             typeof(OcrManager).GetField("_activeMode", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(manager, "gpu");
+            typeof(OcrManager).GetField("_committedWorkerTarget", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(manager, 2);
 
             try
             {
-                var result = await manager.RunAsync(Convert.ToBase64String([1, 2, 3]), CancellationToken.None);
-                Check(result.Ok && result.Detected && result.Text == "恢复成功", "request was not replayed on replacement OCR worker");
-                Check(manager.Status.Ready && manager.Status.Workers == 1, "replacement OCR worker did not restore pool topology");
-                Check(File.Exists(Path.Combine(root, "crashed-once")), "fake OCR worker never exercised the crash path");
+                var results = await Task.WhenAll(
+                    manager.RunAsync(Convert.ToBase64String([1, 2, 3]), CancellationToken.None),
+                    manager.RunAsync(Convert.ToBase64String([4, 5, 6]), CancellationToken.None));
+                Check(results.All(result => result.Ok && result.Detected && result.Text == "恢复成功"),
+                    "concurrent requests were not replayed on replacement OCR workers");
+                Check(manager.Status.Ready && manager.Status.Workers == 2,
+                    "concurrent replacement did not restore the committed two-worker topology");
+                Check(workerRoots.All(workerRoot => File.Exists(Path.Combine(workerRoot, "crashed-once"))),
+                    "both fake OCR workers did not exercise the simultaneous crash path");
             }
             finally
             {
@@ -97,7 +111,7 @@ internal static class OcrWorkerRecoveryContract
         var stateRoot = arguments[cacheIndex + 1];
         Directory.CreateDirectory(stateRoot);
         Console.OutputEncoding = System.Text.Encoding.UTF8;
-        Console.WriteLine("{\"type\":\"ready\",\"device\":\"gpu:0\",\"models\":[\"PP-OCRv6_small_det\",\"PP-OCRv6_small_rec\"]}");
+        Console.WriteLine("{\"type\":\"ready\",\"device\":\"gpu:0\",\"models\":[\"PP-OCRv6_medium_det\",\"PP-OCRv6_medium_rec\"]}");
         Console.Out.Flush();
         var marker = Path.Combine(stateRoot, "crashed-once");
         while (await Console.In.ReadLineAsync() is { } line)

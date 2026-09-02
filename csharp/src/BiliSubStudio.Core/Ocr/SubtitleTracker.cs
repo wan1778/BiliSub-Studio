@@ -2,6 +2,11 @@ namespace BiliSubStudio.Core.Ocr;
 
 internal sealed class SubtitleTracker
 {
+    // A lone CJK-shaped background stroke can be read identically for several
+    // adjacent video frames. Three 30-fps hits are only 100 ms and previously
+    // let 0.2-second garbage cues enter the SRT. Real one-rune captions must be
+    // visibly stable for a reviewable interval as well as repeat consistently.
+    private const double SingleRuneMinimumEvidenceSeconds = .30;
     private readonly double _frameSpan;
     private readonly double _candidateGap;
     private readonly double _lowConfidence;
@@ -10,6 +15,8 @@ internal sealed class SubtitleTracker
     private Candidate? _candidate;
     private SubtextVariant? _subtextVariant;
     private OcrCue? _active;
+    private int _activeRawSupport;
+    private int _activeConfidentSupport;
     private string? _longerVariantText;
     private int _longerVariantHits;
     private double _longerVariantLast;
@@ -44,6 +51,8 @@ internal sealed class SubtitleTracker
         }
         _active = active is not null && ChineseSubtitleNormalizer.TryNormalize(active.Text, out var activeText)
             ? active with { Text = activeText } : null;
+        _activeRawSupport = _active?.RawSupportCount ?? 0;
+        _activeConfidentSupport = _active?.ConfidentSupportCount ?? 0;
         _candidate = null;
         _subtextVariant = null;
         _longerVariantText = null;
@@ -115,9 +124,6 @@ internal sealed class SubtitleTracker
                     _longerVariantHits = 1;
                 }
                 _longerVariantLast = at;
-                // A single longer read can be a hallucinated edge glyph. Two
-                // matching compatible reads inside the same short evidence window
-                // recover a glyph even when Paddle alternates full/short/full.
                 if (_longerVariantHits >= 2)
                 {
                     resolvedText = _longerVariantText ?? text;
@@ -130,8 +136,6 @@ internal sealed class SubtitleTracker
                 && string.Equals(text, currentText, StringComparison.Ordinal)
                 && at - _longerVariantLast <= _candidateGap)
             {
-                // Keep recent fuller-text evidence across an intermittent short
-                // base reading. The evidence still expires after _candidateGap.
             }
             else
             {
@@ -139,11 +143,15 @@ internal sealed class SubtitleTracker
                 _longerVariantHits = 0;
                 _longerVariantLast = 0;
             }
+            _activeRawSupport++;
+            if (result.Confidence >= ConfidentFloor(text)) _activeConfidentSupport++;
             _active = _active with
             {
                 End = Math.Max(_active.End, at + ActiveFrameEnd(frameDuration)),
                 Text = resolvedText,
                 Confidence = Math.Max(_active.Confidence, result.Confidence),
+                RawSupportCount = _activeRawSupport,
+                ConfidentSupportCount = _activeConfidentSupport,
             };
             return;
         }
@@ -156,7 +164,8 @@ internal sealed class SubtitleTracker
             : 2;
         if (_candidate is null || at - _candidate.Last > _candidateGap || Similarity(_candidate.Text, text) < 0.80)
         {
-            _candidate = new Candidate(text, EstimateBoundary(at, frameDuration), at, result.Confidence, 1, required);
+            var confInc = result.Confidence >= ConfidentFloor(text) ? 1 : 0;
+            _candidate = new Candidate(text, EstimateBoundary(at, frameDuration), at, result.Confidence, 1, required, 1, confInc);
             return;
         }
         _candidate = _candidate with
@@ -164,10 +173,14 @@ internal sealed class SubtitleTracker
             Last = at,
             Confidence = Math.Max(_candidate.Confidence, result.Confidence),
             Hits = _candidate.Hits + 1,
+            RawSupportCount = _candidate.RawSupportCount + 1,
+            ConfidentSupportCount = _candidate.ConfidentSupportCount + (result.Confidence >= ConfidentFloor(text) ? 1 : 0),
             Required = Math.Max(_candidate.Required, required),
             Text = PreferCandidateText(_candidate.Text, _candidate.Confidence, text, result.Confidence),
         };
-        if (_candidate.Hits >= _candidate.Required) PromoteCandidate(frameDuration);
+        if (_candidate.Hits >= _candidate.Required
+            && HasEnoughTemporalEvidence(_candidate.Text, _candidate.Start, at, frameDuration))
+            PromoteCandidate(frameDuration);
     }
 
     public void Finish(double end)
@@ -225,10 +238,14 @@ internal sealed class SubtitleTracker
         // A short suffix can be a one-frame fade/reveal artifact. Requiring stable
         // consecutive observations keeps that noise out without deleting a real
         // short caption such as "你走吧" followed by "走".
-        if (_subtextVariant.Hits < _subtextVariant.Required) return;
+        if (_subtextVariant.Hits < _subtextVariant.Required
+            || !HasEnoughTemporalEvidence(
+                _subtextVariant.Text, _subtextVariant.Start, at, frameDuration)) return;
         var variant = _subtextVariant;
         CommitActive(variant.Start);
-        _active = new OcrCue(variant.Start, at + ActiveFrameEnd(frameDuration), variant.Text, variant.Confidence);
+        _activeRawSupport = variant.Hits;
+        _activeConfidentSupport = variant.Confidence >= ConfidentFloor(variant.Text) ? variant.Hits : 0;
+        _active = new OcrCue(variant.Start, at + ActiveFrameEnd(frameDuration), variant.Text, variant.Confidence, _activeRawSupport, _activeConfidentSupport);
         _subtextVariant = null;
         _emptyHits = 0;
     }
@@ -237,7 +254,9 @@ internal sealed class SubtitleTracker
     {
         if (_candidate is null) return;
         if (_active is not null) CommitActive(_candidate.Start);
-        _active = new OcrCue(_candidate.Start, _candidate.Last + ActiveFrameEnd(frameDuration), _candidate.Text, _candidate.Confidence);
+        _activeRawSupport = _candidate.RawSupportCount;
+        _activeConfidentSupport = _candidate.ConfidentSupportCount;
+        _active = new OcrCue(_candidate.Start, _candidate.Last + ActiveFrameEnd(frameDuration), _candidate.Text, _candidate.Confidence, _activeRawSupport, _activeConfidentSupport);
         _candidate = null;
     }
 
@@ -271,6 +290,34 @@ internal sealed class SubtitleTracker
     private double NormalizeFrameDuration(double value) => value > 0 && !double.IsNaN(value) && !double.IsInfinity(value)
         ? value
         : _frameSpan;
+
+    private bool HasEnoughTemporalEvidence(string text, double start, double at, double frameDuration) =>
+        !_exactFrameTiming
+        || text.EnumerateRunes().Count() > 1
+        || at + frameDuration - start >= SingleRuneMinimumEvidenceSeconds - .000001;
+
+    private static double ConfidentFloor(string text) => IsPureDash(text) ? 0.15 : 0.30;
+
+    private static bool IsPureDash(string text)
+    {
+        var trimmed = text.Trim();
+        if (trimmed.Length == 0) return false;
+        bool hasDash = false;
+        foreach (var rune in trimmed.EnumerateRunes())
+        {
+            var v = rune.Value;
+            if (v is '\u2010' or '\u2011' or '\u2012' or '\u2013' or '\u2014' or '\u2015' or '-' or '—' or '…') { hasDash = true; continue; }
+            if (IsHan(v)) return false;
+            if (IsChinesePunctuation(v) || v is ',' or '.' or '!' or '?' or ';' or ':') continue;
+            return false;
+        }
+        return hasDash;
+    }
+
+    private static bool IsHan(int value) =>
+        value is >= 0x3400 and <= 0x4DBF or >= 0x4E00 and <= 0x9FFF or >= 0xF900 and <= 0xFAFF or >= 0x20000 and <= 0x323AF;
+
+    private static bool IsChinesePunctuation(int value) => value is '，' or '。' or '！' or '？' or '、' or '；' or '：' or '…' or ',' or '.' or '!' or '?' or ';' or ':';
 
     private static string PreferText(string current, double currentConfidence, string candidate, double candidateConfidence)
     {
@@ -398,6 +445,6 @@ internal sealed class SubtitleTracker
     private static bool IsStrictSubtext(string active, string observed) =>
         IsRuneSubsequence(observed, active);
 
-    private sealed record Candidate(string Text, double Start, double Last, double Confidence, int Hits, int Required);
+    private sealed record Candidate(string Text, double Start, double Last, double Confidence, int Hits, int Required, int RawSupportCount, int ConfidentSupportCount);
     private sealed record SubtextVariant(string Text, double Start, double Last, double Confidence, int Hits, int Required);
 }

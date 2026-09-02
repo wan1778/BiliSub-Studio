@@ -1,45 +1,38 @@
-# Whole-cue voice duration matching with non-aborting fallback
+# Whole-cue NGHI/Piper timing policy
 
-## Requested behavior
+## Production policy
 
-Match the full Vietnamese utterance to the corresponding source-speech duration. A successful two-second source window produces a 44,100-frame WAV at 22,050 Hz. Preserve the entire cue text and never obtain the target duration by cutting off the end. Prefer model-native rate control and pooled sentence timing; when even the complete SRT window is physically too short, use pitch-preserving tempo compression as a final fallback instead of aborting the entire voice job at one cue. This policy does not change the voice/model/runtime packages, alter OCR/ASR inference, or rewrite imported SRT.
+The current cache/timing revision is `whole-cue-piper-natural-first-v17`. Every Vietnamese cue containing at least one Unicode letter or number is normalized and sent to the pinned NGHI/Piper model as one complete utterance. Punctuation-, symbol-, invisible-mark- and emoji-only cues remain in SRT but are omitted from voice. Speech is never split or tail-cut to make it fit.
 
-The primary path remains model-native whole-cue resynthesis, with no splitting by Whisper pauses. Field evidence later showed that hard native-rate limits still failed on valid dense subtitles (first cue 9, then cue 17, with thousands of similarly dense cues in the supplied SRT). The current policy therefore keeps native fitting as the quality-first path but adds a narrowly owned `atempo` fallback that consumes the complete synthesized WAV and preserves pitch. It is not a tail cut or a substitute model.
+The duration controller is Piper-first with a bounded pitch-preserving fallback:
 
-## Timing ownership
+- Every ordinary cue and sentence group is first synthesized at the verified model base rate. If that complete natural-rate speech fits the SRT window, it is accepted immediately at measured `1.0x`; no second fast pass is allowed.
+- Only an actually overlong cue is synthesized again. Piper targets the smallest measured speed needed to fit that cue's SRT window, with 0.5% frame headroom for rounding/model-duration variation. There is no fixed `1.30x` floor.
+- Piper `length_scale` may fall as far as `0.30`, but this value is never interpreted as a speed multiplier. The native-reference PCM divided by selected retained PCM is the authoritative measured rate.
+- If complete Piper output still exceeds the source window at `length_scale=0.30`, FFmpeg `atempo` compresses the complete retained waveform. The factor is calculated from measured frame counts and retried at most six times. `atempo` preserves pitch; `atrim`, tail truncation, `asetrate` and Rubber Band are forbidden.
+- Every materially rate-adjusted result is marked for review so listening remains an explicit field gate.
 
-Core verifies the existing Whisper analysis SHA and source identity, then maps its words to the imported cue. `BuildWholeCue` keeps the original SRT identity/start/end/text but adds a separate `voice_start`/`voice_end` envelope, bounded by the cue, from the earliest/latest mapped word. Internal pauses remain inside the envelope: they do not create more TTS calls or get reproduced individually. Missing words, mismatched cue identity or an empty intersection is an actionable error, not a fabricated SRT fallback.
+Groups contain at most 512 cues and 300 seconds. Any positive source gap splits the group; a group cannot borrow time from later silence or unrelated dialogue. Allocation preserves the complete transformed waveform, source order, the exact group boundary, and exact 22,050 Hz PCM frame counts. A high corruption guard remains at `100x`; practical speed is derived from the cue's measured native length and timecode instead of a fixed `1.40x` ceiling.
 
-This matches the measured **Whisper envelope within a cue**, not independently verified ground-truth speech boundaries. Incorrect SRT associations or ASR timestamps still need field review. One cue spanning several utterances is fitted as one continuous whole-cue window; per-word prosody matching is out of scope.
+## OCR and ASR ownership
 
-The text-only sample explicitly uses `timing_source: sample`. It keeps its natural duration when it fits the existing ten-second sample window. Longer samples are fitted without clipping. Project cues require `timing_source: whisper`; the sample exception cannot be applied to arbitrary project cues.
+SRT is the sole timing and cue-presence authority. Every project voice manifest uses the cue's complete SRT start/end interval. ASR never shortens, shifts, replaces, or removes a speakable SRT cue. Voice planning performs two SRT-only cleanup steps; neither rewrites or deletes cues from the exported SRT:
 
-## Fitting and frame accounting
+1. It collapses only proven touching/overlapping OCR flicker duplicates while preserving normal repeated dialogue and distinct sentence fragments.
+2. It removes cues with no speakable Unicode letters or numbers from voice only. Every remaining cue is retained regardless of ASR overlap.
 
-Piper is loaded once per worker and reused for all cues and attempts. Each attempt calls `voice.synthesize(text, syn_config=SynthesisConfig(length_scale=...))` with the complete normalized text. Only `length_scale` is overridden; the verified model/config bytes, generator/width noise, speaker and package pins remain unchanged. The pinned [Piper 1.7.0 config](https://github.com/OHF-Voice/piper1-gpl/blob/v1.7.0/src/piper/config.py) defines smaller scales as faster and larger scales as slower; its [voice implementation](https://github.com/OHF-Voice/piper1-gpl/blob/v1.7.0/src/piper/voice.py) passes that scale into the model before audio is generated.
+ASR mapping is advisory metadata for voice analysis/classification only. `BuildWholeCue` always emits the exact SRT cue window. Internal Whisper pauses never create additional Piper calls, suppress SRT cues, or affect TTS placement.
 
-The first attempt uses the model config's default scale and measures its full WAV. If necessary, the next scale is estimated as `current_scale * aim_frames / measured_frames`, with a bracketed midpoint when the estimate would leave the observed bounds. The model then reads the entire same cue again. There are at most ten attempts per uncached cue, constrained to `[0.85, 1.20]` times the config's base scale. Contiguous fragments of one sentence may pool up to 12 cues/12 seconds and use a lower model-native scale down to `0.45` before fallback.
+## Frame integrity and cache
 
-When native or pooled sentence fitting succeeds, all model-produced speech samples are retained and only verified trailing silence is removed. If those paths cannot fit, the worker synthesizes the complete cue once at the verified base model rate, removes only verified trailing silence, and applies one or more FFmpeg `atempo` stages in the supported `(1, 2]` range. The full result is decoded and measured after every attempt; it is padded to the exact target only after it is no longer overlong. No `atrim`, `asetrate`, tail cutoff, text shortening, or SRT rewrite is permitted. Tempo-fallback cues are always marked `review` and persist their input/output frame counts, factor, attempt count and hashes.
+Every attempt calls `voice.synthesize(text, SynthesisConfig(length_scale=...))` with the complete normalized text. Only verified trailing silence may be removed; unused target frames are padded with silence. Worker metadata records source, generated, trimmed, padding and target frame counts. Core independently validates cue order, placement, mono PCM16 at 22,050 Hz, RIFF frame count, clip/master SHA-256, non-clipping state, group boundaries and exact master duration.
 
-Placement and target frame counts use the same absolute sample boundaries: `round(voice_end * rate) - round(voice_start * rate)`. The resulting project WAV must have exactly that many frames. The master includes the complete fitted clip; the former `min(cue_end, fitted_end)` tail cutoff is removed. Source audio settings, processed preview and final export keep consuming the same validated master track.
+Cache identity includes the exact SRT envelope, timing source, normalized text, worker hash and v17 policy revision. The revision change deliberately invalidates v16 clips because all of them were generated under the removed fixed-fast-floor policy.
 
-`fit`/`review` distinguishes review needs, not permission to deliver a wrong duration. All successful project cues have the exact target frame count. Native speaking-rate control avoids post-processing artifacts for normal cues. Tempo fallback prioritizes a complete deliverable over aborting the whole job, but dense cues can sound very fast and always require listening review. Matching a sample count or passing signal-integrity checks is not a listening assessment.
+## Verification boundary
 
-## Cache, validation and cancellation
+Offline worker contracts cover Piper-first fitting, bounded dynamic-tempo metadata, full-waveform allocation, exact padding, trailing-silence removal, cache identity, malformed metadata and the absence of cutting/pitch-shifting filters. Core property tests cover randomized ASR/SRT mappings, OCR A/B/A cleanup, preservation of normal cues, and prove that ASR never changes a speakable cue's SRT-owned window.
 
-The internal timing policy is `whole-cue-piper-tempo-fallback-v10`; application and engine versions are unchanged. Model/config SHA pins are unchanged. Cache keys include the speech envelope, timing source, worker and policy revision. Native entries use `fit_method: piper-length-scale`; fallback entries use `fit_method: piper-atempo` plus `tempo_factor`, `tempo_input_frames`, and `tempo_attempts`. Cache reuse independently verifies SHA, decoded frame counts, target duration and method-specific metadata. Old revision caches/masters are retained but not accepted as current results.
+The earlier v16 field run proved that cues 23-24 can require approximately `1.54x` and that a bounded `atempo` escape hatch is needed after Piper saturates. It also exposed a policy defect: v16 forced every cue toward at least `1.30x`, including cues whose natural-rate speech already fit. V17 preserves the same complete-waveform and exact-frame guarantees while removing that floor. A full project content preflight found 27 punctuation/symbol-only cues among 16,903; all are removed before ASR/TTS while the source SRT remains unchanged. `1 / length_scale` is never used as the audible-speed estimate; measured PCM frame ratios remain authoritative.
 
-Core checks the reported placement, exact frame counts, non-clipping flag, cue order, native metadata and review status. It then independently hashes every clip and reads RIFF/fmt/data chunks to verify actual mono PCM16 frame counts, including WAVs with extra metadata chunks. Result/event `synthesis_calls` is zero on a cache hit and equals the actual attempt count on a miss; stored `synthesis_attempts` describes the cached clip's original creation. Existing master SHA/decoded-format/duration gates remain. Project reopen validates `VoiceRevision` and rejects old-policy TTS state while preserving files.
-
-Before each synthesis attempt the worker emits cue index and attempt number. Core displays `lượt n/10` while keeping the percentage tied to completed cues; retries do not fake percentage advancement. This keeps the user informed while a model is regenerating the same sentence.
-
-Cancellation/process ownership is unchanged: the owned Python/FFmpeg tree must exit before current-run cleanup; completed clip cache and previous accepted masters survive. A failed fit or failed validation cannot publish a partial/new master.
-
-## Verification status
-
-Automated source/duration contracts, Core contracts and real NGHI inference have run on Windows. Real cue 17-20 and the highest-density supplied cue (7732, 50 non-space characters in 0.8 seconds) completed with exact frame counts, `clipped=false`, and warm-cache reuse. Release/UI listening quality remains a user field test, especially for high tempo factors.
-
-Offline definitions cover a two-second target, sample rounding, native controller direction/brackets/bounds, metadata validation, exact byte-preserving small padding, overflow/excess-silence rejection, timing-sensitive cache identity, no source-timing fallback and actual WAV header validation. They do not mock a model or fabricate production speech evidence. The opt-in four-sentence runtime harness obtains four real Whisper source windows from its supplied video, checks native metadata/attempt counts, and exercises fitting/cache/cancel/preview. A successful native fit and improved listening quality have not yet been demonstrated.
-
-Later user-authorized field checks should include native faster/slower rereads targeting 2 s, quantized/stochastic convergence, complete audible final words, no hidden long silence, attempt messages, out-of-range/nonconvergent failure, warm cache with zero synthesis calls, cancellation during a reread/mixing, old-policy project reopen, and preview/export of the complete fitted master. This may take longer because the model can read a cue again. No speed-up, quality PASS or release claim belongs to this task.
+These checks prove timing rules, provenance and signal integrity. Audible clarity remains a user listening gate and must not be reported as a voice-quality PASS until the generated preview has been heard.

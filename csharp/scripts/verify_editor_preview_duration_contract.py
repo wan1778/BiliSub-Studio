@@ -31,8 +31,12 @@ require(service.count(owner) == 1,
 require("const double targetDuration = 12;" not in service,
         "CLEAN-06 legacy method-local 12-second magic value returned")
 
+require(
+    "=> PreviewWindow(0, sourceDuration, requestedStart);" in service,
+    "CLEAN-06 full-source PreviewWindow must delegate to the range-aware policy",
+)
 match = re.search(
-    r"private static \(double Start, double Duration\) PreviewWindow\(double sourceDuration, double requestedStart\)\s*\{(?P<body>.*?)\n    \}",
+    r"private static \(double Start, double Duration\) PreviewWindow\(\s*double rangeStart,\s*double rangeEnd,\s*double requestedStart\)\s*\{(?P<body>.*?)\n    \}",
     service,
     re.S,
 )
@@ -54,7 +58,6 @@ require("if (sourceDuration > 12.05)" in tests,
 for marker in (
     "Math.Clamp(snapshot.LogicalProcessors - 2, 1, 12)",
     "if (resources.AvailableVramBytes >= 3 * gib) return 12;",
-    "var percent = 12 + completed / (double)source.Count * 84;",
 ):
     # These live in other Editor source files; the verifier intentionally documents
     # that CLEAN-06 does not redefine them as seconds.

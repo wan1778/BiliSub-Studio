@@ -28,6 +28,12 @@ internal static class OcrHardwarePolicyRegression
             "Evaluate",
             BindingFlags.Static | BindingFlags.Public)
             ?? throw new InvalidOperationException("missing OCR measured resource evaluator");
+        var managerType = typeof(HardwareService).Assembly.GetType("BiliSubStudio.Core.Ocr.OcrManager")
+            ?? throw new InvalidOperationException("missing OCR manager");
+        var desiredKinds = managerType.GetMethod("DesiredKinds", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing OCR worker topology builder");
+        var minimumWorkerTarget = managerType.GetMethod("MinimumWorkerTarget", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing OCR minimum worker topology policy");
 
         static long GiB(double value) => checked((long)(value * 1024 * 1024 * 1024));
         static long MiB(double value) => checked((long)(value * 1024 * 1024));
@@ -67,6 +73,21 @@ internal static class OcrHardwarePolicyRegression
             throw new InvalidOperationException("GPU/Auto worker policy ignored NVIDIA VRAM headroom");
         if (DeviceWorkers(lowVram, "hybrid") != 3)
             throw new InvalidOperationException("Hybrid worker policy lost its independent GPU+CPU pool");
+        if ((int)minimumWorkerTarget.Invoke(null, ["hybrid"])! != 2
+            || (int)minimumWorkerTarget.Invoke(null, ["gpu"])! != 1)
+            throw new InvalidOperationException("Hybrid no longer requires a real two-device baseline");
+        var hybridKinds = (string[])desiredKinds.Invoke(null, ["hybrid", 2])!;
+        if (!hybridKinds.SequenceEqual(["gpu", "cpu"]))
+            throw new InvalidOperationException("Hybrid baseline is not exactly one GPU plus one CPU worker");
+        try
+        {
+            desiredKinds.Invoke(null, ["hybrid", 1]);
+            throw new InvalidOperationException("Hybrid silently accepted a GPU-only one-worker topology");
+        }
+        catch (TargetInvocationException error) when (error.InnerException is ArgumentOutOfRangeException)
+        {
+            // Expected: a one-worker pool must be represented as GPU, never Hybrid.
+        }
 
         var noGpu = new HardwareSnapshot("fixture", 32, GiB(32), false, string.Empty, string.Empty, 0);
         if (SegmentLanes(noGpu) != 8 || DeviceWorkers(noGpu, "cpu") != 2 || DeviceWorkers(noGpu, "auto") != 2)

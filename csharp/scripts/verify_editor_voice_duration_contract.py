@@ -30,69 +30,102 @@ class VoiceDurationContract(unittest.TestCase):
         start, frames = worker.cue_window(cue)
         self.assertEqual(start + frames, round(cue["voice_end"] * worker.SAMPLE_RATE))
 
+    def test_vietnamese_normalization_keeps_canonical_tone_marks(self):
+        class EchoNormalizer:
+            @staticmethod
+            def normalize(text):
+                return text.lower()
+
+        decomposed = "Sư phu\u0323"
+        self.assertEqual(worker.normalize_vietnamese_text(EchoNormalizer(), decomposed), "sư phụ")
+        self.assertEqual(worker.normalize_vietnamese_text(EchoNormalizer(), "Đệ tử của Sư Phụ"),
+                         "đệ tử của sư phụ")
+        with self.assertRaises(ValueError):
+            worker.normalize_vietnamese_text(EchoNormalizer(), "   ")
+
     def test_native_duration_controller_direction_and_bounds(self):
         # Frame-count arithmetic only; these are not pretend model outputs.
-        self.assertEqual((worker.MIN_RATE_SCALE, worker.MAX_RATE_SCALE), (.85, 1.2))
-        self.assertEqual((worker.MIN_PREFERRED_RATE_SCALE, worker.MAX_PREFERRED_RATE_SCALE), (.9, 1.15))
-        self.assertAlmostEqual(worker.next_length_scale(1, 52920, 44100, 1, None, None), .85)
+        self.assertEqual((worker.MIN_RATE_SCALE, worker.MAX_RATE_SCALE), (.30, 1.2))
+        self.assertEqual((worker.MIN_PREFERRED_RATE_SCALE, worker.MAX_PREFERRED_RATE_SCALE), (.70, 1.0))
+        self.assertAlmostEqual(worker.next_length_scale(1, 52920, 44100, 1, None, None), 44100 / 52920)
         self.assertAlmostEqual(worker.next_length_scale(1, 35280, 44100, 1, None, None), 1.2)
-        self.assertAlmostEqual(worker.next_length_scale(1.1, 52920, 44100, 1.1, None, None), 1.1 * .85)
+        self.assertAlmostEqual(worker.next_length_scale(1.1, 52920, 44100, 1.1, None, None), 1.1 * 44100 / 52920)
         self.assertAlmostEqual(worker.next_length_scale(1, 60000, 44100, 1, .8, 1), .9)
-        self.assertEqual(worker.next_length_scale(1, 1000000, 44100, 1, None, None), .85)
+        self.assertEqual(worker.next_length_scale(1, 1000000, 44100, 1, None, None), .30)
         self.assertEqual(worker.next_length_scale(1, 1000, 44100, 1, None, None), 1.2)
         for scale in (0, -1, float("nan"), float("inf")):
             with self.assertRaises(ValueError):
                 worker.next_length_scale(scale, 52920, 44100, 1, None, None)
 
     def test_review_reflects_actual_model_rate_not_playback_tempo(self):
-        self.assertFalse(worker.needs_rate_review(.9, 1))
-        self.assertFalse(worker.needs_rate_review(1.15, 1))
-        self.assertTrue(worker.needs_rate_review(.89, 1))
-        self.assertTrue(worker.needs_rate_review(1.16, 1))
-        self.assertFalse(worker.needs_rate_review(1.5, 1.5))
+        self.assertFalse(worker.needs_rate_review(.70, 1))
+        self.assertFalse(worker.needs_rate_review(1.0, 1))
+        self.assertTrue(worker.needs_rate_review(.69, 1))
+        self.assertTrue(worker.needs_rate_review(1.01, 1))
+        self.assertFalse(worker.needs_rate_review(1.05, 1.5))
 
-    def test_native_metadata_keeps_whole_speech_and_reviews_long_tail_silence(self):
-        record = {"fit_method": "piper-length-scale", "raw_duration": 2.4, "frames": 44100,
-                  "source_frames": 43800, "generated_frames": 43800,
-                  "trimmed_silence_frames": 0, "padding_frames": 300, "base_length_scale": 1,
-                  "length_scale": .95, "synthesis_attempts": 2, "status": "fit"}
+    def test_native_metadata_accepts_natural_first_and_accelerated_whole_speech(self):
+        natural = {"fit_method": "piper-length-scale", "raw_duration": 43800 / worker.SAMPLE_RATE,
+                   "frames": 44100, "source_frames": 43800, "generated_frames": 43800,
+                   "trimmed_silence_frames": 0, "padding_frames": 300, "base_length_scale": 1,
+                   "length_scale": 1, "synthesis_attempts": 1, "status": "fit",
+                   "native_reference_frames": 43800, "group_native_frames": 0,
+                   "actual_speed_factor": 1.0, "timing_source": "srt-fallback"}
+        self.assertTrue(worker.native_record_valid(natural, 44100, False))
+        self.assertFalse(worker.native_record_valid(natural | {"length_scale": .99}, 44100, False))
+        self.assertFalse(worker.native_record_valid(natural | {"native_reference_frames": 43801}, 44100, False))
+
+        record = natural | {"raw_duration": 59130 / worker.SAMPLE_RATE,
+                            "source_frames": 43800, "generated_frames": 43800,
+                            "padding_frames": 300, "length_scale": .65,
+                            "synthesis_attempts": 2, "status": "review",
+                            "native_reference_frames": 59130, "actual_speed_factor": 1.35}
         self.assertTrue(worker.native_record_valid(record, 44100, False))
-        self.assertTrue(worker.native_record_valid(record | {"length_scale": .88, "status": "review"}, 44100, False))
+        self.assertTrue(worker.native_record_valid(record | {"length_scale": .70, "status": "fit"}, 44100, False))
         long_tail = record | {"source_frames": 43100, "padding_frames": 1000,
-                              "generated_frames": 43100, "status": "review"}
+                              "generated_frames": 43100, "native_reference_frames": 58185}
         self.assertTrue(worker.native_record_valid(long_tail, 44100, False))
         self.assertFalse(worker.native_record_valid(long_tail | {"status": "fit"}, 44100, False))
         trimmed_tail = record | {"source_frames": 45000, "generated_frames": 44100,
                                  "trimmed_silence_frames": 900, "padding_frames": 0,
-                                 "status": "review"}
+                                 "native_reference_frames": 59535}
         self.assertTrue(worker.native_record_valid(trimmed_tail, 44100, False))
         for change in ({"fit_method": "atempo"}, {"padding_frames": 44100, "generated_frames": 0},
-                       {"generated_frames": 43700}, {"base_length_scale": 0}, {"length_scale": .84},
-                       {"length_scale": float("nan")}, {"synthesis_attempts": 0}, {"synthesis_attempts": 11},
-                       {"synthesis_attempts": 1}, {"status": "review"}):
+                       {"generated_frames": 43700}, {"base_length_scale": 0}, {"length_scale": .299},
+                       {"length_scale": float("nan")}, {"synthesis_attempts": 0}, {"synthesis_attempts": 13},
+                       {"status": "fit"}, {"actual_speed_factor": .999}):
             self.assertFalse(worker.native_record_valid(record | change, 44100, False))
-        sample = record | {"raw_duration": 2, "source_frames": 44100, "generated_frames": 44100,
-                           "trimmed_silence_frames": 0, "padding_frames": 0,
-                           "length_scale": 1, "synthesis_attempts": 1}
+        sample = natural | {"raw_duration": 44100 / worker.SAMPLE_RATE, "frames": 220500,
+                            "target_frames": 220500, "source_frames": 44100, "generated_frames": 44100,
+                            "trimmed_silence_frames": 0, "padding_frames": 176400,
+                            "native_reference_frames": 44100, "timing_source": "sample", "status": "review"}
         self.assertTrue(worker.native_record_valid(sample, 220500, True))
-        self.assertFalse(worker.native_record_valid(sample | {"synthesis_attempts": 2}, 220500, True))
+        self.assertFalse(worker.native_record_valid(sample | {"timing_source": "srt-fallback"}, 220500, True))
         self.assertEqual(worker.padding_budget(44100), 882)
         self.assertEqual(worker.padding_budget(22050), 441)
 
-        grouped = record | {"timing_source": "sentence-group", "length_scale": .5, "status": "review"}
+        grouped = record | {"timing_source": "sentence-group", "length_scale": .50,
+                            "group_native_frames": 59130}
         self.assertTrue(worker.native_record_valid(grouped, 44100, False))
-        self.assertFalse(worker.native_record_valid(grouped | {"length_scale": .44}, 44100, False))
+        self.assertTrue(worker.native_record_valid(
+            grouped | {"synthesis_attempts": worker.MAX_GROUP_SYNTHESIS_ATTEMPTS}, 44100, False))
+        self.assertFalse(worker.native_record_valid(grouped | {"length_scale": .299}, 44100, False))
+        self.assertFalse(worker.native_record_valid(
+            grouped | {"synthesis_attempts": worker.MAX_GROUP_SYNTHESIS_ATTEMPTS + 1}, 44100, False))
+        self.assertTrue(worker.native_record_valid(grouped | {"actual_speed_factor": 1.401}, 44100, False))
         self.assertFalse(worker.native_record_valid(grouped | {"status": "fit"}, 44100, False))
 
         tempo = {"fit_method": "piper-atempo", "raw_duration": 90000 / worker.SAMPLE_RATE,
                  "frames": 44100, "source_frames": 90000, "tempo_input_frames": 88000,
-                 "generated_frames": 43000, "trimmed_silence_frames": 2000, "padding_frames": 1100,
-                 "base_length_scale": 1, "length_scale": 1, "tempo_factor": 2.1,
-                 "tempo_attempts": 1, "synthesis_attempts": 1, "status": "review",
-                 "timing_source": "srt-fallback"}
+                 "generated_frames": 40000, "trimmed_silence_frames": 2000, "padding_frames": 4100,
+                 "base_length_scale": 1, "length_scale": .30, "tempo_factor": 2.2,
+                 "tempo_attempts": 1, "synthesis_attempts": 12, "status": "review",
+                 "native_reference_frames": 80000, "group_native_frames": 0,
+                 "actual_speed_factor": 2.0, "timing_source": "srt-fallback"}
         self.assertTrue(worker.native_record_valid(tempo, 44100, False))
-        for change in ({"tempo_factor": 1}, {"tempo_input_frames": 87999}, {"generated_frames": 88001},
-                       {"tempo_attempts": 0}, {"status": "fit"}, {"length_scale": .9}):
+        for change in ({"tempo_input_frames": 87999}, {"tempo_factor": 2.1},
+                       {"tempo_attempts": 0}, {"tempo_attempts": 7},
+                       {"generated_frames": 88000, "padding_frames": -43900}):
             self.assertFalse(worker.native_record_valid(tempo | change, 44100, False))
 
     def test_padding_copies_every_pcm_byte_and_refuses_cutting(self):
@@ -116,18 +149,69 @@ class VoiceDurationContract(unittest.TestCase):
                 self.assertEqual(source.getnframes(), 44100)
                 self.assertEqual(source.readframes(4), pcm)
 
-    def test_tempo_fallback_chains_pitch_preserving_supported_factors(self):
-        self.assertEqual(worker.atempo_filter(1.5), "atempo=1.5")
-        self.assertEqual(worker.atempo_filter(4), "atempo=2,atempo=2")
-        stages = [float(value.split("=")[1]) for value in worker.atempo_filter(9.5).split(",")]
-        self.assertTrue(all(1 < stage <= 2 for stage in stages))
-        product = 1
-        for stage in stages:
-            product *= stage
-        self.assertAlmostEqual(product, 9.5)
-        for factor in (1, 0, float("nan"), float("inf")):
-            with self.assertRaises(ValueError):
-                worker.atempo_filter(factor)
+    def test_individual_cue_keeps_natural_rate_when_it_already_fits(self):
+        original = worker.synthesize_cue
+        calls = []
+
+        def fake_synthesize(_voice, _text, path, scale):
+            calls.append(scale)
+            with wave.open(str(path), "wb") as output:
+                output.setparams((1, 2, worker.SAMPLE_RATE, 0, "NONE", "not compressed"))
+                output.writeframes(b"\xff\x7f" * 30000)
+
+        worker.synthesize_cue = fake_synthesize
+        try:
+            with tempfile.TemporaryDirectory(prefix="bilisub-natural-first-") as directory:
+                root = Path(directory)
+                clip, record = worker.fit_cue(
+                    types.SimpleNamespace(config=types.SimpleNamespace(length_scale=1.0)),
+                    "xin chào", 44100, root, "cue", "srt-fallback", Path("ffmpeg"), lambda *_: None)
+                self.assertEqual(calls, [1.0])
+                self.assertEqual(record["synthesis_attempts"], 1)
+                self.assertEqual(record["actual_speed_factor"], 1)
+                self.assertEqual(record["length_scale"], record["base_length_scale"])
+                self.assertEqual(record["generated_frames"], 30000)
+                self.assertEqual(len(worker.read_wav(clip)), 44100)
+                self.assertTrue(worker.native_record_valid(record, 44100, False))
+        finally:
+            worker.synthesize_cue = original
+
+    def test_individual_cue_uses_only_required_speed_without_fixed_fast_floor(self):
+        original = worker.synthesize_cue
+        calls = []
+
+        def fake_synthesize(_voice, _text, path, scale):
+            calls.append(scale)
+            frames = max(1, round(46000 * scale))
+            with wave.open(str(path), "wb") as output:
+                output.setparams((1, 2, worker.SAMPLE_RATE, 0, "NONE", "not compressed"))
+                output.writeframes(b"\xff\x7f" * frames)
+
+        worker.synthesize_cue = fake_synthesize
+        try:
+            with tempfile.TemporaryDirectory(prefix="bilisub-minimum-rate-") as directory:
+                root = Path(directory)
+                clip, record = worker.fit_cue(
+                    types.SimpleNamespace(config=types.SimpleNamespace(length_scale=1.0)),
+                    "xin chào", 44100, root, "cue", "srt-fallback", Path("ffmpeg"), lambda *_: None)
+                self.assertEqual(len(calls), 2)
+                self.assertEqual(calls[0], 1.0)
+                self.assertLess(calls[1], 1.0)
+                self.assertGreater(record["actual_speed_factor"], 46000 / 44100)
+                self.assertLess(record["actual_speed_factor"], 1.10)
+                self.assertEqual(len(worker.read_wav(clip)), 44100)
+                self.assertTrue(worker.native_record_valid(record, 44100, False))
+        finally:
+            worker.synthesize_cue = original
+
+    def test_dynamic_tempo_fallback_is_bounded_and_cutting_filters_are_absent(self):
+        source = inspect.getsource(worker)
+        self.assertIn("atempo=", source)
+        self.assertTrue(hasattr(worker, "tempo_fit_clip"))
+        self.assertEqual(worker.MAX_TEMPO_ATTEMPTS, 6)
+        self.assertNotIn("atrim=", source)
+        self.assertNotIn("-t", inspect.getsource(worker.apply_atempo))
+        self.assertFalse(hasattr(worker, "fit_cue_with_tempo"))
 
     def test_only_trailing_silence_beyond_guard_can_be_trimmed(self):
         guard = worker.SILENCE_GUARD_FRAMES
@@ -149,6 +233,19 @@ class VoiceDurationContract(unittest.TestCase):
                 output.setparams((1, 2, worker.SAMPLE_RATE, 0, "NONE", "not compressed"))
                 output.writeframes(unsafe_pcm)
             self.assertEqual(worker.trim_trailing_silence_to_fit(unsafe, fitted, target), 0)
+
+    def test_truncated_audio_cannot_masquerade_as_a_spoken_sentence(self):
+        minimum = worker.minimum_speech_frames("Không sai, ta phải đi rồi.")
+        self.assertGreaterEqual(minimum, round(.35 * worker.SAMPLE_RATE))
+        record = {
+            "fit_method": "piper-length-scale", "frames": 733, "target_frames": 733,
+            "source_frames": 44300,
+            "generated_frames": 578, "trimmed_silence_frames": 43722,
+            "padding_frames": 155, "raw_duration": 44300 / worker.SAMPLE_RATE,
+            "fitted_duration": 733 / worker.SAMPLE_RATE, "base_length_scale": 1,
+            "length_scale": 1, "synthesis_attempts": 1, "status": "review",
+        }
+        self.assertFalse(worker.native_record_valid(record, 733, False, minimum))
 
     def test_changed_whisper_window_invalidates_same_srt_cache(self):
         cue = self.cue()
@@ -187,13 +284,15 @@ class VoiceDurationContract(unittest.TestCase):
         texts = ["Có đệ tử bầu bạn,", "sư phụ không còn cô độc,",
                  "đương nhiên ngày nào cũng vui vẻ,", "luôn được hạnh phúc vây quanh."]
         self.assertEqual(worker.sentence_groups(cues, texts), [[0, 1, 2, 3]])
-        self.assertEqual(worker.sentence_groups(cues, [texts[0] + ".", *texts[1:]]), [[0], [1, 2, 3]])
-        self.assertEqual(worker.sentence_groups([cues[0], cues[1] | {"cue_start": 15.4, "voice_start": 15.4}], texts[:2]),
+        self.assertEqual(worker.sentence_groups(cues, [texts[0] + ".", *texts[1:]]), [[0, 1, 2, 3]])
+        self.assertEqual(worker.sentence_groups([cues[0], cues[1] | {"cue_start": 31, "voice_start": 31}], texts[:2]),
                          [[0], [1]])
         self.assertEqual(worker.sentence_groups([cues[0], cues[1] | {"timing_source": "sample"}], texts[:2]),
                          [[0], [1]])
+        self.assertEqual(worker.sentence_groups(
+            [cues[0], cues[1] | {"cue_start": .801, "voice_start": .801}], texts[:2]), [[0], [1]])
 
-    def test_sentence_group_borrows_time_without_cutting_pcm_or_crossing_sentence_boundary(self):
+    def test_sentence_group_borrows_time_without_cutting_pcm_when_native_rate_fits(self):
         cues = [
             {"id": "cue-9", "cue_start": 0, "cue_end": .8, "voice_start": 0, "voice_end": .8,
              "timing_source": "srt-fallback", "voice": worker.VOICE_NAME, "text": "a"},
@@ -201,7 +300,7 @@ class VoiceDurationContract(unittest.TestCase):
              "timing_source": "srt-fallback", "voice": worker.VOICE_NAME, "text": "b"},
             {"id": "cue-11", "cue_start": 2, "cue_end": 2.8, "voice_start": 2, "voice_end": 2.8,
              "timing_source": "srt-fallback", "voice": worker.VOICE_NAME, "text": "c"},
-            {"id": "cue-12", "cue_start": 2.8, "cue_end": 4, "voice_start": 2.8, "voice_end": 4,
+            {"id": "cue-12", "cue_start": 2.8, "cue_end": 6.2, "voice_start": 2.8, "voice_end": 6.2,
              "timing_source": "srt-fallback", "voice": worker.VOICE_NAME, "text": "d"},
         ]
         native_frames = {"a": 26000, "b": 33000, "c": 39000, "d": 35000}
@@ -222,12 +321,12 @@ class VoiceDurationContract(unittest.TestCase):
                 entries = worker.synthesize_sentence_group(
                     types.SimpleNamespace(config=types.SimpleNamespace(length_scale=1.0)),
                     cues, ["a", "b", "c", "d"], root, root / "clips", "worker-sha",
-                    root / "plan.json", "plan-key",
+                    root / "plan.json", "plan-key", Path("ffmpeg"),
                     lambda local, attempt, scale: attempts.append((local, attempt, scale)))
                 self.assertEqual(len(entries), 4)
                 windows = [entry[0] for entry in entries]
                 self.assertEqual(round(windows[0]["voice_start"] * worker.SAMPLE_RATE), 0)
-                self.assertEqual(round(windows[-1]["voice_end"] * worker.SAMPLE_RATE), 4 * worker.SAMPLE_RATE)
+                self.assertEqual(round(windows[-1]["voice_end"] * worker.SAMPLE_RATE), round(6.2 * worker.SAMPLE_RATE))
                 for previous, current in zip(windows, windows[1:]):
                     self.assertEqual(round(previous["voice_end"] * worker.SAMPLE_RATE),
                                      round(current["voice_start"] * worker.SAMPLE_RATE))
@@ -240,19 +339,154 @@ class VoiceDurationContract(unittest.TestCase):
                     self.assertEqual(worker.read_wav(clip).shape[0], target)
                     self.assertFalse(cache_hit)
                     self.assertEqual(calls, record["synthesis_attempts"])
-                self.assertGreater(len(attempts), 4)
+                self.assertEqual(len(attempts), 4)
+                self.assertTrue(all(worker.MIN_RATE_SCALE <= scale <= worker.MAX_RATE_SCALE
+                                    for _local, _attempt, scale in attempts))
+                self.assertTrue(all(record["synthesis_attempts"] == 1
+                                    and record["actual_speed_factor"] == 1
+                                    and record["length_scale"] == record["base_length_scale"]
+                                    for _active, _key, _clip, record, _hit, _calls in entries))
         finally:
             worker.synthesize_cue = original
 
-    def test_production_uses_native_whole_cue_retries_not_audio_speed_filters(self):
+    def test_overlong_sentence_group_uses_only_bounded_native_piper_rate(self):
+        cues = [
+            {"id": "cue-a", "cue_start": 0, "cue_end": 1, "voice_start": 0, "voice_end": 1,
+             "timing_source": "srt-fallback", "voice": worker.VOICE_NAME, "text": "a"},
+            {"id": "cue-b", "cue_start": 1, "cue_end": 2, "voice_start": 1, "voice_end": 2,
+             "timing_source": "srt-fallback", "voice": worker.VOICE_NAME, "text": "b"},
+        ]
+        original = worker.synthesize_cue
+        attempts = []
+
+        def fake_synthesize(_voice, _text, path, scale):
+            active = max(1, round(27300 * scale))
+            with wave.open(str(path), "wb") as output:
+                output.setparams((1, 2, worker.SAMPLE_RATE, 0, "NONE", "not compressed"))
+                output.writeframes(b"\xff\x7f" * active + b"\0\0" * 2000)
+
+        worker.synthesize_cue = fake_synthesize
+        try:
+            with tempfile.TemporaryDirectory(prefix="bilisub-bounded-group-") as directory:
+                root = Path(directory)
+                (root / "clips").mkdir()
+                entries = worker.synthesize_sentence_group(
+                    types.SimpleNamespace(config=types.SimpleNamespace(length_scale=1.0)),
+                    cues, ["a", "b"], root, root / "clips", "worker-sha",
+                    root / "plan.json", "plan-key", Path("ffmpeg"),
+                    lambda local, attempt, scale: attempts.append((local, attempt, scale)))
+                self.assertEqual(len(entries), 2)
+                selected_scales = {record["length_scale"] for _active, _key, _clip, record, _hit, _calls in entries}
+                self.assertEqual(len(selected_scales), 1)
+                selected_scale = selected_scales.pop()
+                self.assertGreaterEqual(selected_scale, worker.MIN_GROUP_RATE_SCALE)
+                self.assertLess(selected_scale, 1.0)
+                self.assertLess(entries[0][3]["actual_speed_factor"], 1.30)
+                self.assertTrue(all(scale >= worker.MIN_GROUP_RATE_SCALE for _local, _attempt, scale in attempts))
+                self.assertTrue(any(scale < 1.0 for _local, _attempt, scale in attempts))
+                self.assertEqual(sum(entry[3]["generated_frames"] + entry[3]["padding_frames"]
+                                     for entry in entries), 2 * worker.SAMPLE_RATE)
+                for active, _key, clip, record, _cache_hit, _calls in entries:
+                    _start, target = worker.cue_window(active)
+                    self.assertTrue(worker.native_record_valid(record, target, False))
+                    self.assertEqual(worker.read_wav(clip).shape[0], target)
+        finally:
+            worker.synthesize_cue = original
+
+    def test_sentence_group_uses_dynamic_tempo_after_piper_saturates(self):
+        cues = [
+            {"id": "cue-a", "cue_start": 0, "cue_end": 1, "voice_start": 0, "voice_end": 1,
+             "timing_source": "srt-fallback", "voice": worker.VOICE_NAME, "text": "a"},
+            {"id": "cue-b", "cue_start": 1, "cue_end": 2, "voice_start": 1, "voice_end": 2,
+             "timing_source": "srt-fallback", "voice": worker.VOICE_NAME, "text": "b"},
+        ]
+        original_synthesize = worker.synthesize_cue
+        original_atempo = worker.apply_atempo
+
+        def fake_synthesize(_voice, _text, path, scale):
+            # Deterministic frame fixture only; real NGHI audio is covered by the
+            # separate pinned-model integration gate.
+            active = 30000
+            with wave.open(str(path), "wb") as output:
+                output.setparams((1, 2, worker.SAMPLE_RATE, 0, "NONE", "not compressed"))
+                output.writeframes(b"\xff\x7f" * active + b"\0\0" * 2000)
+
+        def fake_atempo(_ffmpeg, source, output_path, factor):
+            samples = worker.read_wav(source)
+            generated = max(1, round(len(samples) / factor))
+            with wave.open(str(output_path), "wb") as output:
+                output.setparams((1, 2, worker.SAMPLE_RATE, 0, "NONE", "not compressed"))
+                output.writeframes(b"\xff\x7f" * generated)
+            return generated
+
+        worker.synthesize_cue = fake_synthesize
+        worker.apply_atempo = fake_atempo
+        try:
+            with tempfile.TemporaryDirectory(prefix="bilisub-dynamic-tempo-") as directory:
+                root = Path(directory)
+                (root / "clips").mkdir()
+                entries = worker.synthesize_sentence_group(
+                    types.SimpleNamespace(config=types.SimpleNamespace(length_scale=1.0)),
+                    cues, ["a", "b"], root, root / "clips", "worker-sha",
+                    root / "plan.json", "plan-key", Path("ffmpeg"), lambda *_args: None)
+                self.assertEqual(len(entries), 2)
+                for active, _key, clip, record, _cache_hit, _calls in entries:
+                    _start, target = worker.cue_window(active)
+                    self.assertEqual(record["fit_method"], "piper-atempo")
+                    self.assertGreater(record["tempo_input_frames"], record["generated_frames"])
+                    self.assertGreater(record["tempo_factor"], 1)
+                    self.assertTrue(worker.native_record_valid(record, target, False))
+                    self.assertEqual(len(worker.read_wav(clip)), target)
+        finally:
+            worker.synthesize_cue = original_synthesize
+            worker.apply_atempo = original_atempo
+
+    def test_sentence_group_converges_with_repeatable_duration_jitter(self):
+        cues = [
+            {"id": "cue-a", "cue_start": 0, "cue_end": 1, "voice_start": 0, "voice_end": 1,
+             "timing_source": "srt-fallback", "voice": worker.VOICE_NAME, "text": "a"},
+            {"id": "cue-b", "cue_start": 1, "cue_end": 2, "voice_start": 1, "voice_end": 2,
+             "timing_source": "srt-fallback", "voice": worker.VOICE_NAME, "text": "b"},
+        ]
+        original = worker.synthesize_cue
+        calls = 0
+        jitter_by_attempt = (0, 650, -250, 500, -150, 300)
+
+        def fake_synthesize(_voice, _text, path, scale):
+            nonlocal calls
+            attempt = calls // len(cues)
+            calls += 1
+            jitter = jitter_by_attempt[min(attempt, len(jitter_by_attempt) - 1)]
+            active = max(1, round(27300 * scale) + jitter)
+            with wave.open(str(path), "wb") as output:
+                output.setparams((1, 2, worker.SAMPLE_RATE, 0, "NONE", "not compressed"))
+                output.writeframes(b"\xff\x7f" * active + b"\0\0" * 2000)
+
+        worker.synthesize_cue = fake_synthesize
+        try:
+            with tempfile.TemporaryDirectory(prefix="bilisub-jitter-group-") as directory:
+                root = Path(directory)
+                (root / "clips").mkdir()
+                entries = worker.synthesize_sentence_group(
+                    types.SimpleNamespace(config=types.SimpleNamespace(length_scale=1.0)),
+                    cues, ["a", "b"], root, root / "clips", "worker-sha",
+                    root / "plan.json", "plan-key", Path("ffmpeg"), lambda *_args: None)
+                attempts = entries[0][3]["synthesis_attempts"]
+                self.assertLessEqual(attempts, worker.MAX_GROUP_SYNTHESIS_ATTEMPTS)
+                self.assertTrue(all(entry[3]["actual_speed_factor"] <= worker.MAX_GROUP_ACTUAL_SPEED
+                                    for entry in entries))
+                self.assertEqual(sum(entry[3]["frames"] for entry in entries), 2 * worker.SAMPLE_RATE)
+        finally:
+            worker.synthesize_cue = original
+
+    def test_production_uses_native_whole_cue_then_dynamic_pitch_preserving_tempo(self):
         fit = inspect.getsource(worker.fit_cue)
         self.assertIn("range(1, MAX_SYNTHESIS_ATTEMPTS + 1)", fit)
         self.assertIn("synthesize_cue(voice, text, candidate, scale)", fit)
-        self.assertIn("next_length_scale(", fit)
+        self.assertIn("native_reference_frames / frames", fit)
         self.assertIn("on_attempt(attempt, scale)", fit)
         self.assertIn("output_frames != frames + padding", fit)
-        self.assertNotIn("subprocess", fit)
-        self.assertNotIn("ffmpeg", fit.lower())
+        self.assertIn("tempo_fit_clip", fit)
         synthesis = inspect.getsource(worker.synthesize_cue)
         self.assertIn("SynthesisConfig(length_scale=length_scale)", synthesis)
         self.assertIn("voice.synthesize(text, syn_config=syn_config)", synthesis)
@@ -266,33 +500,51 @@ class VoiceDurationContract(unittest.TestCase):
         self.assertIn('candidate_cues.append(fallback)', main)
         self.assertIn('"synthesis_calls": synthesis_calls', main)
         self.assertIn('"event": "attempt"', main)
-        self.assertEqual(worker.TIMING_ALGORITHM, "whole-cue-piper-tempo-fallback-v10")
+        self.assertEqual(worker.TIMING_ALGORITHM, "whole-cue-piper-natural-first-v17")
         self.assertIn('"piper-atempo"', source)
-        self.assertIn("resolve_tempo", main)
-        self.assertIn("trim_trailing_silence_to_fit", fit)
-        self.assertIn("biên giữ chất giọng 0,85–1,20×", source)
+        self.assertIn('atempo_filter(factor)', source)
+        self.assertNotIn("resolve_tempo", main)
+        self.assertEqual(worker.MIN_GROUP_RATE_SCALE, .30)
+        self.assertEqual(worker.MIN_ACTUAL_SPEED, 1.0)
+        self.assertEqual(worker.FIT_HEADROOM, .995)
+        self.assertEqual(worker.MAX_GROUP_ACTUAL_SPEED, 100.0)
+        self.assertEqual(worker.MAX_TEMPO_ATTEMPTS, 6)
+        self.assertEqual(worker.MAX_GROUP_GAP_FRAMES, 0)
+        self.assertEqual(worker.MAX_GROUP_DURATION_FRAMES, 300 * worker.SAMPLE_RATE)
+        self.assertEqual(worker.MAX_GROUP_SYNTHESIS_ATTEMPTS, 12)
+        self.assertIn("trim_trailing_silence", fit)
+        self.assertIn("MIN_GROUP_RATE_SCALE if record.get(\"timing_source\") == \"sentence-group\"", source)
         self.assertIn('cue["timing_source"] == "srt-fallback"', source)
         self.assertIn('active_cue["timing_source"] in ("srt-fallback", "sentence-group")', source)
         service = (ROOT / "csharp/src/BiliSubStudio.Core/Editor/LocalTtsService.cs").read_text(encoding="utf-8")
+        self.assertIn("EditorVoiceCuePlanner.Build(request.Subtitle.Cues)", service)
+        self.assertIn("EditorVoiceCuePlanner.RemoveUnspeakable(", service)
         self.assertIn("BuildWholeCue(cue, voice, cueTiming[cue.Id])", service)
         self.assertIn("cue.Frames != targetFrames", service)
         self.assertIn("cue.Clipped is not false", service)
         self.assertIn("ReadClipFrames(cue.ClipPath, expectedSampleRate) != cue.Frames", service)
         self.assertIn("await HashAsync(cue.ClipPath, cancellationToken) != cue.ClipSha256", service)
         self.assertIn("ValidateNativeSynthesis(cue, targetFrames, naturalSample, expectedSampleRate)", service)
-        self.assertIn('fallback ? "srt-fallback" : "whisper"', service)
+        self.assertIn('cue.Start, cue.End, "srt-fallback"', service)
+        whole = service.split("internal static TtsCueManifest BuildWholeCue", 1)[1].split(
+            "private static string ResolveVoice", 1)[0]
+        self.assertNotIn("timing.SpeechStart", whole)
+        self.assertNotIn("timing.SpeechEnd", whole)
         self.assertIn('expected.TimingSource == "whisper" && cue.TimingSource == "srt-fallback"', service)
         self.assertIn('cue.TimingSource == "sentence-group"', service)
         self.assertIn("ValidateSentenceGroupWindows(result.Cues, expectedCues, expectedSampleRate)", service)
         self.assertIn('kind == "attempt"', service)
         self.assertIn("(index - 1) / (double)total * 53", service)
         timing = (ROOT / "csharp/src/BiliSubStudio.Core/Editor/LocalTtsService.Timing.cs").read_text(encoding="utf-8")
-        self.assertIn('cue.TimingSource == "sentence-group" ? .45 : .85', timing)
-        self.assertIn('cue.FitMethod == "piper-atempo"', timing)
-        self.assertIn("cue.TempoInputFrames", timing)
-        self.assertIn("cue.PaddingFrames > precisionPaddingBudget", timing)
+        self.assertIn('const double minimumScale = .30', timing)
+        self.assertIn('cue.ActualSpeedFactor > 100', timing)
+        self.assertIn('cue.FitMethod is not ("piper-length-scale" or "piper-atempo")', timing)
+        self.assertIn("cue.TempoInputFrames != cue.SourceFrames - cue.TrimmedSilenceFrames", timing)
+        self.assertIn("cue.SynthesisAttempts < 1", timing)
+        self.assertIn("cue.ActualSpeedFactor < 1", timing)
+        self.assertIn("relativeScale is < .70 or > 1", timing)
         installer = (ROOT / "csharp/src/BiliSubStudio.Core/Editor/LocalTtsInstaller.cs").read_text(encoding="utf-8")
-        self.assertIn('TimingAlgorithm = "whole-cue-piper-tempo-fallback-v10"', installer)
+        self.assertIn('TimingAlgorithm = "whole-cue-piper-natural-first-v17"', installer)
 
 
 if __name__ == "__main__":

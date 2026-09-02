@@ -37,6 +37,9 @@ require("MatchesAsync(partial, file" in installer and
         "download must verify before promotion")
 require('JsonSerializer.Deserialize<RuntimeInstallManifest>(File.ReadAllText(RuntimeManifest), Json)' in installer,
         "runtime manifest must read the same JSON naming policy it writes")
+require("if (!RuntimeEnvironmentMatches())" in installer
+        and "if (!RuntimeMatches()) await WriteRuntimeManifestAsync(worker" in installer,
+        "a verified worker-only policy update must not reinstall unchanged Piper packages")
 
 tree = ast.parse(worker)
 calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
@@ -48,20 +51,45 @@ require(sum(isinstance(c.func, ast.Attribute) and c.func.attr == "synthesize" fo
 require("voice.synthesize(text, syn_config=syn_config)" in worker and
         "SynthesisConfig(length_scale=length_scale)" in worker,
         "primary duration fitting must control Piper synthesis")
-require("tempo_fit_clip" in worker and '"piper-atempo"' in worker and "atempo_filter(factor)" in worker,
-        "overlong cues must have a pitch-preserving complete-speech fallback instead of aborting the job")
+require(all(value in worker for value in ("tempo_fit_clip", '"piper-atempo"', "atempo_filter(factor)"))
+        and "MAX_TEMPO_ATTEMPTS = 6" in worker
+        and all(value not in worker for value in ("atrim=", "asetrate=", "rubberband=")),
+        "worker must use bounded pitch-preserving tempo only after Piper and must never cut speech")
+require("MIN_RATE_SCALE = .30" in worker
+        and "MIN_ACTUAL_SPEED = 1.0" in worker
+        and "FIT_HEADROOM = .995" in worker
+        and "MAX_ACTUAL_SPEED = 100.0" in worker
+        and "MAX_GROUP_GAP_FRAMES = 0" in worker
+        and "minimum_speech_frames" in worker
+        and "MAX_GROUP_DURATION_FRAMES = 300 * SAMPLE_RATE" in worker
+        and "MAX_GROUP_CUES = 512" in worker,
+        "natural-first cues must use Piper before the bounded dynamic-tempo escape hatch")
 main = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "main")
 loop = next(node for node in ast.walk(main) if isinstance(node, ast.For)
             and "zip(cues, ordered_entries)" in ast.unparse(node.iter))
 require(not any(isinstance(node, ast.Attribute) and node.attr == "load" for node in ast.walk(loop)),
         "model load must be outside the cue loop")
-require('normalizer.normalize(cue["text"])' in worker and 'cue.get("groups")' not in worker,
+require('normalize_vietnamese_text(normalizer, cue["text"])' in worker
+        and 'unicodedata.normalize("NFC"' in worker and 'cue.get("groups")' not in worker,
         "worker must normalize and speak complete cue text")
 require("sentence_groups(cues, texts)" in worker and "synthesize_sentence_group(" in worker,
-        "contiguous fragments of one sentence must share their bounded source time when one cue is too narrow")
+        "dense subtitle runs must share their bounded source time when one cue is too narrow")
+require('"native_reference_frames": record["native_reference_frames"]' in worker
+        and '"group_native_frames": record.get("group_native_frames", 0)' in worker
+        and '"actual_speed_factor": record.get("actual_speed_factor", 0)' in worker,
+        "measured sentence-group speed metadata must reach Core result validation")
+require("EditorVoiceCuePlanner.Build(request.Subtitle.Cues)" in service,
+        "proven OCR flicker duplicates must be removed from the voice plan")
+require("EditorVoiceCuePlanner.RemoveUnspeakable(" in service
+        and "VietnameseTtsTextNormalizer.HasSpeakableUnits" in service,
+        "punctuation, symbols and emoji-only cues must be removed from voice without changing SRT")
+require("RemoveUnvoicedFlicker" not in service
+        and "var cues = voiceCues.Select(cue => BuildWholeCue" in service,
+        "ASR must not remove speakable SRT cues from the voice plan")
 whole = service.split("internal static TtsCueManifest BuildWholeCue", 1)[1].split("private static string ResolveVoice", 1)[0]
-require("cue.Start, cue.End, voice, text" in whole and "Pauses" not in whole,
-        "C# manifest must retain exact SRT interval and complete text")
+require('cue.Start, cue.End, voice, text, cue.Start, cue.End, "srt-fallback"' in whole
+        and "timing.SpeechStart" not in whole and "timing.SpeechEnd" not in whole and "Pauses" not in whole,
+        "C# manifest must keep SRT as the only timing owner and retain complete text")
 require("GenerateCuesAsync" in service and "GenerateSampleAsync" in service,
         "sample and project generation must share the production worker")
 require("_application.StartEditorTtsSample(selectedVoice)" in sample and "voice-sample-analysis" not in sample,

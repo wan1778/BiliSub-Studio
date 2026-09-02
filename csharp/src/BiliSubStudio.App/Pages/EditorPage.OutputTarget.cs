@@ -2,11 +2,11 @@ using BiliSubStudio.Core.Editor;
 
 namespace BiliSubStudio.App.Pages;
 
-internal sealed record EditorOutputTarget(string Directory, string FileName);
+internal sealed record EditorOutputTarget(string Directory, string FileName, EditorExportSettings Settings);
 
 public sealed partial class EditorPage
 {
-    private EditorOutputTarget CaptureEditorOutputTarget()
+    private EditorOutputTarget CaptureEditorOutputTarget(EditorExportSettings? settings = null)
     {
         var configuredDirectory = _application.Config.OutputDirectory?.Trim() ?? string.Empty;
         if (configuredDirectory.Length == 0)
@@ -15,7 +15,7 @@ public sealed partial class EditorPage
         var fileName = FileNameBox.Text?.Trim() ?? string.Empty;
         if (fileName.Length == 0)
             throw new InvalidOperationException("Tên file đầu ra không được để trống.");
-        return new EditorOutputTarget(directory, fileName);
+        return new EditorOutputTarget(directory, fileName, EditorExportPolicy.Normalize(settings));
     }
 
     private void EnsureEditorExportSourceIdentity(string projectId, string sourcePath)

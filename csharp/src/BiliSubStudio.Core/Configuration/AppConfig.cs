@@ -10,6 +10,9 @@ public sealed record AppConfig
     [JsonPropertyName("output_dir")]
     public string OutputDirectory { get; init; } = string.Empty;
 
+    [JsonPropertyName("ocr_output_dir")]
+    public string OcrOutputDirectory { get; init; } = string.Empty;
+
     [JsonPropertyName("sub_format")]
     public string SubtitleFormat { get; init; } = "srt";
 

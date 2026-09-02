@@ -32,6 +32,7 @@ public sealed partial class EditorPage : Page
     private EditorProject? _project;
     private EditorSubtitleSource? _subtitleSource;
     private EditorSubtitlePlacement _subtitlePlacement = EditorSubtitlePlacement.Default;
+    private EditorSubtitleStyle _subtitleStyle = EditorSubtitleStylePolicy.Default;
     private EditorAudioSettings _audioSettings = EditorAudioSettings.Default;
     private EditRegion? _draftRegion;
     private string? _jobId;
@@ -46,6 +47,8 @@ public sealed partial class EditorPage : Page
     private bool _syncingList;
     private bool _syncingAudio;
     private bool _syncingVoice;
+    private bool _syncingSubtitleStyle;
+    private bool _trimRangeValid = true;
     private InspectorMode _inspectorMode = InspectorMode.Subtitle;
     private Point? _dragStartNormalized;
     private EditRegion? _dragOriginal;
@@ -73,6 +76,7 @@ public sealed partial class EditorPage : Page
         _picker = picker;
         _playback = new EditorPlaybackController(this);
         InitializeComponent();
+        ApplySubtitleStyleToUi(_subtitleStyle);
         // Page-lifetime observation of our own control covers ASR, TTS, sample,
         // resets and completion without adding another progress owner or timer.
         VoiceProgress.RegisterPropertyChangedCallback(ProgressBar.ValueProperty, (_, _) => UpdateVoiceProgressPercent());
@@ -240,6 +244,8 @@ public sealed partial class EditorPage : Page
         _path = candidatePath;
         _media = candidateMedia;
         _project = candidateProject;
+        var trim = EditorProjectStore.NormalizeTrim(_project.Trim, candidateMedia.Duration);
+        _project = _project with { Trim = trim };
         _document.Reset(_project.Regions);
         _audioSettings = EditorProjectStore.NormalizeAudio(_project.Audio);
         ApplyAudioSettingsToUi();
@@ -258,7 +264,7 @@ public sealed partial class EditorPage : Page
         await EnsureImageProjectLoadedAsync();
         _draftRegion = null;
         Timeline.Maximum = Math.Max(0.1, _media.Duration);
-        Timeline.Value = 0;
+        Timeline.Value = trim.Start;
         PathText.Text = candidatePath;
         MediaText.Text = $"{_media.Width}×{_media.Height} · {_media.Duration:0.0}s · {_media.Codec} · preview xử lý dùng cùng pipeline FFmpeg với export";
         _syncingInputs = true;
@@ -267,6 +273,11 @@ public sealed partial class EditorPage : Page
             FileNameBox.Text = _project.FileName;
             StartBox.Maximum = EndBox.Maximum = _media.Duration;
             EndBox.Value = _media.Duration;
+            TrimStartBox.Maximum = TrimEndBox.Maximum = _media.Duration;
+            TrimStartBox.Value = trim.Start;
+            TrimEndBox.Value = trim.End;
+            _trimRangeValid = true;
+            UpdateTrimSummary(trim);
         }
         finally { _syncingInputs = false; }
         await _playback.PrepareAsync();
@@ -338,6 +349,8 @@ public sealed partial class EditorPage : Page
     {
         _subtitleSource = null;
         _subtitlePlacement = EditorSubtitlePlacement.Default;
+        _subtitleStyle = EditorSubtitleStylePolicy.Default;
+        ApplySubtitleStyleToUi(_subtitleStyle);
         SrtPathText.Text = "Chưa chọn SRT.";
         SrtSummaryText.Text = "Chọn SRT Việt đã dịch bên ngoài app.";
         if (saved is null) return;
@@ -383,6 +396,8 @@ public sealed partial class EditorPage : Page
                 ClearVoiceTrackState();
             }
             _subtitlePlacement = saved.Placement ?? EditorSubtitlePlacement.Default;
+            _subtitleStyle = EditorSubtitleStylePolicy.Normalize(saved.Style);
+            ApplySubtitleStyleToUi(_subtitleStyle);
             _syncingVoice = true;
             try { KaraokeToggle.IsOn = saved.Karaoke; } finally { _syncingVoice = false; }
             SrtPathText.Text = saved.SourcePath;
@@ -532,8 +547,153 @@ public sealed partial class EditorPage : Page
                 string.Empty,
                 outputPath,
                 KaraokeToggle.IsOn,
-                translationPolicyKey),
+                translationPolicyKey,
+                _subtitleStyle),
         };
+    }
+
+    private static string SelectedSubtitleStyleTag(ComboBox box, string fallback) =>
+        (box.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? fallback;
+
+    private static void SelectSubtitleStyleTag(ComboBox box, string tag)
+    {
+        box.SelectedItem = box.Items.OfType<ComboBoxItem>()
+            .FirstOrDefault(item => string.Equals(item.Tag?.ToString(), tag, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private void ApplySubtitleStyleToUi(EditorSubtitleStyle source)
+    {
+        var style = EditorSubtitleStylePolicy.Normalize(source);
+        _syncingSubtitleStyle = true;
+        try
+        {
+            SelectSubtitleStyleTag(SubtitleFontBox, style.FontName);
+            SelectSubtitleStyleTag(SubtitleOutlineColorBox, style.OutlineColor);
+            SelectSubtitleStyleTag(SubtitleBackgroundColorBox, style.BackgroundColor);
+            var textColor = ParseSubtitleColor(style.TextColor);
+            SubtitleTextColorPicker.Color = textColor;
+            SubtitleTextColorSwatch.Background = new SolidColorBrush(textColor);
+            SubtitleOutlineWidthBox.Value = style.OutlineWidth;
+            SubtitleBackgroundOpacityBox.Value = style.BackgroundOpacity * 100;
+            SubtitleBackgroundPaddingBox.Value = style.BackgroundPadding;
+            SubtitleShadowBox.Value = style.Shadow;
+            SubtitleFontScaleBox.Value = style.FontScale * 100;
+            SubtitleBoldButton.IsChecked = style.Bold;
+            SubtitleItalicButton.IsChecked = style.Italic;
+            SubtitleUnderlineButton.IsChecked = style.Underline;
+        }
+        finally { _syncingSubtitleStyle = false; }
+        UpdateSubtitleStylePresetSelection(style.Preset);
+        UpdateSubtitleStyleSummary();
+    }
+
+    private EditorSubtitleStyle ReadSubtitleStyleFromUi() => EditorSubtitleStylePolicy.Normalize(new EditorSubtitleStyle(
+        EditorSubtitleStylePolicy.CustomPreset,
+        SubtitleColorHex(SubtitleTextColorPicker.Color),
+        SelectedSubtitleStyleTag(SubtitleOutlineColorBox, _subtitleStyle.OutlineColor),
+        double.IsFinite(SubtitleOutlineWidthBox.Value) ? SubtitleOutlineWidthBox.Value : _subtitleStyle.OutlineWidth,
+        SelectedSubtitleStyleTag(SubtitleBackgroundColorBox, _subtitleStyle.BackgroundColor),
+        double.IsFinite(SubtitleBackgroundOpacityBox.Value) ? SubtitleBackgroundOpacityBox.Value / 100 : _subtitleStyle.BackgroundOpacity,
+        double.IsFinite(SubtitleBackgroundPaddingBox.Value) ? SubtitleBackgroundPaddingBox.Value : _subtitleStyle.BackgroundPadding,
+        double.IsFinite(SubtitleShadowBox.Value) ? SubtitleShadowBox.Value : _subtitleStyle.Shadow,
+        SubtitleBoldButton.IsChecked == true,
+        SelectedSubtitleStyleTag(SubtitleFontBox, _subtitleStyle.FontName),
+        SubtitleItalicButton.IsChecked == true,
+        SubtitleUnderlineButton.IsChecked == true,
+        double.IsFinite(SubtitleFontScaleBox.Value) ? SubtitleFontScaleBox.Value / 100 : _subtitleStyle.FontScale));
+
+    private void SubtitleStylePreset_Click(object sender, RoutedEventArgs e)
+    {
+        if (_syncingSubtitleStyle) return;
+        var preset = (sender as Button)?.Tag?.ToString() ?? EditorSubtitleStylePolicy.DefaultPreset;
+        var style = EditorSubtitleStylePolicy.FromPreset(preset);
+        ApplySubtitleStyleToUi(style);
+        CommitSubtitleStyle(style, "Đã áp dụng mẫu chữ vào Preview và video xuất.");
+    }
+
+    private void SubtitleStyleCombo_SelectionChanged(object sender, SelectionChangedEventArgs e) => CommitCustomSubtitleStyle();
+
+    private void SubtitleStyleFont_SelectionChanged(object sender, SelectionChangedEventArgs e) => CommitCustomSubtitleStyle();
+
+    private void SubtitleStyleNumber_ValueChanged(NumberBox sender, NumberBoxValueChangedEventArgs args) => CommitCustomSubtitleStyle();
+
+    private void SubtitleStyleFormat_Changed(object sender, RoutedEventArgs e) => CommitCustomSubtitleStyle();
+
+    private void SubtitleTextColorPicker_ColorChanged(ColorPicker sender, ColorChangedEventArgs args)
+    {
+        SubtitleTextColorSwatch.Background = new SolidColorBrush(args.NewColor);
+        CommitCustomSubtitleStyle();
+    }
+
+    private void CommitCustomSubtitleStyle()
+    {
+        if (_syncingSubtitleStyle) return;
+        var style = ReadSubtitleStyleFromUi();
+        UpdateSubtitleStylePresetSelection(EditorSubtitleStylePolicy.CustomPreset);
+        CommitSubtitleStyle(style, "Đã cập nhật hiệu ứng chữ cho Preview và video xuất.");
+    }
+
+    private void UpdateSubtitleStylePresetSelection(string preset)
+    {
+        var activeBrush = new SolidColorBrush(ColorHelper.FromArgb(255, 55, 216, 228));
+        var idleBrush = new SolidColorBrush(ColorHelper.FromArgb(255, 44, 59, 78));
+        foreach (var button in SubtitleStylePresetGrid.Children.OfType<Button>())
+        {
+            var active = string.Equals(button.Tag?.ToString(), preset, StringComparison.OrdinalIgnoreCase);
+            button.BorderBrush = active ? activeBrush : idleBrush;
+            button.BorderThickness = new Thickness(active ? 2 : 1);
+        }
+    }
+
+    private static Windows.UI.Color ParseSubtitleColor(string hex)
+    {
+        var color = hex.TrimStart('#');
+        return ColorHelper.FromArgb(
+            255,
+            byte.Parse(color.AsSpan(0, 2), System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture),
+            byte.Parse(color.AsSpan(2, 2), System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture),
+            byte.Parse(color.AsSpan(4, 2), System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture));
+    }
+
+    private static string SubtitleColorHex(Windows.UI.Color color) => $"#{color.R:X2}{color.G:X2}{color.B:X2}";
+
+    private void CommitSubtitleStyle(EditorSubtitleStyle style, string status)
+    {
+        _subtitleStyle = EditorSubtitleStylePolicy.Normalize(style);
+        UpdateSubtitleStyleSummary();
+        if (_subtitleSource is null) return;
+        AttachSubtitleToProject(_project?.Subtitle?.OutputPath ?? string.Empty, _project?.Subtitle?.TranslationPolicyKey);
+        QueueProjectSave();
+        if (!_playback.IsPreviewMode) QueuePreviewRefresh();
+        SubtitleStatusText.Text = status;
+        RefreshEditorActions();
+    }
+
+    private void UpdateSubtitleStyleSummary()
+    {
+        var preset = _subtitleStyle.Preset switch
+        {
+            EditorSubtitleStylePolicy.DefaultPreset => "Trắng viền đen",
+            EditorSubtitleStylePolicy.CinemaPreset => "Điện ảnh",
+            EditorSubtitleStylePolicy.YellowPreset => "Vàng nổi bật",
+            EditorSubtitleStylePolicy.CyanPreset => "Cyan hiện đại",
+            EditorSubtitleStylePolicy.BlackBoxPreset => "Hộp đen",
+            EditorSubtitleStylePolicy.LightBoxPreset => "Hộp sáng",
+            EditorSubtitleStylePolicy.PlainPreset => "Không hiệu ứng",
+            EditorSubtitleStylePolicy.PinkPreset => "Hồng",
+            EditorSubtitleStylePolicy.RedPreset => "Đỏ",
+            EditorSubtitleStylePolicy.GreenPreset => "Xanh lá",
+            EditorSubtitleStylePolicy.YellowBoxPreset => "Hộp vàng",
+            EditorSubtitleStylePolicy.BlueBoxPreset => "Hộp xanh",
+            _ => "Tùy chỉnh",
+        };
+        var background = _subtitleStyle.BackgroundOpacity > .001
+            ? $"nền {_subtitleStyle.BackgroundOpacity:P0}"
+            : "không nền";
+        var format = (_subtitleStyle.Bold ? "B" : string.Empty)
+            + (_subtitleStyle.Underline ? "U" : string.Empty)
+            + (_subtitleStyle.Italic ? "I" : string.Empty);
+        SubtitleStyleSummaryText.Text = $"{preset} · {_subtitleStyle.FontName} · cỡ {_subtitleStyle.FontScale:P0} · {(format.Length == 0 ? "thường" : format)} · viền {_subtitleStyle.OutlineWidth:0.#} · {background}";
     }
 
     private string SelectedVoiceModel() =>
@@ -832,7 +992,8 @@ public sealed partial class EditorPage : Page
         {
             if (delay > TimeSpan.Zero) await Task.Delay(delay, cancellationToken);
             var regions = CurrentPreviewRegions();
-            var bytes = await _application.GetEditorPreviewFrameJpegAsync(_path, Timeline.Value, _media, regions, cancellationToken);
+            var bytes = await _application.GetEditorPreviewFrameJpegAsync(
+                _path, Timeline.Value, _media, regions, CurrentFrameSubtitleBurn(), cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
             if (revision != _previewRevision) return;
             using var stream = new InMemoryRandomAccessStream();
@@ -1138,27 +1299,109 @@ public sealed partial class EditorPage : Page
         }
     }
 
-    private void SourceAudioMode_SelectionChanged(object sender, SelectionChangedEventArgs e) => UpdateAudioSettingsFromUi();
+    private EditorTrimRange CurrentTrimRange()
+    {
+        if (_media is null) throw new InvalidOperationException("Chưa chọn video để cắt.");
+        return EditorProjectStore.NormalizeTrim(
+            new EditorTrimRange(TrimStartBox.Value, TrimEndBox.Value), _media.Duration);
+    }
+
+    private void TrimRange_ValueChanged(NumberBox sender, NumberBoxValueChangedEventArgs args)
+    {
+        if (!IsLoaded || _syncingInputs || _media is null || _project is null) return;
+        try
+        {
+            var trim = CurrentTrimRange();
+            _trimRangeValid = true;
+            _project = _project with { Trim = trim };
+            UpdateTrimSummary(trim);
+            QueueProjectSave();
+            StatusText.Text = EditorProjectStore.HasTrim(trim, _media.Duration)
+                ? $"Đã đặt khoảng giữ lại {FormatClock(trim.Start)}–{FormatClock(trim.End)}."
+                : "Đang giữ toàn bộ video.";
+        }
+        catch (Exception error)
+        {
+            _trimRangeValid = false;
+            TrimSummaryText.Text = error.Message;
+        }
+        RefreshEditorActions();
+    }
+
+    private void TrimUseCurrentStart_Click(object sender, RoutedEventArgs e) => SetTrimBoundaryFromCurrent(setStart: true);
+
+    private void TrimUseCurrentEnd_Click(object sender, RoutedEventArgs e) => SetTrimBoundaryFromCurrent(setStart: false);
+
+    private void SetTrimBoundaryFromCurrent(bool setStart)
+    {
+        if (_media is null || _project is null || EditorBusy || _playback.IsPreviewMode) return;
+        var value = Math.Clamp(Timeline.Value, 0, _media.Duration);
+        var candidate = setStart
+            ? new EditorTrimRange(value, TrimEndBox.Value)
+            : new EditorTrimRange(TrimStartBox.Value, value);
+        try
+        {
+            candidate = EditorProjectStore.NormalizeTrim(candidate, _media.Duration);
+            _syncingInputs = true;
+            try
+            {
+                TrimStartBox.Value = candidate.Start;
+                TrimEndBox.Value = candidate.End;
+            }
+            finally { _syncingInputs = false; }
+            _trimRangeValid = true;
+            _project = _project with { Trim = candidate };
+            UpdateTrimSummary(candidate);
+            QueueProjectSave();
+            RefreshEditorActions();
+            StatusText.Text = $"Đã đặt {(setStart ? "đầu" : "cuối")} đoạn giữ lại tại {FormatClock(value)}.";
+        }
+        catch (Exception error)
+        {
+            StatusText.Text = error.Message;
+        }
+    }
+
+    private void TrimReset_Click(object sender, RoutedEventArgs e)
+    {
+        if (_media is null || _project is null || EditorBusy || _playback.IsPreviewMode) return;
+        var trim = new EditorTrimRange(0, _media.Duration);
+        _syncingInputs = true;
+        try
+        {
+            TrimStartBox.Value = trim.Start;
+            TrimEndBox.Value = trim.End;
+        }
+        finally { _syncingInputs = false; }
+        _trimRangeValid = true;
+        _project = _project with { Trim = trim };
+        UpdateTrimSummary(trim);
+        QueueProjectSave();
+        RefreshEditorActions();
+        StatusText.Text = "Đã đặt lại: giữ toàn bộ video.";
+    }
+
+    private void UpdateTrimSummary(EditorTrimRange trim)
+    {
+        if (_media is null)
+        {
+            TrimSummaryText.Text = "Chưa chọn video.";
+            return;
+        }
+        var removedStart = trim.Start;
+        var removedEnd = Math.Max(0, _media.Duration - trim.End);
+        TrimSummaryText.Text = EditorProjectStore.HasTrim(trim, _media.Duration)
+            ? $"Giữ {FormatClock(trim.Start)} → {FormatClock(trim.End)} · dài {FormatClock(trim.Duration)} · bỏ đầu {FormatClock(removedStart)} · bỏ cuối {FormatClock(removedEnd)}."
+            : $"Giữ toàn bộ video · {FormatClock(_media.Duration)}.";
+    }
 
     private void SourceAudioGain_ValueChanged(object sender, Microsoft.UI.Xaml.Controls.Primitives.RangeBaseValueChangedEventArgs e) => UpdateAudioSettingsFromUi();
 
     private void UpdateAudioSettingsFromUi()
     {
         if (_syncingAudio || !IsLoaded) return;
-        var mode = (SourceAudioModeBox.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "keep";
-        var gain = mode switch
-        {
-            "mute" => 0,
-            "duck" => SourceAudioGainSlider.Value / 100,
-            _ => 1,
-        };
-        _audioSettings = EditorProjectStore.NormalizeAudio(new EditorAudioSettings(mode, gain));
-        AudioStatusText.Text = _audioSettings.SourceMode switch
-        {
-            "duck" => $"Preview và video xuất sẽ giữ {_audioSettings.SourceGain:P0} mức âm thanh gốc.",
-            "mute" => "Preview và video xuất sẽ không có âm thanh gốc.",
-            _ => "Preview và video xuất sẽ giữ nguyên âm thanh gốc.",
-        };
+        _audioSettings = EditorProjectStore.FromSourceGain(SourceAudioGainSlider.Value / 100);
+        UpdateAudioStatus();
         QueueProjectSave();
         RefreshEditorActions();
         NotifyEditorCompositeChanged();
@@ -1169,30 +1412,27 @@ public sealed partial class EditorPage : Page
         _syncingAudio = true;
         try
         {
-            for (var index = 0; index < SourceAudioModeBox.Items.Count; index++)
-            {
-                if (SourceAudioModeBox.Items[index] is ComboBoxItem item &&
-                    string.Equals(item.Tag?.ToString(), _audioSettings.SourceMode, StringComparison.OrdinalIgnoreCase))
-                {
-                    SourceAudioModeBox.SelectedIndex = index;
-                    break;
-                }
-            }
-            if (_audioSettings.SourceMode == "duck") SourceAudioGainSlider.Value = _audioSettings.SourceGain * 100;
-            AudioStatusText.Text = _audioSettings.SourceMode switch
-            {
-                "duck" => $"Preview và video xuất sẽ giữ {_audioSettings.SourceGain:P0} mức âm thanh gốc.",
-                "mute" => "Preview và video xuất sẽ không có âm thanh gốc.",
-                _ => "Preview và video xuất sẽ giữ nguyên âm thanh gốc.",
-            };
+            SourceAudioGainSlider.Value = _audioSettings.SourceGain * 100;
+            UpdateAudioStatus();
         }
         finally { _syncingAudio = false; }
         RefreshEditorActions();
     }
 
+    private void UpdateAudioStatus()
+    {
+        AudioStatusText.Text = _audioSettings.SourceMode switch
+        {
+            "mute" => "0% · Preview và video xuất sẽ tắt âm thanh gốc.",
+            "keep" => "100% · Preview và video xuất giữ nguyên âm thanh gốc.",
+            _ when _audioSettings.SourceGain < 1 => $"{_audioSettings.SourceGain:P0} · Đã giảm âm thanh gốc cho Preview và video xuất.",
+            _ => $"{_audioSettings.SourceGain:P0} · Đã tăng âm thanh gốc cho Preview và video xuất.",
+        };
+    }
+
     private EditorSubtitleBurn? CompletedSubtitleBurn() =>
         _subtitleSource is not null && _subtitleSource.Cues.All(x => !string.IsNullOrWhiteSpace(x.VietnameseText))
-            ? new EditorSubtitleBurn(_subtitleSource.Cues, _subtitlePlacement, _cueSpeechTiming, KaraokeToggle.IsOn)
+            ? new EditorSubtitleBurn(_subtitleSource.Cues, _subtitlePlacement, _cueSpeechTiming, KaraokeToggle.IsOn, _subtitleStyle)
             : null;
 
     private EditorSubtitleBurn? PreviewSubtitleBurn()
@@ -1203,7 +1443,23 @@ public sealed partial class EditorPage : Page
         {
             VietnameseText = string.IsNullOrWhiteSpace(cue.VietnameseText) ? cue.SourceText : cue.VietnameseText,
         }).ToArray();
-        return new EditorSubtitleBurn(cues, _subtitlePlacement, _cueSpeechTiming, KaraokeToggle.IsOn);
+        return new EditorSubtitleBurn(cues, _subtitlePlacement, _cueSpeechTiming, KaraokeToggle.IsOn, _subtitleStyle);
+    }
+
+    private EditorSubtitleBurn? CurrentFrameSubtitleBurn()
+    {
+        var source = _subtitleSource;
+        if (source is null) return null;
+        var seconds = Timeline.Value;
+        var cues = source.Cues
+            .Where(cue => seconds >= cue.Start && seconds < cue.End)
+            .Select(cue => cue with { VietnameseText = SubtitlePreviewText(cue) })
+            .Where(cue => !string.IsNullOrWhiteSpace(cue.VietnameseText))
+            .ToArray();
+        if (cues.Length == 0) return null;
+        var cueIds = cues.Select(cue => cue.Id).ToHashSet(StringComparer.Ordinal);
+        var timing = _cueSpeechTiming.Where(item => cueIds.Contains(item.CueId)).ToArray();
+        return new EditorSubtitleBurn(cues, _subtitlePlacement, timing, KaraokeToggle.IsOn, _subtitleStyle);
     }
 
     private VideoEditRequest CurrentEditRequest(EditorSubtitleBurn? subtitle)
@@ -1222,7 +1478,8 @@ public sealed partial class EditorPage : Page
             _document.Regions.ToArray(),
             subtitle,
             _audioSettings,
-            _voiceTrack);
+            _voiceTrack,
+            Trim: CurrentTrimRange());
     }
 
     private async void Render_Click(object sender, RoutedEventArgs e)
@@ -1340,6 +1597,7 @@ public sealed partial class EditorPage : Page
             if (commit)
             {
                 QueueProjectSave();
+                QueuePreviewRefresh();
                 SubtitleStatusText.Text = "Đã lưu vị trí/kích thước khung phụ đề.";
             }
             _subtitleDrag = false;
@@ -1504,31 +1762,7 @@ public sealed partial class EditorPage : Page
         Canvas.SetTop(rectangle, top);
         Overlay.Children.Add(rectangle);
 
-        var cue = CurrentSubtitleCue();
-        var text = cue is null ? "Kéo để đặt vị trí phụ đề" : SubtitlePreviewText(cue);
-        var preview = new TextBlock
-        {
-            Text = text,
-            Width = Math.Max(1, width - 16),
-            MaxHeight = Math.Max(1, height - 12),
-            FontSize = Math.Clamp(video.Height * .032, 13, 30),
-            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-            Foreground = new SolidColorBrush(Colors.White),
-            TextWrapping = TextWrapping.Wrap,
-            TextAlignment = TextAlignment.Center,
-            HorizontalAlignment = HorizontalAlignment.Center,
-        };
-        Canvas.SetLeft(preview, left + 8);
-        Canvas.SetTop(preview, top + Math.Max(6, height * .20));
-        Overlay.Children.Add(preview);
         if (active) RenderSubtitleHandles(placement, video, stroke);
-    }
-
-    private EditorSubtitleCue? CurrentSubtitleCue()
-    {
-        if (_subtitleSource is null) return null;
-        var seconds = Timeline.Value;
-        return _subtitleSource.Cues.FirstOrDefault(x => seconds >= x.Start && seconds <= x.End);
     }
 
     private void RenderSubtitleHandles(EditorSubtitlePlacement placement, Rect video, Windows.UI.Color stroke)
@@ -1954,8 +2188,10 @@ public sealed partial class EditorPage : Page
             _project.Subtitle?.SkillSha256 ?? string.Empty,
             _project.Subtitle?.OutputPath ?? string.Empty,
             KaraokeToggle.IsOn,
-            _project.Subtitle?.TranslationPolicyKey),
+            _project.Subtitle?.TranslationPolicyKey,
+            _subtitleStyle),
         Audio = _audioSettings,
+        Trim = _project.Trim,
         UpdatedUtc = DateTimeOffset.UtcNow,
     };
 
@@ -1976,9 +2212,11 @@ public sealed partial class EditorPage : Page
         SubtitlePresetButton.IsEnabled = WatermarkPresetButton.IsEnabled = editable;
         var subtitleReady = _subtitleSource is { Cues.Count: > 0 } && _subtitleSource.Cues.All(x => !string.IsNullOrWhiteSpace(x.VietnameseText));
         var audioChanged = _audioSettings.SourceMode != "keep";
+        var trimChanged = hasMedia && _trimRangeValid
+            && EditorProjectStore.HasTrim(_project?.Trim, _media!.Duration);
         var hasImages = _imageFeatureInitialized && _imageOverlays.Count > 0;
-        RenderButton.IsEnabled = editable && !_subtitleManualDirty && _path is not null
-            && (_document.Regions.Count > 0 || subtitleReady || audioChanged || _voiceTrack is not null || hasImages)
+        RenderButton.IsEnabled = editable && _trimRangeValid && !_subtitleManualDirty && _path is not null
+            && (_document.Regions.Count > 0 || subtitleReady || audioChanged || _voiceTrack is not null || hasImages || trimChanged)
             && !string.IsNullOrWhiteSpace(FileNameBox.Text);
         CancelButton.IsEnabled = _jobId is not null;
         Timeline.IsEnabled = idle && hasMedia;
@@ -1990,12 +2228,13 @@ public sealed partial class EditorPage : Page
         StartBox.IsEnabled = EndBox.IsEnabled = editable && !WholeToggle.IsOn;
         EditorUseCurrentStartButton.IsEnabled = EditorUseCurrentEndButton.IsEnabled = editable && !WholeToggle.IsOn;
         FileNameBox.IsEnabled = editable;
+        TrimStartBox.IsEnabled = TrimEndBox.IsEnabled = editable;
+        TrimUseCurrentStartButton.IsEnabled = TrimUseCurrentEndButton.IsEnabled = TrimResetButton.IsEnabled = editable;
         ImportSrtButton.IsEnabled = idle && !_playback.IsPreviewMode;
         OpenTranslatedSrtButton.IsEnabled = idle && !_playback.IsPreviewMode && !_subtitleManualDirty && File.Exists(_project?.Subtitle?.OutputPath);
         SaveKaraokeAssButton.IsEnabled = editable && !_subtitleManualDirty && subtitleReady && KaraokeToggle.IsOn && _cueSpeechTiming.Count > 0;
         PreviewMuteToggle.IsEnabled = PreviewVolumeSlider.IsEnabled = idle && hasMedia;
-        SourceAudioModeBox.IsEnabled = editable;
-        SourceAudioGainSlider.IsEnabled = editable && _audioSettings.SourceMode == "duck";
+        SourceAudioGainSlider.IsEnabled = editable;
         VoiceModelBox.IsEnabled = idle && !_playback.IsPreviewMode;
         AsrExecutionModeBox.IsEnabled = idle && !_playback.IsPreviewMode;
         AnalyzeTimingButton.IsEnabled = editable && _project is not null;
@@ -2011,6 +2250,19 @@ public sealed partial class EditorPage : Page
         if (VoiceProgressContainer is not null) VoiceProgressContainer.Visibility = Visibility.Visible;
         if (_voiceSampleButton is not null) _voiceSampleButton.IsEnabled = idle && !_playback.IsPreviewMode;
         KaraokeToggle.IsEnabled = idle && !_playback.IsPreviewMode && _subtitleSource is not null;
+        var subtitleStyleEditable = idle && !_playback.IsPreviewMode && _subtitleSource is not null;
+        SubtitleFontBox.IsEnabled = SubtitleFontScaleBox.IsEnabled = SubtitleTextColorButton.IsEnabled = SubtitleOutlineColorBox.IsEnabled = subtitleStyleEditable;
+        SubtitleBackgroundColorBox.IsEnabled = subtitleStyleEditable;
+        SubtitleOutlineWidthBox.IsEnabled = SubtitleShadowBox.IsEnabled = subtitleStyleEditable;
+        SubtitleBackgroundOpacityBox.IsEnabled = SubtitleBackgroundPaddingBox.IsEnabled = subtitleStyleEditable;
+        SubtitleBoldButton.IsEnabled = SubtitleItalicButton.IsEnabled = SubtitleUnderlineButton.IsEnabled = subtitleStyleEditable;
+        foreach (var button in SubtitleStylePresetGrid.Children.OfType<Button>())
+        {
+            button.IsEnabled = true;
+            button.IsHitTestVisible = subtitleStyleEditable;
+            button.IsTabStop = subtitleStyleEditable;
+        }
+        SubtitleStylePresetGrid.Opacity = subtitleStyleEditable ? 1 : .72;
         RefreshVoiceCuePreview();
         RefreshImageControls();
         RefreshEditorParityControls();

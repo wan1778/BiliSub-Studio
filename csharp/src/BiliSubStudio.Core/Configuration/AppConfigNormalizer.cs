@@ -11,6 +11,9 @@ public static class AppConfigNormalizer
         var outputDirectory = string.IsNullOrWhiteSpace(config.OutputDirectory)
             ? paths.DefaultDownloads
             : config.OutputDirectory;
+        var ocrOutputDirectory = string.IsNullOrWhiteSpace(config.OcrOutputDirectory)
+            ? outputDirectory
+            : config.OcrOutputDirectory;
         var subtitleFormat = config.SubtitleFormat is "srt" or "txt" or "json"
             ? config.SubtitleFormat
             : "srt";
@@ -32,6 +35,7 @@ public static class AppConfigNormalizer
         {
             Theme = theme,
             OutputDirectory = outputDirectory,
+            OcrOutputDirectory = ocrOutputDirectory,
             SubtitleFormat = subtitleFormat,
             VideoSpeed = videoSpeed,
             VideoContainer = videoContainer,

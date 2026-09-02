@@ -25,7 +25,7 @@ internal sealed class LocalTtsInstaller : IDisposable
     // Drive objects are mutable; reviewed content hashes pin identity.
     internal const string ModelRevision = "2140977786d76d834736c059dacfa553d4931dac2b2c7aaaea438bb2aa9da697";
     internal const string ConfigSha256 = "971f57f8d504223fee5b40d664f503cf769baf7db21f7d2ae0554a75d07de2f8";
-    internal const string TimingAlgorithm = "whole-cue-piper-tempo-fallback-v10";
+    internal const string TimingAlgorithm = "whole-cue-piper-natural-first-v17";
     internal const string VoiceRevision = ModelRevision + ":" + ConfigSha256 + ":" + TimingAlgorithm;
     internal static readonly IReadOnlyList<string> AvailableVoices = Array.AsReadOnly(new[] { Voice });
     internal static string CanonicalVoiceId(string voice) => voice.Trim().ToLowerInvariant().Replace('-', '_');
@@ -86,7 +86,7 @@ internal sealed class LocalTtsInstaller : IDisposable
             _lastError = null;
             Directory.CreateDirectory(Root);
             var worker = await EnsureWorkerAsync(job.CancellationToken);
-            if (!RuntimeMatches())
+            if (!RuntimeEnvironmentMatches())
             {
                 job.Set("tts-python", Progress(2), "Đang kiểm tra runtime Piper/NGHI local...");
                 Directory.CreateDirectory(RuntimeRoot);
@@ -99,8 +99,11 @@ internal sealed class LocalTtsInstaller : IDisposable
                     ["-I", "-X", "utf8", "-c", "import sys,importlib.metadata as m; from piper import PiperVoice; from vietnormalizer import VietnameseNormalizer; import numpy,onnxruntime,gdown; assert all(m.version(p.split('==')[0]) == p.split('==')[1] for p in sys.argv[1].split(';')); print('nghi-ok')", Packages],
                     job.CancellationToken, managed.Environment);
                 if (verify.ExitCode != 0) throw new InvalidOperationException("Runtime NGHI-TTS không vượt kiểm tra: " + verify.StandardError.Trim());
-                await WriteRuntimeManifestAsync(worker, job.CancellationToken);
             }
+            // A bundled timing-policy update changes only worker.py. Refresh its
+            // verified manifest without reinstalling the unchanged pinned Python
+            // packages; RuntimeEnvironmentMatches already proved that runtime.
+            if (!RuntimeMatches()) await WriteRuntimeManifestAsync(worker, job.CancellationToken);
             Directory.CreateDirectory(ModelRoot);
             foreach (var file in ModelFiles)
             {
@@ -137,11 +140,22 @@ internal sealed class LocalTtsInstaller : IDisposable
     {
         try
         {
-            if (!File.Exists(Python) || !File.Exists(Worker) || !File.Exists(BundledWorker) || !File.Exists(RuntimeManifest)) return false;
+            if (!RuntimeEnvironmentMatches() || !File.Exists(Worker) || !File.Exists(BundledWorker)) return false;
+            var manifest = JsonSerializer.Deserialize<RuntimeInstallManifest>(File.ReadAllText(RuntimeManifest), Json);
+            return manifest is not null && manifest.WorkerSha256 == HashFile(Worker)
+                && manifest.WorkerSha256 == HashFile(BundledWorker);
+        }
+        catch { return false; }
+    }
+
+    private bool RuntimeEnvironmentMatches()
+    {
+        try
+        {
+            if (!File.Exists(Python) || !File.Exists(RuntimeManifest)) return false;
             var manifest = JsonSerializer.Deserialize<RuntimeInstallManifest>(File.ReadAllText(RuntimeManifest), Json);
             return manifest is not null && manifest.Schema == 3 && manifest.Python == OcrInstaller.PythonVersion
-                && manifest.Packages == Packages && manifest.EngineVersion == EngineVersion
-                && manifest.WorkerSha256 == HashFile(Worker) && manifest.WorkerSha256 == HashFile(BundledWorker);
+                && manifest.Packages == Packages && manifest.EngineVersion == EngineVersion;
         }
         catch { return false; }
     }

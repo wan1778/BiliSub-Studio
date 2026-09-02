@@ -84,14 +84,19 @@ internal static class OcrTrackerModeRegression
             ?? throw new InvalidOperationException("missing exact-frame tracker active cue");
         var exact = exactConstructor.Invoke([30d, .68d, true]);
         var singleRune = new OcrResult(true, true, "啊", .99, []);
-        observeExact.Invoke(exact, [10d, 1d / 30d, singleRune]);
-        observeExact.Invoke(exact, [10d + 1d / 30d, 1d / 30d, singleRune]);
-        observeExact.Invoke(exact, [10d + 2d / 30d, 1d / 30d, singleRune]);
+        for (var index = 0; index < 7; index++)
+            observeExact.Invoke(exact, [10d + index / 30d, 1d / 30d, singleRune]);
+        if (exactActive.GetValue(exact) is not null)
+            throw new InvalidOperationException("233ms one-rune OCR noise became an exact-frame cue");
+        observeExact.Invoke(exact, [10d + 7d / 30d, 1d / 30d, singleRune]);
+        if (exactActive.GetValue(exact) is not null)
+            throw new InvalidOperationException("sub-300ms one-rune OCR noise became an exact-frame cue");
+        observeExact.Invoke(exact, [10d + 8d / 30d, 1d / 30d, singleRune]);
         var exactCue = (OcrCue)(exactActive.GetValue(exact)
             ?? throw new InvalidOperationException("exact-frame tracker did not preserve a short one-rune cue"));
         if (Math.Abs(exactCue.Start - 10d) > .000001)
             throw new InvalidOperationException("exact-frame tracker did not retain the first refined PTS as cue start");
-        if (Math.Abs(exactCue.End - (10d + 3d / 30d)) > .000001)
+        if (Math.Abs(exactCue.End - (10d + 9d / 30d)) > .000001)
             throw new InvalidOperationException("exact-frame tracker did not retain refined frame duration as cue end");
 
         var cues = trackerType.GetProperty("Cues", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
@@ -176,8 +181,9 @@ internal static class OcrTrackerModeRegression
         observeExact.Invoke(shortCaption, [22d + 3d / 30d, 1d / 30d, oneRune]);
         if (((IReadOnlyList<OcrCue>)(cues.GetValue(shortCaption)
                 ?? throw new InvalidOperationException("missing short-caption cue list"))).Count != 0)
-            throw new InvalidOperationException("one-rune subtext was promoted before its third stable frame");
-        observeExact.Invoke(shortCaption, [22d + 4d / 30d, 1d / 30d, oneRune]);
+            throw new InvalidOperationException("one-rune subtext was promoted before minimum evidence");
+        for (var index = 4; index <= 11; index++)
+            observeExact.Invoke(shortCaption, [22d + index / 30d, 1d / 30d, oneRune]);
         var shortCaptionCues = (IReadOnlyList<OcrCue>)(cues.GetValue(shortCaption)
             ?? throw new InvalidOperationException("missing confirmed short-caption cue list"));
         var shortCaptionActive = (OcrCue)(exactActive.GetValue(shortCaption)
@@ -185,7 +191,7 @@ internal static class OcrTrackerModeRegression
         if (shortCaptionCues.Count != 1 || shortCaptionCues[0].Text != "你走吧"
             || shortCaptionActive.Text != "走"
             || Math.Abs(shortCaptionActive.Start - (22d + 2d / 30d)) > .000001)
-            throw new InvalidOperationException("three-frame one-rune subtitle did not become its own timed cue");
+            throw new InvalidOperationException("stable 300ms one-rune subtitle did not become its own timed cue");
 
         var repeated = exactConstructor.Invoke([30d, .68d, true]);
         var longText = new OcrResult(true, true, "天天被幸福包围", .99, []);
@@ -218,6 +224,15 @@ internal static class OcrTrackerModeRegression
                 throw new InvalidOperationException($"{name} OCR can quantize cue timing or drop short captions");
         }
         var accurateMode = modes["accurate"];
+        if (accurateMode.GetType().GetProperty("ExhaustiveRecognition")?.GetValue(accurateMode) is not true
+            || modes["balanced"].GetType().GetProperty("ExhaustiveRecognition")?.GetValue(modes["balanced"]) is true
+            || modes["fast"].GetType().GetProperty("ExhaustiveRecognition")?.GetValue(modes["fast"]) is true)
+            throw new InvalidOperationException("Accurate OCR no longer owns the every-frame Medium quality policy");
+        var installerType = assembly.GetType("BiliSubStudio.Core.Ocr.OcrInstaller")
+            ?? throw new InvalidOperationException("missing OCR installer");
+        if ((string?)installerType.GetField("DetectionModel")?.GetRawConstantValue() != "PP-OCRv6_medium_det"
+            || (string?)installerType.GetField("RecognitionModel")?.GetRawConstantValue() != "PP-OCRv6_medium_rec")
+            throw new InvalidOperationException("OCR quality model regressed from PP-OCRv6 Medium");
         var scannerType = typeof(OcrResult).Assembly.GetType("BiliSubStudio.Core.Ocr.OcrScanner")
             ?? throw new InvalidOperationException("missing OcrScanner");
         var filterOverlayLines = scannerType.GetMethod("FilterOffBaselineOverlayLines", BindingFlags.Static | BindingFlags.NonPublic)

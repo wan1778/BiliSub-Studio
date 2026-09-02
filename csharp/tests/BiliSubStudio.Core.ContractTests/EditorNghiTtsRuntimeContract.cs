@@ -146,22 +146,33 @@ internal static class EditorNghiTtsRuntimeContract
                 var trimmed = cues[index].GetProperty("trimmed_silence_frames").GetInt64();
                 var padding = cues[index].GetProperty("padding_frames").GetInt64();
                 var scale = cues[index].GetProperty("length_scale").GetDouble() / cues[index].GetProperty("base_length_scale").GetDouble();
-                var timingSource = cues[index].GetProperty("timing_source").GetString();
-                var minimumScale = timingSource == "sentence-group" ? .45 : .85;
+                const double minimumScale = .30;
+                var nativeReferenceFrames = cues[index].GetProperty("native_reference_frames").GetInt64();
+                var actualSpeed = cues[index].GetProperty("actual_speed_factor").GetDouble();
                 var calls = cues[index].GetProperty("synthesis_calls").GetInt32();
                 var fitMethod = cues[index].GetProperty("fit_method").GetString();
-                var nativeMetadata = fitMethod == "piper-length-scale" && sourceFrames - trimmed == generated;
-                var tempoMetadata = fitMethod == "piper-atempo"
-                    && cues[index].GetProperty("tempo_input_frames").GetInt64() == sourceFrames - trimmed
-                    && cues[index].GetProperty("tempo_factor").GetDouble() > 1
-                    && cues[index].GetProperty("tempo_attempts").GetInt32() is >= 1 and <= 12
-                    && generated <= sourceFrames - trimmed;
-                Check((nativeMetadata || tempoMetadata)
-                    && attempts is >= 1 and <= 10 && calls >= attempts && calls <= attempts + 10
+                var timingSource = cues[index].GetProperty("timing_source").GetString();
+                var tempoInput = cues[index].GetProperty("tempo_input_frames").GetInt64();
+                var tempoFactor = cues[index].GetProperty("tempo_factor").GetDouble();
+                var tempoAttempts = cues[index].GetProperty("tempo_attempts").GetInt32();
+                var noTempo = cues[index].GetProperty("tempo_input_frames").GetInt64() == 0
+                    && cues[index].GetProperty("tempo_factor").GetDouble() == 0
+                    && cues[index].GetProperty("tempo_attempts").GetInt32() == 0;
+                var nativeMetadata = fitMethod == "piper-length-scale"
+                    ? noTempo && sourceFrames - trimmed == generated
+                    : fitMethod == "piper-atempo" && tempoInput == sourceFrames - trimmed
+                        && tempoInput > generated && tempoFactor > 1 && tempoAttempts is >= 1 and <= 6
+                        && Math.Abs(tempoInput / (double)generated - tempoFactor) <= 1e-9;
+                var speedMetadata = timingSource == "sentence-group"
+                    || Math.Abs(nativeReferenceFrames / (double)generated - actualSpeed) <= 1e-9;
+                const int maximumAttempts = 12;
+                Check(nativeMetadata && speedMetadata
+                    && attempts >= 1 && attempts <= maximumAttempts && calls >= attempts && calls <= attempts + 10
                     && scale >= minimumScale && scale <= 1.20 && sourceFrames > 0 && trimmed >= 0
+                    && nativeReferenceFrames > 0 && actualSpeed >= 1 && actualSpeed <= 100
                     && generated > 0 && generated + padding == frames
                     && padding >= 0 && padding < frames,
-                    "native Piper fit or complete-speech tempo fallback has verified frame metadata");
+                    "Piper-first dynamic fit has verified complete-frame metadata");
                 File.Copy(clip, Path.Combine(paths.Root, $"sentence-{index + 1}.wav"), overwrite: true);
             }
         }

@@ -66,20 +66,41 @@ internal static class EditorLicensedVoiceProfileContract
         Equal(cue.Id, type.GetProperty("Id")!.GetValue(whole));
         Equal(1d, type.GetProperty("CueStart")!.GetValue(whole));
         Equal(5d, type.GetProperty("CueEnd")!.GetValue(whole));
-        Equal(1.5d, type.GetProperty("VoiceStart")!.GetValue(whole));
-        Equal(3.5d, type.GetProperty("VoiceEnd")!.GetValue(whole));
-        Equal("whisper", type.GetProperty("TimingSource")!.GetValue(whole));
+        Equal(1d, type.GetProperty("VoiceStart")!.GetValue(whole));
+        Equal(5d, type.GetProperty("VoiceEnd")!.GetValue(whole));
+        Equal("srt-fallback", type.GetProperty("TimingSource")!.GetValue(whole));
         Equal(cue.VietnameseText, type.GetProperty("Text")!.GetValue(whole));
         True(type.GetProperty("Groups") is null, "whole cue must not encode Whisper pause groups");
         var fallback = method.Invoke(null, [cue, "ngoc_huyen", timing with { Words = [] }])!;
         Equal(1d, type.GetProperty("VoiceStart")!.GetValue(fallback));
         Equal(5d, type.GetProperty("VoiceEnd")!.GetValue(fallback));
         Equal("srt-fallback", type.GetProperty("TimingSource")!.GetValue(fallback));
+        var boundaryHalo = method.Invoke(null, [cue, "ngoc_huyen", timing with
+        {
+            Words = [new EditorWordTiming("neighbor", .92, .987, .9)],
+            Pauses = [], SpeechStart = .92, SpeechEnd = .987,
+        }])!;
+        Equal(1d, type.GetProperty("VoiceStart")!.GetValue(boundaryHalo));
+        Equal(5d, type.GetProperty("VoiceEnd")!.GetValue(boundaryHalo));
+        Equal("srt-fallback", type.GetProperty("TimingSource")!.GetValue(boundaryHalo));
+        var partialOverlap = method.Invoke(null, [cue, "ngoc_huyen", timing with
+        {
+            Words = [new EditorWordTiming("crossing", .95, 1.2, .9)],
+            Pauses = [], SpeechStart = .95, SpeechEnd = 1.2,
+        }])!;
+        Equal(1d, type.GetProperty("VoiceStart")!.GetValue(partialOverlap));
+        Equal(5d, type.GetProperty("VoiceEnd")!.GetValue(partialOverlap));
+        Equal("srt-fallback", type.GetProperty("TimingSource")!.GetValue(partialOverlap));
         VerifyVoiceWavFrames(service);
         VerifyNativeRateMetadata(service);
         VerifySentenceGroupMetadata(service);
-        foreach (var invalid in new[] { timing with { CueId = "different-cue" },
-            timing with { Words = [new EditorWordTiming("outside", 6, 7, .9)] } })
+        var outside = method.Invoke(null, [cue, "ngoc_huyen", timing with
+        {
+            Words = [new EditorWordTiming("outside", 6, 7, .9)],
+            Pauses = []
+        }])!;
+        Equal("srt-fallback", type.GetProperty("TimingSource")!.GetValue(outside));
+        foreach (var invalid in new[] { timing with { CueId = "different-cue" } })
         {
             try
             {
@@ -128,12 +149,24 @@ internal static class EditorLicensedVoiceProfileContract
         Equal("w0-0", mapped[0].Words[0].Text);
         Equal("w0-5", mapped[0].Words[^1].Text);
         Equal(0d, mapped[0].SpeechStart);
-        Equal(1.8d, mapped[0].SpeechEnd);
+        Equal(1.84d, mapped[0].SpeechEnd);
         Equal("male_like", mapped[0].VoiceClass);
         True(mapped.SelectMany(timing => timing.Words).All(word => word.End > word.Start),
             "indexed mapping returned invalid words");
         True(watch.Elapsed < TimeSpan.FromSeconds(10),
             $"indexed mapping regressed to dispatcher-blocking runtime: {watch.Elapsed}");
+
+        var boundaryCue = new EditorSubtitleCue("boundary-cue", "3083", string.Empty,
+            7943.333, 7945.4, "source", "Buông ta ra! Ca ca!");
+        var boundaryAnalysis = analysis with
+        {
+            Segments = [new EditorSpeechSegment(7941.88, 7943.32, "neighbor", 0, 0,
+                [new EditorWordTiming("呢", 7943.24, 7943.32, .24)], "uncertain", 0, 0)]
+        };
+        var boundaryMapped = EditorSpeechAnalysisDocument.MapToCues(boundaryAnalysis, [boundaryCue]);
+        Equal(1, boundaryMapped[0].Words.Count);
+        Equal(7943.24d, boundaryMapped[0].SpeechStart);
+        Equal(7943.32d, boundaryMapped[0].SpeechEnd);
 
         using var cancelled = new CancellationTokenSource();
         cancelled.Cancel();
@@ -189,30 +222,40 @@ internal static class EditorLicensedVoiceProfileContract
             ["fit_method"] = "piper-length-scale", ["raw_duration"] = 2.4, ["frames"] = 44100L,
             ["source_frames"] = 43800L, ["generated_frames"] = 43800L,
             ["trimmed_silence_frames"] = 0L, ["padding_frames"] = 300L, ["base_length_scale"] = 1d,
-            ["length_scale"] = .95, ["synthesis_attempts"] = 2, ["synthesis_calls"] = 2, ["cache_hit"] = false,
+            ["length_scale"] = .65d, ["synthesis_attempts"] = 2, ["synthesis_calls"] = 2, ["cache_hit"] = false,
+            ["native_reference_frames"] = 59130L, ["group_native_frames"] = 0L,
+            ["actual_speed_factor"] = 1.35d,
         };
         object Cue(Dictionary<string, object> values) => System.Text.Json.JsonSerializer.Deserialize(
             System.Text.Json.JsonSerializer.Serialize(values), cueType, json)!;
-        Equal(false, validate.Invoke(null, [Cue(fixture), 44100L, false, 22050]));
-        Equal(true, validate.Invoke(null, [Cue(new(fixture) { ["length_scale"] = .88 }), 44100L, false, 22050]));
+        Equal(true, validate.Invoke(null, [Cue(fixture), 44100L, false, 22050]));
         Equal(true, validate.Invoke(null, [Cue(new(fixture) { ["source_frames"] = 43100L,
-            ["generated_frames"] = 43100L, ["padding_frames"] = 1000L }), 44100L, false, 22050]));
+            ["generated_frames"] = 43100L, ["padding_frames"] = 1000L,
+            ["native_reference_frames"] = 58185L }), 44100L, false, 22050]));
         Equal(true, validate.Invoke(null, [Cue(new(fixture) { ["source_frames"] = 45000L,
-            ["generated_frames"] = 44100L, ["trimmed_silence_frames"] = 900L, ["padding_frames"] = 0L }), 44100L, false, 22050]));
+            ["generated_frames"] = 44100L, ["trimmed_silence_frames"] = 900L, ["padding_frames"] = 0L,
+            ["native_reference_frames"] = 59535L }), 44100L, false, 22050]));
         Equal(true, validate.Invoke(null, [Cue(new(fixture) { ["timing_source"] = "sentence-group",
-            ["length_scale"] = .5 }), 44100L, false, 22050]));
+             ["length_scale"] = .50d, ["group_native_frames"] = 59130L,
+             ["actual_speed_factor"] = 1.35d }), 44100L, false, 22050]));
+        Equal(true, validate.Invoke(null, [Cue(new(fixture) { ["timing_source"] = "sentence-group",
+             ["length_scale"] = .60d, ["group_native_frames"] = 59130L,
+             ["actual_speed_factor"] = 1.35d, ["synthesis_attempts"] = 12,
+             ["synthesis_calls"] = 12 }), 44100L, false, 22050]));
         var tempo = new Dictionary<string, object>
         {
             ["fit_method"] = "piper-atempo", ["raw_duration"] = 90000d / 22050,
             ["frames"] = 44100L, ["source_frames"] = 90000L, ["tempo_input_frames"] = 88000L,
-            ["generated_frames"] = 43000L, ["trimmed_silence_frames"] = 2000L, ["padding_frames"] = 1100L,
-            ["base_length_scale"] = 1d, ["length_scale"] = 1d, ["tempo_factor"] = 2.1,
-            ["tempo_attempts"] = 1, ["synthesis_attempts"] = 1, ["synthesis_calls"] = 1,
+            ["generated_frames"] = 40000L, ["trimmed_silence_frames"] = 2000L, ["padding_frames"] = 4100L,
+            ["base_length_scale"] = 1d, ["length_scale"] = .30d, ["tempo_factor"] = 2.2,
+            ["tempo_attempts"] = 1, ["synthesis_attempts"] = 12, ["synthesis_calls"] = 12,
+            ["native_reference_frames"] = 80000L, ["group_native_frames"] = 0L,
+            ["actual_speed_factor"] = 2d,
             ["cache_hit"] = false, ["status"] = "review", ["timing_source"] = "srt-fallback",
         };
         Equal(true, validate.Invoke(null, [Cue(tempo), 44100L, false, 22050]));
-        Equal(false, validate.Invoke(null, [Cue(new(fixture) { ["synthesis_calls"] = 12 }), 44100L, false, 22050]));
-        Equal(false, validate.Invoke(null, [Cue(new(fixture) { ["cache_hit"] = true, ["synthesis_calls"] = 0 }), 44100L, false, 22050]));
+        Equal(true, validate.Invoke(null, [Cue(new(fixture) { ["synthesis_calls"] = 12 }), 44100L, false, 22050]));
+        Equal(true, validate.Invoke(null, [Cue(new(fixture) { ["cache_hit"] = true, ["synthesis_calls"] = 0 }), 44100L, false, 22050]));
         var invalid = new Dictionary<string, object>[]
         {
             new(fixture) { ["fit_method"] = "atempo" },
@@ -220,9 +263,12 @@ internal static class EditorLicensedVoiceProfileContract
             new(fixture) { ["generated_frames"] = 43700L },
             new(fixture) { ["source_frames"] = 45000L, ["trimmed_silence_frames"] = 899L },
             new(fixture) { ["base_length_scale"] = 0d },
-            new(fixture) { ["length_scale"] = .84 },
-            new(fixture) { ["timing_source"] = "sentence-group", ["length_scale"] = .44 },
-            new(fixture) { ["synthesis_attempts"] = 11, ["synthesis_calls"] = 11 },
+            new(fixture) { ["length_scale"] = .299 },
+            new(fixture) { ["timing_source"] = "sentence-group", ["length_scale"] = .299,
+                ["group_native_frames"] = 59130L },
+            new(fixture) { ["timing_source"] = "sentence-group", ["length_scale"] = .60,
+                ["group_native_frames"] = 59130L, ["actual_speed_factor"] = 1.35d,
+                ["synthesis_attempts"] = 13, ["synthesis_calls"] = 13 },
             new(fixture) { ["synthesis_calls"] = 13 },
             new(fixture) { ["synthesis_attempts"] = 1, ["synthesis_calls"] = 1 },
             new(fixture) { ["cache_hit"] = true },
@@ -238,10 +284,10 @@ internal static class EditorLicensedVoiceProfileContract
         }
         foreach (var values in new[]
         {
-            new Dictionary<string, object>(tempo) { ["tempo_factor"] = 1d },
+            new Dictionary<string, object>(tempo) { ["tempo_factor"] = 2.1d },
             new Dictionary<string, object>(tempo) { ["tempo_input_frames"] = 87999L },
             new Dictionary<string, object>(tempo) { ["tempo_attempts"] = 0 },
-            new Dictionary<string, object>(tempo) { ["status"] = "fit" },
+            new Dictionary<string, object>(tempo) { ["tempo_attempts"] = 7 },
         })
         {
             try
@@ -273,6 +319,8 @@ internal static class EditorLicensedVoiceProfileContract
             {
                 ["id"] = $"cue-{index + 9}", ["timing_source"] = "sentence-group",
                 ["clip_start_sample"] = cursor, ["target_frames"] = frames[index],
+                ["generated_frames"] = frames[index], ["native_reference_frames"] = 119070L,
+                ["group_native_frames"] = 119070L, ["actual_speed_factor"] = 1.35d,
             };
             actual.SetValue(System.Text.Json.JsonSerializer.Deserialize(
                 System.Text.Json.JsonSerializer.Serialize(values), workerType, json), index);
@@ -289,6 +337,8 @@ internal static class EditorLicensedVoiceProfileContract
         {
             ["id"] = "cue-11", ["timing_source"] = "sentence-group",
             ["clip_start_sample"] = 355973L, ["target_frames"] = frames[2],
+            ["generated_frames"] = frames[2], ["native_reference_frames"] = 119070L,
+            ["group_native_frames"] = 119070L, ["actual_speed_factor"] = 1.35d,
         };
         broken.SetValue(System.Text.Json.JsonSerializer.Deserialize(
             System.Text.Json.JsonSerializer.Serialize(invalid), workerType, json), 2);

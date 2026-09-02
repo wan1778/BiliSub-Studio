@@ -130,15 +130,28 @@ public static class EditorSpeechAnalysisDocument
         {
             if ((cueIndex & 255) == 0) cancellationToken.ThrowIfCancellationRequested();
             var cue = cues[cueIndex];
-            var wordStart = LowerBoundWord(wordsByMidpoint, cue.Start - .08);
-            var wordEnd = UpperBoundWord(wordsByMidpoint, cue.End + .08);
+            // Whisper may see speech begin just before OCR paints the caption or
+            // finish just after it disappears. Borrow at most 500 ms, and never
+            // cross the neighboring cue's ownership boundary.
+            var ownershipStart = Math.Max(0, cue.Start - .5);
+            var ownershipEnd = cue.End + .5;
+            if (cueIndex > 0) ownershipStart = Math.Max(ownershipStart, cues[cueIndex - 1].End);
+            if (cueIndex + 1 < cues.Count) ownershipEnd = Math.Min(ownershipEnd, cues[cueIndex + 1].Start);
+            if (ownershipEnd <= ownershipStart)
+            {
+                ownershipStart = cue.Start;
+                ownershipEnd = cue.End;
+            }
+            var wordStart = LowerBoundWord(wordsByMidpoint, ownershipStart);
+            var wordEnd = UpperBoundWord(wordsByMidpoint, ownershipEnd);
             var words = wordsByMidpoint.AsSpan(wordStart, wordEnd - wordStart).ToArray()
                 .Select(item => item.Word)
+                .Where(word => word.End > ownershipStart && word.Start < ownershipEnd)
                 .OrderBy(word => word.Start)
                 .ThenBy(word => word.End)
                 .ToArray();
-            var speechStart = words.Length > 0 ? Math.Clamp(words[0].Start, cue.Start, cue.End) : cue.Start;
-            var speechEnd = words.Length > 0 ? Math.Clamp(words[^1].End, speechStart, cue.End) : cue.End;
+            var speechStart = words.Length > 0 ? Math.Clamp(words[0].Start, ownershipStart, ownershipEnd) : cue.Start;
+            var speechEnd = words.Length > 0 ? Math.Clamp(words[^1].End, speechStart, ownershipEnd) : cue.End;
             if (speechEnd <= speechStart + .01) { speechStart = cue.Start; speechEnd = cue.End; }
             var pauses = new List<EditorPauseTiming>();
             for (var index = 1; index < words.Length; index++)

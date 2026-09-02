@@ -108,6 +108,7 @@ public sealed partial class EditorPage
             ? "Câu đang có thay đổi chưa lưu. Preview hiển thị bản nháp; bấm Lưu câu trước khi tạo voice/xuất."
             : "Nội dung khớp câu đã lưu.";
         RenderOverlays();
+        if (!_playback.IsPreviewMode) QueuePreviewRefresh();
         RefreshEditorActions();
         RefreshSubtitleCueEditorControls();
     }

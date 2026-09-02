@@ -9,7 +9,7 @@ public sealed record OcrRegion(
     [property: JsonPropertyName("h")] double Height);
 public sealed record OcrLine(string Text, double Confidence, int[] Box);
 public sealed record OcrResult(bool Ok, bool Detected, string Text, double Confidence, IReadOnlyList<OcrLine> Lines, string? Error = null);
-public sealed record OcrCue(double Start, double End, string Text, [property: JsonPropertyName("conf")] double Confidence);
+public sealed record OcrCue(double Start, double End, string Text, [property: JsonPropertyName("conf")] double Confidence, [property: JsonPropertyName("support")] int RawSupportCount = 0, [property: JsonPropertyName("csupport")] int ConfidentSupportCount = 0, [property: JsonPropertyName("review")] bool NeedsReview = false);
 
 public sealed record OcrScanRequest(
     string Path,
@@ -83,4 +83,5 @@ public sealed record OcrCheckpointInfo(
     int CompletedLanes,
     int TotalLanes,
     double ProgressPercent,
-    IReadOnlyList<OcrCue> RecentCues);
+    IReadOnlyList<OcrCue> RecentCues,
+    IReadOnlyList<OcrCue>? RecoverableCues = null);

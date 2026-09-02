@@ -546,8 +546,10 @@ public sealed class BiliSubApplication : IAsyncDisposable
         double seconds,
         MediaPreviewInfo media,
         IReadOnlyList<EditRegion> regions,
+        EditorSubtitleBurn? subtitle,
         CancellationToken cancellationToken) =>
-        _editor.GetPreviewFrameJpegAsync(path, seconds, media.Width, media.Height, media.Duration, regions, cancellationToken);
+        _editor.GetPreviewFrameJpegAsync(
+            path, seconds, media.Width, media.Height, media.Duration, regions, subtitle, cancellationToken);
 
     public Task<EditorPreviewSegment> CreateEditorPreviewSegmentAsync(
         VideoEditRequest request,
@@ -636,6 +638,7 @@ public sealed class BiliSubApplication : IAsyncDisposable
         var name = FileNamePolicy.Sanitize(fileName, "BiliSub_OCR_Chinese");
         if (!name.EndsWith(".srt", StringComparison.OrdinalIgnoreCase)) name += ".srt";
         var path = FileNamePolicy.UniquePath(Path.Combine(directory, name));
+        var temporary = path + ".tmp-" + Guid.NewGuid().ToString("N");
         var output = new StringBuilder();
         var index = 0;
         foreach (var cue in cues)
@@ -643,8 +646,16 @@ public sealed class BiliSubApplication : IAsyncDisposable
             if (!ChineseSubtitleNormalizer.TryNormalize(cue.Text, out var text)) continue;
             output.Append(++index).Append('\n').Append(SrtTime(cue.Start)).Append(" --> ").Append(SrtTime(cue.End)).Append('\n').Append(text).Append("\n\n");
         }
-        await File.WriteAllTextAsync(path, output.ToString(), new UTF8Encoding(false), cancellationToken);
-        return path;
+        try
+        {
+            await File.WriteAllTextAsync(temporary, output.ToString(), new UTF8Encoding(false), cancellationToken);
+            File.Move(temporary, path);
+            return path;
+        }
+        finally
+        {
+            try { File.Delete(temporary); } catch { }
+        }
     }
 
     public async Task PauseJobAsync(string id, CancellationToken cancellationToken)
@@ -727,7 +738,7 @@ public sealed class BiliSubApplication : IAsyncDisposable
     private static async Task RunJobAsync(AppJob job, Func<Task> action)
     {
         try { await action(); }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (job.CancellationToken.IsCancellationRequested)
         {
             if (!job.Snapshot().Done) job.CancelComplete();
         }

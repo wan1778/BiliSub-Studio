@@ -23,6 +23,11 @@ public sealed record EditorAudioSettings(string SourceMode, double SourceGain)
     public static EditorAudioSettings Default { get; } = new("keep", 1);
 }
 
+public sealed record EditorTrimRange(double Start, double End)
+{
+    public double Duration => End - Start;
+}
+
 public sealed record EditorAsrProject(
     string Status,
     string ModelName,
@@ -69,7 +74,8 @@ public sealed record EditorSubtitleProject(
     string SkillSha256,
     string OutputPath,
     bool Karaoke = true,
-    string? TranslationPolicyKey = null);
+    string? TranslationPolicyKey = null,
+    EditorSubtitleStyle? Style = null);
 
 public sealed record EditorProject(
     int Schema,
@@ -84,11 +90,12 @@ public sealed record EditorProject(
     EditorAsrProject? Asr = null,
     EditorSpeechProject? Speech = null,
     EditorTtsProject? Tts = null,
-    IReadOnlyDictionary<string, string>? VoiceOverrides = null);
+    IReadOnlyDictionary<string, string>? VoiceOverrides = null,
+    EditorTrimRange? Trim = null);
 
 public sealed class EditorProjectStore
 {
-    public const int CurrentSchema = 5;
+    public const int CurrentSchema = 7;
     private const long MaxProjectBytes = 64L * 1024 * 1024;
     private const string CurrentTtsEngine = "nghi-tts";
     private readonly string _directory;
@@ -147,7 +154,7 @@ public sealed class EditorProjectStore
                     loaded = await JsonSerializer.DeserializeAsync<EditorProject>(stream, _json, cancellationToken)
                         ?? throw new InvalidDataException("Project Editor rỗng.");
                 }
-                if (loaded.Schema is not (1 or 2 or 3 or 4 or CurrentSchema)
+                if (loaded.Schema is not (1 or 2 or 3 or 4 or 5 or 6 or CurrentSchema)
                     || !string.Equals(loaded.Id, id, StringComparison.Ordinal)
                     || loaded.Source is null)
                     throw new InvalidDataException("Project Editor không đúng phiên bản hoặc nguồn.");
@@ -173,6 +180,7 @@ public sealed class EditorProjectStore
                     Speech = NormalizeSpeech(loaded.Speech),
                     Tts = subtitle is null ? null : NormalizeTts(loaded.Tts),
                     VoiceOverrides = subtitle is null ? null : NormalizeVoiceOverrides(loaded.VoiceOverrides),
+                    Trim = NormalizeTrim(loaded.Trim, source.Duration),
                 };
             }
             catch (OperationCanceledException) { throw; }
@@ -209,7 +217,8 @@ public sealed class EditorProjectStore
             [],
             null,
             DateTimeOffset.UtcNow,
-            EditorAudioSettings.Default);
+            EditorAudioSettings.Default,
+            Trim: new EditorTrimRange(0, source.Duration));
     }
 
     private static bool SourceFingerprintChanged(EditorSourceFingerprint? previous, EditorSourceFingerprint current)
@@ -276,6 +285,7 @@ public sealed class EditorProjectStore
             Speech = NormalizeSpeech(project.Speech),
             Tts = subtitle is null ? null : NormalizeTts(project.Tts),
             VoiceOverrides = subtitle is null ? null : NormalizeVoiceOverrides(project.VoiceOverrides),
+            Trim = NormalizeTrim(project.Trim, normalizedSource.Duration),
             UpdatedUtc = DateTimeOffset.UtcNow,
         };
 
@@ -388,6 +398,7 @@ public sealed class EditorProjectStore
             SkillName = subtitle.SkillName?.Trim() ?? string.Empty,
             SkillSha256 = subtitle.SkillSha256?.Trim().ToLowerInvariant() ?? string.Empty,
             OutputPath = subtitle.OutputPath?.Trim() ?? string.Empty,
+            Style = EditorSubtitleStylePolicy.Normalize(subtitle.Style),
         };
     }
 
@@ -403,8 +414,40 @@ public sealed class EditorProjectStore
         {
             "keep" => new EditorAudioSettings("keep", 1),
             "mute" => new EditorAudioSettings("mute", 0),
-            _ => new EditorAudioSettings("duck", Math.Clamp(audio.SourceGain, .05, .95)),
+            _ => FromSourceGain(audio.SourceGain),
         };
+    }
+
+    public static EditorAudioSettings FromSourceGain(double sourceGain)
+    {
+        if (!double.IsFinite(sourceGain))
+            throw new InvalidDataException("Project Editor chứa mức âm thanh không hợp lệ.");
+        var gain = Math.Clamp(sourceGain, 0, 2);
+        if (gain <= 0) return new EditorAudioSettings("mute", 0);
+        if (Math.Abs(gain - 1) <= .0005) return new EditorAudioSettings("keep", 1);
+        // Keep the persisted "duck" value for backward compatibility. It now
+        // means any filtered source gain, including amplification above 100%.
+        return new EditorAudioSettings("duck", Math.Clamp(gain, .01, 2));
+    }
+
+    public static EditorTrimRange NormalizeTrim(EditorTrimRange? trim, double sourceDuration)
+    {
+        if (!double.IsFinite(sourceDuration) || sourceDuration <= 0)
+            throw new InvalidDataException("Thời lượng video Editor không hợp lệ.");
+        if (trim is null) return new EditorTrimRange(0, sourceDuration);
+        if (!double.IsFinite(trim.Start) || !double.IsFinite(trim.End)
+            || trim.Start < 0 || trim.End > sourceDuration + .05
+            || trim.End - trim.Start < .1)
+            throw new InvalidDataException("Khoảng cắt video phải nằm trong video và dài ít nhất 0,1 giây.");
+        return new EditorTrimRange(
+            Math.Clamp(trim.Start, 0, sourceDuration),
+            Math.Clamp(trim.End, 0, sourceDuration));
+    }
+
+    public static bool HasTrim(EditorTrimRange? trim, double sourceDuration)
+    {
+        var normalized = NormalizeTrim(trim, sourceDuration);
+        return normalized.Start > .001 || normalized.End < sourceDuration - .001;
     }
 
     private static EditorAsrProject? NormalizeAsr(EditorAsrProject? asr)

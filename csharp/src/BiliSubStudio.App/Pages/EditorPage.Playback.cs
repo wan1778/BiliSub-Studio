@@ -102,7 +102,7 @@ public sealed partial class EditorPage
 
         private void ResumeFromCurrentFrame() => _player?.Play();
 
-        private Task PlayFromStartAsync() => LoadSegmentAsync(0, play: true);
+        private Task PlayFromStartAsync() => LoadSegmentAsync(_page.CurrentTrimRange().Start, play: true);
 
         private Task ReplayFromStartAsync() => PlayFromStartAsync();
 
@@ -162,7 +162,7 @@ public sealed partial class EditorPage
                 if (snapshot.Ended)
                 {
                     PauseAtCurrentFrame();
-                    _page.StatusText.Text = "Đã xem hết bản chỉnh. Bấm Play để phát lại từ đầu.";
+                    _page.StatusText.Text = "Đã xem hết khoảng giữ lại. Bấm Play để phát lại từ mốc đầu.";
                 }
                 else if (snapshot.Playing) ResumeFromCurrentFrame();
                 else PauseAtCurrentFrame();
@@ -387,7 +387,7 @@ public sealed partial class EditorPage
             if (play) player.Play();
             if (announcePlayback)
                 _page.StatusText.Text =
-                    $"Đang xem bản chỉnh từ {FormatClock(sourcePosition)}. Preview sẽ tiếp tục tự động đến hết video.";
+                    $"Đang xem bản chỉnh từ {FormatClock(sourcePosition)}. Preview sẽ tiếp tục đến hết khoảng giữ lại.";
             if (previousPath is not null && !string.Equals(previousPath, _previewPath, StringComparison.OrdinalIgnoreCase))
                 await _page._application.DeleteEditorPreviewSegmentAsync(previousPath);
         }
@@ -398,7 +398,7 @@ public sealed partial class EditorPage
             try
             {
                 var nextStart = VideoEditorService.NextPreviewStart(
-                    _sourceStart, _sourceDuration, _page._media.Duration);
+                    _sourceStart, _sourceDuration, _page.CurrentTrimRange().End);
                 if (nextStart is null)
                 {
                     _prefetchTask = Task.CompletedTask;
@@ -539,7 +539,7 @@ public sealed partial class EditorPage
             {
                 if (_isUnloading || !IsPreviewMode || _page._media is null) return;
                 var nextStart = VideoEditorService.NextPreviewStart(
-                    _sourceStart, _sourceDuration, _page._media.Duration);
+                    _sourceStart, _sourceDuration, _page.CurrentTrimRange().End);
                 if (nextStart is null)
                 {
                     await CompletePlaybackAsync();
@@ -593,10 +593,10 @@ public sealed partial class EditorPage
             await SetModeAsync(enabled: false, play: false);
             HasEnded = true;
             _page._syncingTimeline = true;
-            try { _page.Timeline.Value = _page.Timeline.Maximum; }
+            try { _page.Timeline.Value = _page.CurrentTrimRange().End; }
             finally { _page._syncingTimeline = false; }
             _page.UpdateClock();
-            _page.StatusText.Text = "Đã xem hết bản chỉnh. Bấm Play để phát lại từ đầu.";
+            _page.StatusText.Text = "Đã xem hết khoảng giữ lại. Bấm Play để phát lại từ mốc đầu.";
             _page.SyncShellPlayerControls();
         }
 

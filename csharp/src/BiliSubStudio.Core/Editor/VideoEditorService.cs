@@ -23,9 +23,16 @@ public sealed record VideoEditRequest(
     EditorAudioSettings? Audio = null,
     EditorVoiceTrack? VoiceTrack = null,
     double MosaicScaleX = 1,
-    double MosaicScaleY = 1);
+    double MosaicScaleY = 1,
+    EditorTrimRange? Trim = null,
+    EditorExportSettings? Export = null);
 
-public sealed record EditorSubtitleBurn(IReadOnlyList<EditorSubtitleCue> Cues, EditorSubtitlePlacement Placement, IReadOnlyList<EditorCueSpeechTiming>? SpeechTiming = null, bool Karaoke = true);
+public sealed record EditorSubtitleBurn(
+    IReadOnlyList<EditorSubtitleCue> Cues,
+    EditorSubtitlePlacement Placement,
+    IReadOnlyList<EditorCueSpeechTiming>? SpeechTiming = null,
+    bool Karaoke = true,
+    EditorSubtitleStyle? Style = null);
 
 public sealed record VideoEditResult(string OutputPath);
 
@@ -55,7 +62,10 @@ public sealed class VideoEditorService
         var input = Path.GetFullPath(request.InputPath.Trim());
         var inputInfo = new FileInfo(input);
         if (!inputInfo.Exists || inputInfo.Length <= 0) throw new FileNotFoundException("Video nguồn không hợp lệ.", input);
-        if (!HasEdit(request)) throw new ArgumentException("Hãy tạo vùng hiệu ứng, nạp bản Vietsub hoặc thay đổi âm thanh để xuất video.");
+        var trim = EditorProjectStore.NormalizeTrim(request.Trim, request.Duration);
+        if (!HasEdit(request)) throw new ArgumentException("Hãy cắt video, tạo vùng hiệu ứng, nạp bản Vietsub hoặc thay đổi âm thanh để xuất video.");
+        var renderRequest = BuildPreviewSlice(
+            request, trim.Start, trim.Duration, request.SourceWidth, request.SourceHeight);
         var outputDirectory = string.IsNullOrWhiteSpace(request.OutputDirectory) ? Path.GetDirectoryName(input)! : Path.GetFullPath(request.OutputDirectory.Trim());
         Directory.CreateDirectory(outputDirectory);
         DriveInfo? outputDrive = null;
@@ -94,38 +104,32 @@ public sealed class VideoEditorService
         if (Path.GetExtension(fileName).ToLowerInvariant() is not (".mp4" or ".mkv")) fileName += ".mp4";
         var output = FileNamePolicy.UniquePath(Path.Combine(outputDirectory, fileName), input);
         var temporary = output + ".rendering" + Path.GetExtension(output);
-        var subtitleAss = request.Subtitle is null ? null : Path.Combine(Path.GetTempPath(), "bilisub-editor-sub-" + Guid.NewGuid().ToString("N") + ".ass");
+        var subtitleAss = renderRequest.Subtitle is null ? null : Path.Combine(Path.GetTempPath(), "bilisub-editor-sub-" + Guid.NewGuid().ToString("N") + ".ass");
         TryDelete(temporary);
         if (subtitleAss is not null)
-            await File.WriteAllTextAsync(subtitleAss, BuildAss(request.Subtitle!, request.SourceWidth, request.SourceHeight), new UTF8Encoding(encoderShouldEmitUTF8Identifier: true), token);
-        var graph = BuildFilter(request, subtitleAss);
+            await File.WriteAllTextAsync(subtitleAss, BuildAss(renderRequest.Subtitle!, request.SourceWidth, request.SourceHeight), new UTF8Encoding(encoderShouldEmitUTF8Identifier: true), token);
+        var graph = "[0:v]setpts=PTS-STARTPTS[renderbase];"
+            + BuildFilterCore(renderRequest, subtitleAss, "renderbase", requireEdit: false);
         var ffmpeg = await _tools.EnsureFfmpegAsync(token);
-        var audio = EditorProjectStore.NormalizeAudio(request.Audio);
-        var voice = NormalizeVoiceTrack(request.VoiceTrack, requireFile: true);
+        var audio = EditorProjectStore.NormalizeAudio(renderRequest.Audio);
+        var voice = NormalizeVoiceTrack(renderRequest.VoiceTrack, requireFile: true);
         var mp4 = Path.GetExtension(output).Equals(".mp4", StringComparison.OrdinalIgnoreCase);
-        var args = new List<string>
-        {
-            "-y", "-hide_banner", "-loglevel", "error", "-nostdin", "-i", input,
-        };
-        if (voice is not null) args.AddRange(["-i", voice.Path]);
-        var combinedGraph = voice is null ? graph : graph + ";" + BuildVoiceAudioFilter(audio, voice, 1, sourceStart: 0);
-        args.AddRange([
-            "-filter_complex", combinedGraph, "-map", "[vout]", "-map_metadata", "0",
-            "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p",
-        ]);
-        if (voice is null) args.AddRange(BuildAudioArguments(audio, mp4));
-        else args.AddRange(["-map", "[aout]", "-c:a", "aac", "-b:a", "192k"]);
-        if (mp4) args.AddRange(["-movflags", "+faststart"]);
-        args.AddRange(["-progress", "pipe:1", "-nostats", temporary]);
+        var export = EditorExportPolicy.Normalize(request.Export);
+        var exportGraph = EditorExportPolicy.BuildVideoGraph(graph, export, request.SourceWidth, request.SourceHeight);
+        job.Set("encoder-probe", .5, "Đang kiểm tra bộ mã hóa video...");
+        var encoder = await EditorExportPolicy.ResolveEncoderAsync(ffmpeg, _processes, export, token, job.Log);
+        var args = BuildConfiguredRenderArguments(
+            input, temporary, exportGraph.FilterGraph, audio, trim, voice, mp4,
+            export, encoder, exportGraph.OutputLabel);
         job.Set("rendering", 1, "Đang chuẩn bị xuất video...");
-        job.Log($"Video Editor: {request.Regions.Count} vùng, audio={audio.SourceMode}/{audio.SourceGain:0.00}, voice={(voice is null ? "off" : "local")}, output {output}");
+        job.Log($"Video Editor: {request.Regions.Count} vùng, giữ {trim.Start:0.000}-{trim.End:0.000}s ({trim.Duration:0.000}s), codec={export.Codec}/{encoder.Name}, quality={export.Quality}, size={exportGraph.Dimensions.Width}x{exportGraph.Dimensions.Height}, fps={(export.FrameRate?.ToString("0.###", CultureInfo.InvariantCulture) ?? "source")}, audio={audio.SourceMode}/{audio.SourceGain:0.00}/{export.AudioBitrateKbps}k, voice={(voice is null ? "off" : "local")}, output {output}");
         var nextDiskCheck = Environment.TickCount64;
         try
         {
             var result = await _processes.RunAsync(ffmpeg, args, token, standardOutputLine: line =>
             {
                 var split = line.Split('=', 2);
-                if (split.Length != 2 || split[0] is not ("out_time_us" or "out_time_ms") || request.Duration <= 0) return;
+                if (split.Length != 2 || split[0] is not ("out_time_us" or "out_time_ms") || trim.Duration <= 0) return;
                 if (!double.TryParse(split[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var microseconds)) return;
                 if (outputDrive is not null && Environment.TickCount64 >= nextDiskCheck)
                 {
@@ -140,13 +144,15 @@ public sealed class VideoEditorService
                     }
                     nextDiskCheck = Environment.TickCount64 + RenderDiskCheckIntervalMilliseconds;
                 }
-                var percent = Math.Clamp(2 + microseconds / 1_000_000d / request.Duration * 94, 2, 96);
+                var percent = Math.Clamp(2 + microseconds / 1_000_000d / trim.Duration * 94, 2, 96);
                 job.Set("rendering", percent, $"Đang xuất video... {(int)percent}%");
             });
             if (result.ExitCode != 0) throw new InvalidOperationException($"FFmpeg editor: {result.StandardError.Trim()}");
             if (!File.Exists(temporary) || new FileInfo(temporary).Length <= 0) throw new InvalidDataException("Video đã render rỗng.");
             job.Set("validating", 97, "Đang kiểm tra stream, thời lượng và khả năng giải mã...");
-            await ValidateRenderedOutputAsync(temporary, request.Duration, voice is not null || audio.SourceMode != "mute", token);
+            await ValidateRenderedOutputAsync(
+                temporary, trim.Duration, voice is not null || audio.SourceMode != "mute",
+                exportGraph.Dimensions, export.Codec, export.FrameRate, token);
             job.Set("finalizing", 99, "Đã xác minh file; đang hoàn tất...");
             File.Move(temporary, output);
             return new VideoEditResult(output);
@@ -158,18 +164,22 @@ public sealed class VideoEditorService
         string path,
         double expectedDuration,
         bool expectAudio,
+        EditorExportDimensions expectedDimensions,
+        string expectedCodec,
+        double? expectedFrameRate,
         CancellationToken cancellationToken)
     {
         var ffprobe = await _tools.EnsureFfprobeAsync(cancellationToken);
         var probe = await _processes.RunAsync(ffprobe,
         [
             "-v", "error",
-            "-show_entries", "stream=codec_type,width,height:format=duration,size",
+            "-show_entries", "stream=codec_type,codec_name,width,height,avg_frame_rate:format=duration,size",
             "-of", "json", path,
         ], cancellationToken);
         if (probe.ExitCode != 0)
             throw new InvalidDataException("Không đọc được file vừa render: " + probe.StandardError.Trim());
         ValidateRenderedProbe(probe.StandardOutput, expectedDuration, expectAudio);
+        ValidateExportProbe(probe.StandardOutput, expectedDimensions, expectedCodec, expectedFrameRate);
 
         var ffmpeg = await _tools.EnsureFfmpegAsync(cancellationToken);
         var videoHead = await _processes.RunAsync(ffmpeg,
@@ -247,6 +257,55 @@ public sealed class VideoEditorService
             throw new InvalidDataException($"Duration output lệch {Math.Abs(duration - expectedDuration):0.000}s, vượt tolerance {tolerance:0.000}s.");
     }
 
+    private static void ValidateExportProbe(
+        string json,
+        EditorExportDimensions expectedDimensions,
+        string expectedCodec,
+        double? expectedFrameRate)
+    {
+        ArgumentNullException.ThrowIfNull(expectedDimensions);
+        using var document = JsonDocument.Parse(json);
+        var root = document.RootElement;
+        if (!root.TryGetProperty("streams", out var streams) || streams.ValueKind != JsonValueKind.Array)
+            throw new InvalidDataException("Output không có danh sách stream để xác minh thiết lập xuất.");
+        JsonElement video = default;
+        foreach (var stream in streams.EnumerateArray())
+        {
+            if (stream.TryGetProperty("codec_type", out var type) && type.GetString() == "video")
+            {
+                video = stream;
+                break;
+            }
+        }
+        if (video.ValueKind != JsonValueKind.Object)
+            throw new InvalidDataException("Output không có video stream để xác minh thiết lập xuất.");
+        var width = video.TryGetProperty("width", out var widthNode) && widthNode.TryGetInt32(out var parsedWidth) ? parsedWidth : 0;
+        var height = video.TryGetProperty("height", out var heightNode) && heightNode.TryGetInt32(out var parsedHeight) ? parsedHeight : 0;
+        if (width != expectedDimensions.Width || height != expectedDimensions.Height)
+            throw new InvalidDataException($"Kích thước output sai: cần {expectedDimensions.Width}x{expectedDimensions.Height}, thực tế {width}x{height}.");
+        var codec = video.TryGetProperty("codec_name", out var codecNode) ? codecNode.GetString()?.ToLowerInvariant() : null;
+        var requiredCodec = expectedCodec == "hevc" ? "hevc" : "h264";
+        if (!string.Equals(codec, requiredCodec, StringComparison.Ordinal))
+            throw new InvalidDataException($"Codec output sai: cần {requiredCodec}, thực tế {codec ?? "không xác định"}.");
+        if (expectedFrameRate is not double expectedFps) return;
+        var actualFps = video.TryGetProperty("avg_frame_rate", out var fpsNode)
+            ? ParseFrameRate(fpsNode.GetString())
+            : 0;
+        if (!double.IsFinite(actualFps) || actualFps <= 0 || Math.Abs(actualFps - expectedFps) > .05)
+            throw new InvalidDataException($"FPS output sai: cần {expectedFps:0.###}, thực tế {actualFps:0.###}.");
+    }
+
+    private static double ParseFrameRate(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return 0;
+        var parts = value.Split('/', 2);
+        if (!double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var numerator)) return 0;
+        if (parts.Length == 1) return numerator;
+        return double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var denominator) && denominator != 0
+            ? numerator / denominator
+            : 0;
+    }
+
     private static bool TryJsonDouble(JsonElement parent, string name, out double value)
     {
         value = 0;
@@ -266,7 +325,8 @@ public sealed class VideoEditorService
         if (!File.Exists(input) || new FileInfo(input).Length <= 0) throw new FileNotFoundException("Video nguồn không hợp lệ.", input);
         if (!double.IsFinite(request.Duration) || request.Duration <= 0) throw new InvalidDataException("Thời lượng video không hợp lệ.");
 
-        var (sourceStart, segmentDuration) = PreviewWindow(request.Duration, requestedStart);
+        var trim = EditorProjectStore.NormalizeTrim(request.Trim, request.Duration);
+        var (sourceStart, segmentDuration) = PreviewWindow(trim.Start, trim.End, requestedStart);
         var (previewWidth, previewHeight) = PreviewDimensions(request.SourceWidth, request.SourceHeight);
         var sliced = BuildPreviewSlice(request, sourceStart, segmentDuration, previewWidth, previewHeight);
         Directory.CreateDirectory(_previewDirectory);
@@ -430,6 +490,7 @@ public sealed class VideoEditorService
             Subtitle = subtitle,
             MosaicScaleX = previewWidth / (double)request.SourceWidth,
             MosaicScaleY = previewHeight / (double)request.SourceHeight,
+            Trim = new EditorTrimRange(0, segmentDuration),
         };
     }
 
@@ -466,8 +527,80 @@ public sealed class VideoEditorService
         return arguments;
     }
 
+    internal static IReadOnlyList<string> BuildRenderArguments(
+        string input,
+        string output,
+        string graph,
+        EditorAudioSettings? audioSettings,
+        EditorTrimRange trim,
+        EditorVoiceTrack? voiceTrack,
+        bool mp4) =>
+        BuildConfiguredRenderArguments(input, output, graph, audioSettings, trim, voiceTrack, mp4);
+
+    internal static IReadOnlyList<string> BuildConfiguredRenderArguments(
+        string input,
+        string output,
+        string graph,
+        EditorAudioSettings? audioSettings,
+        EditorTrimRange trim,
+        EditorVoiceTrack? voiceTrack,
+        bool mp4,
+        EditorExportSettings? exportSettings = null,
+        EditorResolvedVideoEncoder? resolvedEncoder = null,
+        string videoOutputLabel = "[vout]")
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(input);
+        ArgumentException.ThrowIfNullOrWhiteSpace(output);
+        ArgumentException.ThrowIfNullOrWhiteSpace(graph);
+        if (!double.IsFinite(trim.Start) || trim.Start < 0
+            || !double.IsFinite(trim.End) || trim.End - trim.Start < .1)
+            throw new InvalidDataException("Khoảng cắt video không hợp lệ.");
+        var audio = EditorProjectStore.NormalizeAudio(audioSettings);
+        var voice = NormalizeVoiceTrack(voiceTrack, requireFile: false);
+        var export = EditorExportPolicy.Normalize(exportSettings);
+        var encoder = resolvedEncoder ?? new EditorResolvedVideoEncoder(export.Codec == "hevc" ? "libx265" : "libx264", false);
+        if (videoOutputLabel is not ("[vout]" or "[exportv]"))
+            throw new InvalidDataException("Nhãn video output không hợp lệ.");
+        var arguments = new List<string>
+        {
+            "-y", "-hide_banner", "-loglevel", "error", "-nostdin",
+            "-ss", trim.Start.ToString("0.000", CultureInfo.InvariantCulture), "-i", input,
+        };
+        if (voice is not null)
+        {
+            var voiceSeek = Math.Max(0, trim.Start - voice.Start);
+            arguments.AddRange(["-ss", voiceSeek.ToString("0.000", CultureInfo.InvariantCulture), "-i", voice.Path]);
+        }
+        var combinedGraph = voice is null
+            ? graph
+            : graph + ";" + BuildVoiceAudioFilter(audio, voice, 1, trim.Start);
+        arguments.AddRange([
+            "-t", trim.Duration.ToString("0.000", CultureInfo.InvariantCulture),
+            "-filter_complex", combinedGraph, "-map", videoOutputLabel, "-map_metadata", "0",
+        ]);
+        arguments.AddRange(EditorExportPolicy.BuildVideoEncoderArguments(export, encoder, mp4));
+        if (voice is null) arguments.AddRange(BuildFinalAudioArguments(audio, export.AudioBitrateKbps, resetTimestamps: true));
+        else arguments.AddRange(["-map", "[aout]", "-c:a", "aac", "-b:a", export.AudioBitrateKbps.ToString(CultureInfo.InvariantCulture) + "k"]);
+        if (mp4) arguments.AddRange(["-movflags", "+faststart"]);
+        arguments.AddRange(["-progress", "pipe:1", "-nostats", output]);
+        return arguments;
+    }
+
     internal static IReadOnlyList<string> BuildAudioArguments(EditorAudioSettings? settings, bool mp4)
         => BuildAudioArgumentsCore(settings, mp4, resetTimestamps: false);
+
+    private static IReadOnlyList<string> BuildFinalAudioArguments(EditorAudioSettings? settings, int bitrateKbps, bool resetTimestamps)
+    {
+        var audio = EditorProjectStore.NormalizeAudio(settings);
+        if (audio.SourceMode == "mute") return ["-an"];
+        var arguments = new List<string> { "-map", "0:a?" };
+        var filters = new List<string>();
+        if (resetTimestamps) filters.Add("asetpts=PTS-STARTPTS");
+        if (audio.SourceMode == "duck") filters.Add("volume=" + audio.SourceGain.ToString("0.000", CultureInfo.InvariantCulture));
+        if (filters.Count > 0) arguments.AddRange(["-af", string.Join(',', filters)]);
+        arguments.AddRange(["-c:a", "aac", "-b:a", bitrateKbps.ToString(CultureInfo.InvariantCulture) + "k"]);
+        return arguments;
+    }
 
     private static IReadOnlyList<string> BuildAudioArgumentsCore(EditorAudioSettings? settings, bool mp4, bool resetTimestamps)
     {
@@ -490,6 +623,7 @@ public sealed class VideoEditorService
         int sourceHeight,
         double duration,
         IReadOnlyList<EditRegion> regions,
+        EditorSubtitleBurn? subtitle,
         CancellationToken cancellationToken)
     {
         var input = Path.GetFullPath(inputPath.Trim());
@@ -498,25 +632,59 @@ public sealed class VideoEditorService
         var active = regions.Select(region => EditorRegionTimeScope.Normalize(region, duration))
             .Where(region => IsActiveAt(region, seconds)).Select(region =>
             EditorRegionTimeScope.NormalizeWholeVideo(region with { WholeVideo = true }, Math.Max(0, duration))).ToArray();
-        var args = new List<string>
+        var subtitleAss = subtitle is null
+            ? null
+            : Path.Combine(Path.GetTempPath(), "bilisub-editor-frame-sub-" + Guid.NewGuid().ToString("N") + ".ass");
+        try
+        {
+            if (subtitleAss is not null)
+                await File.WriteAllTextAsync(
+                    subtitleAss, BuildAss(subtitle!, sourceWidth, sourceHeight),
+                    new UTF8Encoding(encoderShouldEmitUTF8Identifier: true), cancellationToken);
+            var args = BuildPreviewFrameArguments(
+                input, seconds, sourceWidth, sourceHeight, duration, active, subtitle, subtitleAss);
+            var frame = await _processes.CaptureBytesAsync(ffmpeg, args, cancellationToken);
+            return frame.Length > 0 ? frame : throw new InvalidDataException("Frame preview Editor rỗng.");
+        }
+        finally
+        {
+            if (subtitleAss is not null) TryDelete(subtitleAss);
+        }
+    }
+
+    internal static IReadOnlyList<string> BuildPreviewFrameArguments(
+        string input,
+        double seconds,
+        int sourceWidth,
+        int sourceHeight,
+        double duration,
+        IReadOnlyList<EditRegion> activeRegions,
+        EditorSubtitleBurn? subtitle,
+        string? subtitleAssPath)
+    {
+        var sourceTime = Math.Clamp(double.IsFinite(seconds) ? seconds : 0, 0, Math.Max(0, duration));
+        var arguments = new List<string>
         {
             "-hide_banner", "-loglevel", "error", "-nostdin",
-            "-ss", Math.Max(0, seconds).ToString("0.000", CultureInfo.InvariantCulture),
+            "-ss", sourceTime.ToString("0.000", CultureInfo.InvariantCulture),
             "-i", input, "-frames:v", "1",
         };
-        if (active.Length > 0)
+        if (activeRegions.Count > 0 || subtitle is not null)
         {
-            var graph = BuildFilter(new VideoEditRequest(input, ".", "preview.mp4", sourceWidth, sourceHeight, duration, active));
-            graph += ";[vout]scale=1280:-2:force_original_aspect_ratio=decrease[preview]";
-            args.AddRange(["-filter_complex", graph, "-map", "[preview]"]);
+            var request = new VideoEditRequest(
+                input, ".", "preview.mp4", sourceWidth, sourceHeight, duration, activeRegions, subtitle);
+            var timestamp = sourceTime.ToString("0.000", CultureInfo.InvariantCulture);
+            var graph = $"[0:v]setpts=PTS-STARTPTS+{timestamp}/TB[framebase];"
+                + BuildFilterCore(request, subtitleAssPath, "framebase", requireEdit: false)
+                + ";[vout]scale=1280:-2:force_original_aspect_ratio=decrease[preview]";
+            arguments.AddRange(["-filter_complex", graph, "-map", "[preview]"]);
         }
         else
         {
-            args.AddRange(["-vf", "scale=1280:-2:force_original_aspect_ratio=decrease", "-map", "0:v:0"]);
+            arguments.AddRange(["-vf", "scale=1280:-2:force_original_aspect_ratio=decrease", "-map", "0:v:0"]);
         }
-        args.AddRange(["-an", "-sn", "-dn", "-q:v", "4", "-c:v", "mjpeg", "-f", "image2pipe", "pipe:1"]);
-        var frame = await _processes.CaptureBytesAsync(ffmpeg, args, cancellationToken);
-        return frame.Length > 0 ? frame : throw new InvalidDataException("Frame preview Editor rỗng.");
+        arguments.AddRange(["-an", "-sn", "-dn", "-q:v", "4", "-c:v", "mjpeg", "-f", "image2pipe", "pipe:1"]);
+        return arguments;
     }
 
     public static string BuildFilter(VideoEditRequest request, string? subtitleAssPath = null)
@@ -527,7 +695,7 @@ public sealed class VideoEditorService
         if (request.SourceWidth <= 0 || request.SourceHeight <= 0) throw new ArgumentException("Không đọc được kích thước video.");
         if (string.IsNullOrWhiteSpace(inputLabel)) throw new ArgumentException("Nhãn video đầu vào không hợp lệ.");
         if (requireEdit && !HasEdit(request))
-            throw new ArgumentException("Hãy tạo vùng hiệu ứng, nạp bản Vietsub hoặc thay đổi âm thanh để xuất video.");
+            throw new ArgumentException("Hãy cắt video, tạo vùng hiệu ứng, nạp bản Vietsub hoặc thay đổi âm thanh để xuất video.");
         if (request.Regions.Count > 32) throw new ArgumentException("Tối đa 32 vùng chỉnh video.");
         var parts = new List<string>();
         var current = inputLabel;
@@ -584,10 +752,24 @@ public sealed class VideoEditorService
         if (placement.X < 0 || placement.Y < 0 || placement.Width < .05 || placement.Height < .04 ||
             placement.X + placement.Width > 1.0001 || placement.Y + placement.Height > 1.0001)
             throw new InvalidDataException("Vị trí phụ đề không hợp lệ.");
-        var fontSize = Math.Clamp((int)Math.Round(height * Math.Min(.06, placement.Height * .33)), 20, Math.Max(20, height / 8));
+        var style = EditorSubtitleStylePolicy.Normalize(subtitle.Style);
+        var automaticFontSize = Math.Clamp(
+            height * Math.Min(.06, placement.Height * .33),
+            20d,
+            Math.Max(20d, height / 8d));
+        var fontSize = Math.Clamp((int)Math.Round(automaticFontSize * style.FontScale), 10, Math.Max(10, height / 4));
         var marginL = Math.Max(0, (int)Math.Round(placement.X * width));
         var marginR = Math.Max(0, (int)Math.Round((1 - placement.X - placement.Width) * width));
         var marginV = Math.Max(0, (int)Math.Round((1 - placement.Y - placement.Height * .82) * height));
+        var textColor = EditorSubtitleStylePolicy.ToAssColor(style.TextColor, 1);
+        var secondaryColor = EditorSubtitleStylePolicy.ToAssColor(style.TextColor, .45);
+        var outlineColor = EditorSubtitleStylePolicy.ToAssColor(style.OutlineColor, 1);
+        var shadowColor = EditorSubtitleStylePolicy.ToAssColor("#000000", style.Shadow > .001 ? .55 : 0);
+        var backgroundColor = EditorSubtitleStylePolicy.ToAssColor(style.BackgroundColor, style.BackgroundOpacity);
+        var bold = style.Bold ? -1 : 0;
+        var italic = style.Italic ? -1 : 0;
+        var underline = style.Underline ? -1 : 0;
+        static string AssNumber(double value) => value.ToString("0.###", CultureInfo.InvariantCulture);
         var builder = new StringBuilder(subtitle.Cues.Count * 128);
         builder.AppendLine("[Script Info]")
             .AppendLine("ScriptType: v4.00+")
@@ -598,27 +780,56 @@ public sealed class VideoEditorService
             .AppendLine()
             .AppendLine("[V4+ Styles]")
             .AppendLine("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding")
-            .Append("Style: Vietsub,Arial,").Append(fontSize.ToString(CultureInfo.InvariantCulture))
-            .Append(",&H00FFFFFF,&H000000FF,&H00101010,&H78000000,-1,0,0,0,100,100,0,0,1,2.2,0.8,2,")
+            .Append("Style: Vietsub,").Append(style.FontName).Append(',').Append(fontSize.ToString(CultureInfo.InvariantCulture))
+            .Append(',').Append(textColor).Append(',').Append(secondaryColor).Append(',').Append(outlineColor).Append(',').Append(shadowColor).Append(',')
+            .Append(bold.ToString(CultureInfo.InvariantCulture)).Append(',')
+            .Append(italic.ToString(CultureInfo.InvariantCulture)).Append(',')
+            .Append(underline.ToString(CultureInfo.InvariantCulture)).Append(",0,100,100,0,0,1,")
+            .Append(AssNumber(style.OutlineWidth)).Append(',').Append(AssNumber(style.Shadow)).Append(",2,")
             .Append(marginL.ToString(CultureInfo.InvariantCulture)).Append(',')
             .Append(marginR.ToString(CultureInfo.InvariantCulture)).Append(',')
-            .Append(marginV.ToString(CultureInfo.InvariantCulture)).AppendLine(",1")
-            .AppendLine()
+            .Append(marginV.ToString(CultureInfo.InvariantCulture)).AppendLine(",1");
+        if (style.BackgroundOpacity > .001)
+        {
+            builder.Append("Style: VietsubBox,").Append(style.FontName).Append(',').Append(fontSize.ToString(CultureInfo.InvariantCulture))
+                .Append(',').Append(EditorSubtitleStylePolicy.ToAssColor(style.TextColor, 0)).Append(',')
+                .Append(EditorSubtitleStylePolicy.ToAssColor(style.TextColor, 0)).Append(',')
+                .Append(backgroundColor).Append(',').Append(backgroundColor).Append(',')
+                .Append(bold.ToString(CultureInfo.InvariantCulture)).Append(',')
+                .Append(italic.ToString(CultureInfo.InvariantCulture)).Append(',')
+                .Append(underline.ToString(CultureInfo.InvariantCulture)).Append(",0,100,100,0,0,3,")
+                .Append(AssNumber(style.BackgroundPadding)).Append(",0,2,")
+                .Append(marginL.ToString(CultureInfo.InvariantCulture)).Append(',')
+                .Append(marginR.ToString(CultureInfo.InvariantCulture)).Append(',')
+                .Append(marginV.ToString(CultureInfo.InvariantCulture)).AppendLine(",1");
+        }
+        builder.AppendLine()
             .AppendLine("[Events]")
             .AppendLine("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text");
         var timing = subtitle.SpeechTiming?.ToDictionary(x => x.CueId, StringComparer.Ordinal);
+        var foregroundLayer = style.BackgroundOpacity > .001 ? 1 : 0;
         foreach (var cue in subtitle.Cues)
         {
+            double start;
+            double end;
+            string foregroundText;
             if (subtitle.Karaoke && timing is not null && timing.TryGetValue(cue.Id, out var rhythm) && rhythm.SpeechEnd > rhythm.SpeechStart + .04)
             {
-                builder.Append("Dialogue: 0,").Append(AssTime(rhythm.SpeechStart)).Append(',').Append(AssTime(rhythm.SpeechEnd))
-                    .Append(",Vietsub,,0,0,0,,").AppendLine(BuildKaraokeText(cue.VietnameseText, rhythm));
+                start = rhythm.SpeechStart;
+                end = rhythm.SpeechEnd;
+                foregroundText = BuildKaraokeText(cue.VietnameseText, rhythm);
             }
             else
             {
-                builder.Append("Dialogue: 0,").Append(AssTime(cue.Start)).Append(',').Append(AssTime(cue.End))
-                    .Append(",Vietsub,,0,0,0,,").AppendLine(EscapeAssText(cue.VietnameseText));
+                start = cue.Start;
+                end = cue.End;
+                foregroundText = EscapeAssText(cue.VietnameseText);
             }
+            if (style.BackgroundOpacity > .001)
+                builder.Append("Dialogue: 0,").Append(AssTime(start)).Append(',').Append(AssTime(end))
+                    .Append(",VietsubBox,,0,0,0,,").AppendLine(EscapeAssText(cue.VietnameseText));
+            builder.Append("Dialogue: ").Append(foregroundLayer).Append(',').Append(AssTime(start)).Append(',').Append(AssTime(end))
+                .Append(",Vietsub,,0,0,0,,").AppendLine(foregroundText);
         }
         return builder.ToString();
     }
@@ -747,7 +958,8 @@ public sealed class VideoEditorService
 
     private static bool HasEdit(VideoEditRequest request) =>
         request.Regions.Count > 0 || request.Subtitle is not null || request.VoiceTrack is not null
-        || EditorProjectStore.NormalizeAudio(request.Audio).SourceMode != "keep";
+        || EditorProjectStore.NormalizeAudio(request.Audio).SourceMode != "keep"
+        || EditorProjectStore.HasTrim(request.Trim, request.Duration);
 
     public static double? NextPreviewStart(double sourceStart, double segmentDuration, double sourceDuration)
     {
@@ -762,10 +974,20 @@ public sealed class VideoEditorService
     }
 
     private static (double Start, double Duration) PreviewWindow(double sourceDuration, double requestedStart)
+        => PreviewWindow(0, sourceDuration, requestedStart);
+
+    private static (double Start, double Duration) PreviewWindow(
+        double rangeStart,
+        double rangeEnd,
+        double requestedStart)
     {
-        var start = Math.Clamp(double.IsFinite(requestedStart) ? requestedStart : 0, 0, sourceDuration);
-        if (sourceDuration - start < Math.Min(2, sourceDuration)) start = Math.Max(0, sourceDuration - PreviewSegmentDurationSeconds);
-        var duration = Math.Min(PreviewSegmentDurationSeconds, sourceDuration - start);
+        if (!double.IsFinite(rangeStart) || !double.IsFinite(rangeEnd) || rangeStart < 0 || rangeEnd <= rangeStart)
+            throw new InvalidDataException("Khoảng preview video không hợp lệ.");
+        var rangeDuration = rangeEnd - rangeStart;
+        var start = Math.Clamp(double.IsFinite(requestedStart) ? requestedStart : rangeStart, rangeStart, rangeEnd);
+        if (rangeEnd - start < Math.Min(2, rangeDuration))
+            start = Math.Max(rangeStart, rangeEnd - PreviewSegmentDurationSeconds);
+        var duration = Math.Min(PreviewSegmentDurationSeconds, rangeEnd - start);
         if (duration <= 0) throw new InvalidDataException("Không còn đoạn video để tạo preview.");
         return (start, duration);
     }

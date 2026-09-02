@@ -42,8 +42,11 @@ internal static class Program
         ("subtitle JSON exports deterministic SRT", SubtitleContractAsync),
         ("subtitle VTT and SRT normalize before export", SubtitleTimedTextContractAsync),
         ("editor filter graph preserves normalized regions", EditorFilterContractAsync),
-        ("editor audio modes map to exact FFmpeg policy", EditorAudioContractAsync),
+        ("editor subtitle text effects persist and share ASS Preview Export rendering", EditorSubtitleStyleContractAsync),
+        ("editor still-frame subtitle Preview uses the same ASS timeline as playback", EditorStillFrameSubtitlePreviewContractAsync),
+        ("editor direct source volume maps 0 100 200 percent to exact FFmpeg policy", EditorAudioContractAsync),
         ("editor processed preview accepts arbitrary internal windows and preserves render graph and audio policy", EditorProcessedPreviewContractAsync),
+        ("editor trim range persists and shifts Preview Export timelines", EditorTrimContractAsync),
         ("editor processed preview advances every segment to the full source end", EditorFullVideoPlaybackContractAsync),
         ("editor rapid preview requests serialize cleanup and run only the latest request", EditorRapidPreviewRequestContractAsync),
         ("editor preview cache removes normal and crash leftovers", EditorPreviewCacheCleanupContractAsync),
@@ -52,6 +55,7 @@ internal static class Program
         ("local NghiTTS manifest and rhythm grouping stay pinned", LocalTtsContractAsync),
         ("voice track mixes identically for keep duck mute", EditorVoiceMixContractAsync),
         ("editor final render validates streams duration and audio policy", EditorRenderValidationContractAsync),
+        ("editor export dialog settings map H264 H265 quality size FPS GPU and audio to FFmpeg", EditorExportSettingsContractAsync),
         ("Vietnamese TTS text normalization stays deterministic", VietnameseTtsNormalizerContractAsync),
         ("editor document preserves identity through undo redo", EditorDocumentContractAsync),
         ("editor Undo restores ordered region selection and bounded history", EditorUndoContractAsync),
@@ -82,7 +86,9 @@ internal static class Program
         ("ASR private GPU package cache and driver policy reject unsafe state", EditorAsrGpuContract.RunAsync),
         ("Chinese OCR validator rejects foreign scripts", ChineseOcrContractAsync),
         ("OCR touching fragments merge without erasing real short or repeated captions", OcrFragmentContract.RunAsync),
-        ("OCR worker crash preserves diagnostics and auto-recovers one request", OcrWorkerRecoveryContract.RunAsync),
+        ("OCR adversarial flicker 279/280 and dash 97-99 and cluster 112-118 and legit 走/来 stay separate", OcrAdversarialRegression.RunAsync),
+        ("OCR pixel comparer production unavailable and union crop and test comparer explicit", OcrPixelComparerContract.RunAsync),
+        ("concurrent OCR worker crashes preserve diagnostics and recover both requests", OcrWorkerRecoveryContract.RunAsync),
         ("Paddle GPU wheel follows numeric CUDA compatibility", OcrGpuWheelContractAsync),
         ("OCR Auto benchmarks 1 2 4 8 16 and restores last PASS", OcrAutoBenchmarkContractAsync),
         ("OCR Auto resource guard keeps safe 8 and rejects unsafe 16", OcrAutoResourceGuardContractAsync),
@@ -93,6 +99,7 @@ internal static class Program
         ("cookie normalization rejects control-character injection", SessionCookieInjectionContractAsync),
         ("invalid encrypted session is quarantined without blocking startup", InvalidSessionContractAsync),
         ("fresh and corrupt OCR checkpoint state is handled safely", InvalidOcrCheckpointContractAsync),
+        ("OCR checkpoint exposes every committed safe-frontier cue for partial SRT recovery", OcrCheckpointRecoveryExportContractAsync),
         ("job cancellation owns immediate terminal state", JobCancellationContractAsync),
         ("pausable OCR cancellation waits for cleanup completion", PausableJobCancellationContractAsync),
         ("cleanup-aware Editor cancellation waits for FFmpeg cleanup", CleanupAwareJobCancellationContractAsync),
@@ -181,6 +188,7 @@ internal static class Program
 
             Equal("dark", config.Theme);
             Equal(paths.DefaultDownloads, config.OutputDirectory);
+            Equal(paths.DefaultDownloads, config.OcrOutputDirectory);
             Equal("srt", config.SubtitleFormat);
             Equal("fast", config.VideoSpeed);
             Equal("mp4", config.VideoContainer);
@@ -197,7 +205,7 @@ internal static class Program
             True(json.EndsWith('\n'), "config.json must end with a single LF");
             foreach (var name in new[]
             {
-                "theme", "output_dir", "sub_format", "video_speed", "video_container",
+                "theme", "output_dir", "ocr_output_dir", "sub_format", "video_speed", "video_container",
                 "video_mode", "check_updates", "ocr_device", "ocr_top", "ocr_bottom",
                 "ocr_left", "ocr_right",
             })
@@ -235,6 +243,7 @@ internal static class Program
             var config = store.Snapshot;
             Equal("dark", config.Theme);
             Equal(paths.DefaultDownloads, config.OutputDirectory);
+            Equal(paths.DefaultDownloads, config.OcrOutputDirectory);
             Equal("srt", config.SubtitleFormat);
             Equal("fast", config.VideoSpeed);
             Equal("mp4", config.VideoContainer);
@@ -262,6 +271,7 @@ internal static class Program
             Equal("fast", store.Snapshot.VideoSpeed);
             Equal("auto", store.Snapshot.OcrDevice);
             Equal(paths.DefaultDownloads, store.Snapshot.OutputDirectory);
+            Equal(paths.DefaultDownloads, store.Snapshot.OcrOutputDirectory);
         });
     }
 
@@ -278,6 +288,7 @@ internal static class Program
                     Theme = "light",
                     VideoSpeed = "turbo",
                     OcrDevice = "CPU",
+                    OcrOutputDirectory = Path.Combine(root, "OcrOutput"),
                 });
                 True(!File.Exists(paths.ConfigFile + ".tmp"), "temporary config file leaked after update");
             }
@@ -287,6 +298,7 @@ internal static class Program
             Equal("light", second.Snapshot.Theme);
             Equal("turbo", second.Snapshot.VideoSpeed);
             Equal("cpu", second.Snapshot.OcrDevice);
+            Equal(Path.Combine(root, "OcrOutput"), second.Snapshot.OcrOutputDirectory);
         });
     }
 
@@ -304,6 +316,11 @@ internal static class Program
             Equal(output, changed.Config.OutputDirectory);
             True(Directory.Exists(output), "application boundary did not create output directory");
 
+            var ocrOutput = Path.Combine(root, "OcrOutput");
+            changed = await service.SetOcrOutputDirectoryAsync($"  {ocrOutput}  ");
+            Equal(ocrOutput, changed.Config.OcrOutputDirectory);
+            True(Directory.Exists(ocrOutput), "application boundary did not create OCR output directory");
+
             changed = await service.SetThemeAsync(" LIGHT ");
             Equal("light", changed.Config.Theme);
             changed = await service.SetUpdateCheckAsync(false);
@@ -311,6 +328,7 @@ internal static class Program
 
             await ThrowsAsync<ArgumentException>(() => service.SetThemeAsync("system"));
             await ThrowsAsync<ArgumentException>(() => service.SetOutputDirectoryAsync("  "));
+            await ThrowsAsync<ArgumentException>(() => service.SetOcrOutputDirectoryAsync("  "));
         });
     }
 
@@ -515,9 +533,10 @@ internal static class Program
     private static Task MediaProbeContractAsync()
     {
         var info = MediaPreviewService.ParseProbe("""
-            {"streams":[{"codec_name":"h264","codec_type":"video","width":1920,"height":1080}],"format":{"duration":"12.5","format_name":"mov,mp4"}}
+            {"streams":[{"codec_name":"h264","codec_type":"video","width":1920,"height":1080,"avg_frame_rate":"30000/1001"}],"format":{"duration":"12.5","format_name":"mov,mp4"}}
             """, ".mp4");
         Equal(1920, info.Width); Equal(1080, info.Height); Equal(12.5, info.Duration); Equal(true, info.DirectCompatible);
+        True(Math.Abs(info.FrameRate - 29.97002997) < .0001, "media probe lost source FPS used by the export dialog");
         return Task.CompletedTask;
     }
 
@@ -561,6 +580,93 @@ internal static class Program
         return Task.CompletedTask;
     }
 
+    private static Task EditorStillFrameSubtitlePreviewContractAsync()
+    {
+        var cue = new EditorSubtitleCue(
+            "frame-cue", "1", "00:00:40,000 --> 00:00:45,000", 40, 45, "你好", "Xin chào chính xác");
+        var subtitle = new EditorSubtitleBurn([cue], new EditorSubtitlePlacement(.1, .7, .8, .2));
+        var method = typeof(VideoEditorService).GetMethod(
+            "BuildPreviewFrameArguments", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing still-frame Preview FFmpeg policy");
+        var arguments = string.Join(' ', (IReadOnlyList<string>)method.Invoke(null,
+        [
+            "input.mp4", 42.25d, 1920, 1080, 120d, Array.Empty<EditRegion>(),
+            subtitle, "C:\\Temp\\frame-sub.ass",
+        ])!);
+        True(arguments.Contains("-ss 42.250 -i input.mp4", StringComparison.Ordinal),
+            "still-frame Preview did not seek the requested source time");
+        True(arguments.Contains("setpts=PTS-STARTPTS+42.250/TB[framebase]", StringComparison.Ordinal),
+            "still-frame Preview did not restore the absolute ASS timeline after input seek");
+        True(arguments.Contains("ass=filename='C\\:/Temp/frame-sub.ass'", StringComparison.Ordinal),
+            "still-frame Preview did not use the ASS/libass renderer");
+        True(arguments.Contains("[vout]scale=1280:-2", StringComparison.Ordinal),
+            "still-frame subtitle was not burned before preview scaling");
+
+        var plainArguments = string.Join(' ', (IReadOnlyList<string>)method.Invoke(null,
+        [
+            "input.mp4", 42.25d, 1920, 1080, 120d, Array.Empty<EditRegion>(),
+            null, null,
+        ])!);
+        True(plainArguments.Contains("-vf scale=1280:-2", StringComparison.Ordinal),
+            "plain still-frame Preview lost its lightweight path");
+        True(!plainArguments.Contains("ass=filename=", StringComparison.Ordinal),
+            "plain still-frame Preview unexpectedly enabled ASS");
+        return Task.CompletedTask;
+    }
+
+    private static Task EditorSubtitleStyleContractAsync()
+    {
+        var legacyStyle = JsonSerializer.Deserialize<EditorSubtitleStyle>("""
+            {"Preset":"default","TextColor":"#FFFFFF","OutlineColor":"#101010","OutlineWidth":2.2,"BackgroundColor":"#000000","BackgroundOpacity":0,"BackgroundPadding":4,"Shadow":0.8,"Bold":true}
+            """) ?? throw new InvalidOperationException("legacy subtitle style did not deserialize");
+        legacyStyle = EditorSubtitleStylePolicy.Normalize(legacyStyle);
+        Equal("Arial", legacyStyle.FontName);
+        Equal(false, legacyStyle.Italic);
+        Equal(false, legacyStyle.Underline);
+        Equal(1d, legacyStyle.FontScale);
+        Equal("&H005CE4FF", EditorSubtitleStylePolicy.ToAssColor("#FFE45C", 1));
+        Equal("&H8C000000", EditorSubtitleStylePolicy.ToAssColor("#000000", .45));
+        foreach (var preset in new[]
+        {
+            EditorSubtitleStylePolicy.DefaultPreset,
+            EditorSubtitleStylePolicy.CinemaPreset,
+            EditorSubtitleStylePolicy.YellowPreset,
+            EditorSubtitleStylePolicy.CyanPreset,
+            EditorSubtitleStylePolicy.BlackBoxPreset,
+            EditorSubtitleStylePolicy.LightBoxPreset,
+            EditorSubtitleStylePolicy.PlainPreset,
+            EditorSubtitleStylePolicy.PinkPreset,
+            EditorSubtitleStylePolicy.RedPreset,
+            EditorSubtitleStylePolicy.GreenPreset,
+            EditorSubtitleStylePolicy.YellowBoxPreset,
+            EditorSubtitleStylePolicy.BlueBoxPreset,
+        })
+            Equal(preset, EditorSubtitleStylePolicy.FromPreset(preset).Preset);
+
+        var cue = new EditorSubtitleCue("styled-cue", "1", "00:00:01,000 --> 00:00:03,000", 1, 3, "你好", "Xin chào");
+        var style = EditorSubtitleStylePolicy.Normalize(new EditorSubtitleStyle(
+            EditorSubtitleStylePolicy.CustomPreset, "#FFE45C", "#4A1700", 3.5,
+            "#000000", .45, 6, 1.5, true, "Tahoma", true, true, 1.5));
+        var ass = VideoEditorService.BuildAss(
+            new EditorSubtitleBurn([cue], EditorSubtitlePlacement.Default, Style: style), 1920, 1080);
+        True(ass.Contains("Style: Vietsub,Tahoma", StringComparison.Ordinal), "selected font did not reach foreground ASS");
+        True(ass.Contains("Style: Vietsub,Tahoma,97,", StringComparison.Ordinal), "font scale did not reach foreground ASS");
+        True(ass.Contains("&H005CE4FF", StringComparison.Ordinal), "text color was not converted to ASS BGR");
+        True(ass.Contains("Style: VietsubBox,Tahoma", StringComparison.Ordinal), "selected font did not reach background ASS");
+        True(ass.Contains("Style: VietsubBox,Tahoma,97,", StringComparison.Ordinal), "font scale did not reach background ASS");
+        Equal(.5d, EditorSubtitleStylePolicy.Normalize(style with { FontScale = .1 }).FontScale);
+        Equal(2d, EditorSubtitleStylePolicy.Normalize(style with { FontScale = 4 }).FontScale);
+        True(ass.Contains(",-1,-1,-1,0,100,100", StringComparison.Ordinal), "B/U/I format did not reach ASS style");
+        True(ass.Contains("Dialogue: 0,0:00:01.00,0:00:03.00,VietsubBox", StringComparison.Ordinal), "background layer timing drift");
+        True(ass.Contains("Dialogue: 1,0:00:01.00,0:00:03.00,Vietsub", StringComparison.Ordinal), "foreground layer must render above background");
+
+        var defaultAss = VideoEditorService.BuildAss(
+            new EditorSubtitleBurn([cue], EditorSubtitlePlacement.Default), 1920, 1080);
+        True(!defaultAss.Contains("VietsubBox", StringComparison.Ordinal), "default no-background style added an opaque box");
+        True(defaultAss.Contains("Dialogue: 0,0:00:01.00,0:00:03.00,Vietsub", StringComparison.Ordinal), "default style changed legacy ASS layer");
+        return Task.CompletedTask;
+    }
+
     private static Task EditorAudioContractAsync()
     {
         var method = typeof(VideoEditorService).GetMethod("BuildAudioArguments", BindingFlags.Static | BindingFlags.NonPublic)
@@ -577,6 +683,14 @@ internal static class Program
         True(duck.Contains("-af volume=0.350", StringComparison.Ordinal), "duck mode gain drift");
         True(duck.Contains("-c:a aac -b:a 192k", StringComparison.Ordinal), "duck mode must encode filtered audio");
 
+        Equal(new EditorAudioSettings("mute", 0), EditorProjectStore.FromSourceGain(0));
+        Equal(new EditorAudioSettings("keep", 1), EditorProjectStore.FromSourceGain(1));
+        Equal(new EditorAudioSettings("duck", 1.5), EditorProjectStore.FromSourceGain(1.5));
+        Equal(new EditorAudioSettings("duck", 2), EditorProjectStore.FromSourceGain(3));
+        var boosted = Arguments(method, EditorProjectStore.FromSourceGain(1.5), mp4: true);
+        True(boosted.Contains("-af volume=1.500", StringComparison.Ordinal), "source boost did not reach FFmpeg");
+        True(boosted.Contains("-c:a aac -b:a 192k", StringComparison.Ordinal), "boosted source must be re-encoded");
+
         var mute = Arguments(method, new EditorAudioSettings("mute", 1), mp4: true);
         Equal("-an", mute);
         var graph = VideoEditorService.BuildFilter(new VideoEditRequest(
@@ -587,7 +701,8 @@ internal static class Program
 
     private static Task EditorProcessedPreviewContractAsync()
     {
-        var windowMethod = typeof(VideoEditorService).GetMethod("PreviewWindow", BindingFlags.Static | BindingFlags.NonPublic)
+        var windowMethod = typeof(VideoEditorService).GetMethods(BindingFlags.Static | BindingFlags.NonPublic)
+            .Single(method => method.Name == "PreviewWindow" && method.GetParameters().Length == 2)
             ?? throw new InvalidOperationException("missing editor processed-preview window policy");
         var sliceMethod = typeof(VideoEditorService).GetMethod("BuildPreviewSlice", BindingFlags.Static | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("missing editor processed-preview slice policy");
@@ -629,6 +744,8 @@ internal static class Program
         Equal(1280, sliced.SourceWidth);
         Equal(720, sliced.SourceHeight);
         Equal(previewDuration, sliced.Duration);
+        Equal(0d, sliced.Trim!.Start);
+        Equal(previewDuration, sliced.Trim.End);
         Equal(1, sliced.Regions.Count);
         Equal(0d, sliced.Regions[0].Start);
         Equal(5d, sliced.Regions[0].End);
@@ -655,9 +772,92 @@ internal static class Program
         return Task.CompletedTask;
     }
 
+    private static Task EditorTrimContractAsync()
+    {
+        var full = EditorProjectStore.NormalizeTrim(null, 120);
+        Equal(0d, full.Start);
+        Equal(120d, full.End);
+        var normalized = EditorProjectStore.NormalizeTrim(new EditorTrimRange(20, 90), 120);
+        Equal(20d, normalized.Start);
+        Equal(90d, normalized.End);
+        Equal(70d, normalized.Duration);
+        True(EditorProjectStore.HasTrim(normalized, 120), "trimmed range was not recognized as an edit");
+        True(!EditorProjectStore.HasTrim(full, 120), "full source range was incorrectly recognized as a trim");
+        Throws<InvalidDataException>(() => EditorProjectStore.NormalizeTrim(new EditorTrimRange(double.NaN, 90), 120));
+        Throws<InvalidDataException>(() => EditorProjectStore.NormalizeTrim(new EditorTrimRange(90, 20), 120));
+        Throws<InvalidDataException>(() => EditorProjectStore.NormalizeTrim(new EditorTrimRange(20, 121), 120));
+
+        var rangeWindowMethod = typeof(VideoEditorService).GetMethods(BindingFlags.Static | BindingFlags.NonPublic)
+            .Single(method => method.Name == "PreviewWindow" && method.GetParameters().Length == 3);
+        var rangeWindow = ((double Start, double Duration))rangeWindowMethod.Invoke(null, [20d, 90d, 89d])!;
+        True(rangeWindow.Start >= 20 && rangeWindow.Start + rangeWindow.Duration <= 90,
+            "trimmed Preview window escaped the kept source range");
+        True(89 >= rangeWindow.Start && 89 <= rangeWindow.Start + rangeWindow.Duration,
+            "trimmed Preview window lost the requested source position");
+
+        var subtitle = new EditorSubtitleBurn(
+        [
+            new EditorSubtitleCue("trim-a", "1", "00:00:18,000 --> 00:00:22,000", 18, 22, "甲", "Một"),
+            new EditorSubtitleCue("trim-b", "2", "00:01:25,000 --> 00:01:35,000", 85, 95, "乙", "Hai"),
+            new EditorSubtitleCue("trim-outside", "3", "00:01:40,000 --> 00:01:45,000", 100, 105, "丙", "Ba"),
+        ], EditorSubtitlePlacement.Default);
+        var request = new VideoEditRequest(
+            "input.mp4", ".", "output.mp4", 1920, 1080, 120,
+            [
+                new EditRegion(.1, .1, .2, .2, "blur", 18, false, 15, 30, "trim-cross-start"),
+                new EditRegion(.4, .4, .2, .2, "cover", 0, false, 85, 95, "trim-cross-end"),
+                new EditRegion(.7, .7, .2, .2, "mosaic", 12, false, 100, 110, "trim-outside"),
+            ],
+            subtitle,
+            new EditorAudioSettings("duck", .35),
+            new EditorVoiceTrack("voice.wav", 5, 115),
+            Trim: normalized);
+        var sliceMethod = typeof(VideoEditorService).GetMethod("BuildPreviewSlice", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing trim timeline slicer");
+        var sliced = (VideoEditRequest)sliceMethod.Invoke(null, [request, normalized.Start, normalized.Duration, 1920, 1080])!;
+        Equal(70d, sliced.Duration);
+        Equal(0d, sliced.Trim!.Start);
+        Equal(70d, sliced.Trim.End);
+        Equal(2, sliced.Regions.Count);
+        Equal(0d, sliced.Regions[0].Start);
+        Equal(10d, sliced.Regions[0].End);
+        Equal(65d, sliced.Regions[1].Start);
+        Equal(70d, sliced.Regions[1].End);
+        Equal(2, sliced.Subtitle?.Cues.Count ?? 0);
+        Equal(0d, sliced.Subtitle!.Cues[0].Start);
+        Equal(2d, sliced.Subtitle.Cues[0].End);
+        Equal(65d, sliced.Subtitle.Cues[1].Start);
+        Equal(70d, sliced.Subtitle.Cues[1].End);
+
+        var renderArgumentsMethod = typeof(VideoEditorService).GetMethod(
+            "BuildRenderArguments", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing trim-aware Export argument policy");
+        var graph = "[0:v]setpts=PTS-STARTPTS[vout]";
+        var sourceOnlyArguments = string.Join(' ', (IReadOnlyList<string>)renderArgumentsMethod.Invoke(null,
+            ["input.mp4", "output.mp4", graph, request.Audio, normalized, null, true])!);
+        True(sourceOnlyArguments.Contains("-ss 20.000 -i input.mp4", StringComparison.Ordinal),
+            "Export did not seek the source to the trim start");
+        True(sourceOnlyArguments.Contains("-t 70.000", StringComparison.Ordinal),
+            "Export did not stop at the kept duration");
+        True(sourceOnlyArguments.Contains("-af asetpts=PTS-STARTPTS,volume=0.350", StringComparison.Ordinal),
+            "trimmed source audio did not reset timestamps");
+
+        var voiceArguments = string.Join(' ', (IReadOnlyList<string>)renderArgumentsMethod.Invoke(null,
+            ["input.mp4", "output.mp4", graph, request.Audio, normalized, request.VoiceTrack, true])!);
+        True(voiceArguments.Contains("-ss 20.000 -i input.mp4 -ss 15.000 -i", StringComparison.Ordinal),
+            "Export did not seek the full-length voice track to the trim start");
+        True(voiceArguments.Contains("[0:a]asetpts=PTS-STARTPTS", StringComparison.Ordinal)
+            && voiceArguments.Contains("[1:a]asetpts=PTS-STARTPTS", StringComparison.Ordinal),
+            "trimmed source/voice timelines did not both reset to zero");
+        True(voiceArguments.Contains("-t 70.000", StringComparison.Ordinal),
+            "voice Export did not stop at the kept duration");
+        return Task.CompletedTask;
+    }
+
     private static Task EditorFullVideoPlaybackContractAsync()
     {
-        var windowMethod = typeof(VideoEditorService).GetMethod("PreviewWindow", BindingFlags.Static | BindingFlags.NonPublic)
+        var windowMethod = typeof(VideoEditorService).GetMethods(BindingFlags.Static | BindingFlags.NonPublic)
+            .Single(method => method.Name == "PreviewWindow" && method.GetParameters().Length == 2)
             ?? throw new InvalidOperationException("missing editor processed-preview window policy");
         var durations = new[] { .04, 1, 11.9, 12, 12.1, 24, 24.5, 25, 299, 300, 3_600 };
         foreach (var sourceDuration in durations)
@@ -860,6 +1060,8 @@ internal static class Program
         True(keep.Contains("[sourcea][voicea]amix=inputs=2", StringComparison.Ordinal), "keep+voice did not mix source and TTS");
         var duck = Graph(new EditorAudioSettings("duck", .35));
         True(duck.Contains("volume=0.350", StringComparison.Ordinal) && duck.Contains("amix=inputs=2", StringComparison.Ordinal), "duck+voice graph drift");
+        var boosted = Graph(EditorProjectStore.FromSourceGain(1.5));
+        True(boosted.Contains("volume=1.500", StringComparison.Ordinal) && boosted.Contains("amix=inputs=2", StringComparison.Ordinal), "boosted source+voice graph drift");
         var mute = Graph(new EditorAudioSettings("mute", 0));
         True(!mute.Contains("[0:a]", StringComparison.Ordinal), "mute+voice unexpectedly kept source audio");
         True(mute.Contains("[voicea]anull[aout]", StringComparison.Ordinal), "mute+voice did not route TTS to output");
@@ -904,6 +1106,12 @@ internal static class Program
             VietnameseTtsTextNormalizer.Normalize("Hôm nay 02/03/2026 lúc 09:05"));
         Equal("ba phẩy hai phần trăm", VietnameseTtsTextNormalizer.Normalize("3,2%"));
         Equal("một trăm hai mươi ba", VietnameseTtsTextNormalizer.Normalize("123"));
+        foreach (var text in new[] { "Xin chào", "123", "你好", "sư phu\u0323", "１２３", "Ⅻ", "🔥 có lời" })
+            True(VietnameseTtsTextNormalizer.HasSpeakableUnits(text), $"speakable text was rejected: {text}");
+        foreach (var text in new string?[] { null, "", "   ", ".", "...", "##", "?!", "🔥", "👨‍👩‍👧", "\u200B", "\u0301" })
+            True(!VietnameseTtsTextNormalizer.HasSpeakableUnits(text), $"symbol-only text was accepted: {text}");
+        Equal(4, VietnameseTtsTextNormalizer.SpeakableUnitCount("🔥 Có_hai, chữ 123 thật!"));
+        Equal(0, VietnameseTtsTextNormalizer.SpeakableUnitCount("... ## 🔥"));
         return Task.CompletedTask;
     }
 
@@ -1505,7 +1713,13 @@ internal static class Program
                 "Dịch Trung Tu Tiên",
                 TranslationSkillBundle.BuiltInSha256,
                 Path.Combine(root, "source.vi.srt"),
-                TranslationPolicyKey: LocalSubtitleTranslationService.TranslationPolicyKey);
+                TranslationPolicyKey: LocalSubtitleTranslationService.TranslationPolicyKey,
+                Style: EditorSubtitleStylePolicy.FromPreset(EditorSubtitleStylePolicy.CinemaPreset) with
+                {
+                    FontName = "Tahoma",
+                    Italic = true,
+                    Underline = true,
+                });
             var speechPath = Path.Combine(root, "speech.json");
             var speechAnalysis = new EditorSpeechAnalysis(
                 EditorSpeechAnalysisDocument.CurrentSchema, new string('b', 64), "fixture Whisper",
@@ -1530,6 +1744,7 @@ internal static class Program
                 Tts = new EditorTtsProject("complete", "piper-nghitts", "1.4.2", "deepman3909", "calmwoman3688",
                     ttsManifest, ttsManifestSha, new EditorVoiceTrack(voicePath, 0, 120), 1, 0),
                 VoiceOverrides = new Dictionary<string, string> { [subtitle.Cues[0].Id] = "female" },
+                Trim = new EditorTrimRange(12.5, 110),
             }, CancellationToken.None);
 
             var reopened = await store.LoadOrCreateAsync(video, 1920, 1080, 120, CancellationToken.None);
@@ -1545,6 +1760,11 @@ internal static class Program
             Equal(120d, reopened.Regions[1].End);
             Equal("Xin chào", reopened.Subtitle!.Cues[0].VietnameseText);
             Equal(.72, reopened.Subtitle.Placement.Y);
+            Equal(EditorSubtitleStylePolicy.CinemaPreset, reopened.Subtitle.Style!.Preset);
+            Equal(.45, reopened.Subtitle.Style.BackgroundOpacity);
+            Equal("Tahoma", reopened.Subtitle.Style.FontName);
+            Equal(true, reopened.Subtitle.Style.Italic);
+            Equal(true, reopened.Subtitle.Style.Underline);
             Equal("duck", reopened.Audio!.SourceMode);
             Equal(.35, reopened.Audio.SourceGain);
             Equal("complete", reopened.Asr!.Status);
@@ -1554,6 +1774,8 @@ internal static class Program
             Equal(speechSha, reopened.Speech.AnalysisSha256);
             Equal("complete", reopened.Tts!.Status);
             Equal("female", reopened.VoiceOverrides![subtitle.Cues[0].Id]);
+            Equal(12.5, reopened.Trim!.Start);
+            Equal(110d, reopened.Trim.End);
 
             File.Delete(voicePath);
             var selectivelyRecovered = await store.LoadOrCreateAsync(video, 1920, 1080, 120, CancellationToken.None);
@@ -1574,6 +1796,8 @@ internal static class Program
             True(sourceChanged.Tts is null, "changed source reused old TTS state");
             Equal(0, sourceChanged.VoiceOverrides?.Count ?? 0);
             Equal("keep", sourceChanged.Audio!.SourceMode);
+            Equal(0d, sourceChanged.Trim!.Start);
+            Equal(120d, sourceChanged.Trim.End);
             True(Directory.GetFiles(Path.GetDirectoryName(projectPath)!, Path.GetFileName(projectPath) + ".source-changed-*").Length == 1,
                 "source-changed Editor project was not archived");
 
@@ -1843,7 +2067,7 @@ internal static class Program
         }
         Equal(486_212_372L, total);
         True(hashes.Contains("3e305921506d8872816023e4c273e75d2419fb89b24da97b4fe7bce14170d671"), "ASR model.bin SHA-256 drift");
-        Equal(5, EditorProjectStore.CurrentSchema);
+        Equal(7, EditorProjectStore.CurrentSchema);
         return Task.CompletedTask;
     }
 
@@ -1880,6 +2104,10 @@ internal static class Program
             ?? throw new InvalidOperationException("missing OCR topology benchmark levels");
         if (!levels.SequenceEqual([1, 2, 4, 8, 16]))
             throw new InvalidOperationException("OCR Auto ladder is not exactly 1 -> 2 -> 4 -> 8 -> 16");
+        var hybridLevels = policy.GetProperty("HybridLevels", BindingFlags.Static | BindingFlags.NonPublic)?.GetValue(null) as IReadOnlyList<int>
+            ?? throw new InvalidOperationException("missing OCR Hybrid topology benchmark levels");
+        if (!hybridLevels.SequenceEqual([2, 4, 8, 16]))
+            throw new InvalidOperationException("OCR Hybrid ladder must start at two real GPU+CPU workers");
         var checkpointStore = typeof(OcrScanRequest).Assembly.GetType("BiliSubStudio.Core.Ocr.OcrCheckpointStore")
             ?? throw new InvalidOperationException("missing OCR checkpoint store");
         var buildSegments = checkpointStore.GetMethod("BuildSegments", BindingFlags.Static | BindingFlags.Public)
@@ -1891,6 +2119,8 @@ internal static class Program
 
         var select = policy.GetMethod("SelectAsync", BindingFlags.Static | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("missing OCR topology benchmark selector");
+        var selectForMode = policy.GetMethod("SelectForModeAsync", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing device-aware OCR topology benchmark selector");
         static async Task<int> InvokeAsync(
             MethodInfo method,
             Func<int, CancellationToken, Task> probe,
@@ -1899,6 +2129,18 @@ internal static class Program
         {
             var pending = method.Invoke(null, [probe, restore, rejected, CancellationToken.None]) as Task<int>
                 ?? throw new InvalidOperationException("OCR topology selector returned the wrong task type");
+            return await pending;
+        }
+
+        static async Task<int> InvokeForModeAsync(
+            MethodInfo method,
+            string mode,
+            Func<int, CancellationToken, Task> probe,
+            Func<int, CancellationToken, Task> restore,
+            Action<int, int, Exception> rejected)
+        {
+            var pending = method.Invoke(null, [mode, probe, restore, rejected, CancellationToken.None]) as Task<int>
+                ?? throw new InvalidOperationException("device-aware OCR topology selector returned the wrong task type");
             return await pending;
         }
 
@@ -1929,6 +2171,25 @@ internal static class Program
             (_, _, _) => throw new InvalidOperationException("all-pass benchmark unexpectedly rejected a level"));
         if (selected != 16 || !attempted.SequenceEqual([1, 2, 4, 8, 16]) || restored.Count != 0)
             throw new InvalidOperationException("OCR Auto did not retain level 16 after every real probe passed");
+
+        attempted.Clear();
+        restored.Clear();
+        rejected.Clear();
+        selected = await InvokeForModeAsync(
+            selectForMode,
+            "hybrid",
+            (level, _) =>
+            {
+                attempted.Add(level);
+                return level == 4
+                    ? Task.FromException(new InvalidOperationException("fixture Hybrid saturation"))
+                    : Task.CompletedTask;
+            },
+            (level, _) => { restored.Add(level); return Task.CompletedTask; },
+            (failed, best, _) => rejected.Add((failed, best)));
+        if (selected != 3 || !attempted.SequenceEqual([2, 4, 3]) || !restored.SequenceEqual([2])
+            || !rejected.SequenceEqual([(4, 2)]))
+            throw new InvalidOperationException("OCR Hybrid benchmark used an invalid one-worker baseline or lost its safe fallback");
     }
 
     private static Task OcrAutoResourceGuardContractAsync()
@@ -2136,6 +2397,8 @@ internal static class Program
                 .Select(index => new OcrCue(index * .5, index * .5 + .4, $"第{index + 1}句", .99))
                 .ToArray();
             var path = await application.ExportOcrAsync(cues, root, "all-cues.srt", CancellationToken.None);
+            True(!Directory.EnumerateFiles(root, "*.tmp-*", SearchOption.TopDirectoryOnly).Any(),
+                "OCR SRT export leaked its atomic temporary file");
             var blocks = (await File.ReadAllTextAsync(path))
                 .Replace("\r", string.Empty, StringComparison.Ordinal)
                 .Split("\n\n", StringSplitOptions.RemoveEmptyEntries);
@@ -2160,6 +2423,123 @@ internal static class Program
             await application.DisposeAsync();
         }
     });
+
+    private static async Task OcrCheckpointRecoveryExportContractAsync()
+    {
+        await WithTemporaryRootAsync(async root =>
+        {
+            var paths = AppPaths.FromRoot(root);
+            var source = Path.Combine(root, "recovery-fixture.mp4");
+            await File.WriteAllBytesAsync(source, new byte[] { 1, 2, 3 });
+            var request = new OcrScanRequest(source, new OcrRegion(.05, .65, .9, .29), "balanced", "cpu", "2", 1, 240);
+            var storeType = typeof(OcrManager).Assembly.GetType("BiliSubStudio.Core.Ocr.OcrCheckpointStore")
+                ?? throw new InvalidOperationException("missing OcrCheckpointStore");
+            var store = Activator.CreateInstance(storeType, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+                binder: null, args: [paths], culture: null) ?? throw new InvalidOperationException("cannot create checkpoint store");
+            var keyMethod = storeType.GetMethod("KeyAsync", BindingFlags.Instance | BindingFlags.NonPublic)
+                ?? throw new InvalidOperationException("missing checkpoint identity method");
+            var key = await ((Task<string>?)keyMethod.Invoke(store, [request, 15, CancellationToken.None])
+                ?? throw new InvalidOperationException("checkpoint identity did not return a task"));
+            var directory = Path.Combine(paths.Data, "OCRCheckpoints");
+            Directory.CreateDirectory(directory);
+            await File.WriteAllTextAsync(Path.Combine(directory, key + ".json"), $$"""
+                {
+                  "schema": 15,
+                  "key": "{{key}}",
+                  "selected_parallelism": 2,
+                  "lanes": [
+                    {
+                      "segment": { "index": 0, "core_start": 0, "core_end": 120, "scan_start": 0, "scan_end": 136 },
+                      "media_seconds": 100,
+                      "cues": [
+                        { "start": 10, "end": 11, "text": "第一句", "conf": 0.9 },
+                        { "start": 90, "end": 91, "text": "第二句", "conf": 0.9 }
+                      ],
+                      "active": { "start": 99, "end": 100, "text": "尚未提交", "conf": 0.8 },
+                      "frames": 100,
+                      "ocr_images": 50,
+                      "completed": false
+                    },
+                    {
+                      "segment": { "index": 1, "core_start": 120, "core_end": 240, "scan_start": 104, "scan_end": 240 },
+                      "media_seconds": 180,
+                      "cues": [{ "start": 150, "end": 151, "text": "未来分段", "conf": 0.9 }],
+                      "active": null,
+                      "frames": 80,
+                      "ocr_images": 40,
+                      "completed": false
+                    }
+                  ],
+                  "boundary_merges": 0
+                }
+                """);
+            var inspect = storeType.GetMethod("InspectAsync", BindingFlags.Instance | BindingFlags.Public)
+                ?? throw new InvalidOperationException("missing checkpoint inspect method");
+            var operation = (Task?)inspect.Invoke(store, [request, CancellationToken.None])
+                ?? throw new InvalidOperationException("checkpoint inspect did not return a task");
+            await operation;
+            var info = operation.GetType().GetProperty("Result")?.GetValue(operation) as OcrCheckpointInfo
+                ?? throw new InvalidOperationException("checkpoint inspect returned no public result");
+            Equal(2, info.CueCount);
+            Equal(2, info.RecoverableCues?.Count ?? 0);
+            True(info.RecoverableCues!.All(cue => cue.Text is "第一句" or "第二句"),
+                "partial SRT recovery included an active or future-lane cue");
+        });
+    }
+
+    private static Task EditorExportSettingsContractAsync()
+    {
+        var defaults = EditorExportPolicy.Normalize(null);
+        Equal("h264", defaults.Codec);
+        Equal("high", defaults.Quality);
+        Equal(192, defaults.AudioBitrateKbps);
+        Equal("hevc", EditorExportPolicy.Normalize(new EditorExportSettings("h265")).Codec);
+        Throws<InvalidDataException>(() => EditorExportPolicy.Normalize(new EditorExportSettings("vp9")));
+        Throws<InvalidDataException>(() => EditorExportPolicy.Normalize(new EditorExportSettings(TargetHeight: 999)));
+        Throws<InvalidDataException>(() => EditorExportPolicy.Normalize(new EditorExportSettings(FrameRate: 29.97)));
+        Throws<InvalidDataException>(() => EditorExportPolicy.Normalize(new EditorExportSettings(AudioBitrateKbps: 96)));
+
+        Equal(new EditorExportDimensions(1920, 1080), EditorExportPolicy.ResolveDimensions(defaults, 1920, 1080));
+        Equal(new EditorExportDimensions(1280, 720), EditorExportPolicy.ResolveDimensions(defaults with { TargetHeight = 720 }, 1920, 1080));
+        var sourceGraph = EditorExportPolicy.BuildVideoGraph("[0:v]null[vout]", defaults, 1920, 1080);
+        Equal("[vout]", sourceGraph.OutputLabel);
+        True(!sourceGraph.FilterGraph.Contains("scale=", StringComparison.Ordinal), "source resolution unexpectedly added a scale filter");
+        var convertedGraph = EditorExportPolicy.BuildVideoGraph(
+            "[0:v]null[vout]", defaults with { TargetHeight = 720, FrameRate = 30 }, 1920, 1080);
+        Equal("[exportv]", convertedGraph.OutputLabel);
+        True(convertedGraph.FilterGraph.Contains("[vout]scale=1280:720:flags=lanczos,fps=30[exportv]", StringComparison.Ordinal),
+            "resolution/FPS settings did not share one final output chain");
+
+        var h264 = EditorExportPolicy.BuildVideoEncoderArguments(
+            defaults, new EditorResolvedVideoEncoder("libx264", false), mp4: true);
+        True(string.Join(' ', h264).Contains("-c:v libx264 -preset medium -crf 18", StringComparison.Ordinal),
+            "H.264 high quality did not map to libx264 CRF 18");
+        var hevc = EditorExportPolicy.BuildVideoEncoderArguments(
+            defaults with { Codec = "hevc", Quality = "standard" },
+            new EditorResolvedVideoEncoder("libx265", false), mp4: true);
+        True(string.Join(' ', hevc).Contains("-c:v libx265 -preset medium -crf 24", StringComparison.Ordinal),
+            "H.265 standard quality did not map to libx265 CRF 24");
+        True(string.Join(' ', hevc).Contains("-tag:v hvc1", StringComparison.Ordinal),
+            "H.265 MP4 lost the Apple/player-compatible hvc1 tag");
+        var nvenc = EditorExportPolicy.BuildVideoEncoderArguments(
+            defaults, new EditorResolvedVideoEncoder("h264_nvenc", true), mp4: true);
+        True(string.Join(' ', nvenc).Contains("-c:v h264_nvenc -preset p5 -tune hq -rc vbr -cq 18 -b:v 0", StringComparison.Ordinal),
+            "NVENC quality controls drifted from the selected high preset");
+
+        var renderMethod = typeof(VideoEditorService).GetMethod("BuildConfiguredRenderArguments", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing final FFmpeg argument builder");
+        var render = (IReadOnlyList<string>)renderMethod.Invoke(null,
+        [
+            "input.mp4", "output.mp4", convertedGraph.FilterGraph,
+            EditorAudioSettings.Default, new EditorTrimRange(0, 10), null, true,
+            defaults with { TargetHeight = 720, FrameRate = 30, AudioBitrateKbps = 256 },
+            new EditorResolvedVideoEncoder("libx264", false), convertedGraph.OutputLabel,
+        ])!;
+        var command = string.Join(' ', render);
+        True(command.Contains("-map [exportv]", StringComparison.Ordinal), "final render mapped the pre-scale video label");
+        True(command.Contains("-c:a aac -b:a 256k", StringComparison.Ordinal), "final render ignored selected AAC bitrate");
+        return Task.CompletedTask;
+    }
 
     private static Task FileNamePolicyContractAsync()
     {

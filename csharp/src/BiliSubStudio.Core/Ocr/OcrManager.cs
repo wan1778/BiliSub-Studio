@@ -18,6 +18,7 @@ public sealed class OcrManager : IAsyncDisposable
     private string _activeMode = string.Empty;
     private string _state = "stopped";
     private string? _error;
+    private int _committedWorkerTarget = 1;
 
     internal OcrManager(AppPaths paths, HardwareService hardware, OcrInstaller installer)
     {
@@ -48,6 +49,7 @@ public sealed class OcrManager : IAsyncDisposable
             await StopWorkersLockedAsync();
             _deviceMode = mode;
             _activeMode = string.Empty;
+            _committedWorkerTarget = MinimumWorkerTarget(mode);
             _state = "stopped";
             _error = null;
         }
@@ -80,13 +82,21 @@ public sealed class OcrManager : IAsyncDisposable
                 {
                     var mode = _deviceMode;
                     if (mode == "auto") mode = hardware.NvidiaDetected ? "gpu" : "cpu";
-                    await BuildPoolLockedAsync(mode, 1, hardware, operationToken);
+                    var target = Math.Max(_committedWorkerTarget, MinimumWorkerTarget(mode));
+                    await BuildPoolLockedAsync(mode, target, hardware, operationToken);
                 }
                 catch (Exception gpuError) when (_deviceMode == "auto" && gpuError is not OperationCanceledException)
                 {
                     await StopWorkersLockedAsync();
                     _error = "GPU không khởi tạo được, đã chuyển CPU: " + gpuError.Message;
-                    await BuildPoolLockedAsync("cpu", 1, hardware, operationToken);
+                    await BuildPoolLockedAsync("cpu", _committedWorkerTarget, hardware, operationToken);
+                }
+                catch (Exception hybridError) when (_deviceMode == "hybrid" && hybridError is not OperationCanceledException)
+                {
+                    await StopWorkersLockedAsync();
+                    _error = "Hybrid không khởi tạo đủ GPU + CPU, đã chuyển sang GPU: " + hybridError.Message;
+                    _committedWorkerTarget = 1;
+                    await BuildPoolLockedAsync("gpu", 1, hardware, operationToken);
                 }
                 _state = "ready";
             }
@@ -113,7 +123,15 @@ public sealed class OcrManager : IAsyncDisposable
         await _gate.WaitAsync(cancellationToken);
         try
         {
-            if (_workers.Count == target && _workers.All(x => x.IsAlive)) return target;
+            var minimum = MinimumWorkerTarget(_activeMode);
+            if (target < minimum)
+                throw new ArgumentOutOfRangeException(nameof(target),
+                    $"OCR {_activeMode} cần ít nhất {minimum} worker.");
+            if (_workers.Count == target && _workers.All(x => x.IsAlive))
+            {
+                _committedWorkerTarget = target;
+                return target;
+            }
             var hardware = _hardware.Snapshot();
             _state = "starting";
             try
@@ -121,6 +139,7 @@ public sealed class OcrManager : IAsyncDisposable
                 await ResizePoolLockedAsync(_activeMode, target, hardware, cancellationToken);
                 _state = "ready";
                 _error = null;
+                _committedWorkerTarget = target;
                 return _workers.Count;
             }
             catch (OperationCanceledException)
@@ -212,7 +231,8 @@ public sealed class OcrManager : IAsyncDisposable
         try
         {
             if (!ReferenceEquals(_available, channel))
-                throw new OperationCanceledException("OCR worker pool đã thay đổi trong lúc tự khôi phục.", cancellationToken);
+                throw new OcrWorkerUnavailableException(
+                    "OCR worker pool đã được dựng lại bởi lane khác trong lúc tự khôi phục.", cause);
             var index = _workers.IndexOf(failed);
             if (index < 0) throw new InvalidOperationException("OCR worker lỗi không còn thuộc pool hiện tại.", cause);
             _workers.RemoveAt(index);
@@ -232,6 +252,7 @@ public sealed class OcrManager : IAsyncDisposable
                 try { await replacement.DisposeAsync(); } catch { }
                 var error = "Không tự khởi động lại được OCR worker sau lỗi: " + cause.Message;
                 channel.Writer.TryComplete(new OcrWorkerUnavailableException(error, replacementError));
+                _available = null;
                 _state = "failed";
                 _error = error;
                 throw new OcrWorkerUnavailableException(error, replacementError);
@@ -255,6 +276,7 @@ public sealed class OcrManager : IAsyncDisposable
             await StopWorkersLockedAsync();
             _state = "stopped";
             _activeMode = string.Empty;
+            _committedWorkerTarget = MinimumWorkerTarget(_deviceMode);
             _error = null;
         }
         finally { _gate.Release(); }
@@ -274,6 +296,7 @@ public sealed class OcrManager : IAsyncDisposable
             _installer.RemoveBootstrap();
             _state = "stopped";
             _activeMode = string.Empty;
+            _committedWorkerTarget = MinimumWorkerTarget(_deviceMode);
             _error = null;
         }
         finally { _gate.Release(); }
@@ -377,11 +400,14 @@ public sealed class OcrManager : IAsyncDisposable
     {
         "cpu" => Enumerable.Repeat("cpu", target).ToArray(),
         "gpu" => Enumerable.Repeat("gpu", target).ToArray(),
-        "hybrid" => target == 1
-            ? ["gpu"]
-            : new[] { "gpu", "cpu" }.Concat(Enumerable.Repeat("gpu", target - 2)).ToArray(),
+        "hybrid" when target >= 2 => new[] { "gpu", "cpu" }
+            .Concat(Enumerable.Repeat("gpu", target - 2)).ToArray(),
+        "hybrid" => throw new ArgumentOutOfRangeException(nameof(target),
+            "OCR Hybrid cần ít nhất 2 worker: 1 GPU + 1 CPU."),
         _ => throw new ArgumentException("Chế độ OCR nội bộ không hợp lệ."),
     };
+
+    private static int MinimumWorkerTarget(string mode) => mode == "hybrid" ? 2 : 1;
 
     private async Task StopWorkersLockedAsync()
     {

@@ -41,7 +41,7 @@ completed_subtitle = editor.split("private EditorSubtitleBurn? CompletedSubtitle
 )[0]
 require("_subtitleSource.Cues.All(x => !string.IsNullOrWhiteSpace(x.VietnameseText))" in completed_subtitle,
         "VOICE-14 export subtitle owner must require complete Vietnamese text")
-require("new EditorSubtitleBurn(_subtitleSource.Cues, _subtitlePlacement, _cueSpeechTiming, KaraokeToggle.IsOn)" in completed_subtitle,
+require("new EditorSubtitleBurn(_subtitleSource.Cues, _subtitlePlacement, _cueSpeechTiming, KaraokeToggle.IsOn, _subtitleStyle)" in completed_subtitle,
         "VOICE-14 export subtitle owner must carry the same placement/timing/karaoke state")
 
 preview_subtitle = editor.split("private EditorSubtitleBurn? PreviewSubtitleBurn()", 1)[1].split(
@@ -78,7 +78,7 @@ for token in (
     "_document.Regions.ToArray(),",
     "subtitle,",
     "_audioSettings,",
-    "_voiceTrack);",
+    "_voiceTrack,",
 ):
     require(token in current_request, f"VOICE-14 shared request lost render state: {token}")
 require("_monitorAudio" not in current_request,
@@ -104,9 +104,9 @@ export_run = video_editor.split("public async Task<VideoEditResult> RunAsync(", 
 preview_run = video_editor.split("public async Task<EditorPreviewSegment> CreatePreviewSegmentAsync(", 1)[1].split(
     "public async Task DeletePreviewSegmentAsync", 1
 )[0]
-require("BuildAss(request.Subtitle!, request.SourceWidth, request.SourceHeight)" in export_run,
+require("BuildAss(renderRequest.Subtitle!, request.SourceWidth, request.SourceHeight)" in export_run,
         "VOICE-14 Export subtitle must be rendered by the shared BuildAss owner")
-require("BuildFilter(request, subtitleAss)" in export_run,
+require('BuildFilterCore(renderRequest, subtitleAss, "renderbase", requireEdit: false)' in export_run,
         "VOICE-14 Export video effects must enter the shared filter core")
 require("BuildAss(sliced.Subtitle!, previewWidth, previewHeight)" in preview_run,
         "VOICE-14 Preview subtitle must be rendered by the same BuildAss owner")
@@ -130,13 +130,16 @@ require("MosaicScaleX = previewWidth / (double)request.SourceWidth" in preview_s
 
 # Voice path: both outputs use one source/voice mix owner. Preview contributes only
 # sourceStart so the Vietnamese master is seeked/delayed onto the sliced timeline.
-require("BuildVoiceAudioFilter(audio, voice, 1, sourceStart: 0)" in export_run,
+render_args = video_editor.split("internal static IReadOnlyList<string> BuildRenderArguments(", 1)[1].split(
+    "internal static IReadOnlyList<string> BuildAudioArguments", 1
+)[0]
+require("BuildVoiceAudioFilter(audio, voice, 1, trim.Start)" in render_args,
         "VOICE-14 Export must use the shared Vietnamese voice mix owner")
 require("BuildVoiceAudioFilter(EditorProjectStore.NormalizeAudio(sliced.Audio), voice, 1, sourceStart)" in preview_run,
         "VOICE-14 Preview must use the same Vietnamese voice mix owner")
 
 preview_args = video_editor.split("internal static IReadOnlyList<string> BuildPreviewArguments(", 1)[1].split(
-    "internal static IReadOnlyList<string> BuildAudioArguments", 1
+    "internal static IReadOnlyList<string> BuildRenderArguments", 1
 )[0]
 require("BuildAudioArgumentsCore(audio, mp4: true, resetTimestamps: true)" in preview_args,
         "VOICE-14 no-voice Preview must share source-audio policy with Export")
@@ -166,7 +169,7 @@ require("MediaSource.CreateFromStorageFile(file)" in activate,
         "VOICE-14 Player must play the rendered processed segment, not raw source media")
 
 # Encoding/performance differences are allowed; semantic audio/voice/effect state is not.
-require('"-preset", "medium", "-crf", "18"' in export_run,
+require('"-preset", "medium", "-crf", "18"' in render_args,
         "VOICE-14 fixture expects final Export quality settings to remain independent")
 require('"-preset", "ultrafast", "-crf", "23"' in preview_args,
         "VOICE-14 fixture expects Preview to retain its faster encoder")

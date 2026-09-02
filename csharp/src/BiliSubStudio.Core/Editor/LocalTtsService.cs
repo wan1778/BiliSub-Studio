@@ -45,6 +45,7 @@ public sealed record EditorTtsResult(
 internal sealed partial class LocalTtsService : IDisposable
 {
     private const int ManifestSchema = 2;
+    private const int VoiceSampleRate = 22050;
     private const string TimingAlgorithm = LocalTtsInstaller.TimingAlgorithm;
     private readonly SemaphoreSlim _generationGate = new(1, 1);
     private readonly AppPaths _paths;
@@ -78,14 +79,22 @@ internal sealed partial class LocalTtsService : IDisposable
             request.SpeechAnalysisPath, request.SpeechAnalysisSha256, job.CancellationToken).ConfigureAwait(false);
         if (!string.Equals(analysis.SourceKey, expectedSourceKey, StringComparison.Ordinal))
             throw new InvalidDataException("Whisper timing không còn khớp video nguồn; hãy phân tích nhịp lại trước khi tạo voice.");
-        // Fit the entire Vietnamese cue to its mapped source-speech envelope.
-        // Whisper pauses never split the text sent to Piper.
+        // Collapse only proven OCR flicker runs (for example A/B/A with a
+        // sub-250 ms frame) before speech mapping. The subtitle document stays
+        // untouched; the voice must not read the same live-caption frame twice.
+        var voiceCues = EditorVoiceCuePlanner.RemoveUnspeakable(
+            EditorVoiceCuePlanner.Build(request.Subtitle.Cues));
+        if (voiceCues.Count == 0)
+            throw new InvalidDataException("Không có cue chứa chữ hoặc số để tạo voice.");
+        // ASR is advisory metadata only (for example voice classification). It
+        // cannot remove a cue or own TTS placement: every speakable SRT cue is
+        // synthesized over its complete SRT interval.
         var mappedTiming = await Task.Run(
-            () => EditorSpeechAnalysisDocument.MapToCues(analysis, request.Subtitle.Cues, job.CancellationToken),
+            () => EditorSpeechAnalysisDocument.MapToCues(analysis, voiceCues, job.CancellationToken),
             job.CancellationToken).ConfigureAwait(false);
         var cueTiming = mappedTiming.ToDictionary(x => x.CueId, StringComparer.Ordinal);
         var voice = ResolveVoice(request.Voice);
-        var cues = request.Subtitle.Cues.Select(cue => BuildWholeCue(cue, voice, cueTiming[cue.Id])).ToArray();
+        var cues = voiceCues.Select(cue => BuildWholeCue(cue, voice, cueTiming[cue.Id])).ToArray();
         return await GenerateCuesAsync(job, request.ProjectId, request.Duration, voice, cues, cueTiming);
     }
 
@@ -103,20 +112,21 @@ internal sealed partial class LocalTtsService : IDisposable
     {
         var text = VietnameseTtsTextNormalizer.Normalize(cue.VietnameseText);
         if (string.IsNullOrWhiteSpace(text)) throw new InvalidDataException($"Cue {cue.Number} chưa có câu Việt để tạo voice.");
+        if (!VietnameseTtsTextNormalizer.HasSpeakableUnits(text))
+            throw new InvalidDataException($"Cue {cue.Number} chỉ có dấu câu/ký hiệu nên không có lời để tạo voice.");
         if (timing is null || timing.CueId != cue.Id || timing.CueStart != cue.Start || timing.CueEnd != cue.End)
             throw new InvalidDataException($"Cue {cue.Number} không khớp dữ liệu timing của SRT hiện tại.");
-        // Prefer the real Whisper word envelope. If Whisper found no word in a
-        // valid external-SRT cue, preserve the user's full SRT interval under an
-        // explicit fallback identity instead of aborting every later cue.
-        var fallback = timing.Words.Count == 0;
-        var voiceStart = fallback ? cue.Start : Math.Max(cue.Start, timing.Words.Min(word => word.Start));
-        var voiceEnd = fallback ? cue.End : Math.Min(cue.End, timing.Words.Max(word => word.End));
-        if (!double.IsFinite(voiceStart) || !double.IsFinite(voiceEnd) || voiceEnd <= voiceStart
-            || Math.Round(voiceEnd * 22050) <= Math.Round(voiceStart * 22050))
-            throw new InvalidDataException($"Cue {cue.Number} có timecode SRT hoặc khoảng thoại Whisper rỗng.");
-        return new TtsCueManifest(cue.Id, cue.Start, cue.End, voice, text, voiceStart, voiceEnd,
-            fallback ? "srt-fallback" : "whisper");
+        if (!HasSampleRange(cue.Start, cue.End))
+            throw new InvalidDataException($"Cue {cue.Number} có timecode SRT rỗng.");
+        // `srt-fallback` is the existing worker wire value for a full SRT-owned
+        // window. It is now the primary production route: never shrink or shift
+        // voice timing to the ASR speech envelope.
+        return new TtsCueManifest(cue.Id, cue.Start, cue.End, voice, text, cue.Start, cue.End, "srt-fallback");
     }
+
+    private static bool HasSampleRange(double start, double end) =>
+        double.IsFinite(start) && double.IsFinite(end) && end > start
+        && Math.Round(end * VoiceSampleRate) > Math.Round(start * VoiceSampleRate);
 
     private static string ResolveVoice(string? voice)
     {
@@ -174,9 +184,9 @@ internal sealed partial class LocalTtsService : IDisposable
                                 var attempt = GetInt(root, "attempt");
                                 var maximum = GetInt(root, "max_attempts");
                                 if (total == cues.Count && index >= 1 && index <= total && attempt >= 1
-                                    && maximum is >= 1 and <= 10 && attempt <= maximum)
+                                    && maximum is >= 1 and <= 12 && attempt <= maximum)
                                     job.Set("tts-generate", 38 + (index - 1) / (double)total * 53,
-                                        $"Model đang đọc nguyên câu {index}/{total} · lượt {attempt}/{maximum} để canh thời lượng · không kéo tốc độ file...");
+                                        $"Model đang đọc nguyên câu {index}/{total} · lượt {attempt}/{maximum} · ưu tiên nhịp tự nhiên, chỉ tăng khi SRT quá ngắn...");
                             }
                             else if (kind == "cue")
                             {
@@ -191,13 +201,13 @@ internal sealed partial class LocalTtsService : IDisposable
                                 var total = Math.Max(1, GetInt(root, "total"));
                                 if (index >= 1 && index <= total)
                                     job.Set("tts-generate", 38 + (index - 1) / (double)total * 53,
-                                        $"Cue {index}/{total} quá chật · đang nén nhịp có giữ cao độ để bảo toàn đủ lời...");
+                                        $"Cue {index}/{total} quá chật · đang giữ nguyên toàn timecode SRT...");
                             }
                             else if (kind == "block")
                             {
                                 var total = Math.Max(1d, root.GetProperty("total").GetDouble());
                                 job.Set("tts-mix", 91 + root.GetProperty("index").GetDouble() / total * 6,
-                                    "Đang ghép nguyên câu voice theo thời lượng thoại gốc, không cắt đuôi...");
+                                    "Đang ghép nguyên câu voice theo timecode SRT, không cắt đuôi...");
                             }
                             else if (kind == "complete")
                             {
@@ -227,7 +237,7 @@ internal sealed partial class LocalTtsService : IDisposable
                 job.CancellationToken.ThrowIfCancellationRequested();
                 job.Set("tts-final", 99, parsedResult.ReviewCount == 0
                     ? $"Voice Việt hoàn tất · {cueResults.Length} câu đã canh thời lượng, không cắt đuôi."
-                    : $"Voice Việt đã canh thời lượng · {parsedResult.ReviewCount} câu cần nghe lại; câu quá chật đã được nén nhịp nhưng giữ đủ lời.");
+                    : $"Voice Việt đã canh theo SRT · {parsedResult.ReviewCount} câu cần nghe lại; câu chật được tăng tốc động, không cắt chữ.");
                 accepted = true;
                 return new EditorTtsResult(resultPath, manifestSha,
                     new EditorVoiceTrack(masterPath, 0, duration), cueResults, parsedResult.ReviewCount,
@@ -291,12 +301,11 @@ internal sealed partial class LocalTtsService : IDisposable
                 ? cue.TargetFrames
                 : checked((long)Math.Round(effectiveEnd * expectedSampleRate)) - startSample;
             var target = targetFrames / (double)expectedSampleRate;
-            var naturalSample = expected.TimingSource == "sample" && cue.RawDuration <= target;
+            var naturalSample = expected.TimingSource == "sample";
             if (targetFrames <= 0 || cue.TargetFrames != targetFrames
                 || cue.Frames <= 0 || cue.Clipped is not false || cue.ClipStartSample != startSample
                 || cue.ClipEndSample != startSample + cue.Frames || cue.ClipEndSample > startSample + targetFrames
-                || (!naturalSample && cue.Frames != targetFrames)
-                || (naturalSample && Math.Abs(cue.FittedDuration - cue.RawDuration) > 1d / expectedSampleRate)
+                || cue.Frames != targetFrames
                 || Math.Abs(cue.FittedDuration - cue.Frames / (double)expectedSampleRate) > 1e-9)
                 throw new InvalidDataException("Voice chưa khớp đủ thời lượng thoại gốc hoặc bị cắt đuôi; không nhận master này.");
             var needsReview = ValidateNativeSynthesis(cue, targetFrames, naturalSample, expectedSampleRate)
@@ -408,7 +417,8 @@ internal sealed partial class LocalTtsService : IDisposable
         string ClipPath, string ClipSha256, string FitMethod, double BaseLengthScale, double LengthScale,
         long SourceFrames, long GeneratedFrames, long TrimmedSilenceFrames, long PaddingFrames,
         int SynthesisAttempts, int SynthesisCalls, bool CacheHit,
-        double TempoFactor, long TempoInputFrames, int TempoAttempts);
+        double TempoFactor, long TempoInputFrames, int TempoAttempts,
+        long NativeReferenceFrames, long GroupNativeFrames, double ActualSpeedFactor);
     private sealed record TtsWorkerTrack(string Path, double Start, double Duration, string Sha256);
     private sealed record TtsWorkerResult(int Schema, string Engine, string EngineVersion, string Voice, string VoiceRevision,
         IReadOnlyList<TtsWorkerCue> Cues, TtsWorkerTrack Master, int ReviewCount, int SampleRate);

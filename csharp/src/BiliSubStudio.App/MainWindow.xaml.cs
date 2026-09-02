@@ -101,7 +101,7 @@ public sealed partial class MainWindow : Window
         _pages = new Dictionary<string, UIElement>(StringComparer.Ordinal)
         {
             ["video"] = new VideoPage(_application, folderPicker, _globalLog),
-            ["ocr"] = new OcrPage(_application, filePicker),
+            ["ocr"] = new OcrPage(_application, filePicker, folderPicker),
             ["editor"] = new EditorPage(_application, filePicker),
             ["settings"] = _settingsPage,
         };
