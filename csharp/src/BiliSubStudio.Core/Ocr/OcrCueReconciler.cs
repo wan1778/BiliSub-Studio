@@ -95,6 +95,88 @@ public static class OcrCueReconciler
         bool IsPunctVariant,
         bool IsPureExact);
 
+    // Text + temporal candidacy, KHÔNG pixel. Dùng chung cho EvaluateBoundaryAsync (merge path)
+    // và IsChainBoundary (tìm safe split cho live tail) nên rules không drift giữa 2 path.
+    private sealed record TextCandidacy(
+        bool IsCandidate,
+        string Reason,
+        double AllowedGapSeconds,
+        bool IsIdentical,
+        bool IsDashIdentical,
+        bool IsPureExact,
+        bool IsDuplicate,
+        bool CanMergeFlicker,
+        bool IsDashDropout,
+        bool IsPunctVariant);
+
+    private static TextCandidacy ClassifyTextCandidate(OcrCue previous, OcrCue cue, bool allowFlicker, double exactIdenticalMaxGap)
+    {
+        var canMergeFlicker = allowFlicker && IsShortSingleSubstitutionFlicker(previous, cue);
+        var isIdentical = IsIdentical(previous, cue);
+        var isDashIdentical = isIdentical && !string.Equals(previous.Text, cue.Text, StringComparison.Ordinal);
+        var isPureExact = isIdentical && string.Equals(previous.Text, cue.Text, StringComparison.Ordinal);
+        var isDuplicate = IsTransientAdjacentDuplicate(previous, cue, out _);
+        var isDashDropout = IsDashTailDropoutCandidate(previous, cue);
+        var isPunctVariant = IsPunctuationOnlyVariant(previous.Text, cue.Text);
+        var isCandidate = isIdentical || isDuplicate || canMergeFlicker || isDashDropout || isPunctVariant;
+        var allowedGap = isPureExact ? Math.Max(Epsilon, exactIdenticalMaxGap)
+            : (canMergeFlicker || isDashIdentical || isDashDropout || isPunctVariant) ? FlickerGap
+            : Epsilon;
+        var reason = !isCandidate ? "none"
+            : isPureExact ? "exact-identical"
+            : isDuplicate ? "duplicate"
+            : canMergeFlicker ? "flicker"
+            : isDashDropout ? "dash-dropout"
+            : isPunctVariant ? "punct-variant"
+            : "dash-identical";
+        return new TextCandidacy(isCandidate, reason, allowedGap, isIdentical, isDashIdentical,
+            isPureExact, isDuplicate, canMergeFlicker, isDashDropout, isPunctVariant);
+    }
+
+    // Boundary là chain link theo đúng rules merge pass flicker (+ bare single-rune substitution
+    // cho CollapseSandwiched A/B/A: triplet đó merge được qua boundary mà MergeAdjacent coi là
+    // non-candidate khi fail flicker-duration). Live tail mở rộng ngược qua các link này để split
+    // rơi vào safe boundary. Chỉ làm tail to hơn (re-reconcile thêm), không đổi quyết định merge.
+    internal static bool IsChainBoundary(OcrCue previous, OcrCue cue, double exactIdenticalMaxGap = Epsilon)
+    {
+        var text = ClassifyTextCandidate(previous, cue, allowFlicker: true, exactIdenticalMaxGap);
+        if (text.IsCandidate && cue.Start <= previous.End + text.AllowedGapSeconds) return true;
+        return cue.Start <= previous.End + FlickerGap
+            && IsSingleRuneSubstitution(previous.Text, cue.Text);
+    }
+
+    // Reconcile incremental: reconciledPrefix (view đã đúng tới offer trước) + freshCommitted mới.
+    // Chỉ reconcile window cuối (tailWindow cue của prefix + toàn bộ fresh, mở rộng ngược qua chain
+    // tới safe boundary); prefix trước split giữ nguyên. Split tại safe boundary (non-candidate)
+    // cho kết quả đúng bằng full reconcile: merge chỉ xảy ra giữa 2 cue kề candidate, và
+    // CollapseSandwiched cần inner candidate qua boundary (đã cover trong IsChainBoundary).
+    internal static async Task<IReadOnlyList<OcrCue>> ReconcileLiveTailAsync(
+        IReadOnlyList<OcrCue> reconciledPrefix,
+        IReadOnlyList<OcrCue> freshCommitted,
+        int tailWindow,
+        string videoPath,
+        IPixelComparer comparer,
+        CancellationToken cancellationToken,
+        double exactIdenticalMaxGap = Epsilon)
+    {
+        if (freshCommitted.Count == 0) return reconciledPrefix;
+        var combined = reconciledPrefix.Concat(freshCommitted)
+            .OrderBy(cue => cue.Start).ThenBy(cue => cue.End).ToArray();
+        var keep = Math.Min(reconciledPrefix.Count, Math.Max(0, tailWindow));
+        var start = reconciledPrefix.Count - keep;
+        var guard = 0;
+        while (start > 0 && guard < 64)
+        {
+            if (!IsChainBoundary(combined[start - 1], combined[start], exactIdenticalMaxGap)) break;
+            start--;
+            guard++;
+        }
+        var merged = await MergeTouchingIdenticalAsync(
+            combined.Skip(start).ToArray(), videoPath, comparer, cancellationToken, exactIdenticalMaxGap);
+        if (start == 0) return merged;
+        return combined.Take(start).Concat(merged).ToArray();
+    }
+
     // Đánh giá một boundary đúng logic MergeAdjacentAsync dùng để merge (candidate + gap + pixel).
     // Internal cho targeted range replay log; MergeAdjacentAsync gọi hàm này nên không drift.
     internal static async Task<BoundaryEvaluation> EvaluateBoundaryAsync(
@@ -106,32 +188,17 @@ public static class OcrCueReconciler
         CancellationToken cancellationToken,
         double exactIdenticalMaxGap = Epsilon)
     {
-        var canMergeFlicker = allowFlicker && IsShortSingleSubstitutionFlicker(previous, cue);
-        var isIdentical = IsIdentical(previous, cue);
-        var isDashIdentical = isIdentical && !string.Equals(previous.Text, cue.Text, StringComparison.Ordinal);
-        var isPureExact = isIdentical && string.Equals(previous.Text, cue.Text, StringComparison.Ordinal);
-        string? duplicateStable = null;
-        var isDuplicate = IsTransientAdjacentDuplicate(previous, cue, out duplicateStable);
-        var isDashDropout = IsDashTailDropoutCandidate(previous, cue);
-        var isPunctVariant = IsPunctuationOnlyVariant(previous.Text, cue.Text);
-        var isCandidate = isIdentical || isDuplicate || canMergeFlicker || isDashDropout || isPunctVariant;
+        var text = ClassifyTextCandidate(previous, cue, allowFlicker, exactIdenticalMaxGap);
         var gap = cue.Start - previous.End;
-        var allowedGap = isPureExact ? Math.Max(Epsilon, exactIdenticalMaxGap)
-            : (canMergeFlicker || isDashIdentical || isDashDropout || isPunctVariant) ? FlickerGap
-            : Epsilon;
-        var reason = !isCandidate ? "none"
-            : isPureExact ? "exact-identical"
-            : isDuplicate ? "duplicate"
-            : canMergeFlicker ? "flicker"
-            : isDashDropout ? "dash-dropout"
-            : isPunctVariant ? "punct-variant"
-            : "dash-identical";
-        if (!isCandidate || cue.Start > previous.End + allowedGap)
-            return new BoundaryEvaluation(isCandidate, reason, gap, allowedGap, false, PixelCheckResult.Unavailable, null,
-                duplicateStable, isIdentical, isDashIdentical, isDuplicate, canMergeFlicker, isDashDropout, isPunctVariant, isPureExact);
+        string? duplicateStable = null;
+        var isDuplicateForText = text.IsDuplicate;
+        if (isDuplicateForText) IsTransientAdjacentDuplicate(previous, cue, out duplicateStable);
+        if (!text.IsCandidate || cue.Start > previous.End + text.AllowedGapSeconds)
+            return new BoundaryEvaluation(text.IsCandidate, text.Reason, gap, text.AllowedGapSeconds, false, PixelCheckResult.Unavailable, null,
+                duplicateStable, text.IsIdentical, text.IsDashIdentical, text.IsDuplicate, text.CanMergeFlicker, text.IsDashDropout, text.IsPunctVariant, text.IsPureExact);
         var comparison = await CheckBoundaryDetailedAsync(previous, cue, videoPath, comparer, cancellationToken);
-        return new BoundaryEvaluation(true, reason, gap, allowedGap, true, comparison.Result, comparison,
-            duplicateStable, isIdentical, isDashIdentical, isDuplicate, canMergeFlicker, isDashDropout, isPunctVariant, isPureExact);
+        return new BoundaryEvaluation(true, text.Reason, gap, text.AllowedGapSeconds, true, comparison.Result, comparison,
+            duplicateStable, text.IsIdentical, text.IsDashIdentical, text.IsDuplicate, text.CanMergeFlicker, text.IsDashDropout, text.IsPunctVariant, text.IsPureExact);
     }
 
     private static bool IsIdentical(OcrCue a, OcrCue b) => DashNormalize(a.Text) == DashNormalize(b.Text);

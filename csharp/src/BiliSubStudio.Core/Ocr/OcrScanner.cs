@@ -189,6 +189,16 @@ public sealed class OcrScanner
         Exception? laneFailure = null;
         using var laneCancellation = CancellationTokenSource.CreateLinkedTokenSource(token);
 
+        // Live incremental reconcile: tail committed cues được pixel-gate ngay trong lúc scan,
+        // preview thay tail sạch không đợi Pause. Final ReconcileAsync bên dưới vẫn chạy safety pass.
+        // Khai báo trước RunGuardedLaneAsync để local function capture hợp lệ.
+        var liveWindow = await ComputeExactIdenticalWindowAsync(_tools, _processes, source, token);
+        using var liveTail = new OcrLiveTailReconciler();
+        liveTail.ResetCommitted(liveCommitted);
+        liveTail.Start(source, new ProductionPixelComparer(_tools, _processes, _activeProcesses), liveWindow,
+            onError: error => job.Log("Live tail reconcile lỗi (preview giữ raw, final pass vẫn chạy): " + Compact(error.Message)),
+            linkedToken: laneCancellation.Token);
+
         OcrParallelCheckpoint SnapshotRecoverableCheckpoint()
         {
             lock (progressGate)
@@ -265,13 +275,18 @@ public sealed class OcrScanner
                                     if (checkpointSafe)
                                         recoverableLanes[lane.Segment.Index] = CloneLaneCheckpoint(laneSnapshot);
                                     var isLast = lane.Segment.Index == checkpoint.Lanes.Count - 1;
+                                    var owned = new List<OcrCue>(committedCues.Count);
                                     foreach (var cue in committedCues)
                                     {
                                         if (cue.Start < lane.Segment.CoreStart
                                             || (!isLast && cue.Start >= lane.Segment.CoreEnd)
                                             || (isLast && cue.Start > lane.Segment.CoreEnd)) continue;
                                         liveCommitted.Add(cue);
+                                        owned.Add(cue);
                                     }
+                                    // Trigger live tail reconcile đúng khi tracker commit boundary mới,
+                                    // không phải mỗi frame. Worker serialize + revision-guard ở trong.
+                                    if (owned.Count > 0) liveTail.AppendCommitted(owned);
                                     liveActive[lane.Segment.Index] = laneSnapshot.Active is not null
                                         && laneSnapshot.Active.Start >= lane.Segment.CoreStart
                                         && (isLast ? laneSnapshot.Active.Start <= lane.Segment.CoreEnd : laneSnapshot.Active.Start < lane.Segment.CoreEnd)
@@ -279,7 +294,7 @@ public sealed class OcrScanner
                                             : null;
                                     PublishTelemetry(
                                         job, checkpoint.Lanes, progress, frameProgress, imageProgress, completed,
-                                        configuredWorkers, configuredWorkerKinds, request.Duration, liveCommitted, liveActive,
+                                        configuredWorkers, configuredWorkerKinds, request.Duration, liveTail.CommittedView, liveActive,
                                         started.Elapsed.TotalSeconds);
                                 }
                             }, job, processes, laneCancellation.Token);
@@ -332,6 +347,9 @@ public sealed class OcrScanner
                                     && (isLast ? restart.Active.Start <= lane.Segment.CoreEnd : restart.Active.Start < lane.Segment.CoreEnd)
                                         ? restart.Active
                                         : null;
+                                // Lane recovery dựng lại committed từ checkpoint an toàn: reset live tail
+                                // để reconcile lại từ state đúng, không giữ merge từ attempt hỏng.
+                                liveTail.ResetCommitted(liveCommitted);
                             }
                             await SaveRecoverableCheckpointAsync();
                             job.Log(
@@ -383,7 +401,7 @@ public sealed class OcrScanner
                     }
                     PublishTelemetry(
                         job, checkpoint.Lanes, progress, frameProgress, imageProgress, completed,
-                        configuredWorkers, configuredWorkerKinds, request.Duration, liveCommitted, liveActive,
+                        configuredWorkers, configuredWorkerKinds, request.Duration, liveTail.CommittedView, liveActive,
                         started.Elapsed.TotalSeconds);
                 }
             }
@@ -398,6 +416,7 @@ public sealed class OcrScanner
         catch
         {
             await StopCheckpointWriterAsync();
+            await liveTail.StopAsync();
             if (!token.IsCancellationRequested && laneFailure is not null)
             {
                 try
@@ -419,10 +438,11 @@ public sealed class OcrScanner
             throw;
         }
         await StopCheckpointWriterAsync();
+        await liveTail.StopAsync();
 
         token.ThrowIfCancellationRequested();
         var paused = lanes.Any(x => !x.Completed) && job.IsPauseRequested;
-        var exactWindow = await ComputeExactIdenticalWindowAsync(_tools, _processes, source, token);
+        var exactWindow = liveWindow;
         var (mergedAll, boundaryMerges) = await ReconcileAsync(lanes, source, new ProductionPixelComparer(_tools, _processes, _activeProcesses), token, exactWindow);
         var frontier = OcrCheckpointStore.ContiguousFrontier(lanes);
         var merged = paused ? mergedAll.Where(x => x.Start <= frontier + 0.001).ToArray() : mergedAll;
@@ -651,7 +671,7 @@ public sealed class OcrScanner
         int workers,
         string workerKinds,
         double duration,
-        IReadOnlyList<OcrCue> liveCommitted,
+        IReadOnlyList<OcrCue> committedView,
         IReadOnlyList<OcrCue?> liveActive,
         double elapsedSeconds)
     {
@@ -670,8 +690,12 @@ public sealed class OcrScanner
         }
         var completedCount = completed.Count(x => x);
         var active = Math.Max(0, lanes.Count - completedCount);
-        var recentCues = OcrCueReconciler.MergeTouchingIdentical(liveCommitted
-            .Concat(liveActive.Where(cue => cue is not null).Select(cue => cue!)))
+        // Preview live: committed tail đã qua pixel-gate incremental (OcrLiveTailReconciler),
+        // active provisional ghép riêng để hiển thị, không thành authoritative. Final Finish/Export
+        // dùng ReconcileAsync safety pass + _cues, cùng một collection semantics.
+        var recentCues = committedView
+            .Concat(liveActive.Where(cue => cue is not null).Select(cue => cue!))
+            .OrderBy(cue => cue.Start).ThenBy(cue => cue.End)
             .Where(cue => cue.Start <= frontier + .001)
             .TakeLast(120)
             .ToArray();
