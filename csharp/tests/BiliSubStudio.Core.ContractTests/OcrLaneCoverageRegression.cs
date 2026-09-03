@@ -15,7 +15,7 @@ internal static class OcrLaneCoverageRegression
     {
         var scanMode = Store.GetMethod("ModeFor")!.Invoke(null, [mode, 1d]);
         return ((IReadOnlyList<string>)Scanner.GetMethod("BuildLaneArguments", BindingFlags.Static | BindingFlags.NonPublic)!
-            .Invoke(null, [source, new OcrRegion(.05, .65, .90, .29), scanMode, start, end, nvdec])!).ToList();
+            .Invoke(null, [source, new OcrRegion(.05, .65, .90, .29), scanMode, start, end, nvdec, null])!).ToList();
     }
 
     private static void Check(bool condition, string message)
@@ -32,9 +32,11 @@ internal static class OcrLaneCoverageRegression
             var end = start + 2;
             var args = Arguments("source.mp4", mode, start, end, nvdec);
             var stop = args.IndexOf("-to");
-            Check(args.Contains("-copyts") && !args.Contains("-t") && stop > args.IndexOf("-i")
-                && args[stop + 1] == end.ToString("0.######", CultureInfo.InvariantCulture),
-                "copyts OCR output must stop at the absolute source end, not a relative output duration");
+            Check(args.Contains("-copyts") && args.Contains("-seek_timestamp") && args.Contains("-fps_mode")
+                && !string.Join(" ", args).Contains("fps=")
+                && stop > args.IndexOf("-i")
+                && args[stop + 1] == end.ToString("0.#########", CultureInfo.InvariantCulture),
+                "copyts OCR must use absolute -ss/-to with seek_timestamp and passthrough without fps retiming");
         }
 
         var validate = Scanner.GetMethod("ValidateLaneCoverage", BindingFlags.Static | BindingFlags.NonPublic)
@@ -99,7 +101,7 @@ internal static class OcrLaneCoverageRegression
         using var cancellation = timeout.Token.Register(() => { try { process.Kill(entireProcessTree: true); } catch { } });
         var ptsType = Scanner.GetNestedType("FrameTimestampReader", BindingFlags.NonPublic)!;
         var jpegType = Scanner.GetNestedType("JpegStreamReader", BindingFlags.NonPublic)!;
-        var ptsReader = Activator.CreateInstance(ptsType, [process.StandardError, start])!;
+        var ptsReader = Activator.CreateInstance(ptsType, [process.StandardError])!;
         var jpegReader = Activator.CreateInstance(jpegType, [process.StandardOutput.BaseStream])!;
         var completion = (Task<string>)ptsType.GetProperty("Completion")!.GetValue(ptsReader)!;
         var frames = 0;
@@ -113,7 +115,7 @@ internal static class OcrLaneCoverageRegression
                 await read;
                 var timing = read.GetType().GetProperty("Result")!.GetValue(read)!;
                 var at = (double)timing.GetType().GetProperty("PresentationTime")!.GetValue(timing)!;
-                duration = (double)timing.GetType().GetProperty("Duration")!.GetValue(timing)!;
+                duration = (double?)(timing.GetType().GetProperty("Duration")?.GetValue(timing)) ?? duration;
                 Check(at >= last, "non-monotonic frame PTS");
                 if (frames++ == 0) first = at;
                 last = at;

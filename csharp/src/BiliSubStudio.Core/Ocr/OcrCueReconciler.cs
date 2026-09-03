@@ -11,9 +11,8 @@ public static class OcrCueReconciler
     private const double Epsilon = 0.001;
     private const double FlickerGap = 0.067; // ~2 frames @30fps, CFR assumption - revisit for VFR
 
-    public static IReadOnlyList<OcrCue> MergeTouchingIdentical(IEnumerable<OcrCue> cues) => MergeTouchingIdentical(cues, videoPath: null, comparer: null);
-    public static IReadOnlyList<OcrCue> MergeTouchingIdentical(IEnumerable<OcrCue> cues, string? videoPath) => MergeTouchingIdentical(cues, videoPath, comparer: null);
-    public static IReadOnlyList<OcrCue> MergeTouchingIdentical(IEnumerable<OcrCue> cues, string? videoPath, IPixelComparer? comparer)
+    // Legacy/no-pixel sync: không merge cross-cue, chỉ normalize + giữ tách (deterministic unit tests, không FFmpeg).
+    public static IReadOnlyList<OcrCue> MergeTouchingIdentical(IEnumerable<OcrCue> cues)
     {
         var normalized = new List<OcrCue>();
         foreach (var rawCue in cues.OrderBy(cue => cue.Start))
@@ -21,9 +20,118 @@ public static class OcrCueReconciler
             if (ChineseSubtitleNormalizer.TryNormalize(rawCue.Text, out var text))
                 normalized.Add(rawCue with { Text = text });
         }
-        var output = MergeAdjacent(normalized, allowFlicker: false, videoPath, comparer);
-        CollapseSandwichedSubstitutions(output);
-        return MergeAdjacent(output, allowFlicker: true, videoPath, comparer);
+        return normalized;
+    }
+
+    // Production async: bắt buộc videoPath + comparer + CancellationToken. Thiếu => Unavailable => giữ tách + NeedsReview.
+    // exactIdenticalMaxGap: window cho exact-identical fragmentation (mặc định Epsilon = chỉ touching).
+    // Production luôn truyền 3.0/nativeFps (OcrScanner), không truyền tay số lớn: blank thật dài hơn
+    // 3 native frame là reappearance (field evidence 0.667s), phải tách kể cả text giống hệt.
+    public static async Task<IReadOnlyList<OcrCue>> MergeTouchingIdenticalAsync(IEnumerable<OcrCue> cues, string videoPath, IPixelComparer comparer, CancellationToken cancellationToken, double exactIdenticalMaxGap = Epsilon)
+    {
+        var normalized = new List<OcrCue>();
+        foreach (var rawCue in cues.OrderBy(cue => cue.Start))
+        {
+            if (ChineseSubtitleNormalizer.TryNormalize(rawCue.Text, out var text))
+                normalized.Add(rawCue with { Text = text });
+        }
+        var output = await MergeAdjacentAsync(normalized, allowFlicker: false, videoPath, comparer, cancellationToken, exactIdenticalMaxGap);
+        await CollapseSandwichedSubstitutionsAsync(output, videoPath, comparer, cancellationToken);
+        return await MergeAdjacentAsync(output, allowFlicker: true, videoPath, comparer, cancellationToken, exactIdenticalMaxGap);
+    }
+
+    // Giữ overload sync 3 tham số cho contract tests hiện tại (sẽ migrate sang Async). Sync không gọi FFmpeg, chỉ dùng comparer sync? Tạm thời: nếu comparer null/video rỗng => Unavailable.
+    // Để không block thread pool, sync overload này KHÔNG gọi async comparer; nó chỉ dùng cho tests với fake sync (sẽ xóa sau khi migrate hết sang Async).
+    public static IReadOnlyList<OcrCue> MergeTouchingIdentical(IEnumerable<OcrCue> cues, string? videoPath, IPixelComparer? comparer) => MergeTouchingIdentical(cues);
+
+    private static async Task<PixelCheckResult> CheckBoundaryAsync(OcrCue left, OcrCue right, string? videoPath, IPixelComparer? comparer, CancellationToken cancellationToken)
+        => (await CheckBoundaryDetailedAsync(left, right, videoPath, comparer, cancellationToken)).Result;
+
+    private static PixelComparison UnavailableComparison()
+        => new(PixelCheckResult.Unavailable,
+            new FrameSample(double.NaN, double.NaN, double.NaN),
+            new FrameSample(double.NaN, double.NaN, double.NaN),
+            System.Drawing.Rectangle.Empty, null, null, null);
+
+    private static async Task<PixelComparison> CheckBoundaryDetailedAsync(OcrCue left, OcrCue right, string? videoPath, IPixelComparer? comparer, CancellationToken cancellationToken)
+    {
+        var obsA = left.LastObservation;
+        var obsB = right.FirstObservation;
+        if (obsA is null || obsB is null) return UnavailableComparison();
+        if (comparer is null) return UnavailableComparison();
+        if (string.IsNullOrWhiteSpace(videoPath)) return UnavailableComparison();
+        return await comparer.CheckAsync(videoPath, obsA, obsB, cancellationToken);
+    }
+
+    // Provenance đầy đủ cho pixel verify: cả hai observation biên tồn tại, box hợp lệ,
+    // SourcePts + timebase hợp lệ, Geometry exact đã lưu (không reconstruct từ Start/End).
+    public static bool HasPixelProvenance(OcrCue cue)
+        => HasPixelProvenance(cue.FirstObservation) && HasPixelProvenance(cue.LastObservation);
+
+    private static bool HasPixelProvenance(PixelObservation? obs)
+    {
+        if (obs is null || obs.SourceRoi is null || obs.Geometry is null) return false;
+        if (obs.SourcePts is null) return false;
+        if (obs.SourceTimeBase is not { Num: > 0, Den: > 0 }) return false;
+        if (!double.IsFinite(obs.Pts)) return false;
+        var box = obs.BoxInOcrCrop;
+        return box.Right > box.Left && box.Bottom > box.Top;
+    }
+
+    internal sealed record BoundaryEvaluation(
+        bool IsCandidate,
+        string CandidateReason,
+        double GapSeconds,
+        double AllowedGapSeconds,
+        bool GapWithinWindow,
+        PixelCheckResult Pixel,
+        PixelComparison? Comparison,
+        string? DuplicateStableText,
+        bool IsIdentical,
+        bool IsDashIdentical,
+        bool IsDuplicate,
+        bool CanMergeFlicker,
+        bool IsDashDropout,
+        bool IsPunctVariant,
+        bool IsPureExact);
+
+    // Đánh giá một boundary đúng logic MergeAdjacentAsync dùng để merge (candidate + gap + pixel).
+    // Internal cho targeted range replay log; MergeAdjacentAsync gọi hàm này nên không drift.
+    internal static async Task<BoundaryEvaluation> EvaluateBoundaryAsync(
+        OcrCue previous,
+        OcrCue cue,
+        bool allowFlicker,
+        string videoPath,
+        IPixelComparer comparer,
+        CancellationToken cancellationToken,
+        double exactIdenticalMaxGap = Epsilon)
+    {
+        var canMergeFlicker = allowFlicker && IsShortSingleSubstitutionFlicker(previous, cue);
+        var isIdentical = IsIdentical(previous, cue);
+        var isDashIdentical = isIdentical && !string.Equals(previous.Text, cue.Text, StringComparison.Ordinal);
+        var isPureExact = isIdentical && string.Equals(previous.Text, cue.Text, StringComparison.Ordinal);
+        string? duplicateStable = null;
+        var isDuplicate = IsTransientAdjacentDuplicate(previous, cue, out duplicateStable);
+        var isDashDropout = IsDashTailDropoutCandidate(previous, cue);
+        var isPunctVariant = IsPunctuationOnlyVariant(previous.Text, cue.Text);
+        var isCandidate = isIdentical || isDuplicate || canMergeFlicker || isDashDropout || isPunctVariant;
+        var gap = cue.Start - previous.End;
+        var allowedGap = isPureExact ? Math.Max(Epsilon, exactIdenticalMaxGap)
+            : (canMergeFlicker || isDashIdentical || isDashDropout || isPunctVariant) ? FlickerGap
+            : Epsilon;
+        var reason = !isCandidate ? "none"
+            : isPureExact ? "exact-identical"
+            : isDuplicate ? "duplicate"
+            : canMergeFlicker ? "flicker"
+            : isDashDropout ? "dash-dropout"
+            : isPunctVariant ? "punct-variant"
+            : "dash-identical";
+        if (!isCandidate || cue.Start > previous.End + allowedGap)
+            return new BoundaryEvaluation(isCandidate, reason, gap, allowedGap, false, PixelCheckResult.Unavailable, null,
+                duplicateStable, isIdentical, isDashIdentical, isDuplicate, canMergeFlicker, isDashDropout, isPunctVariant, isPureExact);
+        var comparison = await CheckBoundaryDetailedAsync(previous, cue, videoPath, comparer, cancellationToken);
+        return new BoundaryEvaluation(true, reason, gap, allowedGap, true, comparison.Result, comparison,
+            duplicateStable, isIdentical, isDashIdentical, isDuplicate, canMergeFlicker, isDashDropout, isPunctVariant, isPureExact);
     }
 
     private static bool IsIdentical(OcrCue a, OcrCue b) => DashNormalize(a.Text) == DashNormalize(b.Text);
@@ -63,58 +171,182 @@ public static class OcrCueReconciler
         return sb.ToString();
     }
 
+    private static bool IsDashRune(int value) =>
+        value is '\u2010' or '\u2011' or '\u2012' or '\u2013' or '\u2014' or '\u2015' or '-' or '—';
+
+    // 一 (U+4E00, một nét ngang) hay bị OCR đọc nhầm với —/—— và ngược lại.
+    // Chỉ dùng trong candidate relation dưới đây, không đưa vào DashNormalize/IsIdentical.
+    private static bool IsDashConfusableRune(int value) => IsDashRune(value) || value == '一';
+
+    private static bool IsPureDashText(string s)
+    {
+        var t = s.Trim();
+        if (t.Length == 0) return false;
+        foreach (var r in t.EnumerateRunes())
+        {
+            if (!IsDashRune(r.Value)) return false;
+        }
+        return true;
+    }
+
+    private static string StripTrailingDashes(string s)
+    {
+        var runes = s.EnumerateRunes().ToArray();
+        var end = runes.Length;
+        while (end > 0 && IsDashRune(runes[end - 1].Value)) end--;
+        return string.Concat(runes.Take(end).Select(r => r.ToString()));
+    }
+
+    private static string StripTrailingDashLikes(string s)
+    {
+        var runes = s.EnumerateRunes().ToArray();
+        var end = runes.Length;
+        while (end > 0 && IsDashConfusableRune(runes[end - 1].Value)) end--;
+        return string.Concat(runes.Take(end).Select(r => r.ToString()));
+    }
+
+    private static bool IsDashTailDropoutCandidate(OcrCue left, OcrCue right)
+    {
+        // Case thật 97-99: full caption ending dash(es) <-> pure dash fragment.
+        // Chỉ quyết định candidate để gọi pixel, merge vẫn phải Same.
+        var leftPure = IsPureDashText(left.Text);
+        var rightPure = IsPureDashText(right.Text);
+        if (leftPure && rightPure) return true;
+        if (leftPure && !rightPure)
+        {
+            var core = StripTrailingDashes(right.Text);
+            return core.Length > 0 && right.Text.Length > core.Length;
+        }
+        if (!leftPure && rightPure)
+        {
+            var core = StripTrailingDashes(left.Text);
+            return core.Length > 0 && left.Text.Length > core.Length;
+        }
+        return IsDashConfusableTailCandidate(left.Text, right.Text);
+    }
+
+    private static bool IsDashConfusableTailCandidate(string left, string right)
+    {
+        // Mở rộng cho 一 lẫn với —/—— ở cuối câu (case thật 130↔131: —— ↔ 一).
+        // Lone 一 vs lone — cũng là candidate (review qua pixel), không tự merge.
+        var leftRunes = left.EnumerateRunes().ToArray();
+        var rightRunes = right.EnumerateRunes().ToArray();
+        if (leftRunes.Length == 1 && rightRunes.Length == 1
+            && IsDashConfusableRune(leftRunes[0].Value) && IsDashConfusableRune(rightRunes[0].Value))
+            return true;
+        var leftCore = StripTrailingDashLikes(left);
+        var rightCore = StripTrailingDashLikes(right);
+        if (leftCore.Length == 0 || !string.Equals(leftCore, rightCore, StringComparison.Ordinal)) return false;
+        return left.Length > leftCore.Length || right.Length > rightCore.Length;
+    }
+
+    // Dấu câu được strip khi so candidate (không rewrite output): CJK U+3000-U+303F, fullwidth
+    // U+FF00-U+FF0F, general punctuation U+2000-U+206F và ASCII tương ứng. Không hardcode từng dấu
+    // của fixture; canonical output vẫn chọn từ cue evidence (SelectCanonical).
+    private static bool IsPunctuationMark(int value) =>
+        value is ',' or '.' or '!' or '?' or ';' or ':' or '\'' or '"' or '(' or ')' or '[' or ']' or '-' ||
+        (value >= 0x2000 && value <= 0x206F) ||
+        (value >= 0x3000 && value <= 0x303F) ||
+        (value >= 0xFF00 && value <= 0xFF0F);
+
+    private static string StripPunctuation(string text)
+    {
+        var sb = new StringBuilder(text.Length);
+        foreach (var rune in text.EnumerateRunes())
+        {
+            if (!IsPunctuationMark(rune.Value)) sb.Append(rune.ToString());
+        }
+        return sb.ToString();
+    }
+
+    private static bool IsPunctuationOnlyVariant(string left, string right)
+    {
+        // Giống nhau sau khi bỏ punctuation, khác biệt tổng ≤2 rune (insert/delete/substitute dấu nhỏ).
+        // Chỉ PROPOSE candidate cho pixel verifier; merge vẫn bắt buộc PixelCheckResult.Same.
+        var leftRunes = left.EnumerateRunes().ToArray();
+        var rightRunes = right.EnumerateRunes().ToArray();
+        if (Math.Abs(leftRunes.Length - rightRunes.Length) > 2) return false;
+        var leftCore = StripPunctuation(left);
+        var rightCore = StripPunctuation(right);
+        if (leftCore.Length == 0) return false;
+        return string.Equals(leftCore, rightCore, StringComparison.Ordinal);
+    }
+
     private static List<OcrCue> MergeAdjacent(IEnumerable<OcrCue> cues, bool allowFlicker = false, string? videoPath = null, IPixelComparer? comparer = null)
+    {
+        // Sync legacy: không gọi FFmpeg async, mọi candidate đều giữ tách + NeedsReview (safe-fail).
+        var output = new List<OcrCue>();
+        foreach (var cue in cues)
+        {
+            if (output.Count == 0) { output.Add(cue); continue; }
+            var previous = output[^1];
+            var canMergeFlicker = allowFlicker && IsShortSingleSubstitutionFlicker(previous, cue);
+            var isIdentical = IsIdentical(previous, cue);
+            var isDashIdentical = isIdentical && !string.Equals(previous.Text, cue.Text, StringComparison.Ordinal);
+            string? duplicateStable = null;
+            var isDuplicate = IsTransientAdjacentDuplicate(previous, cue, out duplicateStable);
+            var isDashDropout = IsDashTailDropoutCandidate(previous, cue);
+            var isPunctVariant = IsPunctuationOnlyVariant(previous.Text, cue.Text);
+            var isCandidate = isIdentical || isDuplicate || canMergeFlicker || isDashDropout || isPunctVariant;
+            if (!isCandidate) { output.Add(cue); continue; }
+            var allowedGap = (canMergeFlicker || isDashIdentical || isDashDropout || isPunctVariant) ? FlickerGap : Epsilon;
+            if (cue.Start > previous.End + allowedGap) { output.Add(cue); continue; }
+            output[^1] = previous with { NeedsReview = true };
+            output.Add(cue with { NeedsReview = true });
+            continue;
+        }
+        return output;
+    }
+
+    private static async Task<List<OcrCue>> MergeAdjacentAsync(IEnumerable<OcrCue> cues, bool allowFlicker, string videoPath, IPixelComparer comparer, CancellationToken cancellationToken, double exactIdenticalMaxGap = Epsilon)
     {
         var output = new List<OcrCue>();
         foreach (var cue in cues)
         {
-            var canMergeFlicker = allowFlicker && IsShortSingleSubstitutionFlicker(output.Count > 0 ? output[^1] : null, cue);
-            var isIdentical = output.Count > 0 && IsIdentical(output[^1], cue);
-            var isDashIdentical = isIdentical && output.Count > 0 && !string.Equals(output[^1].Text, cue.Text, StringComparison.Ordinal);
-            string? duplicateStable = null;
-            var isDuplicate = output.Count > 0 && IsTransientAdjacentDuplicate(output[^1], cue, out duplicateStable);
-            var allowedGap = (canMergeFlicker || isDashIdentical) ? FlickerGap : Epsilon;
-            PixelCheckResult pixel = PixelCheckResult.Unavailable;
-            if (canMergeFlicker && output.Count > 0)
+            if (output.Count == 0) { output.Add(cue); continue; }
+            var previous = output[^1];
+            var eval = await EvaluateBoundaryAsync(previous, cue, allowFlicker, videoPath, comparer, cancellationToken, exactIdenticalMaxGap);
+            if (!eval.IsCandidate || !eval.GapWithinWindow) { output.Add(cue); continue; }
+            // Mọi cross-cue merge bắt buộc PixelCheckResult.Same. Different/Unavailable giữ tách + NeedsReview.
+            if (eval.Pixel != PixelCheckResult.Same)
             {
-                IPixelComparer effective = comparer ?? (string.IsNullOrWhiteSpace(videoPath) ? (IPixelComparer)new AlwaysSamePixelComparer() : new ProductionPixelComparer());
-                var bboxA = new System.Drawing.Rectangle(0, 0, 100, 20);
-                var bboxB = new System.Drawing.Rectangle(2, 1, 100, 20);
-                pixel = effective.Check(videoPath ?? "", output[^1].End, cue.Start, bboxA, bboxB);
-            }
-            var flickerShouldMerge = canMergeFlicker && pixel == PixelCheckResult.Same;
-            var flickerNeedsReview = canMergeFlicker && pixel != PixelCheckResult.Same;
-            if (flickerNeedsReview && output.Count > 0)
-            {
-                // FlagForReview: keep separate but mark both for UI badge / export tag
-                output[^1] = output[^1] with { NeedsReview = true };
-                var flaggedCue = cue with { NeedsReview = true };
-                // Keep separate - do not merge, but flagged
-                output.Add(flaggedCue);
+                output[^1] = previous with { NeedsReview = true };
+                output.Add(cue with { NeedsReview = true });
                 continue;
             }
-            if (output.Count > 0 && cue.Start <= output[^1].End + allowedGap
-                && (isIdentical
-                    || isDuplicate
-                    || flickerShouldMerge))
+            var stableText = eval.DuplicateStableText;
+            if (stableText is null)
             {
-                var previous = output[^1];
-                var stableText = duplicateStable;
-                if (stableText is null && isIdentical)
-                    stableText = DashNormalize(SelectCanonical(previous, cue).Text);
-                if (stableText is null && flickerShouldMerge)
-                    stableText = SelectCanonical(previous, cue).Text;
-                // Keep earliest Start, never take later cue's Start even if canonical is later cue
-                output[^1] = previous with
+                var canonical = SelectCanonical(previous, cue);
+                // DashNormalize comparison-only: không rewrite output Text.
+                // Nếu isDashDropout, giữ full caption (bên dài hơn), không để dash fragment thắng vì confidence.
+                if (eval.IsDashDropout && !eval.IsIdentical && !eval.IsDuplicate && !eval.CanMergeFlicker)
                 {
-                    End = Math.Max(previous.End, cue.End),
-                    Text = stableText ?? previous.Text,
-                    Confidence = Math.Max(previous.Confidence, cue.Confidence),
-                    RawSupportCount = Math.Max(previous.RawSupportCount, cue.RawSupportCount),
-                    ConfidentSupportCount = Math.Max(previous.ConfidentSupportCount, cue.ConfidentSupportCount),
-                };
+                    var leftLen = previous.Text.EnumerateRunes().Count();
+                    var rightLen = cue.Text.EnumerateRunes().Count();
+                    stableText = leftLen >= rightLen ? previous.Text : cue.Text;
+                }
+                else
+                {
+                    stableText = canonical.Text;
+                }
             }
-            else output.Add(cue);
+            // Provenance mở rộng 2 đầu: First = left-most First, Last = right-most Last (kể cả null, không backfill).
+            // Support disjoint fragments: cộng dồn. Tracker đảm bảo reconciler-input không share observation
+            // (các cue touching/disjoint theo Start/End); nếu overlap, đây là upper-bound và vẫn an toàn vì
+            // quyết định merge đã pixel-gate, không dùng support để merge.
+            // NeedsReview OR-preservation: Same ở boundary này không xóa review từ boundary khác.
+            output[^1] = previous with
+            {
+                End = Math.Max(previous.End, cue.End),
+                Text = stableText ?? previous.Text,
+                Confidence = Math.Max(previous.Confidence, cue.Confidence),
+                RawSupportCount = previous.RawSupportCount + cue.RawSupportCount,
+                ConfidentSupportCount = previous.ConfidentSupportCount + cue.ConfidentSupportCount,
+                FirstObservation = previous.FirstObservation,
+                LastObservation = cue.LastObservation,
+                NeedsReview = previous.NeedsReview || cue.NeedsReview,
+            };
         }
         return output;
     }
@@ -154,11 +386,9 @@ public static class OcrCueReconciler
         return false;
     }
 
-    private static void CollapseSandwichedSubstitutions(List<OcrCue> cues)
+    private static void CollapseSandwichedSubstitutions(List<OcrCue> cues, string? videoPath = null, IPixelComparer? comparer = null)
     {
-        // A/B/A over consecutive frames is strong temporal evidence that B is a
-        // transient one-glyph OCR substitution. Preserve the spelling actually
-        // observed on both sides and merge timing; do not fuzzy-merge A/B alone.
+        // Sync legacy safe-fail: mọi A/B/A candidate đều giữ tách + NeedsReview, không collapse (cần async pixel Same cả 2 boundary).
         for (var index = 1; index + 1 < cues.Count;)
         {
             var left = cues[index - 1];
@@ -167,14 +397,64 @@ public static class OcrCueReconciler
             var touching = middle.Start <= left.End + .067 && right.Start <= middle.End + .067;
             var bounded = right.End - left.Start <= 2.0 && middle.End - middle.Start <= 1.25;
             var edgeFlicker = Math.Min(left.End - left.Start, right.End - right.Start) <= .35;
-            if (touching && bounded && edgeFlicker
-                && IsIdentical(left, right)
-                && IsSingleRuneSubstitution(left.Text, middle.Text))
+            var outerSame = IsIdentical(left, right) || IsPunctuationOnlyVariant(left.Text, right.Text) || (IsDashTailDropoutCandidate(left, middle) && IsDashTailDropoutCandidate(middle, right));
+            var innerCandidate = IsSingleRuneSubstitution(left.Text, middle.Text) || IsDashTailDropoutCandidate(left, middle) || IsPunctuationOnlyVariant(left.Text, middle.Text);
+            if (touching && bounded && edgeFlicker && outerSame && innerCandidate)
             {
+                cues[index - 1] = left with { NeedsReview = true };
+                cues[index] = middle with { NeedsReview = true };
+                cues[index + 1] = right with { NeedsReview = true };
+                index++;
+                continue;
+            }
+            index++;
+            continue;
+        }
+    }
+
+    private static async Task CollapseSandwichedSubstitutionsAsync(List<OcrCue> cues, string videoPath, IPixelComparer comparer, CancellationToken cancellationToken)
+    {
+        for (var index = 1; index + 1 < cues.Count;)
+        {
+            var left = cues[index - 1];
+            var middle = cues[index];
+            var right = cues[index + 1];
+            var touching = middle.Start <= left.End + .067 && right.Start <= middle.End + .067;
+            // Không veto bằng tổng span A+B+C: cue A dài không được xóa candidate của một visual instance dài.
+            // Candidate dựa vào từng boundary (touching) + middle ngắn (chống explosion) + quan hệ text.
+            var middleBounded = middle.End - middle.Start <= 1.25;
+            var edgeFlicker = Math.Min(left.End - left.Start, right.End - right.Start) <= .35;
+            var outerSame = IsIdentical(left, right) || IsPunctuationOnlyVariant(left.Text, right.Text) || (IsDashTailDropoutCandidate(left, middle) && IsDashTailDropoutCandidate(middle, right));
+            var innerCandidate = IsSingleRuneSubstitution(left.Text, middle.Text) || IsDashTailDropoutCandidate(left, middle) || IsPunctuationOnlyVariant(left.Text, middle.Text);
+            if (touching && middleBounded && edgeFlicker && outerSame && innerCandidate)
+            {
+                var pixelAB = await CheckBoundaryAsync(left, middle, videoPath, comparer, cancellationToken);
+                var pixelBC = await CheckBoundaryAsync(middle, right, videoPath, comparer, cancellationToken);
+                if (pixelAB != PixelCheckResult.Same || pixelBC != PixelCheckResult.Same)
+                {
+                    cues[index - 1] = left with { NeedsReview = true };
+                    cues[index] = middle with { NeedsReview = true };
+                    cues[index + 1] = right with { NeedsReview = true };
+                    index++;
+                    continue;
+                }
+                // Giữ full caption cho dash-dropout, không để dash fragment thắng.
+                string collapsedText = left.Text;
+                if (IsDashTailDropoutCandidate(left, middle))
+                {
+                    collapsedText = left.Text.EnumerateRunes().Count() >= middle.Text.EnumerateRunes().Count() ? left.Text : middle.Text;
+                    if (right.Text.EnumerateRunes().Count() > collapsedText.EnumerateRunes().Count()) collapsedText = right.Text;
+                }
                 cues[index - 1] = left with
                 {
                     End = Math.Max(left.End, right.End),
+                    Text = collapsedText,
                     Confidence = Math.Max(left.Confidence, right.Confidence),
+                    RawSupportCount = left.RawSupportCount + middle.RawSupportCount + right.RawSupportCount,
+                    ConfidentSupportCount = left.ConfidentSupportCount + middle.ConfidentSupportCount + right.ConfidentSupportCount,
+                    FirstObservation = left.FirstObservation,
+                    LastObservation = right.LastObservation,
+                    NeedsReview = left.NeedsReview || middle.NeedsReview || right.NeedsReview,
                 };
                 cues.RemoveRange(index, 2);
                 index = Math.Max(1, index - 1);

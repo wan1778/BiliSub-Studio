@@ -29,12 +29,24 @@ internal sealed class SubtitleTracker
     {
     }
 
+    private readonly OcrRegion? _sourceRoi;
+    private readonly OcrFrameGeometry? _laneGeometry;
+    private readonly double _streamStartTime;
+    private readonly RationalTimeBase? _sourceTimeBase;
+
     internal SubtitleTracker(double framesPerSecond, double lowConfidence, bool exactFrameTiming)
+        : this(framesPerSecond, lowConfidence, exactFrameTiming, null, null, 0, null) { }
+
+    internal SubtitleTracker(double framesPerSecond, double lowConfidence, bool exactFrameTiming, OcrRegion? sourceRoi = null, OcrFrameGeometry? laneGeometry = null, double streamStartTime = 0, RationalTimeBase? sourceTimeBase = null)
     {
         _frameSpan = 1 / Math.Max(0.25, framesPerSecond);
         _candidateGap = Math.Max(0.75, _frameSpan * 2.5);
         _lowConfidence = Math.Clamp(lowConfidence, 0, 1);
         _exactFrameTiming = exactFrameTiming;
+        _sourceRoi = sourceRoi;
+        _laneGeometry = laneGeometry;
+        _streamStartTime = double.IsFinite(streamStartTime) && streamStartTime > 0 ? streamStartTime : 0;
+        _sourceTimeBase = sourceTimeBase is { Num: > 0, Den: > 0 } ? sourceTimeBase : null;
         _lastFrameDuration = _frameSpan;
     }
 
@@ -61,11 +73,14 @@ internal sealed class SubtitleTracker
         _emptyHits = 0;
     }
 
-    public void Observe(double at, OcrResult result) => Observe(at, _frameSpan, result);
+    public void Observe(double at, OcrResult result) => Observe(null, at, _frameSpan, result);
 
-    public void Observe(double at, double frameDuration, OcrResult result)
+    public void Observe(double atAbsolute, double frameDuration, OcrResult result) => Observe(null, atAbsolute, frameDuration, result);
+
+    public void Observe(long? sourcePts, double atAbsolute, double? frameDurationRaw, OcrResult result)
     {
-        frameDuration = NormalizeFrameDuration(frameDuration);
+        var at = atAbsolute - _streamStartTime;
+        var frameDuration = NormalizeFrameDuration(frameDurationRaw ?? _frameSpan);
         _lastFrameDuration = frameDuration;
         if (!result.Ok || !result.Detected || string.IsNullOrWhiteSpace(result.Text))
         {
@@ -74,20 +89,19 @@ internal sealed class SubtitleTracker
         }
         if (!ChineseSubtitleNormalizer.TryNormalize(result.Text, out var text))
         {
-            // Foreign-script OCR garbage is inconclusive for an already active subtitle,
-            // but it must break an unconfirmed candidate so distant hits cannot combine.
             _candidate = null;
             _longerVariantText = null;
             _longerVariantHits = 0;
             _longerVariantLast = 0;
             return;
         }
+        var observation = CreateObservation(atAbsolute, sourcePts, result, text);
         if (_active is not null && _exactFrameTiming && IsStrictSubtext(_active.Text, text))
         {
             _longerVariantText = null;
             _longerVariantHits = 0;
             _longerVariantLast = 0;
-            ObserveSubtextVariant(at, frameDuration, text, result.Confidence);
+            ObserveSubtextVariant(at, frameDuration, text, result.Confidence, observation);
             return;
         }
         if (_active is not null && _subtextVariant is not null)
@@ -152,6 +166,7 @@ internal sealed class SubtitleTracker
                 Confidence = Math.Max(_active.Confidence, result.Confidence),
                 RawSupportCount = _activeRawSupport,
                 ConfidentSupportCount = _activeConfidentSupport,
+                LastObservation = observation,
             };
             return;
         }
@@ -165,7 +180,7 @@ internal sealed class SubtitleTracker
         if (_candidate is null || at - _candidate.Last > _candidateGap || Similarity(_candidate.Text, text) < 0.80)
         {
             var confInc = result.Confidence >= ConfidentFloor(text) ? 1 : 0;
-            _candidate = new Candidate(text, EstimateBoundary(at, frameDuration), at, result.Confidence, 1, required, 1, confInc);
+            _candidate = new Candidate(text, EstimateBoundary(at, frameDuration), at, result.Confidence, 1, required, 1, confInc, observation, observation);
             return;
         }
         _candidate = _candidate with
@@ -175,6 +190,7 @@ internal sealed class SubtitleTracker
             Hits = _candidate.Hits + 1,
             RawSupportCount = _candidate.RawSupportCount + 1,
             ConfidentSupportCount = _candidate.ConfidentSupportCount + (result.Confidence >= ConfidentFloor(text) ? 1 : 0),
+            LastObservation = observation,
             Required = Math.Max(_candidate.Required, required),
             Text = PreferCandidateText(_candidate.Text, _candidate.Confidence, text, result.Confidence),
         };
@@ -218,13 +234,14 @@ internal sealed class SubtitleTracker
         }
     }
 
-    private void ObserveSubtextVariant(double at, double frameDuration, string text, double confidence)
+    private void ObserveSubtextVariant(double at, double frameDuration, string text, double confidence, PixelObservation? observation)
     {
         if (_active is null) return;
         var required = confidence < _lowConfidence || text.EnumerateRunes().Count() <= 1 ? 3 : 2;
         if (_subtextVariant is null || !IsContinuousVariant(_subtextVariant.Text, text))
         {
-            _subtextVariant = new SubtextVariant(text, at, at, confidence, 1, required);
+            var confInc0 = confidence >= ConfidentFloor(text) ? 1 : 0;
+            _subtextVariant = new SubtextVariant(text, at, at, confidence, 1, required, 1, confInc0, observation, observation);
             return;
         }
         _subtextVariant = _subtextVariant with
@@ -233,6 +250,9 @@ internal sealed class SubtitleTracker
             Text = PreferText(_subtextVariant.Text, _subtextVariant.Confidence, text, confidence),
             Confidence = Math.Max(_subtextVariant.Confidence, confidence),
             Hits = _subtextVariant.Hits + 1,
+            RawSupportCount = _subtextVariant.RawSupportCount + 1,
+            ConfidentSupportCount = _subtextVariant.ConfidentSupportCount + (confidence >= ConfidentFloor(text) ? 1 : 0),
+            LastObservation = observation,
             Required = Math.Max(_subtextVariant.Required, required),
         };
         // A short suffix can be a one-frame fade/reveal artifact. Requiring stable
@@ -243,9 +263,9 @@ internal sealed class SubtitleTracker
                 _subtextVariant.Text, _subtextVariant.Start, at, frameDuration)) return;
         var variant = _subtextVariant;
         CommitActive(variant.Start);
-        _activeRawSupport = variant.Hits;
-        _activeConfidentSupport = variant.Confidence >= ConfidentFloor(variant.Text) ? variant.Hits : 0;
-        _active = new OcrCue(variant.Start, at + ActiveFrameEnd(frameDuration), variant.Text, variant.Confidence, _activeRawSupport, _activeConfidentSupport);
+        _activeRawSupport = variant.RawSupportCount;
+        _activeConfidentSupport = variant.ConfidentSupportCount;
+        _active = new OcrCue(variant.Start, at + ActiveFrameEnd(frameDuration), variant.Text, variant.Confidence, _activeRawSupport, _activeConfidentSupport, false, variant.FirstObservation, variant.LastObservation);
         _subtextVariant = null;
         _emptyHits = 0;
     }
@@ -256,7 +276,7 @@ internal sealed class SubtitleTracker
         if (_active is not null) CommitActive(_candidate.Start);
         _activeRawSupport = _candidate.RawSupportCount;
         _activeConfidentSupport = _candidate.ConfidentSupportCount;
-        _active = new OcrCue(_candidate.Start, _candidate.Last + ActiveFrameEnd(frameDuration), _candidate.Text, _candidate.Confidence, _activeRawSupport, _activeConfidentSupport);
+        _active = new OcrCue(_candidate.Start, _candidate.Last + ActiveFrameEnd(frameDuration), _candidate.Text, _candidate.Confidence, _activeRawSupport, _activeConfidentSupport, false, _candidate.FirstObservation, _candidate.LastObservation);
         _candidate = null;
     }
 
@@ -272,6 +292,8 @@ internal sealed class SubtitleTracker
             });
         }
         _active = null;
+        _activeRawSupport = 0;
+        _activeConfidentSupport = 0;
         _longerVariantText = null;
         _longerVariantHits = 0;
         _longerVariantLast = 0;
@@ -297,6 +319,37 @@ internal sealed class SubtitleTracker
         || at + frameDuration - start >= SingleRuneMinimumEvidenceSeconds - .000001;
 
     private static double ConfidentFloor(string text) => IsPureDash(text) ? 0.15 : 0.30;
+
+    private PixelObservation? CreateObservation(double atAbsolute, long? sourcePts, OcrResult result, string normalizedText)
+    {
+        if (_sourceRoi is null) return null;
+        if (result.Lines is null || result.Lines.Count == 0) return null;
+        if (sourcePts is null || _sourceTimeBase is null) return null;
+        // Validate PtsTime ≈ SourcePts * Num/Den trong rounding nhỏ (timebase/2 + epsilon). Sai => Unavailable.
+        var expected = sourcePts.Value * (_sourceTimeBase.Num / (double)_sourceTimeBase.Den);
+        var tbSeconds = _sourceTimeBase.Num / (double)_sourceTimeBase.Den;
+        if (Math.Abs(atAbsolute - expected) > Math.Max(tbSeconds, 1e-6))
+            return null;
+        var boxes = new List<OcrBox>();
+        foreach (var line in result.Lines)
+        {
+            if (line.Box is not { Length: >= 4 }) continue;
+            if (string.IsNullOrWhiteSpace(line.Text)) continue;
+            var l = line.Box[0]; var t = line.Box[1]; var r = line.Box[2]; var b = line.Box[3];
+            if (r <= l || b <= t) continue;
+            boxes.Add(new OcrBox(l, t, r, b));
+        }
+        if (boxes.Count == 0) return null;
+        var left = boxes.Min(x => x.Left);
+        var top = boxes.Min(x => x.Top);
+        var right = boxes.Max(x => x.Right);
+        var bottom = boxes.Max(x => x.Bottom);
+        if (right <= left || bottom <= top) return null;
+        return new PixelObservation(atAbsolute, new OcrBox(left, top, right, bottom), _sourceRoi, _laneGeometry, sourcePts, _sourceTimeBase);
+    }
+
+    private PixelObservation? CreateObservation(double at, OcrResult result, string normalizedText)
+        => CreateObservation(at, null, result, normalizedText);
 
     private static bool IsPureDash(string text)
     {
@@ -445,6 +498,6 @@ internal sealed class SubtitleTracker
     private static bool IsStrictSubtext(string active, string observed) =>
         IsRuneSubsequence(observed, active);
 
-    private sealed record Candidate(string Text, double Start, double Last, double Confidence, int Hits, int Required, int RawSupportCount, int ConfidentSupportCount);
-    private sealed record SubtextVariant(string Text, double Start, double Last, double Confidence, int Hits, int Required);
+    private sealed record Candidate(string Text, double Start, double Last, double Confidence, int Hits, int Required, int RawSupportCount, int ConfidentSupportCount, PixelObservation? FirstObservation, PixelObservation? LastObservation);
+    private sealed record SubtextVariant(string Text, double Start, double Last, double Confidence, int Hits, int Required, int RawSupportCount, int ConfidentSupportCount, PixelObservation? FirstObservation, PixelObservation? LastObservation);
 }

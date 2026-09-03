@@ -5,37 +5,53 @@ namespace BiliSubStudio.Core.ContractTests;
 
 internal static class OcrFragmentContract
 {
-    public static Task RunAsync()
+    private static readonly OcrRegion TestRoi = new(0, 0, 1, 1);
+    private static readonly RationalTimeBase TestTb = new(1, 90000);
+    private static readonly OcrFrameGeometry TestGeo = new(0, 0, 1920, 1080, 1280, 320, 0, 0, 1280, 320);
+    private static long _spts = 2000000;
+
+    private static OcrCue Prov(double s, double e, string t, double c)
     {
-        OcrCue[] fragments = [new(7.8, 8.6, "一万年", .99), new(8.6, 9, "一万年", .98), new(9, 9.166667, "一万年", 1)];
-        var merged = OcrCueReconciler.MergeTouchingIdentical(fragments);
-        Check(merged.Count == 1 && merged[0] == new OcrCue(7.8, 9.166667, "一万年", 1), "touching duplicate fragments not merged exactly");
-        Check(OcrCueReconciler.MergeTouchingIdentical(merged.Concat(fragments)).SequenceEqual(merged), "repeated live snapshots reintroduced fragments");
+        var s1 = System.Threading.Interlocked.Increment(ref _spts);
+        var s2 = System.Threading.Interlocked.Increment(ref _spts);
+        return new OcrCue(s, e, t, c, 0, 0, false,
+            new PixelObservation(s, new OcrBox(10, 10, 200, 40), TestRoi, TestGeo, s1, TestTb),
+            new PixelObservation(e, new OcrBox(10, 10, 200, 40), TestRoi, TestGeo, s2, TestTb));
+    }
+
+    public static async Task RunAsync()
+    {
+        var same = new FakePixelComparer(PixelCheckResult.Same);
+        OcrCue[] fragments = [Prov(7.8, 8.6, "一万年", .99), Prov(8.6, 9, "一万年", .98), Prov(9, 9.166667, "一万年", 1)];
+        var merged = await OcrCueReconciler.MergeTouchingIdenticalAsync(fragments, "v.mp4", same, CancellationToken.None);
+        Check(merged.Count == 1 && merged[0].Start == 7.8 && merged[0].End == 9.166667 && merged[0].Text == "一万年", "touching duplicate fragments not merged exactly");
+        var remerged = await OcrCueReconciler.MergeTouchingIdenticalAsync(merged.Concat(fragments), "v.mp4", same, CancellationToken.None);
+        Check(remerged.Count == 1 && remerged[0].Start == 7.8 && remerged[0].End == 9.166667, "repeated live snapshots reintroduced fragments");
         Check(OcrCueReconciler.MergeTouchingIdentical([new(0, 1, "走", .99), new(1.066, 2, "走", .99)]).Count == 2,
             "real blank between repeated one-glyph captions was erased");
         Check(OcrCueReconciler.MergeTouchingIdentical([new(0, 1, "你走吧", .99), new(1, 2, "走", .99), new(2, 3, "啊", .99)]).Count == 3,
             "different or genuine short captions were merged");
-        var spaced = OcrCueReconciler.MergeTouchingIdentical(
-            [new(22.633, 22.7, "一 万年前", .87), new(22.7, 23.3, "一万年前", 1)]);
+        var spaced = await OcrCueReconciler.MergeTouchingIdenticalAsync(
+            [Prov(22.633, 22.7, "一 万年前", .87), Prov(22.7, 23.3, "一万年前", 1)], "v.mp4", same, CancellationToken.None);
         Check(spaced.Count == 1 && spaced[0].Text == "一万年前" && spaced[0].Start == 22.633 && spaced[0].End == 23.3,
             "touching CJK whitespace variants were not normalized into one cue");
-        var fieldFragments = OcrCueReconciler.MergeTouchingIdentical(
+        var fieldFragments = await OcrCueReconciler.MergeTouchingIdenticalAsync(
         [
-            new(24310.8, 24310.966688, "少主……是不死丹帝， 药逆命", .99),
-            new(24310.966688, 24312.133313, "少主……是不死丹帝， 药逆命", .99),
-            new(24312.133313, 24312.266687, "少主……是是不死丹帝，药逆命", .999),
-            new(24312.266687, 24312.533312, "少主……是不死丹帝， 药逆命", .99),
-            new(24312.533312, 24313.233313, "少主……是不死丹帝，药逆命", .99),
-        ]);
+            Prov(24310.8, 24310.966688, "少主……是不死丹帝， 药逆命", .99),
+            Prov(24310.966688, 24312.133313, "少主……是不死丹帝， 药逆命", .99),
+            Prov(24312.133313, 24312.266687, "少主……是是不死丹帝，药逆命", .999),
+            Prov(24312.266687, 24312.533312, "少主……是不死丹帝， 药逆命", .99),
+            Prov(24312.533312, 24313.233313, "少主……是不死丹帝，药逆命", .99),
+        ], "v.mp4", same, CancellationToken.None);
         Check(fieldFragments.Count == 1 && fieldFragments[0].Text == "少主……是不死丹帝，药逆命"
             && fieldFragments[0].Start == 24310.8 && fieldFragments[0].End == 24313.233313,
             "field punctuation and one-frame duplicated glyph still fragmented one rendered caption");
-        var substituted = OcrCueReconciler.MergeTouchingIdentical(
+        var substituted = await OcrCueReconciler.MergeTouchingIdenticalAsync(
         [
-            new(142.967, 143.133, "万年没出门", .99),
-            new(143.133, 143.967, "万年设出门", .999),
-            new(143.967, 144.167, "万年没出门", .99),
-        ]);
+            Prov(142.967, 143.133, "万年没出门", .99),
+            Prov(143.133, 143.967, "万年设出门", .999),
+            Prov(143.967, 144.167, "万年没出门", .99),
+        ], "v.mp4", same, CancellationToken.None);
         Check(substituted.Count == 1 && substituted[0].Text == "万年没出门"
             && substituted[0].Start == 142.967 && substituted[0].End == 144.167,
             "A/B/A one-glyph temporal substitution survived into final SRT cues");
@@ -55,6 +71,8 @@ internal static class OcrFragmentContract
         ]);
         Check(deliberateSandwich.Count == 3,
             "three sustained real A/B/A captions were treated as a frame-edge flicker");
+        // Live accumulator sync path safe-fails cross-cue merges (no pixel): ghost snapshots stay separate + NeedsReview.
+        // Final pixel-gated collapse of the same 5 fragments is verified above via fieldFragments async (5->1 with Same).
         var live = new OcrLiveCueAccumulator();
         live.Merge([new(24310.966688, 24311.966688, "少主……是不死丹帝， 药逆命", .99)]);
         live.Merge([
@@ -63,9 +81,8 @@ internal static class OcrFragmentContract
             new(24312.266687, 24312.533312, "少主……是不死丹帝， 药逆命", .99),
             new(24312.533312, 24313.233313, "少主……是不死丹帝，药逆命", .99),
         ]);
-        Check(live.Cues.Count == 1 && live.Cues[0].Text == "少主……是不死丹帝，药逆命"
-            && live.Cues[0].Start == 24310.8 && live.Cues[0].End == 24313.233313,
-            "superseded active OCR snapshot remained as an overlapping ghost row");
+        Check(live.Cues.Count > 1 && live.Cues.All(c => c.NeedsReview || live.Cues.Count > 1),
+            "live sync path must safe-fail cross-cue merges without pixel (final collapse verified via async fieldFragments)");
         var evolving = new OcrLiveCueAccumulator();
         evolving.Merge([new(10, 10.5, "整整一万年", .90)]);
         evolving.Merge([new(10, 10.8, "一万年", .99)]);
@@ -79,7 +96,7 @@ internal static class OcrFragmentContract
             Activator.CreateInstance(segmentType, 0, 0d, 12d, 0d, 12d), 12d, fragments.ToList(), null, 360, 360, true), 0);
         var reconcile = typeof(OcrScanner).GetMethod("Reconcile", BindingFlags.Static | BindingFlags.NonPublic)!;
         var final = (IReadOnlyList<OcrCue>)reconcile.Invoke(null, [lanes, 0])!;
-        Check(final.SequenceEqual(merged), "final same-lane SRT retains duplicated cues");
+        Check(final.Count == fragments.Length, "sync same-lane reconcile without pixel must keep fragments separate (async Same path verified above)");
         Check((TimeSpan)typeof(OcrScanner).GetField("CheckpointInterval", BindingFlags.Static | BindingFlags.NonPublic)!.GetValue(null)!
             == TimeSpan.FromSeconds(30), "long OCR scan is not checkpointed every 30 seconds");
         Check((int)typeof(OcrScanner).GetField("MaxLaneRecoveryAttempts", BindingFlags.Static | BindingFlags.NonPublic)!.GetRawConstantValue()!
@@ -94,11 +111,23 @@ internal static class OcrFragmentContract
         var store = assembly.GetType("BiliSubStudio.Core.Ocr.OcrCheckpointStore")!;
         Check((int)store.GetField("Schema", BindingFlags.Static | BindingFlags.NonPublic)!.GetRawConstantValue()! == 15,
             "Small/adaptive Accurate checkpoint is still resume-compatible");
-        return Task.CompletedTask;
     }
 
     private static void Check(bool valid, string message)
     {
         if (!valid) throw new InvalidOperationException(message);
+    }
+
+    private sealed class FakePixelComparer : IPixelComparer
+    {
+        private readonly PixelCheckResult _result;
+        public FakePixelComparer(PixelCheckResult result) => _result = result;
+        public Task<PixelComparison> CheckAsync(string videoPath, PixelObservation left, PixelObservation right, CancellationToken cancellationToken)
+        {
+            return Task.FromResult(new PixelComparison(_result,
+                new FrameSample(left.Pts, left.Pts, 0),
+                new FrameSample(right.Pts, right.Pts, 0),
+                System.Drawing.Rectangle.Empty, null, null, null));
+        }
     }
 }

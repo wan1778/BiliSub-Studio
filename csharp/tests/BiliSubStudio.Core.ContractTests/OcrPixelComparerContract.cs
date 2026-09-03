@@ -4,53 +4,50 @@ namespace BiliSubStudio.Core.ContractTests;
 
 internal static class OcrPixelComparerContract
 {
-    public static Task RunAsync()
+    public static async Task RunAsync()
     {
-        // ProductionUnavailableDoesNotMerge: Unavailable must keep 2 + NeedsReview (use flicker durations 0.4 vs 0.7 diff 0.3)
+        var roi = new OcrRegion(0, 0, 1, 1);
+        OcrCue Cue(double s, double e, string t, double c, double pts) => new(s, e, t, c, 0, 0, false,
+            new PixelObservation(pts, new OcrBox(10, 10, 200, 40), roi),
+            new PixelObservation(pts, new OcrBox(10, 10, 200, 40), roi));
         var unavailableComparer = new UnavailablePixelComparer();
-        var cues = new[] { new OcrCue(10, 10.4, "哇，没毛狗", 0.99), new OcrCue(10.4, 11.1, "哦，没毛狗", 0.98) };
-        var mergedUnavailable = OcrCueReconciler.MergeTouchingIdentical(cues, videoPath: "missing.mp4", comparer: unavailableComparer);
+        var cues = new[] { Cue(10, 10.4, "哇，没毛狗", 0.99, 10.4), Cue(10.4, 11.1, "哦，没毛狗", 0.98, 10.4) };
+        var mergedUnavailable = await OcrCueReconciler.MergeTouchingIdenticalAsync(cues, videoPath: "missing.mp4", comparer: unavailableComparer, cancellationToken: CancellationToken.None);
         Check(mergedUnavailable.Count == 2 && mergedUnavailable.All(c => c.NeedsReview),
             "ProductionUnavailableDoesNotMerge: Unavailable should keep 2 + NeedsReview");
 
-        var unionComparer = new UnionCropPixelComparer();
-        var result = unionComparer.CheckWithBboxes(new System.Drawing.Rectangle(0,0,100,20), new System.Drawing.Rectangle(2,1,100,20));
-        Check(result.Union.Width == 106 && result.Union.Height == 25,
+        var union = OcrCropPlanner.PlanSharedCrop(new System.Drawing.Rectangle(0, 0, 100, 20), new System.Drawing.Rectangle(2, 1, 100, 20), 1920, 1080);
+        Check(union.Left == 0 && union.Top == 0 && union.Right == 104 && union.Bottom == 23,
             "DifferentBboxesUseSharedUnionCrop: union not computed");
 
-        // TestComparerIsExplicitDependency: AlwaysSame only in test, not in production DI
         var alwaysSame = new AlwaysSamePixelComparer();
-        var testMerged = OcrCueReconciler.MergeTouchingIdentical(cues, videoPath: "test.mp4", comparer: alwaysSame);
+        var testMerged = await OcrCueReconciler.MergeTouchingIdenticalAsync(cues, videoPath: "test.mp4", comparer: alwaysSame, cancellationToken: CancellationToken.None);
         Check(testMerged.Count == 1, "AlwaysSame test comparer should merge");
-        var prodMerged = OcrCueReconciler.MergeTouchingIdentical(cues, videoPath: "missing.mp4", comparer: unavailableComparer);
+        var prodMerged = await OcrCueReconciler.MergeTouchingIdenticalAsync(cues, videoPath: "missing.mp4", comparer: unavailableComparer, cancellationToken: CancellationToken.None);
         Check(prodMerged.Count == 2, "Production comparer must not be AlwaysSame");
-
-        return Task.CompletedTask;
     }
 
     private static void Check(bool v, string m){ if(!v) throw new InvalidOperationException(m); }
 
     private sealed class UnavailablePixelComparer : IPixelComparer
     {
-        public PixelCheckResult Check(string video, double ptsA, double ptsB, System.Drawing.Rectangle bboxA, System.Drawing.Rectangle bboxB) => PixelCheckResult.Unavailable;
+        public Task<PixelComparison> CheckAsync(string video, PixelObservation left, PixelObservation right, CancellationToken ct)
+        {
+            var l = new FrameSample(left.Pts, double.NaN, double.NaN);
+            var r = new FrameSample(right.Pts, double.NaN, double.NaN);
+            return Task.FromResult(new PixelComparison(PixelCheckResult.Unavailable, l, r, System.Drawing.Rectangle.Empty, null, null, null));
+        }
     }
     private sealed class AlwaysSamePixelComparer : IPixelComparer
     {
-        public PixelCheckResult Check(string video, double ptsA, double ptsB, System.Drawing.Rectangle bboxA, System.Drawing.Rectangle bboxB) => PixelCheckResult.Same;
-    }
-    private sealed class UnionCropPixelComparer : IPixelComparer
-    {
-        public System.Drawing.Rectangle Union;
-        public PixelCheckResult Check(string video, double ptsA, double ptsB, System.Drawing.Rectangle bboxA, System.Drawing.Rectangle bboxB)
+        public Task<PixelComparison> CheckAsync(string video, PixelObservation left, PixelObservation right, CancellationToken ct)
         {
-            Union = System.Drawing.Rectangle.Union(bboxA, bboxB);
-            Union.Inflate(2,2);
-            return PixelCheckResult.Same;
-        }
-        public (System.Drawing.Rectangle Union, PixelCheckResult Result) CheckWithBboxes(System.Drawing.Rectangle a, System.Drawing.Rectangle b)
-        {
-            Check("",0,0,a,b);
-            return (Union, PixelCheckResult.Same);
+            var l = new FrameSample(left.Pts, left.Pts, 0);
+            var r = new FrameSample(right.Pts, right.Pts, 0);
+            var union = OcrCropPlanner.PlanSharedCrop(
+                new System.Drawing.Rectangle(left.BoxInOcrCrop.Left, left.BoxInOcrCrop.Top, 10, 10),
+                new System.Drawing.Rectangle(right.BoxInOcrCrop.Left, right.BoxInOcrCrop.Top, 10, 10), 1920, 1080);
+            return Task.FromResult(new PixelComparison(PixelCheckResult.Same, l, r, union, 0.99, 0.95, 0.9));
         }
     }
 }

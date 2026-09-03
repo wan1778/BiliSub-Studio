@@ -56,7 +56,7 @@ internal sealed class OcrCheckpointStore
         try
         {
             var checkpoint = JsonSerializer.Deserialize<OcrParallelCheckpoint>(await File.ReadAllTextAsync(path, cancellationToken), JsonOptions);
-            if (checkpoint is null || checkpoint.Schema != Schema || checkpoint.Key != key || !IsValidCheckpoint(checkpoint, request.Duration))
+            if (checkpoint is null || checkpoint.Schema != Schema || checkpoint.Key != key || !IsValidCheckpoint(checkpoint, request.Duration, request.ScanStartOffset))
                 return null;
             return checkpoint;
         }
@@ -92,7 +92,9 @@ internal sealed class OcrCheckpointStore
         var media = ContiguousFrontier(checkpoint.Lanes);
         // Recovery export must contain only tracker-committed, lane-owned cues.
         // Active cues are useful for the live preview but are still provisional.
-        var cues = OcrScanner.Reconcile(checkpoint.Lanes, out _)
+        // Production call-site async: luôn truyền videoPath + ProductionPixelComparer.
+        var (reconciled, _) = await OcrScanner.ReconcileAsync(checkpoint.Lanes, request.Path, new ProductionPixelComparer(), cancellationToken);
+        var cues = reconciled
             .Where(x => x.Start <= media + 0.001)
             .OrderBy(x => x.Start)
             .ToArray();
@@ -119,22 +121,23 @@ internal sealed class OcrCheckpointStore
     {
         var scanMode = ModeFor(request.Mode, request.Sensitivity);
         var overlap = Math.Max(scanMode.Guard, scanMode.ActiveGuard);
-        var segments = BuildSegments(request.Duration, parallelism, overlap);
+        var segments = BuildSegments(request.Duration, parallelism, overlap, request.ScanStartOffset);
         var key = await KeyAsync(request, Schema, cancellationToken);
         return new OcrParallelCheckpoint(Schema, key, segments.Count,
             segments.Select(x => new OcrLaneCheckpoint(x, x.ScanStart, [], null, 0, 0, false)).ToList());
     }
 
-    public static IReadOnlyList<OcrScanSegment> BuildSegments(double duration, int parallelism, double overlap)
+    public static IReadOnlyList<OcrScanSegment> BuildSegments(double duration, int parallelism, double overlap, double offset = 0)
     {
         if (duration <= 0 || double.IsNaN(duration) || double.IsInfinity(duration)) throw new ArgumentException("Thời lượng video không hợp lệ.");
+        if (!double.IsFinite(offset) || offset < 0) throw new ArgumentException("Offset targeted scan không hợp lệ.");
         parallelism = Math.Clamp(parallelism, 1, 16);
         var output = new List<OcrScanSegment>();
         for (var index = 0; index < parallelism; index++)
         {
-            var coreStart = duration * index / parallelism;
-            var coreEnd = duration * (index + 1) / parallelism;
-            output.Add(new OcrScanSegment(index, coreStart, coreEnd, Math.Max(0, coreStart - overlap), Math.Min(duration, coreEnd + overlap)));
+            var coreStart = offset + duration * index / parallelism;
+            var coreEnd = offset + duration * (index + 1) / parallelism;
+            output.Add(new OcrScanSegment(index, coreStart, coreEnd, Math.Max(offset, coreStart - overlap), Math.Min(offset + duration, coreEnd + overlap)));
         }
         return output;
     }
@@ -179,7 +182,15 @@ internal sealed class OcrCheckpointStore
                 region, request.Mode.Trim().ToLowerInvariant(), mode.Fps, mode.Guard, mode.ActiveGuard, mode.DiffTrigger,
                 1280, 320);
         var json = JsonSerializer.SerializeToUtf8Bytes(identity, JsonOptions);
-        return Convert.ToHexStringLower(SHA256.HashData(json));
+        var key = Convert.ToHexStringLower(SHA256.HashData(json));
+        // Targeted scan (offset != 0) dùng key riêng để không bao giờ đè/collide checkpoint full-scan.
+        // Offset 0 giữ nguyên key cũ byte-for-byte (backward compatible, không đụng checkpoint hiện có).
+        if (request.ScanStartOffset != 0)
+        {
+            var extra = System.Text.Encoding.UTF8.GetBytes(key + "|offset:" + request.ScanStartOffset.ToString("R", System.Globalization.CultureInfo.InvariantCulture));
+            key = Convert.ToHexStringLower(SHA256.HashData(extra));
+        }
+        return key;
     }
 
     public static OcrRegion NormalizeRegion(OcrRegion region)
@@ -214,12 +225,12 @@ internal sealed class OcrCheckpointStore
         return frontier;
     }
 
-    private static bool IsValidCheckpoint(OcrParallelCheckpoint checkpoint, double duration)
+    private static bool IsValidCheckpoint(OcrParallelCheckpoint checkpoint, double duration, double offset = 0)
     {
         if (checkpoint.SelectedParallelism is < 1 or > 16 || checkpoint.Lanes is null ||
             checkpoint.Lanes.Count != checkpoint.SelectedParallelism ||
             checkpoint.Lanes.Any(lane => lane is null || lane.Segment is null || lane.Cues is null) ||
-            !double.IsFinite(duration) || duration <= 0)
+            !double.IsFinite(duration) || duration <= 0 || !double.IsFinite(offset) || offset < 0)
             return false;
 
         var ordered = checkpoint.Lanes.OrderBy(x => x.Segment.Index).ToArray();
@@ -229,16 +240,16 @@ internal sealed class OcrCheckpointStore
             var segment = lane.Segment;
             if (segment is null || lane.Cues is null || segment.Index != index || !double.IsFinite(segment.CoreStart) || !double.IsFinite(segment.CoreEnd) ||
                 !double.IsFinite(segment.ScanStart) || !double.IsFinite(segment.ScanEnd) ||
-                segment.CoreStart < 0 || segment.CoreEnd <= segment.CoreStart || segment.CoreEnd > duration + 0.001 ||
-                segment.ScanStart < 0 || segment.ScanStart > segment.CoreStart ||
-                segment.ScanEnd < segment.CoreEnd || segment.ScanEnd > duration + 0.001 ||
+                segment.CoreStart < offset - 0.001 || segment.CoreEnd <= segment.CoreStart || segment.CoreEnd > offset + duration + 0.001 ||
+                segment.ScanStart < offset - 0.001 || segment.ScanStart > segment.CoreStart ||
+                segment.ScanEnd < segment.CoreEnd || segment.ScanEnd > offset + duration + 0.001 ||
                 !double.IsFinite(lane.MediaSeconds) || lane.MediaSeconds < segment.ScanStart - 0.001 || lane.MediaSeconds > segment.ScanEnd + 0.001 ||
                 lane.Frames < 0 || lane.OcrImages < 0 || lane.OcrImages > lane.Frames ||
                 (index > 0 && Math.Abs(ordered[index - 1].Segment.CoreEnd - segment.CoreStart) > 0.001) ||
                 lane.Cues.Any(cue => cue is null || !IsValidCue(cue)) || lane.Active is { } active && !IsValidCue(active))
                 return false;
         }
-        return Math.Abs(ordered[0].Segment.CoreStart) <= 0.001 && Math.Abs(ordered[^1].Segment.CoreEnd - duration) <= 0.001;
+        return Math.Abs(ordered[0].Segment.CoreStart - offset) <= 0.001 && Math.Abs(ordered[^1].Segment.CoreEnd - (offset + duration)) <= 0.001;
     }
 
     private static bool IsValidCue(OcrCue cue) =>

@@ -88,6 +88,12 @@ internal static class Program
         ("OCR touching fragments merge without erasing real short or repeated captions", OcrFragmentContract.RunAsync),
         ("OCR adversarial flicker 279/280 and dash 97-99 and cluster 112-118 and legit 走/来 stay separate", OcrAdversarialRegression.RunAsync),
         ("OCR pixel comparer production unavailable and union crop and test comparer explicit", OcrPixelComparerContract.RunAsync),
+        ("OCR timebase PTS exact match and guard", OcrTimeBaseContract.RunAsync),
+        ("OCR pixel metrics SSIM foreground edge deterministic without threshold", OcrPixelMetricsContract.RunAsync),
+        ("OCR threshold v1 Same Different abstention and repeat-instance gate", OcrThresholdContract.RunAsync),
+        ("OCR exact-identical gap window from field 7-8 and 9-10", OcrExactGapRegression.RunAsync),
+        ("OCR punctuation-only flicker from field 47-50", OcrPunctuationRegression.RunAsync),
+        ("OCR checkpoint replay without worker and targeted range regression", OcrReplayContract.RunAsync),
         ("concurrent OCR worker crashes preserve diagnostics and recover both requests", OcrWorkerRecoveryContract.RunAsync),
         ("Paddle GPU wheel follows numeric CUDA compatibility", OcrGpuWheelContractAsync),
         ("OCR Auto benchmarks 1 2 4 8 16 and restores last PASS", OcrAutoBenchmarkContractAsync),
@@ -2112,7 +2118,7 @@ internal static class Program
             ?? throw new InvalidOperationException("missing OCR checkpoint store");
         var buildSegments = checkpointStore.GetMethod("BuildSegments", BindingFlags.Static | BindingFlags.Public)
             ?? throw new InvalidOperationException("missing OCR checkpoint segment builder");
-        var shortSegments = buildSegments.Invoke(null, [90d, 16, 1d]) as System.Collections.ICollection
+        var shortSegments = buildSegments.Invoke(null, [90d, 16, 1d, 0d]) as System.Collections.ICollection
             ?? throw new InvalidOperationException("OCR checkpoint segment builder returned the wrong collection type");
         if (shortSegments.Count != 16)
             throw new InvalidOperationException("short video duration silently reduced a benchmark-selected 16-pipeline topology");

@@ -264,7 +264,7 @@ internal static class OcrTrackerModeRegression
             throw new InvalidOperationException("user-selected upper ROI lost a legitimate one-glyph caption");
         var buildLane = scannerType.GetMethod("BuildLaneArguments", BindingFlags.Static | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("missing OCR FFmpeg argument builder");
-        var args = (IReadOnlyList<string>)(buildLane.Invoke(null, ["source.mp4", new OcrRegion(.05, .65, .90, .29), accurateMode, 1d, 2d, false])
+        var args = (IReadOnlyList<string>)(buildLane.Invoke(null, ["source.mp4", new OcrRegion(.05, .65, .90, .29), accurateMode, 1d, 2d, false, null])
             ?? throw new InvalidOperationException("accurate OCR FFmpeg arguments unavailable"));
         if (!args.Contains("-copyts") || !args.Contains("info") || args.SkipWhile(x => x != "-vf").Skip(1).FirstOrDefault() is not { } filter
             || !filter.Contains("showinfo", StringComparison.Ordinal) || filter.Contains("fps=", StringComparison.Ordinal))
@@ -272,7 +272,7 @@ internal static class OcrTrackerModeRegression
 
         foreach (var (name, mode) in modes)
         {
-            var nativeArgs = (IReadOnlyList<string>)(buildLane.Invoke(null, ["source.mp4", new OcrRegion(.05, .65, .90, .29), mode, 1000.13d, 1002d, false])
+            var nativeArgs = (IReadOnlyList<string>)(buildLane.Invoke(null, ["source.mp4", new OcrRegion(.05, .65, .90, .29), mode, 1000.13d, 1002d, false, null])
                 ?? throw new InvalidOperationException($"{name} OCR FFmpeg arguments unavailable"));
             if (!nativeArgs.Contains("-copyts") || !nativeArgs.Contains("info")
                 || nativeArgs.SkipWhile(x => x != "-vf").Skip(1).FirstOrDefault() is not { } nativeFilter
@@ -283,7 +283,7 @@ internal static class OcrTrackerModeRegression
 
         var buildSegments = checkpointType.GetMethod("BuildSegments", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("missing OCR lane segment builder");
-        var longSegments = ((System.Collections.IEnumerable)(buildSegments.Invoke(null, [29170d, 4, 16d])
+        var longSegments = ((System.Collections.IEnumerable)(buildSegments.Invoke(null, [29170d, 4, 16d, 0d])
             ?? throw new InvalidOperationException("8-hour OCR lane segments unavailable"))).Cast<object>().ToArray();
         if (longSegments.Length != 4)
             throw new InvalidOperationException("8-hour OCR did not build four lane segments");
@@ -306,14 +306,14 @@ internal static class OcrTrackerModeRegression
         var timestampReaderConstructor = timestampReaderType.GetConstructor(
             BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
             binder: null,
-            types: [typeof(StreamReader), typeof(double)],
+            types: [typeof(StreamReader)],
             modifiers: null)
-            ?? throw new InvalidOperationException("missing lane-origin-aware PTS reader constructor");
+            ?? throw new InvalidOperationException("missing absolute-PTS reader constructor");
         var readTimestamp = timestampReaderType.GetMethod("ReadAsync", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("missing every-frame PTS read method");
         using var stderr = new StreamReader(new MemoryStream(Encoding.UTF8.GetBytes(
             "[Parsed_showinfo_0 @ 000000] n:   0 pts: 953600 pts_time:59.6 duration:    533 duration_time:0.0333125 fmt:yuv420p\n")));
-        var timestampReader = timestampReaderConstructor.Invoke([stderr, 59.6d]);
+        var timestampReader = timestampReaderConstructor.Invoke([stderr]);
         var timestampTask = (Task)(readTimestamp.Invoke(timestampReader, [CancellationToken.None])
             ?? throw new InvalidOperationException("every-frame PTS read did not return a task"));
         timestampTask.GetAwaiter().GetResult();
@@ -321,14 +321,15 @@ internal static class OcrTrackerModeRegression
             ?? throw new InvalidOperationException("every-frame PTS read did not return a frame");
         var pts = (double)(timestamp.GetType().GetProperty("PresentationTime")?.GetValue(timestamp)
             ?? throw new InvalidOperationException("PTS reader dropped presentation timestamp"));
-        var duration = (double)(timestamp.GetType().GetProperty("Duration")?.GetValue(timestamp)
-            ?? throw new InvalidOperationException("PTS reader dropped frame duration"));
-        if (Math.Abs(pts - 59.6) > .000001 || Math.Abs(duration - .0333125) > .000001)
+        var spts = (long)(timestamp.GetType().GetProperty("SourcePts")?.GetValue(timestamp)
+            ?? throw new InvalidOperationException("PTS reader dropped integer SourcePts"));
+        var duration = (double?)(timestamp.GetType().GetProperty("Duration")?.GetValue(timestamp));
+        if (Math.Abs(pts - 59.6) > .000001 || spts != 953600 || !(duration is > 0) || Math.Abs(duration.Value - .0333125) > .000001)
             throw new InvalidOperationException("every-frame PTS reader changed source-global frame timing");
 
         using var sampledStderr = new StreamReader(new MemoryStream(Encoding.UTF8.GetBytes(
             "[Parsed_showinfo_1 @ 000000] n:   0 pts: 2500 pts_time:1000 duration:      1 duration_time:0.4 fmt:yuv420p\n")));
-        var sampledTimestampReader = timestampReaderConstructor.Invoke([sampledStderr, 1000.13d]);
+        var sampledTimestampReader = timestampReaderConstructor.Invoke([sampledStderr]);
         var sampledTimestampTask = (Task)(readTimestamp.Invoke(sampledTimestampReader, [CancellationToken.None])
             ?? throw new InvalidOperationException("sampled PTS read did not return a task"));
         sampledTimestampTask.GetAwaiter().GetResult();
@@ -339,11 +340,10 @@ internal static class OcrTrackerModeRegression
         if (Math.Abs(sampledPts - 1000d) > .000001)
             throw new InvalidOperationException("sampled OCR changed an already source-global PTS after seek");
 
-        var secondLaneScanStart = lane1CoreStart - 16d;
         using var relativeStderr = new StreamReader(new MemoryStream(Encoding.UTF8.GetBytes(
             "[Parsed_showinfo_1 @ 000000] n:   0 pts: 41 pts_time:16.4 duration:      1 duration_time:0.4 fmt:yuv420p\n" +
             "[Parsed_showinfo_1 @ 000000] n:   1 pts: 42 pts_time:16.8 duration:      1 duration_time:0.4 fmt:yuv420p\n")));
-        var relativeTimestampReader = timestampReaderConstructor.Invoke([relativeStderr, secondLaneScanStart]);
+        var relativeTimestampReader = timestampReaderConstructor.Invoke([relativeStderr]);
         var relativeTimestampTask1 = (Task)(readTimestamp.Invoke(relativeTimestampReader, [CancellationToken.None])
             ?? throw new InvalidOperationException("relative lane PTS read did not return a task"));
         relativeTimestampTask1.GetAwaiter().GetResult();
@@ -358,8 +358,8 @@ internal static class OcrTrackerModeRegression
             ?? throw new InvalidOperationException("second relative lane PTS reader did not return a frame");
         var relativePts2 = (double)(relativeTimestamp2.GetType().GetProperty("PresentationTime")?.GetValue(relativeTimestamp2)
             ?? throw new InvalidOperationException("second relative lane PTS reader dropped presentation timestamp"));
-        if (Math.Abs(relativePts1 - 7292.9d) > .000001 || Math.Abs(relativePts2 - 7293.3d) > .000001)
-            throw new InvalidOperationException("seek-relative lane PTS was not restored to the source-global 8-hour timeline");
+        if (Math.Abs(relativePts1 - 16.4d) > .000001 || Math.Abs(relativePts2 - 16.8d) > .000001)
+            throw new InvalidOperationException("copyts absolute PTS was altered by the reader");
 
         var laneCheckpointType = assembly.GetType("BiliSubStudio.Core.Ocr.OcrLaneCheckpoint")
             ?? throw new InvalidOperationException("missing OCR lane checkpoint type");

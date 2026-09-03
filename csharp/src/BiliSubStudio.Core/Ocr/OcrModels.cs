@@ -8,8 +8,12 @@ public sealed record OcrRegion(
     [property: JsonPropertyName("w")] double Width,
     [property: JsonPropertyName("h")] double Height);
 public sealed record OcrLine(string Text, double Confidence, int[] Box);
+public sealed record OcrBox([property: JsonPropertyName("l")] int Left, [property: JsonPropertyName("t")] int Top, [property: JsonPropertyName("r")] int Right, [property: JsonPropertyName("b")] int Bottom);
 public sealed record OcrResult(bool Ok, bool Detected, string Text, double Confidence, IReadOnlyList<OcrLine> Lines, string? Error = null);
-public sealed record OcrCue(double Start, double End, string Text, [property: JsonPropertyName("conf")] double Confidence, [property: JsonPropertyName("support")] int RawSupportCount = 0, [property: JsonPropertyName("csupport")] int ConfidentSupportCount = 0, [property: JsonPropertyName("review")] bool NeedsReview = false);
+// Provenance giữ exact integer SourcePts + time base. Thiếu/invalid => Unavailable, không đoán.
+public sealed record RationalTimeBase([property: JsonPropertyName("num")] int Num, [property: JsonPropertyName("den")] int Den);
+public sealed record PixelObservation([property: JsonPropertyName("pts")] double Pts, [property: JsonPropertyName("box")] OcrBox BoxInOcrCrop, [property: JsonPropertyName("roi")] OcrRegion SourceRoi, OcrFrameGeometry? Geometry = null, [property: JsonPropertyName("spts")] long? SourcePts = null, RationalTimeBase? SourceTimeBase = null);
+public sealed record OcrCue(double Start, double End, string Text, [property: JsonPropertyName("conf")] double Confidence, [property: JsonPropertyName("support")] int RawSupportCount = 0, [property: JsonPropertyName("csupport")] int ConfidentSupportCount = 0, [property: JsonPropertyName("review")] bool NeedsReview = false, PixelObservation? FirstObservation = null, PixelObservation? LastObservation = null);
 
 public sealed record OcrScanRequest(
     string Path,
@@ -18,7 +22,34 @@ public sealed record OcrScanRequest(
     string Device,
     string Parallelism,
     double Sensitivity,
-    double Duration);
+    double Duration,
+    double ScanStartOffset = 0);
+
+// Ném khi checkpoint thiếu provenance pixel (cũ/hỏng) nên không đủ điều kiện replay.
+// Không bao giờ reconstruct/fabricate bbox/PTS từ Start/End.
+public sealed class CheckpointNotEligibleForReplayException : InvalidOperationException
+{
+    public CheckpointNotEligibleForReplayException(string message) : base(message) { }
+    public CheckpointNotEligibleForReplayException(string message, Exception? inner) : base(message, inner) { }
+}
+
+// Trace chẩn đoán cho một boundary kề nhau trong targeted range replay.
+// IsCandidate=false => ProductionPixelComparer không được gọi (xem ReconcileRangeAsync).
+public sealed record BoundaryTrace(
+    double LeftStart,
+    double LeftEnd,
+    string LeftText,
+    double RightStart,
+    double RightEnd,
+    string RightText,
+    double GapSeconds,
+    bool IsCandidate,
+    string CandidateReason,
+    PixelCheckResult Pixel,
+    double? Ssim,
+    double? ForegroundIoU,
+    double? EdgeIoU,
+    bool Merged);
 
 public enum OcrScanStartMode
 {

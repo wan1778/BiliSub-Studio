@@ -422,7 +422,8 @@ public sealed class OcrScanner
 
         token.ThrowIfCancellationRequested();
         var paused = lanes.Any(x => !x.Completed) && job.IsPauseRequested;
-        var mergedAll = Reconcile(lanes, out var boundaryMerges);
+        var exactWindow = await ComputeExactIdenticalWindowAsync(_tools, _processes, source, token);
+        var (mergedAll, boundaryMerges) = await ReconcileAsync(lanes, source, new ProductionPixelComparer(_tools, _processes, _activeProcesses), token, exactWindow);
         var frontier = OcrCheckpointStore.ContiguousFrontier(lanes);
         var merged = paused ? mergedAll.Where(x => x.Start <= frontier + 0.001).ToArray() : mergedAll;
         string? pauseMessage = null;
@@ -719,11 +720,26 @@ public sealed class OcrScanner
         CancellationToken cancellationToken)
     {
         var segment = saved.Segment;
-        var startAt = Math.Clamp(saved.MediaSeconds, segment.ScanStart, segment.ScanEnd);
-        var tracker = new SubtitleTracker(mode.Fps, mode.LowConfidence, exactFrameTiming: mode.AdaptiveTiming);
+        var startAtMedia = Math.Clamp(saved.MediaSeconds, segment.ScanStart, segment.ScanEnd);
+        var videoProbe = await OcrFrameExtractor.ProbeAsync(_tools, _processes, source, cancellationToken);
+        var streamStart = videoProbe?.StartTimeSeconds ?? 0;
+        OcrFrameGeometry? laneGeometry = null;
+        RationalTimeBase? laneTb = null;
+        if (videoProbe is { } vp)
+        {
+            if (ProductionPixelComparer.TryPlanOcrFrame(vp.Width, vp.Height, request.Region) is { } gg)
+                laneGeometry = gg;
+            if (vp.TimeBaseNum > 0 && vp.TimeBaseDen > 0)
+                laneTb = new RationalTimeBase(vp.TimeBaseNum, vp.TimeBaseDen);
+        }
+        var tracker = new SubtitleTracker(mode.Fps, mode.LowConfidence, exactFrameTiming: mode.AdaptiveTiming, sourceRoi: request.Region, laneGeometry: laneGeometry, streamStartTime: streamStart, sourceTimeBase: laneTb);
         tracker.Restore(saved.Cues, saved.Active);
         var publishedCueCount = tracker.Cues.Count;
-        var args = BuildLaneArguments(source, request.Region, mode, startAt, segment.ScanEnd, nvdec);
+        // PTS domain: segment/saved.MediaSeconds là media-relative (0-based cho SRT).
+        // Lane FFmpeg dùng absolute (media + streamStart) với -seek_timestamp 1 + -copyts.
+        var absoluteStart = startAtMedia + streamStart;
+        var absoluteEnd = segment.ScanEnd + streamStart;
+        var args = BuildLaneArguments(source, request.Region, mode, absoluteStart, absoluteEnd, nvdec, videoProbe);
         var start = new ProcessStartInfo(ffmpeg)
         {
             UseShellExecute = false,
@@ -737,15 +753,13 @@ public sealed class OcrScanner
         process.Start();
         using var ownership = processes.Track(process);
         using var registration = cancellationToken.Register(() => Kill(process));
-        // FFmpeg can expose either source-global PTS or seek-relative PTS after
-        // an input -ss. Normalize that domain here so every lane reaches the
-        // tracker, checkpoint and reconciler on the same absolute video clock.
-        var timestamps = new FrameTimestampReader(process.StandardError, startAt);
+        // PTS domain: showinfo absolute (copyts, không offset). Tracker nhận absolute, tự trừ streamStart ra media cho cue/SRT.
+        var timestamps = new FrameTimestampReader(process.StandardError);
         var errorTask = timestamps.Completion;
         var reader = new JpegStreamReader(process.StandardOutput.BaseStream);
         var frames = saved.Frames;
         var images = saved.OcrImages;
-        var mediaSeconds = startAt;
+        var mediaSeconds = startAtMedia;
         var lastFrameDuration = mode.AdaptiveTiming ? 0 : 1 / mode.Fps;
         var paused = false;
         var stoppedAtBoundary = false;
@@ -756,7 +770,7 @@ public sealed class OcrScanner
             ? new OcrResult(true, true, restoredActive.Text, restoredActive.Confidence, [])
             : null;
         var pendingTinyGlyphRecovery = 0;
-        var nextAdaptiveSample = startAt;
+        var nextAdaptiveSampleMedia = startAtMedia;
         var lastProgressPublish = Stopwatch.GetTimestamp();
 
         async Task<OcrResult> RecognizeSingleAsync(
@@ -892,7 +906,7 @@ public sealed class OcrScanner
                     var results = await RecognizeBatchAsync(batch, recoverShortBlank: tracker.Active is not null);
                     images += batch.Length;
                     for (var index = 0; index < batch.Length; index++)
-                        tracker.Observe(batch[index].Timing.PresentationTime, batch[index].Timing.Duration, results[index]);
+                        tracker.Observe(batch[index].Timing.SourcePts, batch[index].Timing.PresentationTime, batch[index].Timing.Duration, results[index]);
                 }
                 var last = adaptiveWindow[^1];
                 previousAdaptiveSample = tracker.Active is { } active
@@ -955,9 +969,9 @@ public sealed class OcrScanner
                 var results = await RecognizeBatchAsync(batch, recoverShortBlank: tracker.Active is not null);
                 images += batch.Length;
                 for (var index = 0; index < batch.Length; index++)
-                    tracker.Observe(batch[index].Timing.PresentationTime, batch[index].Timing.Duration, results[index]);
+                    tracker.Observe(batch[index].Timing.SourcePts, batch[index].Timing.PresentationTime, batch[index].Timing.Duration, results[index]);
             }
-            tracker.Observe(sample.Timing.PresentationTime, sample.Timing.Duration, sampleResult);
+            tracker.Observe(sample.Timing.SourcePts, sample.Timing.PresentationTime, sample.Timing.Duration, sampleResult);
             previousAdaptiveSample = sampleResult;
             previousVisualAnchor = sample;
             adaptiveWindow.Clear();
@@ -969,34 +983,37 @@ public sealed class OcrScanner
             while (await reader.ReadAsync(cancellationToken) is { } jpeg)
             {
                 var timing = await timestamps.ReadAsync(cancellationToken);
-                var at = timing.PresentationTime;
-                if (at > segment.ScanEnd + 0.001)
+                var atAbsolute = timing.PresentationTime;
+                var atMedia = atAbsolute - streamStart;
+                if (atMedia > segment.ScanEnd + 0.001)
                 {
                     if (mode.AdaptiveTiming) await ProcessAdaptiveWindowAsync();
                     stoppedAtBoundary = true;
                     break;
                 }
                 frames++;
-                mediaSeconds = Math.Min(segment.ScanEnd, at + timing.Duration);
-                lastFrameDuration = timing.Duration;
+                var dur = timing.Duration ?? lastFrameDuration;
+                if (!(dur > 0)) dur = 1 / mode.Fps;
+                mediaSeconds = Math.Min(segment.ScanEnd, atMedia + dur);
+                lastFrameDuration = dur;
                 var frame = new OcrBufferedFrame(timing, jpeg);
                 if (mode.AdaptiveTiming)
                 {
                     adaptiveWindow.Add(frame);
                     var sampleDue = previousAdaptiveSample is null
-                        || at + timing.Duration / 2 >= nextAdaptiveSample
+                        || atMedia + dur / 2 >= nextAdaptiveSampleMedia
                         || adaptiveWindow.Count >= 64
                         || job.IsPauseRequested;
                     if (!sampleDue) continue;
                     await ProcessAdaptiveWindowAsync();
-                    do nextAdaptiveSample += 1 / mode.Fps;
-                    while (nextAdaptiveSample <= at + .000001);
+                    do nextAdaptiveSampleMedia += 1 / mode.Fps;
+                    while (nextAdaptiveSampleMedia <= atMedia + .000001);
                 }
                 else
                 {
                     var result = await RecognizeSingleAsync(frame, recoverShortBlank: false, allowEnhanced: true);
                     images++;
-                    tracker.Observe(at, timing.Duration, result);
+                    tracker.Observe(timing.SourcePts, atAbsolute, timing.Duration, result);
                     PublishProgress();
                 }
                 if (job.IsPauseRequested && tracker.CanCheckpoint)
@@ -1085,18 +1102,92 @@ public sealed class OcrScanner
                 && cue.Start <= output[^1].Cue.End + 0.25
                 && Similarity(output[^1].Cue.Text, cue.Text) >= 0.82)
             {
+                output[^1] = (output[^1].Cue with { NeedsReview = true }, output[^1].Lane);
+                output.Add((cue with { NeedsReview = true }, item.Lane));
+                continue;
+            }
+            output.Add(item);
+        }
+        return OcrCueReconciler.MergeTouchingIdentical(output.Select(item => item.Cue));
+    }
+
+    // Exact-identical window từ native frame rate (mọi mode): gap giải thích được tối đa bởi
+    // 3 native frame miss liên tiếp (blink-level) thì candidate; dài hơn là reappearance.
+    // Field evidence: blank thật 0.667s tồn tại (27.35-27.9 không caption, 6 OCR blank + mắt thường),
+    // balanced 4Hz không phân biệt nổi blank thật với dropout bằng cue data => KHÔNG được mở window
+    // theo observation-rate (3/4Hz=0.75s sẽ merge nhầm 2 instances đã chứng minh khác nhau).
+    // Touching (gap ~0) vẫn merge qua Epsilon. Probe fail => Epsilon, fail-safe.
+    // Dùng chung cho full scan reconcile và checkpoint/range replay để cùng một window production.
+    internal static async Task<double> ComputeExactIdenticalWindowAsync(
+        Tools.ToolManager tools,
+        Processes.ProcessRunner processes,
+        string source,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var windowProbe = await OcrFrameExtractor.ProbeAsync(tools, processes, source, cancellationToken);
+            if (windowProbe is { AvgFps: > 0 }) return 3.0 / windowProbe.AvgFps;
+        }
+        catch (OperationCanceledException) { throw; }
+        catch { }
+        return 0.001;
+    }
+
+    internal static async Task<(IReadOnlyList<OcrCue> Cues, int Merges)> ReconcileAsync(IReadOnlyList<OcrLaneCheckpoint> lanes, string videoPath, IPixelComparer comparer, CancellationToken cancellationToken, double exactIdenticalMaxGap = 0.001)
+    {
+        var owned = new List<(OcrCue Cue, int Lane)>();
+        foreach (var lane in lanes)
+        {
+            var isLast = lane.Segment.Index == lanes.Count - 1;
+            foreach (var cue in lane.Cues)
+            {
+                if (cue.Start < lane.Segment.CoreStart || (!isLast && cue.Start >= lane.Segment.CoreEnd) || (isLast && cue.Start > lane.Segment.CoreEnd)) continue;
+                if (ChineseSubtitleNormalizer.TryNormalize(cue.Text, out var text))
+                    owned.Add((cue with { Text = text }, lane.Segment.Index));
+            }
+        }
+        owned.Sort((a, b) => a.Cue.Start.CompareTo(b.Cue.Start));
+        var output = new List<(OcrCue Cue, int Lane)>();
+        var merges = 0;
+        foreach (var item in owned)
+        {
+            var cue = item.Cue;
+            if (output.Count > 0 && item.Lane != output[^1].Lane
+                && cue.Start <= output[^1].Cue.End + 0.25
+                && Similarity(output[^1].Cue.Text, cue.Text) >= 0.82)
+            {
+                var prev = output[^1].Cue;
+                PixelCheckResult pixel = PixelCheckResult.Unavailable;
+                if (prev.LastObservation is not null && cue.FirstObservation is not null)
+                {
+                    var cmp = await comparer.CheckAsync(videoPath, prev.LastObservation, cue.FirstObservation, cancellationToken);
+                    pixel = cmp.Result;
+                }
+                if (pixel != PixelCheckResult.Same)
+                {
+                    output[^1] = (output[^1].Cue with { NeedsReview = true }, output[^1].Lane);
+                    output.Add((cue with { NeedsReview = true }, item.Lane));
+                    continue;
+                }
                 var previous = output[^1];
                 output[^1] = (previous.Cue with
                     {
                         Text = PreferReconciledText(previous.Cue.Text, cue.Text),
                         End = Math.Max(previous.Cue.End, cue.End),
                         Confidence = Math.Max(previous.Cue.Confidence, cue.Confidence),
+                        RawSupportCount = previous.Cue.RawSupportCount + cue.RawSupportCount,
+                        ConfidentSupportCount = previous.Cue.ConfidentSupportCount + cue.ConfidentSupportCount,
+                        FirstObservation = previous.Cue.FirstObservation,
+                        LastObservation = cue.LastObservation,
+                        NeedsReview = previous.Cue.NeedsReview || cue.NeedsReview,
                     }, previous.Lane);
                 merges++;
             }
             else output.Add(item);
         }
-        return OcrCueReconciler.MergeTouchingIdentical(output.Select(item => item.Cue));
+        var merged = await OcrCueReconciler.MergeTouchingIdenticalAsync(output.Select(item => item.Cue), videoPath, comparer, cancellationToken, exactIdenticalMaxGap);
+        return (merged, merges);
     }
 
     private static string PreferReconciledText(string current, string candidate) =>
@@ -1134,6 +1225,28 @@ public sealed class OcrScanner
         return await CaptureFrameWithFfmpegAsync(ffmpeg, path, at, region, enhanced, processes, cancellationToken);
     }
 
+    private async Task<(int Width, int Height)?> TryGetSourceDimensionsAsync(string path, CancellationToken cancellationToken)
+    {
+        // Contract coordinate-space: dùng coded W/H (ffprobe width/height), và OCR/extractor đều chạy với -noautorotate
+        // để iw/ih là coded (không autorotate theo rotation metadata). Mọi path (OCR crop, bbox provenance,
+        // pixel extractor, source crop) thống nhất coded space. Nếu video có rotation=90, cả OCR và comparer
+        // đều thấy 1920x1080 coded, không bên nào thấy 1080x1920 rotated.
+        try
+        {
+            var ffprobe = await _tools.EnsureFfprobeAsync(cancellationToken);
+            var result = await _processes.RunAsync(ffprobe,
+                ["-hide_banner", "-loglevel", "error", "-select_streams", "v:0",
+                 "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x", Path.GetFullPath(path.Trim())],
+                cancellationToken);
+            var output = (result.StandardOutput ?? string.Empty).Trim();
+            var parts = output.Split(['x', ',', ' ', '\n', '\r'], StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length >= 2 && int.TryParse(parts[0], out var w) && int.TryParse(parts[1], out var h) && w > 0 && h > 0)
+                return (w, h);
+            return null;
+        }
+        catch { return null; }
+    }
+
     private async Task<byte[]> CaptureFrameWithFfmpegAsync(
         string ffmpeg,
         string path,
@@ -1144,12 +1257,22 @@ public sealed class OcrScanner
         CancellationToken cancellationToken)
     {
         region = OcrCheckpointStore.NormalizeRegion(region);
-        var filter = string.Format(CultureInfo.InvariantCulture,
-            "crop=iw*{0}:ih*{1}:iw*{2}:ih*{3},scale=1280:320:force_original_aspect_ratio=decrease,pad=1280:320:(ow-iw)/2:(oh-ih)/2:black{4}",
-            region.Width, region.Height, region.X, region.Y, enhanced ? ",eq=contrast=1.25:brightness=0.03,unsharp=5:5:0.8" : string.Empty);
+        var dims = await TryGetSourceDimensionsAsync(path, cancellationToken);
+        string filter;
+        if (dims is { } d && ProductionPixelComparer.TryPlanOcrFrame(d.Width, d.Height, region) is { } g)
+        {
+            filter = ProductionPixelComparer.BuildOcrFilter(g, enhanced);
+        }
+        else
+        {
+            // Probe thất bại: fallback filter cũ để không chặn scan. Pixel compare sẽ Unavailable vì geometry không chắc chắn.
+            filter = string.Format(CultureInfo.InvariantCulture,
+                "crop=iw*{0}:ih*{1}:iw*{2}:ih*{3},scale=1280:320:force_original_aspect_ratio=decrease,pad=1280:320:(ow-iw)/2:(oh-ih)/2:black{4}",
+                region.Width, region.Height, region.X, region.Y, enhanced ? ",eq=contrast=1.25:brightness=0.03,unsharp=5:5:0.8" : string.Empty);
+        }
         return await _processes.CaptureBytesAsync(ffmpeg,
         [
-            "-hide_banner", "-loglevel", "error", "-nostdin", "-ss", Math.Max(0, at).ToString("0.000", CultureInfo.InvariantCulture),
+            "-hide_banner", "-loglevel", "error", "-nostdin", "-noautorotate", "-ss", Math.Max(0, at).ToString("0.000", CultureInfo.InvariantCulture),
             "-i", Path.GetFullPath(path.Trim()), "-map", "0:v:0", "-an", "-sn", "-dn", "-frames:v", "1",
             "-vf", filter, "-q:v", "3", "-c:v", "mjpeg", "-f", "image2pipe", "pipe:1",
         ], cancellationToken, processes);
@@ -1163,7 +1286,8 @@ public sealed class OcrScanner
         OwnedProcessGroup processes,
         CancellationToken cancellationToken)
     {
-        var args = BuildLaneArguments(source, region, mode, 0, Math.Min(2, mode.Fps > 0 ? 2 : 1), nvdec: true).ToList();
+        var probe = await OcrFrameExtractor.ProbeAsync(_tools, _processes, source, cancellationToken);
+        var args = BuildLaneArguments(source, region, mode, 0, Math.Min(2, mode.Fps > 0 ? 2 : 1), nvdec: true, probe).ToList();
         var frameIndex = args.IndexOf("-f");
         if (frameIndex >= 0)
         {
@@ -1180,26 +1304,48 @@ public sealed class OcrScanner
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { return false; }
     }
 
-    private static IReadOnlyList<string> BuildLaneArguments(string source, OcrRegion region, OcrScanMode mode, double start, double end, bool nvdec)
+    private static IReadOnlyList<string> BuildLaneArguments(string source, OcrRegion region, OcrScanMode mode, double start, double end, bool nvdec, VideoProbe? probe = null)
     {
-        var args = new List<string> { "-hide_banner", "-loglevel", "info", "-nostdin" };
+        var args = new List<string> { "-hide_banner", "-loglevel", "info", "-nostdin", "-noautorotate" };
         if (nvdec) args.AddRange(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda", "-hwaccel_device", "0"]);
-        if (start > 0) args.AddRange(["-ss", start.ToString("0.######", CultureInfo.InvariantCulture)]);
-        args.Add("-copyts");
+        args.AddRange(["-copyts", "-seek_timestamp", "1"]);
+        if (start > 0 || (probe is not null && probe.StartTimeSeconds != 0))
+            args.AddRange(["-ss", start.ToString("0.#########", CultureInfo.InvariantCulture)]);
         args.AddRange(["-i", source]);
-        // With -copyts, output timestamps stay on the source clock after -ss.
-        // A relative -t can end later lanes before their first JPEG is emitted.
-        if (end > start) args.AddRange(["-to", end.ToString("0.######", CultureInfo.InvariantCulture)]);
-        var crop = string.Format(CultureInfo.InvariantCulture,
-            "crop=iw*{0}:ih*{1}:iw*{2}:ih*{3},scale=1280:320:force_original_aspect_ratio=decrease:flags=fast_bilinear,pad=1280:320:(ow-iw)/2:(oh-ih)/2:black",
-            region.Width, region.Height, region.X, region.Y);
-        var fps = mode.Fps.ToString("0.######", CultureInfo.InvariantCulture);
-        var filter = nvdec
-            ? mode.AdaptiveTiming
+        // start/end đều absolute (media + streamStart), output giữ absolute nhờ -copyts nên -to absolute là đúng.
+        // Không dùng -t duration: với -copyts + start>0, -t dừng ngay lập tức (đã chứng minh thực nghiệm: 3 frame rồi empty).
+        if (end > start) args.AddRange(["-to", end.ToString("0.#########", CultureInfo.InvariantCulture)]);
+        string crop;
+        if (probe is { Width: > 0, Height: > 0 }
+            && ProductionPixelComparer.TryPlanOcrFrame(probe.Width, probe.Height, region) is { } g)
+        {
+            var baseFilter = $"crop={g.SourceCropW}:{g.SourceCropH}:{g.SourceCropX}:{g.SourceCropY},scale={g.ContentW}:{g.ContentH}:flags=fast_bilinear,pad={g.CanvasW}:{g.CanvasH}:{g.ContentLeft}:{g.ContentTop}:black";
+            crop = baseFilter;
+        }
+        else
+        {
+            crop = string.Format(CultureInfo.InvariantCulture,
+                "crop=iw*{0}:ih*{1}:iw*{2}:ih*{3},scale=1280:320:force_original_aspect_ratio=decrease:flags=fast_bilinear,pad=1280:320:(ow-iw)/2:(oh-ih)/2:black",
+                region.Width, region.Height, region.X, region.Y);
+        }
+        // Không dùng fps filter trước showinfo: fps rewrite PTS (drop/duplicate), provenance sẽ sai.
+        // Sampling 4Hz thực hiện ở C# theo PTS (adaptiveWindow/nextAdaptiveSample), giữ nguyên source PTS.
+        // Mọi mode hiện tại đều AdaptiveTiming:true, nên luôn đi nhánh giữ PTS này.
+        string filter;
+        if (probe is { TimeBaseNum: > 0, TimeBaseDen: > 0 })
+        {
+            var tb = $"{probe.TimeBaseNum}/{probe.TimeBaseDen}";
+            filter = nvdec
+                ? $"hwdownload,format=nv12|p010le|p016le,settb=expr={tb},{crop},showinfo"
+                : $"settb=expr={tb},{crop},showinfo";
+        }
+        else
+        {
+            filter = nvdec
                 ? $"hwdownload,format=nv12|p010le|p016le,{crop},showinfo"
-                : $"hwdownload,format=nv12|p010le|p016le,fps={fps},{crop},showinfo"
-            : mode.AdaptiveTiming ? $"{crop},showinfo" : $"fps={fps},{crop},showinfo";
-        args.AddRange(["-map", "0:v:0", "-an", "-sn", "-dn", "-vf", filter, "-q:v", "4", "-c:v", "mjpeg", "-f", "image2pipe", "pipe:1"]);
+                : $"{crop},showinfo";
+        }
+        args.AddRange(["-map", "0:v:0", "-an", "-sn", "-dn", "-vf", filter, "-fps_mode", "passthrough", "-q:v", "4", "-c:v", "mjpeg", "-f", "image2pipe", "pipe:1"]);
         return args;
     }
 
@@ -1338,15 +1484,15 @@ public sealed class OcrScanner
     private sealed record OcrTopologyProbe(double Throughput);
     private sealed class OcrRecognitionException(string message, Exception? inner = null) : Exception(message, inner);
     private sealed record OcrBufferedFrame(FrameTiming Timing, byte[] Jpeg);
-    private readonly record struct FrameTiming(double PresentationTime, double Duration);
+    private readonly record struct FrameTiming(long SourcePts, double PresentationTime, double? Duration);
 
     // FFmpeg writes showinfo before it emits the matching JPEG. Keep only a small
     // ordered queue so an every-frame scan remains streaming and cannot buffer a video.
     private sealed class FrameTimestampReader
     {
         private static readonly Regex TimestampPattern = new(
-            @"\bpts_time:(?<pts>-?(?:\d+(?:\.\d*)?|\.\d+))\s+duration:\s*-?\d+\s+duration_time:(?<duration>\d+(?:\.\d*)?|\.\d+)",
-            RegexOptions.CultureInvariant | RegexOptions.Compiled);
+            @"Parsed_showinfo_.*?\bn:\s*(?<n>\d+).*?\bpts:\s*(?<pts>-?\d+).*?\bpts_time:(?<ptstime>-?(?:\d+(?:\.\d*)?|\.\d+))(?:.*?\bduration_time:(?<duration>\d+(?:\.\d*)?|\.\d+))?",
+            RegexOptions.CultureInvariant | RegexOptions.Compiled | RegexOptions.Singleline);
         private readonly Channel<FrameTiming> _timestamps = Channel.CreateBounded<FrameTiming>(new BoundedChannelOptions(48)
         {
             FullMode = BoundedChannelFullMode.Wait,
@@ -1355,7 +1501,8 @@ public sealed class OcrScanner
         });
         private readonly StringBuilder _diagnostic = new();
 
-        public FrameTimestampReader(StreamReader standardError, double startAt) => Completion = PumpAsync(standardError, startAt);
+        // Cách A: -copyts giữ source clock, showinfo pts_time là timestamp nguồn. Không cộng startAt.
+        public FrameTimestampReader(StreamReader standardError) => Completion = PumpAsync(standardError);
 
         public Task<string> Completion { get; }
 
@@ -1369,31 +1516,40 @@ public sealed class OcrScanner
             }
         }
 
-        private async Task<string> PumpAsync(StreamReader standardError, double startAt)
+        private async Task<string> PumpAsync(StreamReader standardError)
         {
             Exception? failure = null;
-            double? timestampOffset = null;
+            var expectedN = 0;
             try
             {
                 while (await standardError.ReadLineAsync() is { } line)
                 {
                     if (_diagnostic.Length < 48 * 1024) _diagnostic.AppendLine(line);
+                    if (line.IndexOf("Parsed_showinfo_", StringComparison.Ordinal) < 0) continue;
+                    if (line.IndexOf("config ", StringComparison.Ordinal) >= 0) continue;
                     var match = TimestampPattern.Match(line);
-                    if (!match.Success) continue;
-                    if (!double.TryParse(match.Groups["pts"].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var pts)
-                        || !double.TryParse(match.Groups["duration"].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var duration)
-                        || double.IsNaN(pts) || double.IsInfinity(pts) || duration <= 0 || double.IsNaN(duration) || double.IsInfinity(duration))
-                        throw new InvalidDataException("FFmpeg trả PTS frame OCR không hợp lệ.");
-                    if (timestampOffset is null)
+                    if (!match.Success)
                     {
-                        var tolerance = Math.Max(.5, duration * 2);
-                        var relativeDistance = Math.Abs(pts);
-                        var absoluteDistance = Math.Abs(pts - startAt);
-                        timestampOffset = startAt > tolerance && relativeDistance + tolerance < absoluteDistance
-                            ? startAt
-                            : 0d;
+                        // Ancillary showinfo lines (color_range/color_space/...) không phải frame record.
+                        // Frame record thật luôn có " n:". Thiếu => fail lane, không shift JPEG↔timestamp.
+                        // Bỏ sót một frame record thật sẽ bị phát hiện bởi kiểm tra n-sequence ở record kế tiếp.
+                        if (line.IndexOf(" n:", StringComparison.Ordinal) < 0) continue;
+                        throw new InvalidDataException("FFmpeg showinfo frame không parse được PTS (fail lane, không shift JPEG↔timestamp).");
                     }
-                    await _timestamps.Writer.WriteAsync(new FrameTiming(pts + timestampOffset.Value, duration));
+                    if (!int.TryParse(match.Groups["n"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var n)
+                        || !long.TryParse(match.Groups["pts"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var spts)
+                        || !double.TryParse(match.Groups["ptstime"].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var pts)
+                        || double.IsNaN(pts) || double.IsInfinity(pts))
+                        throw new InvalidDataException("FFmpeg trả PTS frame OCR không hợp lệ.");
+                    double? duration = null;
+                    var durGroup = match.Groups["duration"];
+                    if (durGroup.Success && double.TryParse(durGroup.Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var dur)
+                        && double.IsFinite(dur) && dur > 0)
+                        duration = dur;
+                    if (n != expectedN)
+                        throw new InvalidDataException($"FFmpeg showinfo mất record (expected n={expectedN}, got n={n}); fail lane để tránh shift JPEG↔timestamp.");
+                    expectedN++;
+                    await _timestamps.Writer.WriteAsync(new FrameTiming(spts, pts, duration));
                 }
             }
             catch (Exception error)

@@ -50,10 +50,11 @@ internal static class OcrLaneReconcileFullerTextRegression
 
         var shortCue = new OcrCue(9.9, 10.3, "吃我的喝我", .98);
         var completeCue = new OcrCue(10.0, 10.4, "吃我的喝我的", .84);
+        // Không provenance/pixel => cross-lane candidate giữ tách + NeedsReview (safe-fail, không merge).
         foreach (var output in new[] { Reconcile(shortCue, completeCue), Reconcile(completeCue, shortCue) })
         {
-            if (output.Count != 1 || output[0].Text != "吃我的喝我的" || output[0].End != 10.4)
-                throw new InvalidOperationException($"lane reconcile discarded the real fuller compatible OCR result: {string.Join(" | ", output.Select(x => $"{x.Start:0.0}-{x.End:0.0}:{x.Text}"))}");
+            if (output.Count != 2 || !output.All(x => x.NeedsReview))
+                throw new InvalidOperationException($"lane reconcile without pixel must keep separate + NeedsReview: {string.Join(" | ", output.Select(x => $"{x.Start:0.0}-{x.End:0.0}:{x.Text}"))}");
         }
 
         var differentMeaning = new OcrCue(10.0, 10.4, "吃我的喝她", .99);
@@ -69,7 +70,7 @@ internal static class OcrLaneReconcileFullerTextRegression
 
         var fresh = Reconcile(shortCue, completeCue);
         var resumed = Reconcile(shortCue, completeCue);
-        if (fresh.Count != resumed.Count || fresh[0] != resumed[0])
+        if (fresh.Count != resumed.Count || !fresh.SequenceEqual(resumed))
             throw new InvalidOperationException("reconcile output differs between equivalent fresh and resumed raw lane state");
     }
 }

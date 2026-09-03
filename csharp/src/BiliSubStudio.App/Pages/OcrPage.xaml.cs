@@ -580,9 +580,10 @@ public sealed partial class OcrPage : Page
 
     private void ApplyAuthoritativeCues(IReadOnlyList<OcrCue> cues)
     {
+        // Final cues đã qua ReconcileAsync (pixel-gated) trong OcrScanner. Dùng trực tiếp cho cả
+        // preview lẫn export (_cues), không chạy lại legacy accumulator (no-pixel safe-fail) làm mất merge.
         _liveCues.Clear();
-        _liveCues.Merge(cues);
-        _cues = _liveCues.Cues;
+        _cues = cues.OrderBy(cue => cue.Start).ToArray();
         RenderCues();
         _cueViewDirty = false;
         _nextCueRenderAt = DateTimeOffset.UtcNow.AddSeconds(2);

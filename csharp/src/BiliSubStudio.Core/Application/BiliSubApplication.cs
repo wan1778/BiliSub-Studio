@@ -628,6 +628,102 @@ public sealed class BiliSubApplication : IAsyncDisposable
         }, cancellationToken);
     }
 
+    /// <summary>
+    /// Replay reconciliation từ checkpoint đã lưu mà KHÔNG gọi PaddleOCR (không scan frames, không worker).
+    /// Chỉ extract đúng frame A/B tại candidate boundaries bằng provenance đã lưu.
+    /// Policy reuse: candidate heuristic, temporal gap, punctuation/dash relation, pixel threshold,
+    /// SSIM/Edge classification, final preview reconciliation. KHÔNG dùng để chứng minh tracker correctness
+    /// (OCR worker, model, bbox generation, sampling/filter, tracker observation, PTS acquisition, ROI đổi
+    /// => phải Targeted/Full Fresh Scan lại). Provenance thiếu/cũ => CheckpointNotEligibleForReplayException.
+    /// exactIdenticalMaxGap null => suy ra từ probe như production; truyền explicit để test determinism.
+    /// </summary>
+    public async Task<IReadOnlyList<OcrCue>> ReconcileCheckpointAsync(
+        OcrScanRequest request,
+        IPixelComparer? comparer,
+        CancellationToken cancellationToken,
+        double? exactIdenticalMaxGap = null)
+    {
+        var store = new OcrCheckpointStore(Paths);
+        var checkpoint = await store.LoadAsync(request, cancellationToken)
+            ?? throw new CheckpointNotEligibleForReplayException("Không tìm thấy checkpoint OCR hợp lệ cho request (key/schema/segments không khớp).");
+        foreach (var lane in checkpoint.Lanes)
+            foreach (var cue in lane.Cues)
+                if (!OcrCueReconciler.HasPixelProvenance(cue))
+                    throw new CheckpointNotEligibleForReplayException(
+                        $"Cue {cue.Start:0.000}->{cue.End:0.000} thiếu provenance pixel (First/LastObservation, SourcePts, TimeBase, Geometry, bbox). " +
+                        "Checkpoint cũ/không đủ điều kiện replay; không reconstruct/fabricate.");
+        var effective = comparer ?? new ProductionPixelComparer(Tools, Processes);
+        var window = exactIdenticalMaxGap
+            ?? await OcrScanner.ComputeExactIdenticalWindowAsync(Tools, Processes, request.Path, cancellationToken);
+        var (cues, _) = await OcrScanner.ReconcileAsync(checkpoint.Lanes, request.Path, effective, cancellationToken, window);
+        return cues;
+    }
+
+    /// <summary>
+    /// Replay reconciliation chỉ trên khoảng [startMedia, endMedia), giữ tối đa 1 cue context mỗi phía.
+    /// Không OCR lại. Trả cues đã merge + trace chẩn đoán từng boundary kề (candidate reason, gap,
+    /// texts, SourcePts, bbox, SSIM/FG/Edge, PixelResult, merge/no-merge). Double pixel-extraction
+    /// (1 lần cho trace log + 1 lần trong merge production) được chấp nhận cho diagnostic scope nhỏ.
+    /// </summary>
+    public async Task<(IReadOnlyList<OcrCue> Cues, IReadOnlyList<BoundaryTrace> Trace)> ReconcileRangeAsync(
+        OcrScanRequest request,
+        IPixelComparer? comparer,
+        double startMedia,
+        double endMedia,
+        CancellationToken cancellationToken,
+        double? exactIdenticalMaxGap = null)
+    {
+        if (!double.IsFinite(startMedia) || !double.IsFinite(endMedia) || startMedia < 0 || endMedia <= startMedia)
+            throw new ArgumentException("Khoảng targeted replay không hợp lệ.");
+        var store = new OcrCheckpointStore(Paths);
+        var checkpoint = await store.LoadAsync(request, cancellationToken)
+            ?? throw new CheckpointNotEligibleForReplayException("Không tìm thấy checkpoint OCR hợp lệ cho request (key/schema/segments không khớp).");
+        var all = checkpoint.Lanes.SelectMany(lane => lane.Cues).OrderBy(cue => cue.Start).ToList();
+        var inRange = all.Where(cue => cue.End > startMedia && cue.Start < endMedia).ToList();
+        var selection = new List<OcrCue>();
+        var leftContext = all.Where(cue => cue.End <= startMedia).OrderBy(cue => cue.End).LastOrDefault();
+        if (leftContext is not null) selection.Add(leftContext);
+        selection.AddRange(inRange);
+        var rightContext = all.Where(cue => cue.Start >= endMedia).OrderBy(cue => cue.Start).FirstOrDefault();
+        if (rightContext is not null) selection.Add(rightContext);
+        foreach (var cue in selection)
+            if (!OcrCueReconciler.HasPixelProvenance(cue))
+                throw new CheckpointNotEligibleForReplayException(
+                    $"Cue {cue.Start:0.000}->{cue.End:0.000} thiếu provenance pixel. Không reconstruct/fabricate.");
+        var effective = comparer ?? new ProductionPixelComparer(Tools, Processes);
+        var window = exactIdenticalMaxGap
+            ?? await OcrScanner.ComputeExactIdenticalWindowAsync(Tools, Processes, request.Path, cancellationToken);
+        var traces = new List<BoundaryTrace>();
+        for (var index = 1; index < selection.Count; index++)
+        {
+            var left = selection[index - 1];
+            var right = selection[index];
+            var eval = await OcrCueReconciler.EvaluateBoundaryAsync(left, right, allowFlicker: true, request.Path, effective, cancellationToken, window);
+            traces.Add(new BoundaryTrace(
+                left.Start, left.End, left.Text, right.Start, right.End, right.Text,
+                eval.GapSeconds, eval.IsCandidate, eval.CandidateReason, eval.Pixel,
+                eval.Comparison?.Ssim, eval.Comparison?.ForegroundIoU, eval.Comparison?.EdgeIoU, Merged: false));
+        }
+        var merged = await OcrCueReconciler.MergeTouchingIdenticalAsync(selection, request.Path, effective, cancellationToken, window);
+        var flagged = traces.Select(trace => trace with
+        {
+            Merged = merged.Any(cue => cue.Start <= trace.LeftStart + 0.001 && cue.End >= trace.RightEnd - 0.001),
+        }).ToList();
+        return (merged, flagged);
+    }
+
+    /// <summary>
+    /// Targeted Fresh Scan trên đoạn [startMedia, endMedia) bằng đúng production mode/preset.
+    /// Dùng OcrScanRequest.ScanStartOffset nên checkpoint key riêng, không collide full-scan.
+    /// Chỉ cân nhắc full video scan sau khi targeted scan PASS.
+    /// </summary>
+    public string StartTargetedOcrScan(OcrScanRequest baseRequest, double startMedia, double endMedia, OcrScanStartMode startMode)
+    {
+        if (!double.IsFinite(startMedia) || !double.IsFinite(endMedia) || startMedia < 0 || endMedia <= startMedia)
+            throw new ArgumentException("Khoảng targeted scan không hợp lệ.");
+        return StartOcrScan(baseRequest with { Duration = endMedia - startMedia, ScanStartOffset = startMedia }, startMode);
+    }
+
     public Task<OcrCheckpointInfo> InspectOcrCheckpointAsync(OcrScanRequest request, CancellationToken cancellationToken) => _ocrScanner.InspectCheckpointAsync(request, cancellationToken);
     public Task RemoveOcrCheckpointAsync(OcrScanRequest request, CancellationToken cancellationToken) => _ocrScanner.RemoveCheckpointAsync(request, cancellationToken);
 
