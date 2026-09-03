@@ -249,7 +249,7 @@ internal sealed class OcrWorkerClient : IAsyncDisposable
         var models = root.TryGetProperty("models", out var modelsNode)
             ? modelsNode.EnumerateArray().Select(x => x.GetString()).ToArray() : [];
         if (!models.Contains(OcrInstaller.DetectionModel) || !models.Contains(OcrInstaller.RecognitionModel))
-            throw new InvalidDataException("OCR worker không xác nhận đúng PP-OCRv6 Small detection + recognition.");
+            throw new InvalidDataException($"OCR worker không xác nhận đúng {OcrInstaller.DetectionModel} + {OcrInstaller.RecognitionModel}.");
         var device = root.TryGetProperty("device", out var deviceNode) ? deviceNode.GetString() ?? string.Empty : string.Empty;
         if (!device.StartsWith(_runtime.Kind, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("OCR worker chạy sai thiết bị yêu cầu.");
     }
