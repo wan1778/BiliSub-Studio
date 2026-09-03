@@ -7,9 +7,14 @@ internal static class OcrPixelComparerContract
     public static async Task RunAsync()
     {
         var roi = new OcrRegion(0, 0, 1, 1);
+        var geo = new OcrFrameGeometry(0, 0, 1920, 1080, 1280, 320, 0, 0, 1280, 320);
+        var tb = new RationalTimeBase(1, 90000);
+        long spts = 5000000;
+        // Full provenance để pair vượt generic gate (temporal+spatial) tới comparer.
+        // Thiếu provenance => blocked tách + NeedsReview, KHÔNG gọi comparer (test 1).
         OcrCue Cue(double s, double e, string t, double c, double pts) => new(s, e, t, c, 0, 0, false,
-            new PixelObservation(pts, new OcrBox(10, 10, 200, 40), roi),
-            new PixelObservation(pts, new OcrBox(10, 10, 200, 40), roi));
+            new PixelObservation(pts, new OcrBox(10, 10, 200, 40), roi, geo, Interlocked.Increment(ref spts), tb),
+            new PixelObservation(pts, new OcrBox(10, 10, 200, 40), roi, geo, Interlocked.Increment(ref spts), tb));
         var unavailableComparer = new UnavailablePixelComparer();
         var cues = new[] { Cue(10, 10.4, "哇，没毛狗", 0.99, 10.4), Cue(10.4, 11.1, "哦，没毛狗", 0.98, 10.4) };
         var mergedUnavailable = await OcrCueReconciler.MergeTouchingIdenticalAsync(cues, videoPath: "missing.mp4", comparer: unavailableComparer, cancellationToken: CancellationToken.None);

@@ -40,15 +40,18 @@ internal static class OcrPunctuationRegression
         Check(merged[0].FirstObservation?.Pts == 120.300 && merged[0].LastObservation?.Pts == 122.033,
             "chain merge must preserve First=47.First and Last=49.Last");
 
-        // 2. Negative: khác Han (效/无) nhưng punctuation-normalized gần giống => không candidate => tách, 0 call.
-        var countingNeg = new FakePixelComparer(PixelCheckResult.Same);
+        // 2. Negative: khác Han (效/无) nhưng temporal+spatial dính => generic candidate,
+        // pixel là final gate duy nhất. Different => tách + NeedsReview; comparer PHẢI được gọi
+        // đúng 1 lần (gate mới không lọc bằng text pattern).
+        var countingNeg = new FakePixelComparer(PixelCheckResult.Different);
         var negative = new[] {
             Prov(10.000, 10.500, "第二，也许有效", 0.99),
             Prov(10.500, 11.000, "第二，也许无效", 0.98),
         };
         var negMerged = await OcrCueReconciler.MergeTouchingIdenticalAsync(negative, "v.mp4", countingNeg, ct);
-        Check(negMerged.Count == 2, "punctuation-normalized Han difference must stay separate");
-        Check(countingNeg.Calls == 0, "non-candidate pair must not reach pixel comparer");
+        Check(negMerged.Count == 2 && negMerged.All(c => c.NeedsReview),
+            "Different pixel must keep Han-different pair separate with NeedsReview");
+        Check(countingNeg.Calls == 1, "generic gate must send every temporally-continuous pair to pixel verifier");
 
         // 3. Punctuation-only candidate + Different => tách + NeedsReview.
         var diff = new FakePixelComparer(PixelCheckResult.Different);

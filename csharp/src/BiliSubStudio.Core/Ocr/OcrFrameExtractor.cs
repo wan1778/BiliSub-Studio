@@ -16,7 +16,28 @@ public static partial class OcrFrameExtractor
 
     public sealed record ShowInfoFrame(int N, long Pts, double PtsTime);
 
+    // Probe cache theo (path + size + mtime): ffprobe chạy nhiều lần cho cùng video trong
+    // một scan/replay (lane start, window compute, mỗi pixel check). File đổi => key đổi, không stale.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(string Path, long Size, DateTime Written), VideoProbe?> ProbeCache = new();
+
     public static async Task<VideoProbe?> ProbeAsync(ToolManager tools, ProcessRunner processes, string videoPath, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var full = Path.GetFullPath(videoPath.Trim());
+            var info = new FileInfo(full);
+            if (!info.Exists || info.Length <= 0) return null;
+            var key = (full, info.Length, info.LastWriteTimeUtc);
+            if (ProbeCache.TryGetValue(key, out var cachedProbe)) return cachedProbe;
+            var probe = await ProbeUncachedAsync(tools, processes, full, cancellationToken);
+            if (probe is not null) ProbeCache[key] = probe;
+            return probe;
+        }
+        catch (OperationCanceledException) { throw; }
+        catch { return null; }
+    }
+
+    private static async Task<VideoProbe?> ProbeUncachedAsync(ToolManager tools, ProcessRunner processes, string videoPath, CancellationToken cancellationToken)
     {
         try
         {

@@ -27,7 +27,7 @@ public sealed class OcrLiveTailReconciler : IDisposable
     private Task? _worker;
     private string _videoPath = string.Empty;
     private IPixelComparer? _comparer;
-    private double _exactWindow = 0.001;
+    private double _continuationWindow = 0.001;
     private Action? _onUpdated;
     private Action<Exception>? _onError;
     private bool _disposed;
@@ -87,7 +87,7 @@ public sealed class OcrLiveTailReconciler : IDisposable
         Pulse();
     }
 
-    public void Start(string videoPath, IPixelComparer comparer, double exactIdenticalMaxGap, Action? onUpdated = null, Action<Exception>? onError = null, CancellationToken linkedToken = default)
+    public void Start(string videoPath, IPixelComparer comparer, double continuationWindow, Action? onUpdated = null, Action<Exception>? onError = null, CancellationToken linkedToken = default)
     {
         lock (_gate)
         {
@@ -95,7 +95,7 @@ public sealed class OcrLiveTailReconciler : IDisposable
             if (_worker is not null) throw new InvalidOperationException("Live tail reconciler đã chạy.");
             _videoPath = videoPath;
             _comparer = comparer;
-            _exactWindow = exactIdenticalMaxGap;
+            _continuationWindow = continuationWindow;
             _onUpdated = onUpdated;
             _onError = onError;
             _cts = CancellationTokenSource.CreateLinkedTokenSource(linkedToken);
@@ -187,7 +187,7 @@ public sealed class OcrLiveTailReconciler : IDisposable
                 revision = _revision;
                 videoPath = _videoPath;
                 comparer = _comparer;
-                window = _exactWindow;
+                window = _continuationWindow;
             }
             if (comparer is null || string.IsNullOrWhiteSpace(videoPath))
             {

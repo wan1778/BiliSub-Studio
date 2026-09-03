@@ -9,9 +9,11 @@ public sealed record PixelComparison(PixelCheckResult Result, FrameSample Left, 
 
 public interface IPixelComparer
 {
-    // Chỉ được gọi sau reconciler temporal/text candidate gate. Tuyệt đối không dùng để scan/merge
-    // arbitrary cue pairs: pixel không phân biệt được same-text different-instance (hard-repeat-*).
-    // Far/non-touching repeats không bao giờ tới được đây nhờ gap check trước CheckBoundary.
+    // Chỉ được gọi sau reconciler generic visual gate (adjacent + temporal continuity
+    // native-frame + spatial-compatible + provenance thật). Không yêu cầu text pattern:
+    // pixel là final gate duy nhất (Same mới merge). Tuyệt đối không dùng để scan/merge
+    // arbitrary cue pairs: pixel không phân biệt được same-text different-instance qua blank dài,
+    // nên far/non-continuation repeats không bao giờ tới được đây nhờ temporal gate.
     Task<PixelComparison> CheckAsync(string videoPath, PixelObservation left, PixelObservation right, CancellationToken cancellationToken);
 }
 
@@ -25,6 +27,12 @@ public sealed class ProductionPixelComparer : IPixelComparer
     private readonly Tools.ToolManager? _tools;
     private readonly Processes.ProcessRunner? _processes;
     private readonly Processes.OwnedProcessGroup? _owner;
+
+    // Cache theo (video + SourcePtsA + SourcePtsB + sharedCrop): cùng một boundary
+    // (trace log + merge production, live + final replay) không decode lại.
+    // Instance-scope (một comparer một scan) nên không leak qua scans.
+    private readonly Dictionary<(string Video, long First, long Second, System.Drawing.Rectangle Crop), PixelComparison> _comparisonCache = new();
+    private readonly object _cacheGate = new();
 
     public ProductionPixelComparer() { }
     public ProductionPixelComparer(Tools.ToolManager tools, Processes.ProcessRunner processes, Processes.OwnedProcessGroup? owner = null)
@@ -64,7 +72,12 @@ public sealed class ProductionPixelComparer : IPixelComparer
             return UnavailableComparison(leftSample, rightSample, System.Drawing.Rectangle.Empty);
         var shared = OcrCropPlanner.PlanSharedCrop(rectA, rectB, probe.Width, probe.Height);
         if (shared.IsEmpty)
-            return UnavailableComparison(leftSample, rightSample, System.Drawing.Rectangle.Empty);
+            return UnavailableComparison(leftSample, rightSample, shared);
+        lock (_cacheGate)
+        {
+            if (_comparisonCache.TryGetValue(CacheKey(videoPath, left, right, shared), out var cached))
+                return cached;
+        }
         string ffmpeg;
         try { ffmpeg = await _tools.EnsureFfmpegAsync(cancellationToken); }
         catch { return UnavailableComparison(leftSample, rightSample, shared); }
@@ -84,7 +97,7 @@ public sealed class ProductionPixelComparer : IPixelComparer
         if (!OcrFrameExtractor.PtsTimeMatches(left.SourcePts.Value, probeTimeBase, frameA.DecodedPts) ||
             !OcrFrameExtractor.PtsTimeMatches(right.SourcePts.Value, probeTimeBase, frameB.DecodedPts))
             return UnavailableComparison(leftSample, rightSample, shared);
-        // Raw metrics telemetry. Chưa calibrate threshold nên Result vẫn Unavailable.
+        // Metrics + threshold v1 classification (Same/Different/abstain).
         double? ssim = null; double? fg = null; double? edge = null;
         try
         {
@@ -98,8 +111,14 @@ public sealed class ProductionPixelComparer : IPixelComparer
             }
         }
         catch { ssim = null; fg = null; edge = null; }
-        return new PixelComparison(Classify(ssim, edge), leftSample, rightSample, shared, ssim, fg, edge);
+        var decided = new PixelComparison(Classify(ssim, edge), leftSample, rightSample, shared, ssim, fg, edge);
+        lock (_cacheGate) _comparisonCache[CacheKey(videoPath, left, right, shared)] = decided;
+        return decided;
     }
+
+    private static (string Video, long First, long Second, System.Drawing.Rectangle Crop) CacheKey(
+        string videoPath, PixelObservation left, PixelObservation right, System.Drawing.Rectangle shared)
+        => (videoPath, left.SourcePts!.Value, right.SourcePts!.Value, shared);
 
     // Threshold production v1 (calibration 30 + 20 hard samples, line-bbox):
     // SAME: SSIM min 0.626, Edge min 0.857. DIFFERENT touching/handoff: SSIM max 0.196, Edge max 0.298.

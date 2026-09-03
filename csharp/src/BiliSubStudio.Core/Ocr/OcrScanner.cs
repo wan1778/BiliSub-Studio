@@ -192,7 +192,7 @@ public sealed class OcrScanner
         // Live incremental reconcile: tail committed cues được pixel-gate ngay trong lúc scan,
         // preview thay tail sạch không đợi Pause. Final ReconcileAsync bên dưới vẫn chạy safety pass.
         // Khai báo trước RunGuardedLaneAsync để local function capture hợp lệ.
-        var liveWindow = await ComputeExactIdenticalWindowAsync(_tools, _processes, source, token);
+        var liveWindow = await ComputeContinuationWindowAsync(_tools, _processes, source, token);
         using var liveTail = new OcrLiveTailReconciler();
         liveTail.ResetCommitted(liveCommitted);
         liveTail.Start(source, new ProductionPixelComparer(_tools, _processes, _activeProcesses), liveWindow,
@@ -1142,7 +1142,7 @@ public sealed class OcrScanner
     // theo observation-rate (3/4Hz=0.75s sẽ merge nhầm 2 instances đã chứng minh khác nhau).
     // Touching (gap ~0) vẫn merge qua Epsilon. Probe fail => Epsilon, fail-safe.
     // Dùng chung cho full scan reconcile và checkpoint/range replay để cùng một window production.
-    internal static async Task<double> ComputeExactIdenticalWindowAsync(
+    internal static async Task<double> ComputeContinuationWindowAsync(
         Tools.ToolManager tools,
         Processes.ProcessRunner processes,
         string source,
@@ -1158,7 +1158,7 @@ public sealed class OcrScanner
         return 0.001;
     }
 
-    internal static async Task<(IReadOnlyList<OcrCue> Cues, int Merges)> ReconcileAsync(IReadOnlyList<OcrLaneCheckpoint> lanes, string videoPath, IPixelComparer comparer, CancellationToken cancellationToken, double exactIdenticalMaxGap = 0.001)
+    internal static async Task<(IReadOnlyList<OcrCue> Cues, int Merges)> ReconcileAsync(IReadOnlyList<OcrLaneCheckpoint> lanes, string videoPath, IPixelComparer comparer, CancellationToken cancellationToken, double continuationWindow = 0.001)
     {
         var owned = new List<(OcrCue Cue, int Lane)>();
         foreach (var lane in lanes)
@@ -1210,7 +1210,7 @@ public sealed class OcrScanner
             }
             else output.Add(item);
         }
-        var merged = await OcrCueReconciler.MergeTouchingIdenticalAsync(output.Select(item => item.Cue), videoPath, comparer, cancellationToken, exactIdenticalMaxGap);
+        var merged = await OcrCueReconciler.MergeTouchingIdenticalAsync(output.Select(item => item.Cue), videoPath, comparer, cancellationToken, continuationWindow);
         return (merged, merges);
     }
 

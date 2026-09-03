@@ -635,13 +635,13 @@ public sealed class BiliSubApplication : IAsyncDisposable
     /// SSIM/Edge classification, final preview reconciliation. KHÔNG dùng để chứng minh tracker correctness
     /// (OCR worker, model, bbox generation, sampling/filter, tracker observation, PTS acquisition, ROI đổi
     /// => phải Targeted/Full Fresh Scan lại). Provenance thiếu/cũ => CheckpointNotEligibleForReplayException.
-    /// exactIdenticalMaxGap null => suy ra từ probe như production; truyền explicit để test determinism.
+    /// continuationWindow null => suy ra từ probe như production; truyền explicit để test determinism.
     /// </summary>
     public async Task<IReadOnlyList<OcrCue>> ReconcileCheckpointAsync(
         OcrScanRequest request,
         IPixelComparer? comparer,
         CancellationToken cancellationToken,
-        double? exactIdenticalMaxGap = null)
+        double? continuationWindow = null)
     {
         var store = new OcrCheckpointStore(Paths);
         var checkpoint = await store.LoadAsync(request, cancellationToken)
@@ -653,8 +653,8 @@ public sealed class BiliSubApplication : IAsyncDisposable
                         $"Cue {cue.Start:0.000}->{cue.End:0.000} thiếu provenance pixel (First/LastObservation, SourcePts, TimeBase, Geometry, bbox). " +
                         "Checkpoint cũ/không đủ điều kiện replay; không reconstruct/fabricate.");
         var effective = comparer ?? new ProductionPixelComparer(Tools, Processes);
-        var window = exactIdenticalMaxGap
-            ?? await OcrScanner.ComputeExactIdenticalWindowAsync(Tools, Processes, request.Path, cancellationToken);
+        var window = continuationWindow
+            ?? await OcrScanner.ComputeContinuationWindowAsync(Tools, Processes, request.Path, cancellationToken);
         var (cues, _) = await OcrScanner.ReconcileAsync(checkpoint.Lanes, request.Path, effective, cancellationToken, window);
         return cues;
     }
@@ -671,7 +671,7 @@ public sealed class BiliSubApplication : IAsyncDisposable
         double startMedia,
         double endMedia,
         CancellationToken cancellationToken,
-        double? exactIdenticalMaxGap = null)
+        double? continuationWindow = null)
     {
         if (!double.IsFinite(startMedia) || !double.IsFinite(endMedia) || startMedia < 0 || endMedia <= startMedia)
             throw new ArgumentException("Khoảng targeted replay không hợp lệ.");
@@ -691,14 +691,14 @@ public sealed class BiliSubApplication : IAsyncDisposable
                 throw new CheckpointNotEligibleForReplayException(
                     $"Cue {cue.Start:0.000}->{cue.End:0.000} thiếu provenance pixel. Không reconstruct/fabricate.");
         var effective = comparer ?? new ProductionPixelComparer(Tools, Processes);
-        var window = exactIdenticalMaxGap
-            ?? await OcrScanner.ComputeExactIdenticalWindowAsync(Tools, Processes, request.Path, cancellationToken);
+        var window = continuationWindow
+            ?? await OcrScanner.ComputeContinuationWindowAsync(Tools, Processes, request.Path, cancellationToken);
         var traces = new List<BoundaryTrace>();
         for (var index = 1; index < selection.Count; index++)
         {
             var left = selection[index - 1];
             var right = selection[index];
-            var eval = await OcrCueReconciler.EvaluateBoundaryAsync(left, right, allowFlicker: true, request.Path, effective, cancellationToken, window);
+            var eval = await OcrCueReconciler.EvaluateBoundaryAsync(left, right, request.Path, effective, cancellationToken, window);
             traces.Add(new BoundaryTrace(
                 left.Start, left.End, left.Text, right.Start, right.End, right.Text,
                 eval.GapSeconds, eval.IsCandidate, eval.CandidateReason, eval.Pixel,

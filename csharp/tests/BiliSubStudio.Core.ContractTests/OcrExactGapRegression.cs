@@ -44,7 +44,7 @@ internal static class OcrExactGapRegression
             Prov(28.000, 29.966, "直到烈战狂提到龙帝宫", 0.98),
         };
         var countingGap = new FakePixelComparer(PixelCheckResult.Same);
-        var gappedMerged = await OcrCueReconciler.MergeTouchingIdenticalAsync(gapped, "v.mp4", countingGap, ct, exactIdenticalMaxGap: productionExhaustiveWindow);
+        var gappedMerged = await OcrCueReconciler.MergeTouchingIdenticalAsync(gapped, "v.mp4", countingGap, ct, continuationWindow: productionExhaustiveWindow);
         Check(gappedMerged.Count == 2, "field 9-10 real 0.667 blank must stay 2 cues with production window");
         Check(countingGap.Calls == 0, "gap beyond production window must not reach pixel comparer");
 
@@ -60,31 +60,34 @@ internal static class OcrExactGapRegression
             Prov(42.000, 43.000, "龙无期", 0.98),
         };
         var countingBlank = new FakePixelComparer(PixelCheckResult.Same);
-        var blankMerged = await OcrCueReconciler.MergeTouchingIdenticalAsync(realBlank, "v.mp4", countingBlank, ct, exactIdenticalMaxGap: 0.75);
+        var blankMerged = await OcrCueReconciler.MergeTouchingIdenticalAsync(realBlank, "v.mp4", countingBlank, ct, continuationWindow: 0.75);
         Check(blankMerged.Count == 2, "real 1.0s blank between same-text instances must stay separate");
         Check(countingBlank.Calls == 0, "real blank must not reach pixel comparer");
 
         // 5. Gap 0.667 + Different => tách + NeedsReview cả hai.
         var diff = new FakePixelComparer(PixelCheckResult.Different);
-        var diffMerged = await OcrCueReconciler.MergeTouchingIdenticalAsync(gapped, "v.mp4", diff, ct, exactIdenticalMaxGap: 0.75);
+        var diffMerged = await OcrCueReconciler.MergeTouchingIdenticalAsync(gapped, "v.mp4", diff, ct, continuationWindow: 0.75);
         Check(diffMerged.Count == 2 && diffMerged.All(c => c.NeedsReview),
             "Different pixel must keep 0.667 gap separate with NeedsReview");
 
         // 6. Gap 0.667 + Unavailable => tách + NeedsReview cả hai.
         var unav = new FakePixelComparer(PixelCheckResult.Unavailable);
-        var unavMerged = await OcrCueReconciler.MergeTouchingIdenticalAsync(gapped, "v.mp4", unav, ct, exactIdenticalMaxGap: 0.75);
+        var unavMerged = await OcrCueReconciler.MergeTouchingIdenticalAsync(gapped, "v.mp4", unav, ct, continuationWindow: 0.75);
         Check(unavMerged.Count == 2 && unavMerged.All(c => c.NeedsReview),
             "Unavailable pixel must keep 0.667 gap separate with NeedsReview");
 
-        // 7. Hai câu thật khác nhau đứng sát (field 19↔20) => tách, không gọi comparer dù pixel có Same.
-        var countingDistinct = new FakePixelComparer(PixelCheckResult.Same);
+        // 7. Hai câu thật khác nhau đứng sát (field 19↔20): temporal+spatial dính nên là
+        // generic candidate, pixel quyết định. Different => tách + NeedsReview, gọi đúng 1 lần.
+        // (Gate mới không lọc bằng text: an toàn đến từ pixel, không phải text pattern.)
+        var countingDistinct = new FakePixelComparer(PixelCheckResult.Different);
         var distinct = new[] {
             Prov(50.700, 52.733, "这种人，不像人", 0.99),
             Prov(52.733, 54.333, "像被擦过的棋子", 0.98),
         };
-        var distinctMerged = await OcrCueReconciler.MergeTouchingIdenticalAsync(distinct, "v.mp4", countingDistinct, ct, exactIdenticalMaxGap: 0.75);
-        Check(distinctMerged.Count == 2, "two truly different touching captions must stay separate");
-        Check(countingDistinct.Calls == 0, "non-candidate pair must not reach pixel comparer");
+        var distinctMerged = await OcrCueReconciler.MergeTouchingIdenticalAsync(distinct, "v.mp4", countingDistinct, ct, continuationWindow: 0.75);
+        Check(distinctMerged.Count == 2 && distinctMerged.All(c => c.NeedsReview),
+            "two truly different touching captions must stay separate with NeedsReview on Different pixel");
+        Check(countingDistinct.Calls == 1, "touching distinct pair must reach pixel verifier once");
     }
 
     private static void Check(bool valid, string message)

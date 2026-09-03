@@ -96,6 +96,7 @@ internal static class Program
         ("OCR checkpoint replay without worker and targeted range regression", OcrReplayContract.RunAsync),
         ("OCR worker model contract pins Medium installer payload validator", OcrWorkerModelContract.RunAsync),
         ("OCR live incremental tail reconcile from field 109-112", OcrLiveTailContract.RunAsync),
+        ("OCR generic boundary property randomized vocabulary-invariant", OcrGenericBoundaryProperty.RunAsync),
         ("concurrent OCR worker crashes preserve diagnostics and recover both requests", OcrWorkerRecoveryContract.RunAsync),
         ("Paddle GPU wheel follows numeric CUDA compatibility", OcrGpuWheelContractAsync),
         ("OCR Auto benchmarks 1 2 4 8 16 and restores last PASS", OcrAutoBenchmarkContractAsync),

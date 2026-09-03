@@ -10,11 +10,11 @@ internal static class OcrFragmentContract
     private static readonly OcrFrameGeometry TestGeo = new(0, 0, 1920, 1080, 1280, 320, 0, 0, 1280, 320);
     private static long _spts = 2000000;
 
-    private static OcrCue Prov(double s, double e, string t, double c)
+    private static OcrCue Prov(double s, double e, string t, double c, int raw = 0, int csupport = 0)
     {
         var s1 = System.Threading.Interlocked.Increment(ref _spts);
         var s2 = System.Threading.Interlocked.Increment(ref _spts);
-        return new OcrCue(s, e, t, c, 0, 0, false,
+        return new OcrCue(s, e, t, c, raw, csupport, false,
             new PixelObservation(s, new OcrBox(10, 10, 200, 40), TestRoi, TestGeo, s1, TestTb),
             new PixelObservation(e, new OcrBox(10, 10, 200, 40), TestRoi, TestGeo, s2, TestTb));
     }
@@ -48,9 +48,11 @@ internal static class OcrFragmentContract
             "field punctuation and one-frame duplicated glyph still fragmented one rendered caption");
         var substituted = await OcrCueReconciler.MergeTouchingIdenticalAsync(
         [
-            Prov(142.967, 143.133, "万年没出门", .99),
-            Prov(143.133, 143.967, "万年设出门", .999),
-            Prov(143.967, 144.167, "万年没出门", .99),
+            // Evidence thực: flicker B (设) support thấp hẳn so với 2 instance 没 ổn định.
+            // Canonical ưu tiên ConfidentSupport/RawSupport nên flicker đơn lẻ không thắng.
+            Prov(142.967, 143.133, "万年没出门", .99, 60, 58),
+            Prov(143.133, 143.967, "万年设出门", .999, 3, 1),
+            Prov(143.967, 144.167, "万年没出门", .99, 55, 53),
         ], "v.mp4", same, CancellationToken.None);
         Check(substituted.Count == 1 && substituted[0].Text == "万年没出门"
             && substituted[0].Start == 142.967 && substituted[0].End == 144.167,
