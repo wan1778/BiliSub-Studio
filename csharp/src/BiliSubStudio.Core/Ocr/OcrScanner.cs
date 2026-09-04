@@ -193,9 +193,17 @@ public sealed class OcrScanner
         // preview thay tail sạch không đợi Pause. Final ReconcileAsync bên dưới vẫn chạy safety pass.
         // Khai báo trước RunGuardedLaneAsync để local function capture hợp lệ.
         var liveWindow = await ComputeContinuationWindowAsync(_tools, _processes, source, token);
+        // Pixel cache share live -> final trong CÙNG một scan session (Task 1 perf gate):
+        // một ProductionPixelComparer instance duy nhất cho cả liveTail.Start và final
+        // ReconcileAsync. _comparisonCache là instance field nên final reuse kết quả live đã đo
+        // (cùng key: video path + SourcePts A/B + shared crop) thay vì decode lại bằng FFmpeg.
+        // Lifetime = method scope: tạo khi session bắt đầu, hết scope khi session kết thúc/hủy,
+        // scan mới/video khác luôn có instance (cache) mới — không leak xuyên video.
+        // Không static/global. Key identity giữ nguyên, không nới lỏng.
+        var sharedPixelComparer = new ProductionPixelComparer(_tools, _processes, _activeProcesses);
         using var liveTail = new OcrLiveTailReconciler();
         liveTail.ResetCommitted(liveCommitted);
-        liveTail.Start(source, new ProductionPixelComparer(_tools, _processes, _activeProcesses), liveWindow,
+        liveTail.Start(source, sharedPixelComparer, liveWindow,
             onError: error => job.Log("Live tail reconcile lỗi (preview giữ raw, final pass vẫn chạy): " + Compact(error.Message)),
             linkedToken: laneCancellation.Token);
 
@@ -443,7 +451,7 @@ public sealed class OcrScanner
         token.ThrowIfCancellationRequested();
         var paused = lanes.Any(x => !x.Completed) && job.IsPauseRequested;
         var exactWindow = liveWindow;
-        var (mergedAll, boundaryMerges) = await ReconcileAsync(lanes, source, new ProductionPixelComparer(_tools, _processes, _activeProcesses), token, exactWindow);
+        var (mergedAll, boundaryMerges) = await ReconcileAsync(lanes, source, sharedPixelComparer, token, exactWindow);
         var frontier = OcrCheckpointStore.ContiguousFrontier(lanes);
         var merged = paused ? mergedAll.Where(x => x.Start <= frontier + 0.001).ToArray() : mergedAll;
         string? pauseMessage = null;
