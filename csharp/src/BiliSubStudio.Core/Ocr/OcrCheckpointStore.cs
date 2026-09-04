@@ -242,7 +242,10 @@ internal sealed class OcrCheckpointStore
                 !double.IsFinite(segment.ScanStart) || !double.IsFinite(segment.ScanEnd) ||
                 segment.CoreStart < offset - 0.001 || segment.CoreEnd <= segment.CoreStart || segment.CoreEnd > offset + duration + 0.001 ||
                 segment.ScanStart < offset - 0.001 || segment.ScanStart > segment.CoreStart ||
-                segment.ScanEnd < segment.CoreEnd || segment.ScanEnd > offset + duration + 0.001 ||
+                // ScanEnd-vs-CoreEnd dùng cùng tolerance ±0.001 như mọi bound check lân cận:
+                // BuildSegments tính CoreEnd = offset + duration*N/N bằng floating-point nên có thể
+                // sludge ~1e-12 trên ScanEnd (min với offset+duration); drift <= 1ms vẫn hợp lệ.
+                segment.ScanEnd + 0.001 < segment.CoreEnd || segment.ScanEnd > offset + duration + 0.001 ||
                 !double.IsFinite(lane.MediaSeconds) || lane.MediaSeconds < segment.ScanStart - 0.001 || lane.MediaSeconds > segment.ScanEnd + 0.001 ||
                 lane.Frames < 0 || lane.OcrImages < 0 || lane.OcrImages > lane.Frames ||
                 (index > 0 && Math.Abs(ordered[index - 1].Segment.CoreEnd - segment.CoreStart) > 0.001) ||
