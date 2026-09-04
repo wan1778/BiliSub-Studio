@@ -5,6 +5,7 @@ using BiliSubStudio.Core.Ocr;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
+using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Windows.Foundation;
 using Windows.Media.Core;
@@ -31,6 +32,10 @@ public sealed partial class OcrPage : Page
     private readonly OcrLiveCueAccumulator _liveCues = new();
     private DateTimeOffset _nextCueRenderAt;
     private bool _cueViewDirty;
+    // Live-follow: true khi viewport đang ở cuối danh sách (tự follow cue mới),
+    // false khi user tự scroll lên xem cue cũ (giữ nguyên vị trí, resume khi quay lại gần cuối).
+    private bool _userAtEnd = true;
+    private ScrollViewer? _cueScrollViewer;
     private OcrRegion _region = new(0.05, 0.65, 0.90, 0.29);
     private OcrRegion _dragOriginRegion = new(0.05, 0.65, 0.90, 0.29);
     private Point? _dragStart;
@@ -49,7 +54,164 @@ public sealed partial class OcrPage : Page
         PreviewCanvas.SizeChanged += (_, _) => ApplyRegionVisual();
 
         ApplyConfiguration();
+        CueList.Loaded += (_, _) => AttachCueListScroll();
+        Unloaded += (_, _) => DetachCueListScroll();
         Unloaded += (_, _) => _player?.Pause();
+    }
+
+    // Test-only stress hook (chỉ chạy với flag --ocr-list-stress, không ảnh hưởng production):
+    // load synthetic cues qua đúng RenderCues production, scroll đầu/giữa/cuối, đếm realized
+    // containers, kiểm tra follow/selection, ghi kết quả ra file. Không scan video.
+    internal async Task RunCueListStressAsync(int count, string resultPath)
+    {
+        var report = new List<string>();
+        void Record(string line) => report.Add(line);
+        try
+        {
+            AttachCueListScroll();
+            if (_cueScrollViewer is null) throw new InvalidOperationException("no ListView ScrollViewer");
+            // Cue bắt đầu từ t=100 để Timeline.Value=0 không khớp cue nào (loại nhiễu selection
+            // khỏi phép đo follow/scroll; selection test riêng ở dưới).
+            _cues = Enumerable.Range(0, count)
+                .Select(i => new OcrCue(100 + i * 2.0, 100 + i * 2.0 + 1.5, $"Cue {i + 1} 测试字幕内容", .9))
+                .ToList();
+            _userAtEnd = true;
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            RenderCues();
+            await Task.Delay(500);
+            sw.Stop();
+            Record($"count={CueList.Items.Count}");
+            Record($"initialRenderMs={sw.Elapsed.TotalMilliseconds:0}");
+            Record($"realizedTop={CountRealizedCueItems()}");
+            await ScrollCueListTo(_cueScrollViewer.ScrollableHeight / 2);
+            Record($"realizedMiddle={CountRealizedCueItems()}");
+            await ScrollCueListTo(_cueScrollViewer.ScrollableHeight);
+            Record($"realizedEnd={CountRealizedCueItems()}");
+
+            // C1: đang ở cuối -> append -> tự follow.
+            var maxBefore = _cueScrollViewer.ScrollableHeight;
+            AppendStressCues(50);
+            Record($"followAtEnd={IsNearCueListEnd()} offsetBefore={maxBefore:0} offsetAfter={_cueScrollViewer.VerticalOffset:0} maxAfter={_cueScrollViewer.ScrollableHeight:0}");
+
+            // C2: scroll lên đầu -> append nhiều -> KHÔNG kéo xuống.
+            await ScrollCueListTo(0);
+            var topBefore = _cueScrollViewer.VerticalOffset;
+            AppendStressCues(100);
+            Record($"noYankOnScrollUp={Math.Abs(_cueScrollViewer.VerticalOffset - topBefore) < OcrLiveViewPolicy.FollowThresholdPx} offsetBefore={topBefore:0} offsetAfter={_cueScrollViewer.VerticalOffset:0}");
+
+            // C3: quay lại gần cuối -> append -> follow lại.
+            await ScrollCueListTo(_cueScrollViewer.ScrollableHeight - 32);
+            AppendStressCues(50);
+            Record($"resumeNearEnd={IsNearCueListEnd()}");
+
+            // D: selection giữ qua scroll xa. Mở rộng Timeline range theo synthetic times
+            // để seek không bị clamp về Maximum mặc định (tránh round-trip giả do clamp).
+            Timeline.Maximum = 100 + count * 2.0 + 1000;
+            CueList.SelectedIndex = 1234;
+            await Task.Delay(200);
+            await ScrollCueListTo(0);
+            await ScrollCueListTo(_cueScrollViewer.ScrollableHeight);
+            var selectedOk = CueList.SelectedIndex == 1234;
+            var textOk = CueList.Items.Count > 1234 && (CueList.Items[1234]?.ToString() ?? "").Contains("1235.");
+            Record($"selectionKept={selectedOk} selectedTextOk={textOk}");
+
+            // E: memory.
+            Record($"peakWorkingSetMB={System.Diagnostics.Process.GetCurrentProcess().PeakWorkingSet64 / 1048576}");
+            Record($"managedMB={GC.GetTotalMemory(false) / 1048576}");
+            Record("RESULT=PASS");
+        }
+        catch (Exception error)
+        {
+            report.Insert(0, "RESULT=FAIL " + error.Message);
+        }
+        await System.IO.File.WriteAllTextAsync(resultPath, string.Join(Environment.NewLine, report) + Environment.NewLine);
+    }
+
+    private void AppendStressCues(int add)
+    {
+        var start = _cues.Count == 0 ? 100.0 : _cues[^1].End + 0.5;
+        var extra = Enumerable.Range(0, add)
+            .Select(i => new OcrCue(start + i * 2.0, start + i * 2.0 + 1.5, $"Cue {_cues.Count + i + 1} 测试字幕内容", .9))
+            .ToList();
+        _cues = _cues.Concat(extra).ToList();
+        RenderCues();
+    }
+
+    private bool IsNearCueListEnd()
+    {
+        if (_cueScrollViewer is null) return false;
+        return OcrLiveViewPolicy.IsNearEnd(
+            _cueScrollViewer.VerticalOffset,
+            _cueScrollViewer.ViewportHeight,
+            _cueScrollViewer.ScrollableHeight);
+    }
+
+    private async Task ScrollCueListTo(double offset)
+    {
+        if (_cueScrollViewer is null) return;
+        _cueScrollViewer.ChangeView(null, Math.Max(0, offset), null, true);
+        var last = -1.0;
+        var stable = 0;
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            await Task.Delay(100);
+            var current = _cueScrollViewer.VerticalOffset;
+            if (Math.Abs(current - last) < 0.5 && ++stable >= 2) return;
+            stable = 0;
+            last = current;
+        }
+    }
+
+    private int CountRealizedCueItems()
+    {
+        var found = 0;
+        CountListViewItems(CueList, ref found);
+        return found;
+    }
+
+    private static void CountListViewItems(DependencyObject root, ref int found)
+    {
+        if (root is ListViewItem) found++;
+        var count = VisualTreeHelper.GetChildrenCount(root);
+        for (var i = 0; i < count; i++)
+            CountListViewItems(VisualTreeHelper.GetChild(root, i), ref found);
+    }
+    private void AttachCueListScroll()
+    {
+        DetachCueListScroll();
+        _cueScrollViewer = FindDescendantScrollViewer(CueList);
+        if (_cueScrollViewer is not null)
+            _cueScrollViewer.ViewChanged += CueListViewChanged;
+    }
+
+    private void DetachCueListScroll()
+    {
+        if (_cueScrollViewer is not null)
+            _cueScrollViewer.ViewChanged -= CueListViewChanged;
+        _cueScrollViewer = null;
+    }
+
+    private static ScrollViewer? FindDescendantScrollViewer(DependencyObject root)
+    {
+        var count = VisualTreeHelper.GetChildrenCount(root);
+        for (var i = 0; i < count; i++)
+        {
+            var child = VisualTreeHelper.GetChild(root, i);
+            if (child is ScrollViewer viewer) return viewer;
+            var nested = FindDescendantScrollViewer(child);
+            if (nested is not null) return nested;
+        }
+        return null;
+    }
+
+    private void CueListViewChanged(object? sender, ScrollViewerViewChangedEventArgs e)
+    {
+        if (_cueScrollViewer is null) return;
+        _userAtEnd = OcrLiveViewPolicy.IsNearEnd(
+            _cueScrollViewer.VerticalOffset,
+            _cueScrollViewer.ViewportHeight,
+            _cueScrollViewer.ScrollableHeight);
     }
 
     public void ApplyConfiguration()
@@ -90,6 +252,7 @@ public sealed partial class OcrPage : Page
             _liveCues.Clear();
             _nextCueRenderAt = default;
             _cueViewDirty = false;
+            _userAtEnd = true;
             CueList.Items.Clear();
             CueCountText.Text = "0 câu";
             CancelButton.IsEnabled = false;
@@ -281,6 +444,7 @@ public sealed partial class OcrPage : Page
         _liveCues.Clear();
         _nextCueRenderAt = default;
         _cueViewDirty = false;
+        _userAtEnd = true;
         CueList.Items.Clear();
         CueCountText.Text = "0 câu";
         ExportButton.IsEnabled = false;
@@ -483,6 +647,7 @@ public sealed partial class OcrPage : Page
         _liveCues.Clear();
         _nextCueRenderAt = default;
         _cueViewDirty = false;
+        _userAtEnd = true;
         CueList.Items.Clear();
         CueCountText.Text = "0 câu";
         Progress.Value = 0;
@@ -597,10 +762,16 @@ public sealed partial class OcrPage : Page
 
     private void RenderCues()
     {
-        _visibleCues = _cues.OrderBy(cue => cue.Start).ToArray();
-        for (var index = 0; index < _visibleCues.Count; index++)
+        // Incremental render: chỉ rebuild rows từ first-changed index (tail merge/append),
+        // prefix giữ nguyên nên ListView virtualization không realize lại hàng nghìn containers.
+        // Mirror invariant cũ: CueList.Items[i] <-> _visibleCues[i] (selection/edit giữ nguyên).
+        var cues = _cues.OrderBy(cue => cue.Start).ToArray();
+        var common = OcrLiveViewPolicy.CommonCuePrefixLength(_visibleCues, cues);
+        var appended = cues.Length > _visibleCues.Count;
+        _visibleCues = cues;
+        for (var index = common; index < cues.Length; index++)
         {
-            var cue = _visibleCues[index];
+            var cue = cues[index];
             var start = TimeSpan.FromSeconds(Math.Max(0, cue.Start));
             var end = TimeSpan.FromSeconds(Math.Max(cue.Start, cue.End));
             var text = string.Join(" / ", cue.Text.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries));
@@ -615,9 +786,13 @@ public sealed partial class OcrPage : Page
                 CueList.Items.Add(row);
             }
         }
-        while (CueList.Items.Count > _visibleCues.Count)
+        while (CueList.Items.Count > cues.Length)
             CueList.Items.RemoveAt(CueList.Items.Count - 1);
-        CueCountText.Text = $"{_visibleCues.Count} câu";
+        CueCountText.Text = $"{cues.Length} câu";
+        // Auto-follow: chỉ scroll khi có cue mới VÀ user đang ở cuối. User scroll lên xem
+        // cue cũ => giữ nguyên vị trí; quay lại gần cuối => ViewChanged bật follow, resume.
+        if (appended && _userAtEnd && CueList.Items.Count > 0)
+            CueList.ScrollIntoView(CueList.Items[CueList.Items.Count - 1]);
         SyncCueSelection(Timeline.Value);
     }
 
@@ -914,7 +1089,9 @@ public sealed partial class OcrPage : Page
         if (CueList.SelectedIndex == index) return;
         _syncingCue = true;
         CueList.SelectedIndex = index;
-        if (index >= 0) CueList.ScrollIntoView(CueList.Items[index]);
+        // Selection vẫn bám timeline, nhưng chỉ scroll khi đang follow cuối —
+        // user scroll lên xem cue cũ thì highlight di chuyển mà không bị kéo xuống.
+        if (index >= 0 && _userAtEnd) CueList.ScrollIntoView(CueList.Items[index]);
         _syncingCue = false;
     }
 

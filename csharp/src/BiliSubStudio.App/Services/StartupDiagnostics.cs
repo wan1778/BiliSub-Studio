@@ -6,6 +6,7 @@ namespace BiliSubStudio.App.Services;
 internal static class StartupDiagnostics
 {
     private const string SmokePrefix = "--startup-smoke-test=";
+    private const string ListStressPrefix = "--ocr-list-stress=";
     private static readonly object Sync = new();
     private static string? _logPath;
 
@@ -123,6 +124,25 @@ internal static class StartupDiagnostics
             // Reflection metadata is best-effort diagnostics only.
         }
         return detail.ToString();
+    }
+
+    public static (int Count, string Path)? ListStressRequest { get; } = ResolveListStress(Environment.GetCommandLineArgs());
+
+    private static (int Count, string Path)? ResolveListStress(IEnumerable<string> args)
+    {
+        foreach (var arg in args)
+        {
+            if (!arg.StartsWith(ListStressPrefix, StringComparison.OrdinalIgnoreCase)) continue;
+            // Format: --ocr-list-stress=<count>:<resultPath>
+            var value = arg[ListStressPrefix.Length..].Trim().Trim('"');
+            var split = value.IndexOf(':');
+            if (split <= 0) continue;
+            if (!int.TryParse(value[..split], out var count) || count <= 0) continue;
+            var path = value[(split + 1)..].Trim();
+            if (string.IsNullOrWhiteSpace(path)) continue;
+            return (count, Path.GetFullPath(path));
+        }
+        return null;
     }
 
     private static string? ResolveSmokeSentinel(IEnumerable<string> args)

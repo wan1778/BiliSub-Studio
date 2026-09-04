@@ -118,6 +118,14 @@ public sealed partial class MainWindow : Window
 
     internal Task Initialization => _initialization.Task;
 
+    internal async Task RunCueListStressAsync(int count, string resultPath)
+    {
+        ContentFrame.Content = _pages["ocr"];
+        await Task.Delay(300);
+        if (_pages["ocr"] is Pages.OcrPage ocrPage)
+            await ocrPage.RunCueListStressAsync(count, resultPath);
+    }
+
     internal async Task RunLayoutSmokeAsync()
     {
         StartupDiagnostics.Write("layout-smoke-start");

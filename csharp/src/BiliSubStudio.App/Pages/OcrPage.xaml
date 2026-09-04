@@ -196,7 +196,7 @@
                         </Grid.RowDefinitions>
                         <Grid>
                             <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
-                            <TextBlock FontSize="12" VerticalAlignment="Center" Text="Phụ đề OCR đã quét · 10 câu mỗi lượt xem" />
+                            <TextBlock FontSize="12" VerticalAlignment="Center" Text="Phụ đề OCR đã quét · cuộn liên tục toàn danh sách" />
                             <TextBlock x:Name="CueCountText" Grid.Column="1" FontSize="11" VerticalAlignment="Center" Text="0 câu" />
                         </Grid>
                         <ListView

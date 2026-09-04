@@ -48,6 +48,14 @@ public partial class App : Microsoft.UI.Xaml.Application
                 await MainWindow.RunLayoutSmokeAsync();
                 await StartupDiagnostics.WriteSmokeSentinelAsync();
                 Exit();
+                return;
+            }
+            if (StartupDiagnostics.ListStressRequest is { } stress)
+            {
+                await MainWindow.Initialization.WaitAsync(TimeSpan.FromSeconds(20));
+                await MainWindow.RunCueListStressAsync(stress.Count, stress.Path);
+                Exit();
+                return;
             }
         }
         catch (Exception error)
