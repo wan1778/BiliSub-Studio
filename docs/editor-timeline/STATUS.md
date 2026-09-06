@@ -184,6 +184,12 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
 - `verify_timeline_migration_contract.py`, G3/G2 verifiers, and
   `validate_csharp_migration.py`: PASS; code map regenerated.
 - G1 regression re-run: `TOTAL=35 PASS=35 FAIL=0`.
+- Clean-tree `verify.ps1` on `95b9678`: PASS (contracts 111/111, Range
+  regressions, self-contained publish, startup smoke, checksum readback).
+- G4 gate binary: exe SHA-256
+  `bee94d5f556a58e898ea8ddf870ef1bdc03126ab06fa18c6a120aae987650239`,
+  source tree SHA-256
+  `6d3f9520c69cb321ffab876aa3a183d5417971abaa5420b4d5453b2b1bf3ba96`.
 
 ## Remaining precondition
 
