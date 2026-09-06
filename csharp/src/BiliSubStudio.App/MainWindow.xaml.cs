@@ -10,6 +10,7 @@ using BiliSubStudio.Core.Diagnostics;
 using Microsoft.UI;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Controls;
 using Windows.Graphics;
 
 namespace BiliSubStudio.App;
@@ -327,6 +328,69 @@ public sealed partial class MainWindow : Window
             _closing = false;
             FooterStatus.Text = "Từ chối đóng để bảo toàn dữ liệu: " + error.Message;
             _globalLog.Error("Ứng dụng", "Từ chối đóng để bảo toàn dữ liệu: " + error.Message);
+            // EDIT-CLOSE: chặn im lặng khiến user tưởng app treo. Báo bằng hộp
+            // thoại và cho lối thoát chủ động thay vì bắt restart/mò log.
+            await ShowCloseRefusedDialogAsync(error.Message);
+        }
+    }
+
+    // RELINK (kiểu Adobe): mất file nguồn thì báo rõ và cho user chọn lại
+    // đường dẫn thay vì chặn im lặng. Nối xong thì thoát tiếp; vẫn có lối
+    // bỏ project khi user không cần giữ.
+    private async Task ShowCloseRefusedDialogAsync(string reason)
+    {
+        var editorHasOpenProject = _pages.TryGetValue("editor", out var editorElement)
+            && editorElement is EditorPage editorPage && editorPage.HasOpenEditorProject;
+        var missingPath = reason;
+        const string marker = "Video nguồn của project Editor không tồn tại.";
+        var missingIndex = reason.IndexOf(marker, StringComparison.Ordinal);
+        if (missingIndex >= 0)
+            missingPath = reason[(missingIndex + marker.Length)..].Trim();
+        ContentDialog dialog;
+        try
+        {
+            dialog = new ContentDialog
+            {
+                Title = missingIndex >= 0 ? "Không tìm thấy video nguồn" : "Không thể đóng app ngay",
+                Content = missingIndex >= 0
+                    ? "Không tìm thấy file ở đường dẫn cũ:\n" + missingPath + "\n\nFile có thể đã bị xóa, đổi tên hoặc di chuyển sau khi làm xong. Chọn lại file đó ở vị trí mới để giữ nguyên project và thoát, hoặc bỏ project và thoát luôn."
+                    : reason,
+                CloseButtonText = "Ở lại xử lý",
+                DefaultButton = ContentDialogButton.Close,
+                XamlRoot = Content.XamlRoot,
+            };
+            if (missingIndex >= 0 && editorHasOpenProject)
+                dialog.PrimaryButtonText = "Chọn lại file...";
+            if (editorHasOpenProject)
+                dialog.SecondaryButtonText = "Bỏ project và thoát";
+        }
+        catch { return; }
+        ContentDialogResult choice;
+        try { choice = await dialog.ShowAsync(); }
+        catch { return; }
+        try
+        {
+            if (choice == ContentDialogResult.Primary
+                && _pages["editor"] is EditorPage relinkEditor
+                && await relinkEditor.RelinkMissingEditorSourceAsync())
+            {
+                FooterStatus.Text = "Đã nối lại video nguồn; đang thoát...";
+                _globalLog.Info("Ứng dụng", "User nối lại video nguồn để thoát app.");
+                Close();
+            }
+            else if (choice == ContentDialogResult.Secondary
+                && _pages["editor"] is EditorPage discardEditor)
+            {
+                discardEditor.DiscardOpenProjectForForcedClose();
+                FooterStatus.Text = "Đã bỏ project Editor đang mở theo yêu cầu; đang thoát...";
+                _globalLog.Info("Ứng dụng", "User bỏ project Editor đang mở để thoát app.");
+                Close();
+            }
+        }
+        catch (Exception discardError)
+        {
+            FooterStatus.Text = "Chưa thoát được: " + discardError.Message;
+            _globalLog.Error("Ứng dụng", "Chưa thoát được: " + discardError.Message);
         }
     }
 
@@ -334,6 +398,7 @@ public sealed partial class MainWindow : Window
     {
         _jobProgressTimer.Stop();
         _globalLog.EntryAdded -= OnGlobalLogEntry;
+        if (_pages["video"] is VideoPage videoPage) videoPage.StopMonitoring();
         await _application.DisposeAsync();
     }
 }

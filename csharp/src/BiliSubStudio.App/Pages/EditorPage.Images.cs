@@ -669,6 +669,7 @@ public sealed partial class EditorPage
 
         string? baseOutput = null;
         AppJob? imageJob = null;
+        var detachedImageCleanup = false;
         try
         {
             await SaveProjectNowAsync();
@@ -685,11 +686,22 @@ public sealed partial class EditorPage
                 };
                 _jobId = _application.StartEditor(request);
                 RefreshEditorActions();
+                DateTime? exportCancellingSinceUtc = null;
                 while (_jobId is not null)
                 {
-                    var snapshot = _application.Jobs.GetSnapshot(_jobId);
+                    BiliSubStudio.Core.Jobs.JobSnapshot snapshot;
+                    try { snapshot = _application.Jobs.GetSnapshot(_jobId); }
+                    catch { _jobId = null; RefreshEditorActions(); break; }
                     Progress.Value = snapshot.Progress;
                     StatusText.Text = snapshot.Message;
+                    if (CheckStuckCancelling(snapshot, ref exportCancellingSinceUtc, () =>
+                    {
+                        var detached = _jobId!;
+                        _jobId = null;
+                        DetachEditorJob(detached);
+                        StatusText.Text = "Tác vụ xuất dọn dở quá lâu nên đã tách; có thể mở video mới, tiến trình dở vẫn tự dọn dưới nền và khóa tác vụ mới tới khi xong.";
+                        RefreshEditorActions();
+                    })) return;
                     if (!snapshot.Done)
                     {
                         await Task.Delay(350);
@@ -728,11 +740,22 @@ public sealed partial class EditorPage
                 };
                 _jobId = _application.StartEditor(request);
                 RefreshEditorActions();
+                DateTime? baseCancellingSinceUtc = null;
                 while (_jobId is not null)
                 {
-                    var snapshot = _application.Jobs.GetSnapshot(_jobId);
+                    BiliSubStudio.Core.Jobs.JobSnapshot snapshot;
+                    try { snapshot = _application.Jobs.GetSnapshot(_jobId); }
+                    catch { _jobId = null; RefreshEditorActions(); break; }
                     Progress.Value = Math.Clamp(snapshot.Progress * .68, 0, 68);
                     StatusText.Text = "Đang dựng bản chỉnh trước khi ghép ảnh/logo · " + snapshot.Message;
+                    if (CheckStuckCancelling(snapshot, ref baseCancellingSinceUtc, () =>
+                    {
+                        var detached = _jobId!;
+                        _jobId = null;
+                        DetachEditorJob(detached);
+                        StatusText.Text = "Tác vụ dựng dọn dở quá lâu nên đã tách; có thể mở video mới, tiến trình dở vẫn tự dọn dưới nền và khóa tác vụ mới tới khi xong.";
+                        RefreshEditorActions();
+                    })) return;
                     if (!snapshot.Done)
                     {
                         await Task.Delay(250);
@@ -762,10 +785,28 @@ public sealed partial class EditorPage
             var composer = new EditorImageOverlayComposer(_application.Tools, _application.Processes);
             var specs = _imageOverlays.Select(image => new EditorImageOverlaySpec(
                 image.Path, image.X, image.Y, image.Width, image.Height, image.Opacity)).ToArray();
-            var output = await composer.RenderAsync(
+            var renderTask = composer.RenderAsync(
                 imageJob, composerInput, outputTarget.Directory, outputTarget.FileName,
                 _media.Width, _media.Height, trimChanged ? trim.Duration : _media.Duration, specs,
                 copyAudio: hasBaseEdit, exportSettings: outputTarget.Settings);
+            DateTime? imageCancellingSinceUtc = null;
+            while (!renderTask.IsCompleted)
+            {
+                await Task.WhenAny(renderTask, Task.Delay(350));
+                if (renderTask.IsCompleted) break;
+                var snapshot = _application.Jobs.GetSnapshot(imageJob.Id);
+                if (!CheckStuckCancelling(snapshot, ref imageCancellingSinceUtc, () =>
+                {
+                    _jobId = null;
+                    DetachEditorJob(imageJob.Id);
+                    detachedImageCleanup = true;
+                    _ = CompleteDetachedImageRenderAsync(renderTask, imageJob, baseOutput);
+                    StatusText.Text = "Tác vụ ghép ảnh dọn dở quá lâu nên đã tách; có thể mở video mới, tiến trình dở vẫn tự dọn dưới nền và khóa tác vụ mới tới khi xong.";
+                    RefreshEditorActions();
+                })) continue;
+                return;
+            }
+            var output = await renderTask;
             output = ValidateFinalEditorOutput(outputTarget, output);
             imageJob.Finish(null, "Đã xuất: " + output, new VideoEditResult(output));
             Progress.Value = 100;
@@ -783,13 +824,42 @@ public sealed partial class EditorPage
         }
         finally
         {
-            if (baseOutput is not null)
+            if (!detachedImageCleanup && baseOutput is not null)
             {
                 try { File.Delete(baseOutput); } catch { }
             }
             _jobId = null;
             RefreshEditorActions();
             RenderImageOverlays();
+        }
+    }
+
+    private static async Task CompleteDetachedImageRenderAsync(Task<string> renderTask, AppJob imageJob, string? baseOutput)
+    {
+        try
+        {
+            var output = await renderTask;
+            if (imageJob.CancellationToken.IsCancellationRequested)
+            {
+                try { File.Delete(output); } catch { }
+                imageJob.CancelComplete("Đã hủy xuất và dọn file ảnh/logo dở.");
+            }
+            else imageJob.Finish(null, "Đã xuất: " + output, new VideoEditResult(output));
+        }
+        catch (OperationCanceledException)
+        {
+            imageJob.CancelComplete("Đã hủy xuất và dọn file ảnh/logo dở.");
+        }
+        catch (Exception error)
+        {
+            imageJob.Finish(error, error.Message);
+        }
+        finally
+        {
+            if (baseOutput is not null)
+            {
+                try { File.Delete(baseOutput); } catch { }
+            }
         }
     }
 

@@ -124,6 +124,21 @@
                 <Setter Property="BorderBrush" Value="{ThemeResource DangerBrush}" />
                 <Setter Property="Foreground" Value="{ThemeResource DangerBrush}" />
             </Style>
+            <Style x:Key="DialogSecondaryButtonStyle" TargetType="Button" BasedOn="{StaticResource SecondaryButtonStyle}">
+                <Setter Property="MinHeight" Value="42" />
+                <Setter Property="FontWeight" Value="SemiBold" />
+                <Setter Property="HorizontalContentAlignment" Value="Center" />
+            </Style>
+            <Style x:Key="DialogDangerButtonStyle" TargetType="Button">
+                <Setter Property="MinHeight" Value="42" />
+                <Setter Property="Padding" Value="18,9" />
+                <Setter Property="Background" Value="{ThemeResource DangerBrush}" />
+                <Setter Property="BorderThickness" Value="0" />
+                <Setter Property="Foreground" Value="White" />
+                <Setter Property="CornerRadius" Value="8" />
+                <Setter Property="FontWeight" Value="SemiBold" />
+                <Setter Property="HorizontalContentAlignment" Value="Center" />
+            </Style>
             <Style x:Key="InputTextBoxStyle" TargetType="TextBox">
                 <Setter Property="MinHeight" Value="40" />
                 <Setter Property="Background" Value="{ThemeResource InputSurfaceBrush}" />

@@ -18,21 +18,124 @@
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
-            <StackPanel Spacing="2">
-                <TextBlock FontSize="10" Foreground="{ThemeResource MutedTextBrush}" Text="BiliSub Studio / Chỉnh video" />
-                <TextBlock Style="{StaticResource PageTitleStyle}" Text="Chỉnh video" />
-            </StackPanel>
+            <Grid ColumnSpacing="9">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                <Button x:Name="BackToProjectsButton" Width="38" Height="38" Padding="0" Visibility="Collapsed" Click="BackToProjects_Click"
+                        Style="{StaticResource SecondaryButtonStyle}" ToolTipService.ToolTip="Quay lại danh sách project">
+                    <FontIcon Glyph="&#xE72B;" FontSize="14" />
+                </Button>
+                <StackPanel Grid.Column="1" Spacing="2">
+                    <TextBlock x:Name="EditorBreadcrumbText" FontSize="10" Foreground="{ThemeResource MutedTextBrush}" Text="BiliSub Studio / Chỉnh video" />
+                    <TextBlock x:Name="EditorTitleText" Style="{StaticResource PageTitleStyle}" Text="Chỉnh video" />
+                </StackPanel>
+            </Grid>
             <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-                <Border Padding="8,3" Background="{ThemeResource AccentSoftBrush}" CornerRadius="9">
-                    <TextBlock FontSize="10" Foreground="{ThemeResource AccentPrimaryBrush}" Text="Project tự lưu" />
-                </Border>
-                <Border Padding="8,3" Background="{ThemeResource SuccessSoftBrush}" CornerRadius="9">
-                    <TextBlock FontSize="10" Foreground="{ThemeResource SuccessBrush}" Text="Không ghi đè nguồn" />
-                </Border>
+                <Button x:Name="NewProjectButton" Click="NewProject_Click" MinHeight="38" Padding="16,8" CornerRadius="8"
+                        Background="{ThemeResource AccentPrimaryBrush}" Foreground="White" BorderThickness="0">
+                    <StackPanel Orientation="Horizontal" Spacing="7"><FontIcon Glyph="&#xE710;" FontSize="12" /><TextBlock Text="Project mới" /></StackPanel>
+                </Button>
+                <StackPanel x:Name="EditorHeaderBadges" Orientation="Horizontal" Spacing="6" Visibility="Collapsed">
+                    <Border Padding="8,3" Background="{ThemeResource AccentSoftBrush}" CornerRadius="9">
+                        <TextBlock FontSize="10" Foreground="{ThemeResource AccentPrimaryBrush}" Text="Project tự lưu" />
+                    </Border>
+                    <Border Padding="8,3" Background="{ThemeResource SuccessSoftBrush}" CornerRadius="9">
+                        <TextBlock FontSize="10" Foreground="{ThemeResource SuccessBrush}" Text="Không ghi đè nguồn" />
+                    </Border>
+                </StackPanel>
             </StackPanel>
         </Grid>
 
-        <Grid x:Name="WorkspaceGrid" Grid.Row="1" ColumnSpacing="10">
+        <Grid x:Name="ProjectListPanel" Grid.Row="1" RowSpacing="10">
+            <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+            <Border Padding="14,10" Background="{ThemeResource RaisedSurfaceBrush}" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="1" CornerRadius="11">
+                <Grid ColumnSpacing="12">
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                    <StackPanel Spacing="2">
+                        <TextBlock Text="Project gần đây" FontSize="15" FontWeight="SemiBold" />
+                        <TextBlock x:Name="ProjectListSummaryText" Style="{StaticResource MutedTextStyle}" Text="Đang tải danh sách project..." />
+                    </StackPanel>
+                    <Button Grid.Column="1" x:Name="RefreshProjectsButton" Click="RefreshProjects_Click" Style="{StaticResource SecondaryButtonStyle}"
+                            Padding="12,7" ToolTipService.ToolTip="Làm mới danh sách project">
+                        <StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE72C;" FontSize="12" /><TextBlock Text="Làm mới" /></StackPanel>
+                    </Button>
+                </Grid>
+            </Border>
+
+            <Grid Grid.Row="1">
+                <GridView x:Name="ProjectGridView" IsItemClickEnabled="True" ItemClick="ProjectGridView_ItemClick" SelectionMode="None"
+                          HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                    <GridView.ItemsPanel>
+                        <ItemsPanelTemplate><ItemsWrapGrid Orientation="Horizontal" /></ItemsPanelTemplate>
+                    </GridView.ItemsPanel>
+                    <GridView.ItemContainerStyle>
+                        <Style TargetType="GridViewItem">
+                            <Setter Property="Padding" Value="0" />
+                            <Setter Property="Margin" Value="0,0,12,12" />
+                            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                            <Setter Property="VerticalContentAlignment" Value="Stretch" />
+                        </Style>
+                    </GridView.ItemContainerStyle>
+                    <GridView.ItemTemplate>
+                        <DataTemplate>
+                            <Border Width="286" MinHeight="282" Background="{ThemeResource RaisedSurfaceBrush}" BorderBrush="{ThemeResource BorderBrush}"
+                                    BorderThickness="1" CornerRadius="12" ToolTipService.ToolTip="{Binding SourcePath}">
+                                <Border.ContextFlyout>
+                                    <MenuFlyout>
+                                        <MenuFlyoutItem Text="Mở project" Tag="{Binding}" Click="OpenProjectMenu_Click" />
+                                        <MenuFlyoutItem Text="Đổi tên" Tag="{Binding}" Click="RenameProjectMenu_Click" />
+                                        <MenuFlyoutItem Text="Mở vị trí video" Tag="{Binding}" Click="OpenProjectFolderMenu_Click" />
+                                        <MenuFlyoutSeparator />
+                                        <MenuFlyoutItem Text="Xóa project" Foreground="{ThemeResource DangerBrush}" Tag="{Binding}" Click="DeleteProjectMenu_Click" />
+                                    </MenuFlyout>
+                                </Border.ContextFlyout>
+                                <Grid>
+                                    <Grid.RowDefinitions><RowDefinition Height="150" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                                    <Grid Background="{ThemeResource InputSurfaceBrush}">
+                                        <FontIcon Glyph="&#xE714;" FontSize="36" Foreground="{ThemeResource MutedTextBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                        <Image Source="{Binding Thumbnail}" Stretch="UniformToFill" />
+                                        <Border Margin="9" Padding="7,3" Background="#CC111A28" CornerRadius="7" HorizontalAlignment="Right" VerticalAlignment="Bottom">
+                                            <TextBlock Text="{Binding DurationText}" FontSize="10" Foreground="White" />
+                                        </Border>
+                                    </Grid>
+                                    <StackPanel Grid.Row="1" Padding="13,11,13,13" Spacing="6">
+                                        <TextBlock Text="{Binding Name}" Style="{StaticResource CardTitleStyle}" MaxLines="1" TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Text="{Binding FileName}" Style="{StaticResource MutedTextStyle}" MaxLines="1" TextTrimming="CharacterEllipsis" TextWrapping="NoWrap" />
+                                        <StackPanel Orientation="Horizontal" Spacing="7">
+                                            <Border Padding="7,3" Background="{ThemeResource AccentSoftBrush}" CornerRadius="7"><TextBlock Text="{Binding SrtStatus}" FontSize="10" Foreground="{ThemeResource AccentPrimaryBrush}" /></Border>
+                                            <TextBlock Text="{Binding ResolutionText}" FontSize="10" Foreground="{ThemeResource SecondaryTextBrush}" VerticalAlignment="Center" />
+                                            <TextBlock Text="{Binding FileSizeText}" FontSize="10" Foreground="{ThemeResource SecondaryTextBrush}" VerticalAlignment="Center" />
+                                        </StackPanel>
+                                        <TextBlock Text="{Binding UpdatedText}" FontSize="10" Foreground="{ThemeResource MutedTextBrush}" />
+                                        <Border Visibility="{Binding SourceWarningVisibility}" Padding="7,4" Background="{ThemeResource WarningSoftBrush}" CornerRadius="7">
+                                            <StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE7BA;" FontSize="10" Foreground="{ThemeResource WarningBrush}" /><TextBlock Text="{Binding SourceStatus}" FontSize="10" Foreground="{ThemeResource WarningBrush}" /></StackPanel>
+                                        </Border>
+                                    </StackPanel>
+                                </Grid>
+                            </Border>
+                        </DataTemplate>
+                    </GridView.ItemTemplate>
+                </GridView>
+
+                <Grid x:Name="ProjectEmptyState" Visibility="Collapsed" HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="420">
+                    <Border Padding="30" Background="{ThemeResource RaisedSurfaceBrush}" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="1" CornerRadius="14">
+                        <StackPanel Spacing="14" HorizontalAlignment="Center">
+                            <Border Width="64" Height="64" CornerRadius="16" Background="{ThemeResource AccentSoftBrush}" HorizontalAlignment="Center">
+                                <FontIcon Glyph="&#xE8B7;" FontSize="28" Foreground="{ThemeResource AccentPrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            </Border>
+                            <StackPanel Spacing="5">
+                                <TextBlock Text="Chưa có project nào" FontSize="18" FontWeight="SemiBold" TextAlignment="Center" />
+                                <TextBlock Text="Tạo project từ một video nguồn. Mọi thay đổi sẽ được tự động lưu và xuất hiện tại đây." Style="{StaticResource MutedTextStyle}" TextAlignment="Center" />
+                            </StackPanel>
+                            <Button Click="NewProject_Click" HorizontalAlignment="Center" MinHeight="40" Padding="18,8" CornerRadius="8" Background="{ThemeResource AccentPrimaryBrush}" Foreground="White" BorderThickness="0">
+                                <StackPanel Orientation="Horizontal" Spacing="7"><FontIcon Glyph="&#xE710;" FontSize="12" /><TextBlock Text="Tạo project mới" /></StackPanel>
+                            </Button>
+                        </StackPanel>
+                    </Border>
+                </Grid>
+            </Grid>
+        </Grid>
+
+        <Grid x:Name="WorkspaceGrid" Grid.Row="1" ColumnSpacing="10" Visibility="Collapsed">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition x:Name="SourceColumn" Width="0.68*" MinWidth="120" MaxWidth="200" />
                 <ColumnDefinition x:Name="PlayerColumn" Width="2.2*" MinWidth="220" />
@@ -71,8 +174,10 @@
                             <Rectangle Height="1" Fill="{ThemeResource BorderBrush}" />
                             <StackPanel Spacing="6">
                                 <TextBlock FontWeight="SemiBold" Text="Project" />
+                                <TextBlock x:Name="CurrentProjectNameText" FontSize="12" FontWeight="SemiBold" Foreground="{ThemeResource PrimaryTextBrush}" Text="Chưa mở project" TextWrapping="Wrap" />
                                 <TextBlock Style="{StaticResource MutedTextStyle}" Text="Tự lưu thay đổi · source media luôn giữ nguyên." TextWrapping="Wrap" />
                                 <ToggleSwitch x:Name="EditorAutoCompositeToggle" Header="Tự cập nhật preview" IsOn="True" />
+                                <Button Click="BackToProjects_Click" Content="Đổi project khác" Style="{StaticResource SecondaryButtonStyle}" HorizontalAlignment="Stretch" />
                             </StackPanel>
                         </StackPanel>
                     </ScrollViewer>

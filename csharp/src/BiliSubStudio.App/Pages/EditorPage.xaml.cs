@@ -1,6 +1,7 @@
 using BiliSubStudio.App.Services;
 using BiliSubStudio.Core.Application;
 using BiliSubStudio.Core.Editor;
+using BiliSubStudio.Core.Jobs;
 using BiliSubStudio.Core.Media;
 using Microsoft.UI;
 using Microsoft.UI.Input;
@@ -27,6 +28,7 @@ public sealed partial class EditorPage : Page
     private readonly IFilePickerService _picker;
     private readonly EditorPlaybackController _playback;
     private readonly EditorRegionDocument _document = new();
+    private string? _requestedOpenVideoPath;
     private string? _path;
     private MediaPreviewInfo? _media;
     private EditorProject? _project;
@@ -38,6 +40,9 @@ public sealed partial class EditorPage : Page
     private string? _jobId;
     private string? _asrJobId;
     private string? _ttsJobId;
+    // EDIT-CANCEL-OWNERSHIP: id còn "sống" (đang cancel/dọn dẹp) nhưng đã tách khỏi
+    // poll UI sau watchdog. Busy-state vẫn phải giữ cho tới khi job terminal thật.
+    private readonly HashSet<string> _cleanupDetachedJobIds = new(StringComparer.Ordinal);
     private IReadOnlyList<EditorCueSpeechTiming> _cueSpeechTiming = [];
     private EditorVoiceTrack? _voiceTrack;
     private IReadOnlyDictionary<string, EditorTtsCueWindow> _voiceCueWindows =
@@ -62,6 +67,8 @@ public sealed partial class EditorPage : Page
     private EditorProject? _pendingProjectSave;
     private bool _projectSaveFlushInProgress;
     private int _previewRevision;
+    private long _editorSourceRevision;
+    private bool _sourceSwitchInProgress;
     private bool EditorBusy => _jobId is not null || _asrJobId is not null || _ttsJobId is not null || _playback.IsRendering;
 
     private void ClearVoiceTrackState()
@@ -76,6 +83,7 @@ public sealed partial class EditorPage : Page
         _picker = picker;
         _playback = new EditorPlaybackController(this);
         InitializeComponent();
+        InitializeProjectList();
         ApplySubtitleStyleToUi(_subtitleStyle);
         // Page-lifetime observation of our own control covers ASR, TTS, sample,
         // resets and completion without adding another progress owner or timer.
@@ -116,6 +124,8 @@ public sealed partial class EditorPage : Page
 
     internal Task RunLayoutSmokeAsync()
     {
+        if (ProjectListPanel.Visibility != Visibility.Visible || WorkspaceGrid.Visibility != Visibility.Collapsed)
+            throw new InvalidOperationException("Editor phải mở màn hình danh sách project trước workspace chỉnh sửa.");
         if (!ImportSrtButton.IsEnabled || !VoiceModelBox.IsEnabled)
             throw new InvalidOperationException("Editor phải cho phép chọn SRT Việt và giọng đọc trước khi chọn video.");
         if (GenerateTtsButton.IsEnabled)
@@ -146,6 +156,7 @@ public sealed partial class EditorPage : Page
         await _editorTabLifecycleGate.WaitAsync();
         try
         {
+            CancelProjectThumbnailLoading();
             _previewCancellation?.Cancel();
             _previewCancellation?.Dispose();
             _previewCancellation = null;
@@ -181,9 +192,20 @@ public sealed partial class EditorPage : Page
 
     private async Task OpenVideoAsync()
     {
+        if (_sourceSwitchInProgress) return;
+        _sourceSwitchInProgress = true;
+        try
+        {
         // SOURCE-02: cancel is a no-op. Do not touch the current source/project before a real path exists.
-        var pickedPath = await _picker.PickVideoAsync();
+        var pickedPath = _requestedOpenVideoPath;
+        _requestedOpenVideoPath = null;
+        if (string.IsNullOrWhiteSpace(pickedPath)) pickedPath = await _picker.PickVideoAsync();
         if (string.IsNullOrWhiteSpace(pickedPath)) return;
+
+        // EDIT-SWITCH: tự dọn busy-state kẹt (job hủy dở, preview dở) để chuyển
+        // video không bao giờ đòi restart app. Đặt sau pick để bấm Hủy file
+        // không làm mất tác vụ đang chạy.
+        await ResetEditorBusyStateForSourceSwitchAsync();
 
         var candidatePath = EditorSourceSelection.NormalizeCandidatePath(pickedPath);
         var sameSourcePath = EditorSourceSelection.IsSameSource(_path, candidatePath);
@@ -207,6 +229,9 @@ public sealed partial class EditorPage : Page
                 _project.Source, _path, _media.Width, _media.Height, _media.Duration);
         if (sameSourcePath && !currentSourceChanged)
         {
+            ShowWorkspaceSurface();
+            if (!_playback.IsReady)
+                await RestoreCurrentProjectPreviewAsync();
             StatusText.Text = "Video này đang được mở và fingerprint không đổi; giữ nguyên project và preview hiện tại.";
             return;
         }
@@ -280,6 +305,7 @@ public sealed partial class EditorPage : Page
             UpdateTrimSummary(trim);
         }
         finally { _syncingInputs = false; }
+        ShowWorkspaceSurface();
         await _playback.PrepareAsync();
         if (_document.Selected is not null) LoadSelectedIntoInputs();
         else SetCoordinateBoxes(0, 0, 0, 0);
@@ -296,6 +322,76 @@ public sealed partial class EditorPage : Page
                     : "Chọn SRT Việt đã dịch để tạo voice, hoặc kéo frame để tạo vùng hiệu ứng.";
         RefreshEditorActions();
         QueueProjectSave();
+        }
+        finally
+        {
+            _sourceSwitchInProgress = false;
+        }
+    }
+
+    private async Task OpenVideoPathAsync(string path)
+    {
+        _requestedOpenVideoPath = path;
+        try { await OpenVideoAsync(); }
+        finally { _requestedOpenVideoPath = null; }
+    }
+
+    private async Task RestoreCurrentProjectPreviewAsync()
+    {
+        await _playback.PrepareAsync();
+        await UpdateFrameAsync();
+    }
+
+    // RELINK (kiểu Adobe): video nguồn mất khỏi đường dẫn cũ thì báo và cho
+    // user chỉ lại file. Giữ nguyên toàn bộ project, chỉ trỏ nguồn sang chỗ
+    // mới. Trả true khi nối xong và đã lưu.
+    internal async Task<bool> RelinkMissingEditorSourceAsync()
+    {
+        if (_project is null || string.IsNullOrWhiteSpace(_path)) return false;
+        StatusText.Text = "Không tìm thấy video nguồn ở đường dẫn cũ: " + _path + " Hãy chọn lại file đó ở vị trí mới.";
+        var picked = await _picker.PickVideoAsync();
+        if (string.IsNullOrWhiteSpace(picked)) return false;
+        var candidate = EditorSourceSelection.NormalizeCandidatePath(picked);
+        MediaPreviewInfo media;
+        try
+        {
+            media = await _application.Media.ProbeAsync(candidate, CancellationToken.None);
+        }
+        catch (Exception error)
+        {
+            StatusText.Text = "File được chọn không đọc được: " + error.Message;
+            return false;
+        }
+        EditorProject relinked;
+        try
+        {
+            relinked = await _application.RelinkEditorProjectSourceAsync(
+                _project, candidate, media, CancellationToken.None);
+        }
+        catch (Exception error)
+        {
+            // File lạ (khác kích thước/thời lượng): báo rõ để user chọn lại.
+            StatusText.Text = "Không nối được file: " + error.Message;
+            return false;
+        }
+        await ResetEditorBusyStateForSourceSwitchAsync();
+        _path = candidate;
+        _media = media;
+        _project = relinked with { Trim = EditorProjectStore.NormalizeTrim(relinked.Trim, media.Duration) };
+        ClearVoiceTrackState();
+        PathText.Text = candidate;
+        MediaText.Text = $"{media.Width}×{media.Height} · {media.Duration:0.0}s · {media.Codec} · preview xử lý dùng cùng pipeline FFmpeg với export";
+        Timeline.Maximum = Math.Max(0.1, media.Duration);
+        await EnsureImageProjectLoadedAsync();
+        await _playback.PrepareAsync();
+        RenderDocument();
+        RenderImageList();
+        RenderImageOverlays();
+        await UpdateFrameAsync();
+        await SaveProjectNowAsync();
+        RefreshEditorActions();
+        StatusText.Text = "Đã nối lại video nguồn: " + candidate;
+        return true;
     }
 
     private async Task SaveCurrentSourceStateForSwitchAsync()
@@ -456,8 +552,14 @@ public sealed partial class EditorPage : Page
     {
         _cueSpeechTiming = [];
         if (_project?.Speech is not { Status: "complete" } speech || _subtitleSource is null) return;
-        _cueSpeechTiming = await _application.LoadEditorCueSpeechTimingAsync(
-            speech.AnalysisPath, speech.AnalysisSha256, _subtitleSource.Cues, CancellationToken.None);
+        var revision = _editorSourceRevision;
+        var project = _project;
+        var subtitle = _subtitleSource;
+        var timing = await _application.LoadEditorCueSpeechTimingAsync(
+            speech.AnalysisPath, speech.AnalysisSha256, subtitle.Cues, CancellationToken.None);
+        if (revision == _editorSourceRevision && ReferenceEquals(project, _project)
+            && ReferenceEquals(subtitle, _subtitleSource))
+            _cueSpeechTiming = timing;
     }
 
     private async void ImportSubtitle_Click(object sender, RoutedEventArgs e)
@@ -734,46 +836,79 @@ public sealed partial class EditorPage : Page
 
     private async Task PollAsrJobAsync(bool continueVoice)
     {
-        while (_asrJobId is not null)
+        var jobId = _asrJobId;
+        if (jobId is null) return;
+        var sourceRevision = _editorSourceRevision;
+        DateTime? cancellingSinceUtc = null;
+        while (string.Equals(_asrJobId, jobId, StringComparison.Ordinal))
         {
-            var snapshot = _application.Jobs.GetSnapshot(_asrJobId);
+            JobSnapshot snapshot;
+            try { snapshot = _application.Jobs.GetSnapshot(jobId); }
+            catch
+            {
+                if (string.Equals(_asrJobId, jobId, StringComparison.Ordinal)) _asrJobId = null;
+                RefreshEditorActions();
+                break;
+            }
             VoiceProgress.Value = snapshot.Progress;
             AsrStatusText.Text = snapshot.Message;
             VoiceStatusText.Text = snapshot.Message;
             if (snapshot.Done)
             {
-                if (snapshot.Result is EditorAsrResult result && _project is not null)
+                // EDIT-SWITCH: khối xử lý kết quả nằm sau Done nhưng trước khi xóa
+                // id theo dõi. Mọi exception ở đây từng làm cờ busy kẹt vĩnh viễn
+                // (nút Mở video chết, phải restart app), nên bắt buộc try/finally.
+                try
                 {
-                    ClearVoiceTrackState();
-                    _project = _project with
+                    if (sourceRevision == _editorSourceRevision
+                        && string.Equals(_asrJobId, jobId, StringComparison.Ordinal)
+                        && snapshot.Result is EditorAsrResult result && _project is not null)
                     {
-                        Asr = null,
-                        Speech = new EditorSpeechProject(
-                            "complete",
-                            result.ModelName,
-                            result.ModelRevision,
-                            result.Device,
-                            result.ComputeType,
-                            result.AnalysisPath,
-                            result.AnalysisSha256,
-                            result.SegmentCount,
-                            result.WordCount,
-                            result.ProbeRealtimeFactor),
-                        Tts = null,
-                    };
-                    await RefreshSpeechTimingForSubtitleAsync();
-                    UpdateSubtitleSummary();
-                    AsrStatusText.Text = $"Whisper timing hoàn tất · {result.WordCount} từ · {result.Device.ToUpperInvariant()}/{result.ComputeType} · benchmark {result.ProbeRealtimeFactor:0.00}×.";
-                    VoiceStatusText.Text = continueVoice
-                        ? "Đã có word timing. Đang tiếp tục tạo voice Ngọc Huyền và canh theo timecode..."
-                        : "Đã cập nhật nhịp thoại. Có thể tạo lại voice theo timing mới.";
-                    RenderOverlays();
-                    await SaveProjectNowAsync();
+                        ClearVoiceTrackState();
+                        _project = _project with
+                        {
+                            Asr = null,
+                            Speech = new EditorSpeechProject(
+                                "complete",
+                                result.ModelName,
+                                result.ModelRevision,
+                                result.Device,
+                                result.ComputeType,
+                                result.AnalysisPath,
+                                result.AnalysisSha256,
+                                result.SegmentCount,
+                                result.WordCount,
+                                result.ProbeRealtimeFactor),
+                            Tts = null,
+                        };
+                        await RefreshSpeechTimingForSubtitleAsync();
+                        if (sourceRevision != _editorSourceRevision
+                            || !string.Equals(_asrJobId, jobId, StringComparison.Ordinal)) break;
+                        UpdateSubtitleSummary();
+                        AsrStatusText.Text = $"Whisper timing hoàn tất · {result.WordCount} từ · {result.Device.ToUpperInvariant()}/{result.ComputeType} · benchmark {result.ProbeRealtimeFactor:0.00}×.";
+                        VoiceStatusText.Text = continueVoice
+                            ? "Đã có word timing. Đang tiếp tục tạo voice Ngọc Huyền và canh theo timecode..."
+                            : "Đã cập nhật nhịp thoại. Có thể tạo lại voice theo timing mới.";
+                        RenderOverlays();
+                        await SaveProjectNowAsync();
+                    }
                 }
-                _asrJobId = null;
-                RefreshEditorActions();
+                finally
+                {
+                    if (string.Equals(_asrJobId, jobId, StringComparison.Ordinal)) _asrJobId = null;
+                    RefreshEditorActions();
+                }
                 break;
             }
+            if (CheckStuckCancelling(snapshot, ref cancellingSinceUtc, () =>
+            {
+                if (!string.Equals(_asrJobId, jobId, StringComparison.Ordinal)) return;
+                _asrJobId = null;
+                DetachEditorJob(jobId);
+                AsrStatusText.Text = VoiceStatusText.Text =
+                    "Tác vụ Whisper dọn dở quá lâu nên đã tách; có thể mở video mới, tiến trình dở vẫn tự dọn dưới nền và khóa tác vụ mới tới khi xong.";
+                RefreshEditorActions();
+            })) break;
             await Task.Delay(350);
         }
     }
@@ -843,43 +978,73 @@ public sealed partial class EditorPage : Page
 
     private async Task PollTtsJobAsync()
     {
-        while (_ttsJobId is not null)
+        var jobId = _ttsJobId;
+        if (jobId is null) return;
+        var sourceRevision = _editorSourceRevision;
+        DateTime? cancellingSinceUtc = null;
+        while (string.Equals(_ttsJobId, jobId, StringComparison.Ordinal))
         {
-            var snapshot = _application.Jobs.GetSnapshot(_ttsJobId);
+            JobSnapshot snapshot;
+            try { snapshot = _application.Jobs.GetSnapshot(jobId); }
+            catch
+            {
+                if (string.Equals(_ttsJobId, jobId, StringComparison.Ordinal)) _ttsJobId = null;
+                RefreshEditorActions();
+                break;
+            }
             VoiceProgress.Value = snapshot.Progress;
             VoiceStatusText.Text = snapshot.Message;
             if (snapshot.Done)
             {
-                if (snapshot.Result is EditorTtsResult result && _project is not null)
+                // EDIT-SWITCH: xem chú thích try/finally ở PollAsrJobAsync.
+                try
                 {
-                    EnsureCurrentSubtitleFingerprint();
-                    _voiceTrack = result.VoiceTrack;
-                    _voiceCueWindows = result.CueWindows.ToDictionary(window => window.Id, StringComparer.Ordinal);
-                    _project = _project with
+                    if (sourceRevision == _editorSourceRevision
+                        && string.Equals(_ttsJobId, jobId, StringComparison.Ordinal)
+                        && snapshot.Result is EditorTtsResult result && _project is not null)
                     {
-                        Tts = new EditorTtsProject(
-                            "complete",
-                            result.Engine,
-                            result.EngineVersion,
-                            result.Voice,
-                            result.Voice,
-                            result.ManifestPath,
-                            result.ManifestSha256,
-                            result.VoiceTrack,
-                            result.Cues.Count,
-                            result.ReviewCount,
-                            result.CueWindows),
-                    };
-                    VoiceStatusText.Text = result.ReviewCount == 0
-                        ? $"Voice Việt hoàn tất · {result.Cues.Count} câu khớp thời lượng thoại gốc · đã vào Xem bản chỉnh."
-                        : $"Voice Việt đã canh thời lượng · {result.ReviewCount} câu cần nghe lại do nhịp model hoặc fallback timecode SRT.";
-                    await SaveProjectNowAsync();
-                    QueuePreviewRefresh();
+                        EnsureCurrentSubtitleFingerprint();
+                        _voiceTrack = result.VoiceTrack;
+                        _voiceCueWindows = result.CueWindows.ToDictionary(window => window.Id, StringComparer.Ordinal);
+                        _project = _project with
+                        {
+                            Tts = new EditorTtsProject(
+                                "complete",
+                                result.Engine,
+                                result.EngineVersion,
+                                result.Voice,
+                                result.Voice,
+                                result.ManifestPath,
+                                result.ManifestSha256,
+                                result.VoiceTrack,
+                                result.Cues.Count,
+                                result.ReviewCount,
+                                result.CueWindows),
+                        };
+                        VoiceStatusText.Text = result.ReviewCount == 0
+                            ? $"Voice Việt hoàn tất · {result.Cues.Count} câu khớp thời lượng thoại gốc · đã vào Xem bản chỉnh."
+                            : $"Voice Việt đã canh thời lượng · {result.ReviewCount} câu cần nghe lại do nhịp model hoặc fallback timecode SRT.";
+                        await SaveProjectNowAsync();
+                        if (sourceRevision == _editorSourceRevision
+                            && string.Equals(_ttsJobId, jobId, StringComparison.Ordinal)) QueuePreviewRefresh();
+                    }
                 }
-                _ttsJobId = null;
-                RefreshEditorActions();
+                finally
+                {
+                    if (string.Equals(_ttsJobId, jobId, StringComparison.Ordinal)) _ttsJobId = null;
+                    RefreshEditorActions();
+                }
                 break;
             }
+            if (CheckStuckCancelling(snapshot, ref cancellingSinceUtc, () =>
+            {
+                if (!string.Equals(_ttsJobId, jobId, StringComparison.Ordinal)) return;
+                _ttsJobId = null;
+                DetachEditorJob(jobId);
+                VoiceStatusText.Text =
+                    "Tác vụ TTS dọn dở quá lâu nên đã tách; có thể mở video mới, tiến trình dở vẫn tự dọn dưới nền và khóa tác vụ mới tới khi xong.";
+                RefreshEditorActions();
+            })) break;
             await Task.Delay(350);
         }
     }
@@ -892,6 +1057,110 @@ public sealed partial class EditorPage : Page
         VoiceStatusText.Text = _ttsJobId is not null
             ? "Đang dừng TTS local và thu hồi process..."
             : "Đang dừng Whisper và thu hồi Python/FFmpeg; checkpoint timing đã hoàn tất vẫn được giữ.";
+    }
+
+    // EDIT-SWITCH: tab Edit là singleton nên mọi cờ busy kẹt đều khóa nút
+    // Mở video cho tới khi restart app. Watchdog này chỉ tách theo dõi ở
+    // phía UI; job toàn cục vẫn tự dọn dưới nền và poll thường sẽ thấy Done.
+    private static readonly TimeSpan StuckCancellingLimit = TimeSpan.FromSeconds(30);
+
+    private bool IsCleanupDetached(string jobId) => _cleanupDetachedJobIds.Contains(jobId);
+
+    // EDIT-CANCEL-OWNERSHIP: detached jobs no longer block source switching, but
+    // they remain observed and block new jobs until cleanup reaches a terminal state.
+    private void DetachEditorJob(string jobId)
+    {
+        if (_cleanupDetachedJobIds.Add(jobId)) _ = ObserveDetachedEditorJobAsync(jobId);
+    }
+
+    private async Task ObserveDetachedEditorJobAsync(string jobId)
+    {
+        while (true)
+        {
+            try
+            {
+                if (_application.Jobs.GetSnapshot(jobId).Done) break;
+            }
+            catch
+            {
+                break; // A job missing from JobManager is terminal from this page's perspective.
+            }
+            await Task.Delay(500);
+        }
+
+        void Release()
+        {
+            _cleanupDetachedJobIds.Remove(jobId);
+            RefreshEditorActions();
+        }
+
+        if (DispatcherQueue.HasThreadAccess) Release();
+        else DispatcherQueue.TryEnqueue(Release);
+    }
+
+    private void PruneDetachedEditorJobs()
+    {
+        if (_cleanupDetachedJobIds.Count == 0) return;
+        _cleanupDetachedJobIds.RemoveWhere(id =>
+        {
+            try { return _application.Jobs.GetSnapshot(id).Done; }
+            catch { return true; } // Job đã rời JobManager coi như terminal.
+        });
+    }
+
+    private static bool CheckStuckCancelling(JobSnapshot snapshot, ref DateTime? cancellingSinceUtc, Action onDetach)
+    {
+        if (snapshot.Done || !string.Equals(snapshot.Status, "cancelling", StringComparison.OrdinalIgnoreCase))
+        {
+            cancellingSinceUtc = null;
+            return false;
+        }
+        cancellingSinceUtc ??= DateTime.UtcNow;
+        if (DateTime.UtcNow - cancellingSinceUtc < StuckCancellingLimit) return false;
+        cancellingSinceUtc = null;
+        onDetach();
+        return true;
+    }
+
+    private bool TrackedEditorJobsSettled()
+    {
+        foreach (var id in new[] { _jobId, _asrJobId, _ttsJobId })
+        {
+            if (id is null) continue;
+            try { if (!_application.Jobs.GetSnapshot(id).Done) return false; }
+            catch { } // Job không còn tồn tại coi như đã xong.
+        }
+        return true;
+    }
+
+    // EDIT-SWITCH: chuyển video tự dọn busy-state (hủy job tab Edit theo dõi,
+    // hủy preview, chờ bounded rồi tách) để không bao giờ kẹt ở video cũ.
+    // EDIT-CANCEL-OWNERSHIP: id chỉ bị bỏ khi job terminal; job còn dọn dẹp
+    // chuyển sang detached set để observer giữ ownership tới khi xong.
+    private async Task ResetEditorBusyStateForSourceSwitchAsync()
+    {
+        ++_editorSourceRevision;
+        foreach (var id in new[] { _jobId, _asrJobId, _ttsJobId })
+        {
+            if (id is null) continue;
+            try { _application.CancelJob(id); } catch { }
+        }
+        try { await DisposePreviewForSourceChangeAsync(); } catch { }
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(8);
+        while (DateTime.UtcNow < deadline && !TrackedEditorJobsSettled())
+            await Task.Delay(200);
+        foreach (var id in new[] { _jobId, _asrJobId, _ttsJobId })
+        {
+            if (id is null) continue;
+            var settled = false;
+            try { settled = _application.Jobs.GetSnapshot(id).Done; } catch { settled = true; }
+            if (settled) _cleanupDetachedJobIds.Remove(id);
+            else DetachEditorJob(id);
+        }
+        _jobId = null;
+        _asrJobId = null;
+        _ttsJobId = null;
+        RefreshEditorActions();
     }
 
     private void Karaoke_Toggled(object sender, RoutedEventArgs e)
@@ -2197,7 +2466,9 @@ public sealed partial class EditorPage : Page
 
     private void RefreshEditorActions()
     {
+        PruneDetachedEditorJobs();
         var idle = !EditorBusy;
+        var cleanupPending = _cleanupDetachedJobIds.Count > 0;
         var hasMedia = _media is not null;
         var editable = idle && hasMedia && !_playback.IsPreviewMode;
         OpenVideoButton.IsEnabled = idle && !_playback.IsPreviewMode;
@@ -2215,7 +2486,7 @@ public sealed partial class EditorPage : Page
         var trimChanged = hasMedia && _trimRangeValid
             && EditorProjectStore.HasTrim(_project?.Trim, _media!.Duration);
         var hasImages = _imageFeatureInitialized && _imageOverlays.Count > 0;
-        RenderButton.IsEnabled = editable && _trimRangeValid && !_subtitleManualDirty && _path is not null
+        RenderButton.IsEnabled = editable && !cleanupPending && _trimRangeValid && !_subtitleManualDirty && _path is not null
             && (_document.Regions.Count > 0 || subtitleReady || audioChanged || _voiceTrack is not null || hasImages || trimChanged)
             && !string.IsNullOrWhiteSpace(FileNameBox.Text);
         CancelButton.IsEnabled = _jobId is not null;
@@ -2237,9 +2508,9 @@ public sealed partial class EditorPage : Page
         SourceAudioGainSlider.IsEnabled = editable;
         VoiceModelBox.IsEnabled = idle && !_playback.IsPreviewMode;
         AsrExecutionModeBox.IsEnabled = idle && !_playback.IsPreviewMode;
-        AnalyzeTimingButton.IsEnabled = editable && _project is not null;
+        AnalyzeTimingButton.IsEnabled = editable && !cleanupPending && _project is not null;
         var voiceBlockReason = EditorVietnameseSubtitleWorkflow.VoiceBlockReason(
-            hasMedia, !idle, _playback.IsPreviewMode, _subtitleManualDirty, _subtitleSource);
+            hasMedia, !idle || cleanupPending, _playback.IsPreviewMode, _subtitleManualDirty, _subtitleSource);
         GenerateTtsButton.IsEnabled = voiceBlockReason is null;
         if (idle && voiceBlockReason is not null) VoiceStatusText.Text = voiceBlockReason;
         CancelVoiceButton.IsEnabled = _asrJobId is not null || _ttsJobId is not null;

@@ -93,12 +93,29 @@ public sealed record EditorProject(
     IReadOnlyDictionary<string, string>? VoiceOverrides = null,
     EditorTrimRange? Trim = null);
 
+public sealed record EditorProjectSummary(
+    string Id,
+    string Name,
+    string SourcePath,
+    string FileName,
+    int Width,
+    int Height,
+    double Duration,
+    long SourceSize,
+    long SourceLastWriteUtcTicks,
+    bool HasSubtitle,
+    DateTimeOffset UpdatedUtc,
+    bool SourceExists);
+
 public sealed class EditorProjectStore
 {
     public const int CurrentSchema = 7;
     private const long MaxProjectBytes = 64L * 1024 * 1024;
     private const string CurrentTtsEngine = "nghi-tts";
     private readonly string _directory;
+    private readonly string _ttsCacheDirectory;
+    private readonly string _thumbnailCacheDirectory;
+    private readonly string _temporaryAsrDirectory;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly JsonSerializerOptions _json = new()
     {
@@ -111,6 +128,94 @@ public sealed class EditorProjectStore
     {
         ArgumentNullException.ThrowIfNull(paths);
         _directory = Path.Combine(paths.Data, "Projects");
+        _ttsCacheDirectory = Path.Combine(paths.Cache, "Editor", "TTS");
+        _thumbnailCacheDirectory = Path.Combine(paths.Cache, "Editor", "ProjectThumbnails");
+        _temporaryAsrDirectory = Path.Combine(paths.Temp, "Editor", "ASR");
+    }
+
+    public async Task<IReadOnlyList<EditorProjectSummary>> ListAsync(CancellationToken cancellationToken)
+    {
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (!Directory.Exists(_directory)) return [];
+            var summaries = new List<EditorProjectSummary>();
+            foreach (var path in Directory.EnumerateFiles(_directory, "*.json", SearchOption.TopDirectoryOnly))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var id = Path.GetFileNameWithoutExtension(path);
+                if (!IsProjectId(id)) continue;
+                try
+                {
+                    var project = await ReadStoredFileAsync(id, cancellationToken).ConfigureAwait(false);
+                    summaries.Add(new EditorProjectSummary(
+                        project.Id,
+                        string.IsNullOrWhiteSpace(project.Name) ? Path.GetFileNameWithoutExtension(project.Source.Path) : project.Name.Trim(),
+                        project.Source.Path,
+                        project.FileName,
+                        project.Source.Width,
+                        project.Source.Height,
+                        project.Source.Duration,
+                        project.Source.Size,
+                        project.Source.LastWriteUtcTicks,
+                        project.Subtitle is not null,
+                        project.UpdatedUtc,
+                        File.Exists(project.Source.Path)));
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception error) when (IsCatalogReadFailure(error))
+                {
+                    // One unreadable record must not hide the rest of the project catalog.
+                }
+            }
+            return summaries
+                .OrderByDescending(project => project.UpdatedUtc)
+                .ThenBy(project => project.Name, StringComparer.CurrentCultureIgnoreCase)
+                .ToArray();
+        }
+        finally { _gate.Release(); }
+    }
+
+    public async Task RenameAsync(string id, string name, CancellationToken cancellationToken)
+    {
+        ValidateProjectId(id);
+        var normalizedName = name?.Trim() ?? string.Empty;
+        if (normalizedName.Length is 0 or > 120)
+            throw new InvalidDataException("Tên project phải có từ 1 đến 120 ký tự.");
+
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var project = await ReadStoredFileAsync(id, cancellationToken).ConfigureAwait(false);
+            await WriteStoredFileAsync(project with
+            {
+                Name = normalizedName,
+                UpdatedUtc = DateTimeOffset.UtcNow,
+            }, cancellationToken).ConfigureAwait(false);
+        }
+        finally { _gate.Release(); }
+    }
+
+    public async Task DeleteAsync(string id, CancellationToken cancellationToken)
+    {
+        ValidateProjectId(id);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await Task.Run(() =>
+            {
+                DeleteFiles(Path.Combine(_directory, "ASR"), id + ".*");
+                DeleteFiles(Path.Combine(_directory, "Speech"), id + ".*");
+                DeleteFiles(Path.Combine(_directory, "Translation"), id + ".*");
+                DeleteFiles(_thumbnailCacheDirectory, id + ".*");
+                DeleteDirectory(Path.Combine(_ttsCacheDirectory, id));
+                DeleteDirectory(Path.Combine(_temporaryAsrDirectory, id));
+                DeleteFile(ImageSidecarPath(id));
+                // Delete the primary record last so a failed cleanup remains visible and retryable.
+                DeleteFile(ProjectPath(id));
+            }, CancellationToken.None).ConfigureAwait(false);
+        }
+        finally { _gate.Release(); }
     }
 
     public static bool SourceFingerprintMatchesCurrent(
@@ -221,6 +326,92 @@ public sealed class EditorProjectStore
             Trim: new EditorTrimRange(0, source.Duration));
     }
 
+    // RELINK (kiểu Adobe): video nguồn bị xóa/đổi tên/di chuyển khỏi đường
+    // dẫn cũ. User chỉ lại file mới; giữ nguyên toàn bộ project (vùng, SRT,
+    // voice, trim) và chỉ trỏ nguồn sang đường dẫn mới. Chặn file lạ bằng
+    // kích thước khung hình + thời lượng, KHÔNG so size/mtime vì copy file
+    // hợp lệ vẫn đổi mtime.
+    public static EditorProject RelinkSource(
+        EditorProject project,
+        string newPath,
+        int width,
+        int height,
+        double duration)
+    {
+        ArgumentNullException.ThrowIfNull(project);
+        var fresh = Fingerprint(newPath, width, height, duration);
+        var previous = project.Source;
+        if (previous.Size != fresh.Size || previous.Width != fresh.Width || previous.Height != fresh.Height
+            || Math.Abs(previous.Duration - fresh.Duration) > .5)
+            throw new InvalidDataException(
+                $"File được chọn không khớp video gốc ({previous.Size} byte, {previous.Width}×{previous.Height}, {previous.Duration:0.0}s) — " +
+                $"file này là {fresh.Size} byte, {fresh.Width}×{fresh.Height}, {fresh.Duration:0.0}s. Hãy chọn đúng file video đã di chuyển.");
+        return project with
+        {
+            Id = ProjectId(fresh.Path),
+            Source = fresh,
+            Asr = null,
+            Speech = null,
+            Tts = null,
+            UpdatedUtc = DateTimeOffset.UtcNow,
+        };
+    }
+
+    public async Task<EditorProject> RelinkAsync(
+        EditorProject project,
+        string newPath,
+        int width,
+        int height,
+        double duration,
+        CancellationToken cancellationToken)
+    {
+        var relinked = RelinkSource(project, newPath, width, height, duration);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var sameId = string.Equals(project.Id, relinked.Id, StringComparison.Ordinal);
+            var destinationProject = ProjectPath(relinked.Id);
+            var destinationImages = ImageSidecarPath(relinked.Id);
+            if (!sameId && (File.Exists(destinationProject) || File.Exists(destinationImages)))
+                throw new InvalidDataException("Đường dẫn mới đã có một project Editor khác; không ghi đè project hoặc ảnh/logo của project đó.");
+
+            var sourceImages = ImageSidecarPath(project.Id);
+            var copiedImages = false;
+            try
+            {
+                if (!sameId && File.Exists(sourceImages))
+                {
+                    File.Copy(sourceImages, destinationImages, overwrite: false);
+                    copiedImages = true;
+                }
+                await WriteStoredFileAsync(relinked, cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                if (copiedImages) DeleteFile(destinationImages);
+                throw;
+            }
+
+            if (!sameId)
+            {
+                // The new record and sidecar are durable before the old catalog entry is removed.
+                // Path-derived ASR/TTS caches stay orphaned rather than risking deletion of live data.
+                try { DeleteFile(ProjectPath(project.Id)); } catch { }
+                try { DeleteFile(sourceImages); } catch { }
+            }
+            return relinked;
+        }
+        finally { _gate.Release(); }
+    }
+
+    public async Task<EditorProject> LoadAsync(string id, CancellationToken cancellationToken)
+    {
+        ValidateProjectId(id);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try { return await ReadStoredFileAsync(id, cancellationToken).ConfigureAwait(false); }
+        finally { _gate.Release(); }
+    }
+
     private static bool SourceFingerprintChanged(EditorSourceFingerprint? previous, EditorSourceFingerprint current)
     {
         if (previous is null || previous.Size <= 0 || previous.LastWriteUtcTicks <= 0
@@ -292,25 +483,7 @@ public sealed class EditorProjectStore
         await _gate.WaitAsync(cancellationToken);
         try
         {
-            Directory.CreateDirectory(_directory);
-            var path = ProjectPath(project.Id);
-            var temporary = path + ".tmp-" + Guid.NewGuid().ToString("N");
-            try
-            {
-                await using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None, 64 * 1024,
-                    FileOptions.Asynchronous | FileOptions.WriteThrough))
-                {
-                    await JsonSerializer.SerializeAsync(stream, normalized, _json, cancellationToken);
-                    await stream.WriteAsync("\n"u8.ToArray(), cancellationToken);
-                    await stream.FlushAsync(cancellationToken);
-                    stream.Flush(flushToDisk: true);
-                }
-                File.Move(temporary, path, overwrite: true);
-            }
-            finally
-            {
-                try { File.Delete(temporary); } catch { }
-            }
+            await WriteStoredFileAsync(normalized, cancellationToken).ConfigureAwait(false);
         }
         finally { _gate.Release(); }
     }
@@ -641,6 +814,72 @@ public sealed class EditorProjectStore
     private string ProjectPath(string id) => Path.Combine(_directory, id + ".json");
     private string ImageSidecarPath(string id) => Path.Combine(_directory, id + ".images.json");
 
+    private async Task<EditorProject> ReadStoredFileAsync(string id, CancellationToken cancellationToken)
+    {
+        ValidateProjectId(id);
+        var path = ProjectPath(id);
+        var info = new FileInfo(path);
+        if (!info.Exists) throw new FileNotFoundException("Project Editor không tồn tại.", path);
+        if (info.Length <= 0 || info.Length > MaxProjectBytes)
+            throw new InvalidDataException("Project Editor có kích thước không hợp lệ.");
+        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+        var project = await JsonSerializer.DeserializeAsync<EditorProject>(stream, _json, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidDataException("Project Editor rỗng.");
+        if (project.Schema is < 1 or > CurrentSchema || project.Source is null
+            || !string.Equals(project.Id, id, StringComparison.Ordinal))
+            throw new InvalidDataException("Project Editor không đúng phiên bản hoặc nguồn.");
+        return project;
+    }
+
+    private async Task WriteStoredFileAsync(EditorProject project, CancellationToken cancellationToken)
+    {
+        Directory.CreateDirectory(_directory);
+        var path = ProjectPath(project.Id);
+        var temporary = path + ".tmp-" + Guid.NewGuid().ToString("N");
+        try
+        {
+            await using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None, 64 * 1024,
+                FileOptions.Asynchronous | FileOptions.WriteThrough))
+            {
+                await JsonSerializer.SerializeAsync(stream, project, _json, cancellationToken).ConfigureAwait(false);
+                await stream.WriteAsync("\n"u8.ToArray(), cancellationToken).ConfigureAwait(false);
+                await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+                stream.Flush(flushToDisk: true);
+            }
+            File.Move(temporary, path, overwrite: true);
+        }
+        finally
+        {
+            try { File.Delete(temporary); } catch { }
+        }
+    }
+
+    private static bool IsProjectId(string? id) =>
+        id is { Length: 24 } && id.All(character => char.IsAsciiHexDigit(character));
+
+    private static void ValidateProjectId(string id)
+    {
+        if (!IsProjectId(id)) throw new ArgumentException("Project ID không hợp lệ.", nameof(id));
+    }
+
+    private static void DeleteFiles(string directory, string pattern)
+    {
+        if (!Directory.Exists(directory)) return;
+        foreach (var path in Directory.EnumerateFiles(directory, pattern, SearchOption.TopDirectoryOnly))
+            DeleteFile(path);
+    }
+
+    private static void DeleteFile(string path)
+    {
+        if (File.Exists(path)) File.Delete(path);
+    }
+
+    private static void DeleteDirectory(string path)
+    {
+        if (Directory.Exists(path)) Directory.Delete(path, recursive: true);
+    }
+
     private sealed class SourceChangeArchiveException : IOException
     {
         public SourceChangeArchiveException(string message, Exception innerException) : base(message, innerException) { }
@@ -657,6 +896,9 @@ public sealed class EditorProjectStore
             or ArgumentException
             or FormatException
             or OverflowException;
+
+    private static bool IsCatalogReadFailure(Exception exception) =>
+        IsProjectCorruption(exception) || exception is IOException or UnauthorizedAccessException;
 
     private static void ArchiveCorruptState(string path)
     {

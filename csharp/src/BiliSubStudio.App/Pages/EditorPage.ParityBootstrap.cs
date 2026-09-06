@@ -30,7 +30,11 @@ public sealed partial class EditorPage
 
             EnsureEditorExportProgressTimer();
             StartVoiceArtifactMonitor();
-            if (_path is not null && _media is not null && !_playback.IsReady)
+            if (!EditorBusy) await ShowProjectListAsync(saveCurrent: false);
+            else ShowWorkspaceSurface();
+
+            if (WorkspaceGrid.Visibility == Visibility.Visible
+                && _path is not null && _media is not null && !_playback.IsReady)
             {
                 try
                 {
