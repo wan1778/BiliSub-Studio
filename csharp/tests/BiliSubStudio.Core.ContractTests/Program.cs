@@ -126,6 +126,7 @@ internal static class Program
         ("portable update rolls back the previous runtime on invalid payload", UpdateRollbackContractAsync),
         ("bug reports redact secrets and Windows user paths", BugReportSanitizationContractAsync),
         ("public OCR API does not expose internal installer", OcrPublicApiContractAsync),
+        ("timeline V2 shell stays flagged off with an isolated test root", TimelineV2ShellContract.RunAsync),
     ];
 
     private static async Task<int> Main(string[] arguments)

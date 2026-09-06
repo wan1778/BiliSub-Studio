@@ -7,6 +7,7 @@ using BiliSubStudio.App.ViewModels;
 using BiliSubStudio.Core.Application;
 using BiliSubStudio.Core.Configuration;
 using BiliSubStudio.Core.Diagnostics;
+using BiliSubStudio.Core.Timeline;
 using Microsoft.UI;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
@@ -106,6 +107,17 @@ public sealed partial class MainWindow : Window
             ["editor"] = new EditorPage(_application, filePicker),
             ["settings"] = _settingsPage,
         };
+        // G2: Timeline V2 shell is registered only behind the internal flag.
+        // Flag off keeps the classic navigation and pages byte-for-byte unchanged.
+        if (TimelineFeatureFlags.IsEnabled)
+        {
+            _pages["timelinev2"] = new TimelineEditorPage(_application);
+            Navigation.MenuItems.Add(new NavigationViewItem
+            {
+                Content = "Timeline V2 (dev)",
+                Tag = "timelinev2",
+            });
+        }
         RootGrid.Loaded += OnLoaded;
         Closed += OnClosed;
         AppWindow.Closing += OnAppWindowClosing;

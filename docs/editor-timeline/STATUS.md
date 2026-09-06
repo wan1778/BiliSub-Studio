@@ -6,10 +6,10 @@ Last updated: 2026-09-06
 
 ```text
 Program status: PLANNING APPROVED
-Current gate: G1 - Classic contracts
-Gate state: VERIFIED - 35/35 classic autosave/reopen/preview/export contracts pass
-Timeline implementation: NOT STARTED
-Classic Editor modifications for Timeline: NONE
+Current gate: G2 - V2 shell
+Gate state: VERIFIED - separate page/flag/test root, no production writes
+Timeline implementation: STARTED (shell only, no domain/migration/render)
+Classic Editor modifications for Timeline: NONE (additive flag-gated registration only)
 ```
 
 ## Approved direction
@@ -117,13 +117,35 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
 - Classic Editor source: unchanged for Timeline; no schema change.
 - G0 baseline tag `timeline-v2-g0-baseline-20260906` remains the recovery point.
 
+## G1 re-verification evidence (2026-09-06, before G2)
+
+- `git diff timeline-v2-g0-baseline-20260906..HEAD --name-only`: only 6 verifier scripts + timeline docs; no `csharp/src` changes.
+- G1 frozen inventory re-run: `TOTAL=35 PASS=35 FAIL=0` with `python -B`.
+- Release x64 build: 0 warnings, 0 errors; code map current; no `*Timeline*` V2 files present yet.
+
+## G2 verification evidence (2026-09-06)
+
+- Separate namespace `BiliSubStudio.Core.Timeline`: flag, V2 model/store/session,
+  immutable `TimelineRenderPlan` + `TimelineCompiler`, preview/export shells.
+- Flag `BILISUB_TIMELINE_V2` defaults off; page registers only when enabled.
+- `TimelineEditorPage` owns only V2 session state; classic `EditorPage`,
+  schema-7 store and `VideoEditorService` untouched.
+- Store root is `Temp/TimelineV2` (or injected test root); production
+  `Data/Projects` is rejected and every path is prefix-checked; writes are atomic.
+- `MainWindow.xaml` unchanged; classic navigation items intact.
+- Core contracts: `109/109 passed` (108 + `TimelineV2ShellContract`).
+- `verify_timeline_v2_shell_contract.py`: PASS.
+- G1 regression re-run after G2: `TOTAL=35 PASS=35 FAIL=0`.
+- Release x64 build: 0 warnings, 0 errors; code map regenerated (133 files).
+- `validate_csharp_migration.py`: PASS.
+
 ## Remaining precondition
 
-- None for starting G2 shell/design work. Any future restore or migration experiment must use a separate test root and re-verify `BACKUP_PROCEDURE.md` first.
+- None for starting G3 domain work. Any future restore or migration experiment must use a separate test root and re-verify `BACKUP_PROCEDURE.md` first.
 
 ## Next exact action
 
-Begin G2 by creating the separate Timeline page/model/persistence/preview/export behind a flag with no production writes. Do not modify the classic Editor for Timeline work.
+Begin G3 by adding Timeline assets/clips/tracks/time-mapping domain with boundary tests. Do not modify the classic Editor for Timeline work.
 
 ## Required resume command
 
