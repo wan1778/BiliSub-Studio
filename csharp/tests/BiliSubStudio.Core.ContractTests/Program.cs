@@ -127,6 +127,7 @@ internal static class Program
         ("bug reports redact secrets and Windows user paths", BugReportSanitizationContractAsync),
         ("public OCR API does not expose internal installer", OcrPublicApiContractAsync),
         ("timeline V2 shell stays flagged off with an isolated test root", TimelineV2ShellContract.RunAsync),
+        ("timeline domain keeps microsecond time, frame grid and sequential validation", TimelineDomainContract.RunAsync),
     ];
 
     private static async Task<int> Main(string[] arguments)

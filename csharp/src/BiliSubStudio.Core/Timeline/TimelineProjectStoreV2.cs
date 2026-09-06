@@ -43,7 +43,9 @@ public sealed class TimelineProjectStoreV2
         var project = new TimelineProjectV2(
             TimelineProjectV2.NewId(),
             TimelineProjectV2.ValidateName(name),
-            DateTimeOffset.UtcNow);
+            DateTimeOffset.UtcNow,
+            [],
+            null);
         await SaveAsync(project, cancellationToken).ConfigureAwait(false);
         return project;
     }
@@ -51,8 +53,7 @@ public sealed class TimelineProjectStoreV2
     public async Task SaveAsync(TimelineProjectV2 project, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(project);
-        TimelineProjectV2.ValidateId(project.Id);
-        TimelineProjectV2.ValidateName(project.Name);
+        project.Validate();
         var stored = project with { UpdatedUtc = DateTimeOffset.UtcNow };
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -146,7 +147,8 @@ public sealed class TimelineProjectStoreV2
         try
         {
             var payload = new TimelineProjectV2File(
-                TimelineProjectV2.Schema, project.Id, project.Name, project.UpdatedUtc);
+                TimelineProjectV2.Schema, project.Id, project.Name, project.UpdatedUtc,
+                project.Assets, project.Sequence);
             await using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None,
                 64 * 1024, FileOptions.Asynchronous | FileOptions.WriteThrough))
             {
@@ -175,7 +177,14 @@ public sealed class TimelineProjectStoreV2
         if (payload.Schema != TimelineProjectV2.Schema
             || !string.Equals(payload.Id, id, StringComparison.Ordinal))
             throw new InvalidDataException("Timeline V2 project không đúng phiên bản.");
-        return new TimelineProjectV2(payload.Id, TimelineProjectV2.ValidateName(payload.Name), payload.UpdatedUtc);
+        var project = new TimelineProjectV2(
+            payload.Id,
+            TimelineProjectV2.ValidateName(payload.Name),
+            payload.UpdatedUtc,
+            payload.Assets ?? [],
+            payload.Sequence);
+        project.Validate();
+        return project;
     }
 
     private Task<TimelineProjectV2> ReadStoredFileLockedAsync(string id, CancellationToken cancellationToken) =>
@@ -184,5 +193,11 @@ public sealed class TimelineProjectStoreV2
     private static bool IsId(string? id) =>
         id is { Length: 32 } && id.All(character => char.IsAsciiHexDigit(character));
 
-    private sealed record TimelineProjectV2File(int Schema, string Id, string Name, DateTimeOffset UpdatedUtc);
+    private sealed record TimelineProjectV2File(
+        int Schema,
+        string Id,
+        string Name,
+        DateTimeOffset UpdatedUtc,
+        IReadOnlyList<TimelineMediaAsset>? Assets,
+        TimelineSequence? Sequence);
 }

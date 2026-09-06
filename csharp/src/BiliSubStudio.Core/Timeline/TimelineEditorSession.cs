@@ -26,4 +26,12 @@ public sealed class TimelineEditorSession
         Current = project;
         return project;
     }
+
+    public async Task<TimelineProjectV2> SaveAsync(TimelineProjectV2 project, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(project);
+        await Store.SaveAsync(project, cancellationToken).ConfigureAwait(false);
+        Current = project;
+        return project;
+    }
 }

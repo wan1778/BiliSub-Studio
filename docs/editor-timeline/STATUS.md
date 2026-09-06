@@ -6,10 +6,10 @@ Last updated: 2026-09-06
 
 ```text
 Program status: PLANNING APPROVED
-Current gate: G2 - V2 shell
-Gate state: VERIFIED - separate page/flag/test root, no production writes
-Timeline implementation: STARTED (shell only, no domain/migration/render)
-Classic Editor modifications for Timeline: NONE (additive flag-gated registration only)
+Current gate: G3 - Domain
+Gate state: VERIFIED - microsecond time, assets/clips/tracks/sequence validated
+Timeline implementation: STARTED (shell + domain, no migration/render)
+Classic Editor modifications for Timeline: NONE (V2-only files plus test/verifier/docs)
 ```
 
 ## Approved direction
@@ -145,13 +145,30 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
   source tree SHA-256
   `cd97f1f3d4378d0382b25c6042b864b125075f49ee6dab6c59b9b46d0384436c`.
 
+## G3 verification evidence (2026-09-06)
+
+- New domain: `TimelineTime` (int64 microseconds, frame-grid snap, explicit
+  source/sequence mappings), `TimelineMediaAsset`, `TimelineClip`,
+  `TimelineTrack` (DEC-007 canonical order), `TimelineSequence`
+  (first-clip geometry default, explicit FPS, hard-cut validation, reflow).
+- Project schema 1 -> 2 with assets/sequence; store rejects old schema files
+  instead of guessing geometry/FPS. Test-root isolation and atomic writes kept.
+- `TimelineCompiler` resolves ordered clip segments into the shared immutable plan.
+- Core contracts: `110/110 passed` (108 + V2 shell + `TimelineDomainContract`
+  boundary/property tests incl. 500-case roundtrip/snap fuzz).
+- `verify_timeline_domain_contract.py` and `verify_timeline_v2_shell_contract.py`: PASS.
+- G1 regression re-run: `TOTAL=35 PASS=35 FAIL=0`.
+- `validate_csharp_migration.py`: PASS; code map regenerated.
+- PDEC-001/002 follow current recommendations (first-clip geometry, explicit
+  FPS); final product approval still required at promotion.
+
 ## Remaining precondition
 
-- None for starting G3 domain work. Any future restore or migration experiment must use a separate test root and re-verify `BACKUP_PROCEDURE.md` first.
+- None for starting G4 migration-copy work. Any future restore or migration experiment must use a separate test root and re-verify `BACKUP_PROCEDURE.md` first.
 
 ## Next exact action
 
-Begin G3 by adding Timeline assets/clips/tracks/time-mapping domain with boundary tests. Do not modify the classic Editor for Timeline work.
+Begin G4 by implementing schema-7 to one-clip V2 copy with backup evidence and no source/schema-7 mutation. Do not modify the classic Editor for Timeline work.
 
 ## Required resume command
 
