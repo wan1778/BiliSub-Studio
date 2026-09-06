@@ -82,8 +82,6 @@ public sealed record TimelineSequence(
             throw new InvalidDataException("Sequence output resolution không hợp lệ.");
         if (!double.IsFinite(OutputFrameRate) || OutputFrameRate <= 0)
             throw new InvalidDataException("Sequence FPS phải là số dương hữu hạn.");
-        if (VideoClips.Count == 0)
-            throw new InvalidDataException("Timeline sequence cần ít nhất một clip.");
         var byId = assets.ToDictionary(asset => asset.Id, StringComparer.Ordinal);
         foreach (var clip in VideoClips)
         {

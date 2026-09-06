@@ -1,17 +1,18 @@
 namespace BiliSubStudio.Core.Timeline;
 
-// G3 project (MASTER_PLAN section 7). Assets and sequence arrived in G3, so
-// the schema moves 1 -> 2. The store rejects schema-1 files instead of
-// guessing output geometry/FPS for them. Project ID stays stable across
-// asset relinks (DEC-012; relink itself arrives later).
+// G3 project (MASTER_PLAN section 7), extended with persisted items in G7.
+// Schema 2 upgrades safely with an empty item set; schema 1 remains rejected
+// because output geometry/FPS cannot be inferred. Project ID stays stable
+// across asset relinks (DEC-012; relink itself arrives later).
 public sealed record TimelineProjectV2(
     string Id,
     string Name,
     DateTimeOffset UpdatedUtc,
     IReadOnlyList<TimelineMediaAsset> Assets,
-    TimelineSequence? Sequence)
+    TimelineSequence? Sequence,
+    IReadOnlyList<TimelineItem> Items)
 {
-    public const int Schema = 2;
+    public const int Schema = 3;
 
     public static string NewId() => Guid.NewGuid().ToString("N");
 
@@ -43,5 +44,15 @@ public sealed record TimelineProjectV2(
                 throw new InvalidDataException("Timeline project chứa asset trùng ID.");
         }
         Sequence?.Validate(Assets);
+        ArgumentNullException.ThrowIfNull(Items);
+        if (Sequence is null)
+        {
+            if (Items.Count != 0)
+                throw new InvalidDataException("Timeline project không có sequence nhưng chứa item.");
+        }
+        else
+        {
+            TimelineItemOps.ValidateAll(Items, Sequence.VideoClips);
+        }
     }
 }

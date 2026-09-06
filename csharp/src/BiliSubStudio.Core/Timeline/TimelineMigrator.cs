@@ -79,7 +79,8 @@ public static class TimelineMigrator
             string.IsNullOrWhiteSpace(source.Name) ? "Timeline copy" : source.Name,
             DateTimeOffset.UtcNow,
             [asset],
-            sequence);
+            sequence,
+            []);
         project.Validate();
 
         return new TimelineMigrationReport(project, warnings, source.Source);

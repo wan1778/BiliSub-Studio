@@ -45,7 +45,8 @@ public sealed class TimelineProjectStoreV2
             TimelineProjectV2.ValidateName(name),
             DateTimeOffset.UtcNow,
             [],
-            null);
+            null,
+            []);
         await SaveAsync(project, cancellationToken).ConfigureAwait(false);
         return project;
     }
@@ -148,7 +149,7 @@ public sealed class TimelineProjectStoreV2
         {
             var payload = new TimelineProjectV2File(
                 TimelineProjectV2.Schema, project.Id, project.Name, project.UpdatedUtc,
-                project.Assets, project.Sequence);
+                project.Assets, project.Sequence, project.Items);
             await using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None,
                 64 * 1024, FileOptions.Asynchronous | FileOptions.WriteThrough))
             {
@@ -174,15 +175,21 @@ public sealed class TimelineProjectStoreV2
             FileOptions.Asynchronous | FileOptions.SequentialScan);
         var payload = await JsonSerializer.DeserializeAsync<TimelineProjectV2File>(stream, Json, cancellationToken)
             .ConfigureAwait(false) ?? throw new InvalidDataException("Timeline V2 project rỗng.");
-        if (payload.Schema != TimelineProjectV2.Schema
+        if (payload.Schema is not 2 and not TimelineProjectV2.Schema
             || !string.Equals(payload.Id, id, StringComparison.Ordinal))
             throw new InvalidDataException("Timeline V2 project không đúng phiên bản.");
+        if (payload.Schema == 2 && payload.Items is { Count: > 0 })
+            throw new InvalidDataException("Timeline V2 schema 2 không được chứa items.");
+        var items = payload.Schema == 2
+            ? []
+            : payload.Items ?? throw new InvalidDataException("Timeline V2 schema 3 thiếu items.");
         var project = new TimelineProjectV2(
             payload.Id,
             TimelineProjectV2.ValidateName(payload.Name),
             payload.UpdatedUtc,
             payload.Assets ?? [],
-            payload.Sequence);
+            payload.Sequence,
+            items);
         project.Validate();
         return project;
     }
@@ -199,5 +206,6 @@ public sealed class TimelineProjectStoreV2
         string Name,
         DateTimeOffset UpdatedUtc,
         IReadOnlyList<TimelineMediaAsset>? Assets,
-        TimelineSequence? Sequence);
+        TimelineSequence? Sequence,
+        IReadOnlyList<TimelineItem>? Items);
 }

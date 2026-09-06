@@ -168,7 +168,7 @@ internal static class TimelineDomainContract
             () => TimelineSequence.Create([first, second], [a, b], 0),
             "implicit sequence FPS accepted");
         var plan = TimelineCompiler.Compile(
-            new TimelineProjectV2("a".PadLeft(32, 'b'), "P", DateTimeOffset.UtcNow, [a, b], sequence));
+            new TimelineProjectV2("a".PadLeft(32, 'b'), "P", DateTimeOffset.UtcNow, [a, b], sequence, []));
         Check(plan.Clips.Count == 2 && plan.TotalDurationUs == 20_000_000,
             "compiler did not resolve ordered clip segments");
         Check(plan.Clips[0].SequenceStartUs == 0 && plan.Clips[1].SequenceStartUs == 10_000_000,

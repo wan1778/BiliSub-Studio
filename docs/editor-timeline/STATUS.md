@@ -1,14 +1,14 @@
 # Timeline Editor V2 - Current Status
 
-Last updated: 2026-09-06
+Last updated: 2026-09-07
 
 ## Current checkpoint
 
 ```text
 Program status: PLANNING APPROVED
-Current gate: G6 - Multi-clip core
-Gate state: VERIFIED - add/reorder/trim/split/delete with atomic bounded undo
-Timeline implementation: STARTED (through multi-clip core; no effects/voice/render parity)
+Current gate: G7 - Effects and subtitle ownership
+Gate state: IN_PROGRESS - source and dirty-tree gates pass; clean-tree verify pending
+Timeline implementation: STARTED (through item ownership/compiler resolution; no voice/render parity)
 Classic Editor modifications for Timeline: NONE (V2-only files plus test/verifier/docs)
 ```
 
@@ -239,13 +239,50 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
   source tree SHA-256
   `060dd173079bf9870ecf26684a928e02f35bd5d231cf6632667e99c88802f0f7`.
 
+## G7 pre-commit verification evidence (2026-09-07)
+
+- `TimelineItem` distinguishes clip-local effect/subtitle/logo ranges from
+  sequence-global subtitle/music/logo ranges; all persisted times remain `long`
+  microseconds. Local items must reference an existing clip and stay inside
+  its duration.
+- `TimelineDependencyOps` applies reorder/trim/split/delete to one immutable
+  clips-plus-items state. Effects and clip logos crossing a split are cloned
+  and clamped; items after the cut are rebased to right-clip local time;
+  global items remain unchanged. Signed trim deltas preserve source-content
+  ownership for inward/outward trims, including sub-microsecond rounding.
+- Subtitle cues crossing a split are rejected by default and can only split
+  through explicit `TimelineSubtitleSplitPolicy.SplitAndClamp`.
+- `TimelineEditHistory` snapshots clips and items together, so split/delete
+  undo and redo restore the complete dependency set atomically.
+- Project schema 2 -> 3 persists items. Existing experimental schema-2 files
+  load safely with an empty item set; schema 1 remains rejected.
+- `TimelineCompiler` is still the sole resolver and now maps clip-local items
+  into immutable sequence-time render-plan items. G5 classic parity rejects
+  plans containing unsupported G7 items instead of silently dropping them.
+- Core contracts: `114/114 passed` (new `TimelineItemsContract`: validation,
+  reorder, trim clamp/drop, split ownership, subtitle policy, delete,
+  dependency undo/redo, schema-3 persistence/schema-2 upgrade and compiler
+  resolution, final-clip deletion and fractional-rate rounding boundaries).
+- `verify_timeline_items_contract.py` plus G2-G6 verifiers: PASS.
+- G1 frozen classic Editor contracts: `35/35 PASS`; no classic Editor source
+  or schema-7 store modifications.
+- Release x64 build: 0 warnings, 0 errors; Range field regressions PASS;
+  `validate_csharp_migration.py` PASS; generated code map current.
+- Clean-tree `verify.ps1`, self-contained publish/startup smoke and final
+  G7 binary/source hashes: PENDING until the G7 source is committed.
+
 ## Remaining precondition
 
-- None for starting G7 effects/subtitle ownership work. Any future restore or migration experiment must use a separate test root and re-verify `BACKUP_PROCEDURE.md` first.
+- Commit the reviewed G7 source and run clean-tree `csharp/scripts/verify.ps1`
+  before changing the gate state to `VERIFIED`.
+- Any future restore or migration experiment must use a separate test root and
+  re-verify `BACKUP_PROCEDURE.md` first.
 
 ## Next exact action
 
-Begin G7 by attaching Blur/SRT/logo items to clips with move/split dependency semantics. Do not modify the classic Editor for Timeline work.
+Review and commit the G7 source, run the clean-tree Windows verification gate,
+then record the binary/source hashes. Do not modify the classic Editor for
+Timeline work.
 
 ## Required resume command
 

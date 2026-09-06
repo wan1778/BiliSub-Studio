@@ -25,7 +25,7 @@ internal static class TimelineMigrationCopyContract
                 width: 1920, height: 1080, durationSeconds: 60,
                 size: 3, lastWriteUtcTicks: 123);
 
-            Check(TimelineProjectV2.Schema == 2, "migrated copy must be schema 2");
+            Check(TimelineProjectV2.Schema == 3, "migrated copy must use current V2 schema");
             Check(!string.Equals(report.Project.Id, schema7.project.Id, StringComparison.Ordinal),
                 "migrated copy must own a fresh V2 identity, not the schema-7 id");
             var sequence = report.Project.Sequence

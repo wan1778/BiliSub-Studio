@@ -18,7 +18,7 @@ public static class TimelineOneClipParity
     public static bool IsOneClip(TimelineRenderPlan plan)
     {
         ArgumentNullException.ThrowIfNull(plan);
-        return plan.Clips.Count == 1;
+        return plan.Clips.Count == 1 && plan.Items.Count == 0;
     }
 
     // Parity mapping. requestedStart/previewWidth/previewHeight mirror

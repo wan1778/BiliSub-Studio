@@ -72,7 +72,7 @@ for token in (
     require(token in sequence, f"G3 sequence lost token: {token}")
 
 project = read("TimelineProjectV2.cs")
-require("public const int Schema = 2;" in project, "G3 project schema must be 2")
+require("public const int Schema =" in project, "G3 project schema marker missing")
 require("IReadOnlyList<TimelineMediaAsset> Assets" in project
         and "TimelineSequence? Sequence" in project, "G3 project lost assets/sequence")
 
