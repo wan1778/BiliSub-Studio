@@ -7,7 +7,7 @@ Last updated: 2026-09-06
 ```text
 Program status: PLANNING APPROVED
 Current gate: G0 - Baseline
-Gate state: IN PROGRESS - diagnostics complete, awaiting user approval
+Gate state: VERIFIED - source/binary baseline tagged; production backup remains a G1 precondition
 Timeline implementation: NOT STARTED
 Classic Editor modifications for Timeline: NONE
 ```
@@ -20,16 +20,15 @@ Classic Editor modifications for Timeline: NONE
 - Use the immutable objectives and gates in `MASTER_PLAN.md`.
 - Use accepted architecture decisions in `DECISIONS.md`.
 
-## Repository warning
+## Baseline identity
 
-The working tree contains many unrelated and uncommitted OCR, media queue, Editor Project List, relink and media-download changes (35 tracked files modified, 8 untracked source/doc files, ~3,620 untracked build artifacts under `.codex-build`).
+- Verified source commit: `642bf8d`.
+- Annotated tag: `timeline-v2-g0-baseline-20260906`.
+- Baseline commits: `81fef4b` OCR, `2ead6ec` media, `9c3a1aa` Editor, `1addd83` verifier/docs, `642bf8d` logging gate follow-up.
+- Timeline implementation remains absent from this baseline.
 
-Do not:
+Do not modify or move this tag. Future Timeline work must branch from or remain recoverable to this identity.
 
-- reset or revert those changes;
-- create a baseline commit containing them without explicit user approval;
-- start Timeline implementation in the same unreviewed change set;
-- treat the current working tree as a clean V2 baseline.
 
 ## Completed
 
@@ -42,17 +41,34 @@ Do not:
 - [x] Resume and stop protocol persisted in the repository.
 - [x] Working-tree inspection and four-group classification.
 - [x] Diagnostic gates executed on the current dirty tree (see evidence below).
+- [x] User approved the four-group baseline strategy and App-bin artifact cleanup.
+- [x] Cancellation ownership, source-switch races, relink collision handling and verifier drift fixed.
+- [x] Four approved baseline groups committed; one follow-up verifier-only commit records the final logging token refresh.
+- [x] Full clean-tree Windows gate passed and baseline tag created.
 
 ## G0 baseline checklist
 
 - [x] Inspect and classify every current working-tree change.
-- [x] Run permitted diagnostic gates on the dirty tree (full `verify.ps1` still blocked by its clean-tree requirement).
+- [x] Run permitted diagnostic gates on the dirty tree.
 - [x] Produce a known-good Windows x64 executable in an isolated publish.
 - [x] Record binary SHA-256 and verification evidence.
-- [ ] Decide which existing changes belong in the pre-V2 baseline (grouping proposed below, commit pending approval).
-- [ ] Fix/refresh stale verifiers and the one genuine regression found (pending approval).
+- [x] Decide and commit the existing changes in reviewed pre-V2 groups.
+- [x] Fix/refresh stale verifiers and the cancellation ownership regression.
 - [ ] Back up production `Data/Projects` before any migration experiment.
-- [ ] Obtain explicit user approval before commit/tag or baseline promotion.
+- [x] Obtain explicit user approval before commit/tag and baseline promotion.
+
+## Final G0 verification evidence (2026-09-06)
+
+- Clean-tree `powershell -NoProfile -ExecutionPolicy Bypass -File csharp/scripts/verify.ps1` - PASS.
+- Official Python migration, Editor Voice/TTS, logging, OCR and ASR gates - PASS.
+- Release x64 solution build - 0 warnings, 0 errors.
+- Core contract tests - `108/108 passed`.
+- Range field regressions - PASS.
+- Self-contained WinUI publish, real startup smoke, worker identity, PE32+ x64 and checksum readback - PASS.
+- Version: `4.0.0-beta.70-csharp-p5`.
+- `BiliSubStudio.exe` SHA-256: `7d4086987513e7c5512868a51c536dae8d5f61847e706398e194d043dfc02de5`.
+- Source tree SHA-256: `fa2dc5888f0335f2d56c2fc1b0df6b833bc3a06efb4187ead5c6a3f3903eda66`.
+- App-bin `Data`, `Tools`, `Cache` contamination and `.codex-build` diagnostics were removed before baseline commits.
 
 ## G0 diagnostic evidence (2026-09-06, dirty tree, HEAD 153f97cd)
 
@@ -74,9 +90,9 @@ Startup smoke environmental finding (not a source regression):
 - First smoke run from the normal App `bin` output directory exited 0 without sentinel; log showed `TimeoutException` at `App.xaml.cs:47` (20 s init wait).
 - Root cause: the App bin directory is contaminated with portable runtime roots - `Data` 14 files / ~87 MB, `Tools` 45,456 files / ~10.4 GB, `Cache` 13,026 files / ~556 MB. Initialization (preview-cache cleanup / storage scan) exceeds the 20 s smoke budget on first run over those roots.
 - The same binary published into a clean directory passes the identical smoke. `verify.ps1` always publishes fresh, so the official gate is not exposed to this.
-- Proposed (pending approval): delete the contaminated `Data|Tools|Cache` roots inside the App bin output directory (test byproducts, not user production data).
+- Resolved before baseline: deleted the contaminated `Data|Tools|Cache` roots inside the App bin output directory (test byproducts, not user production data).
 
-Gate failures - classified (7 stale verifiers + 1 stale generated doc + 1 genuine regression):
+Historical dirty-tree failures, all resolved before the tagged baseline:
 
 1. `verify_editor_voice_preview_contract.py` (VOICE-12) - STALE: expects `_voiceTrack);` terminator; shared request now ends `..., _voiceTrack, Trim: CurrentTrimRange()` (`EditorPage.xaml.cs:1647-1649`). Behavior verified intact (preview slices via `request with`, voice mix preserved).
 2. `verify_editor_voice_preview_export_contract.py` (VOICE-14) - STALE: expects literal `medium`/`crf 18` inside `BuildRenderArguments`; export encoding moved to `EditorExportPolicy.BuildVideoEncoderArguments` (`VideoEditorService.cs:581`, `EditorExportSettings.cs:90-149`). Preview still `ultrafast`/23 independently.
@@ -87,22 +103,13 @@ Gate failures - classified (7 stale verifiers + 1 stale generated doc + 1 genuin
 7. `verify_ocr_scanner_contract.py` - STALE: requires the old NVDEC `fps={fps}` filter shape; source deliberately removed the fps filter because it rewrites PTS, sampling is now PTS-preserving in C# via `settb` + `-fps_mode passthrough` (`OcrScanner.cs:1363-1380`), covered by passing Core contract tests (OCR timebase PTS exact match and guard).
 8. `verify_editor_tts_cancel_contract.py` - GENUINE regression: `PollTtsJobAsync` detaches `_ttsJobId` after 30 s while the TTS job is still non-terminally cancelling (`EditorPage.xaml.cs:994-1000`), and source switching clears tracked IDs after only 8 s (`EditorPage.xaml.cs:1047-1060`). Violates the ownership rule "UI keeps the job ID until cleanup reaches a terminal state"; restart is still blocked by the app-level active-job gate, but the UI loses its owner and may not refresh. Must fix source before baseline promotion.
 
-## Blockers
+## Remaining precondition
 
-- Full `verify.ps1` remains blocked by its intentional clean-tree requirement until the user approves the commit strategy.
-- The TTS cancellation ownership regression must be fixed (and the stale verifiers refreshed) before G0 can be marked VERIFIED.
-- Production `Data/Projects` backup strategy still needs user approval.
-
-## Proposed baseline strategy (pending user approval)
-
-1. Fix the one genuine regression (TTS cancel ownership) and refresh the 7 stale verifiers + regenerate the code map. No classic-Editor behavior change beyond the ownership fix.
-2. Delete contaminated portable roots inside the App bin output directory.
-3. Stage and commit the existing change set in the proposed groups (OCR fixes / media fixes / Editor Project List+relink / verifier+doc refresh), then run full `verify.ps1` on the clean tree.
-4. Tag the verified commit as the pre-V2 baseline; only then start G1.
+- Production `Data/Projects` backup strategy still needs explicit approval and execution before any migration experiment or G1 persistence write.
 
 ## Next exact action
 
-Await user decision on the proposed baseline strategy above. Do not edit Timeline code.
+Define and execute the production `Data/Projects` backup procedure. Then begin only the G1 data-model/design checkpoint; do not modify the classic Editor for Timeline work.
 
 ## Required resume command
 
