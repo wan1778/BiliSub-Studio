@@ -6,9 +6,9 @@ Last updated: 2026-09-06
 
 ```text
 Program status: PLANNING APPROVED
-Current gate: G4 - Migration copy
-Gate state: VERIFIED - schema-7 to one-clip V2 copy, no in-place mutation
-Timeline implementation: STARTED (shell + domain + migration copy, no render)
+Current gate: G5 - One-clip parity
+Gate state: VERIFIED - V2 one-clip maps onto the classic render pipeline
+Timeline implementation: STARTED (shell + domain + migration + one-clip parity)
 Classic Editor modifications for Timeline: NONE (V2-only files plus test/verifier/docs)
 ```
 
@@ -191,13 +191,29 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
   source tree SHA-256
   `6d3f9520c69cb321ffab876aa3a183d5417971abaa5420b4d5453b2b1bf3ba96`.
 
+## G5 verification evidence (2026-09-06)
+
+- `TimelineOneClipParity`: one-clip V2 plan maps to the exact classic
+  `VideoEditRequest` (input path, dimensions, duration in seconds, source
+  trim from microseconds, keep audio, no invented edits). Export range
+  equals the classic trim window; a full-clip plan behaves like an
+  untrimmed classic request; multi-clip plans are rejected.
+- `TimelinePreviewExportService`: separate V2 types/preview root
+  (`Temp/TimelineV2/Preview`) delegating to the proven
+  `VideoEditorService` — the single FFmpeg graph owner. No duplicated
+  filter/argument building, no direct process management.
+- Core contracts: `112/112 passed` (new `TimelineParityContract`).
+- `verify_timeline_parity_contract.py` plus G2/G3/G4 verifiers and
+  `validate_csharp_migration.py`: PASS; code map regenerated.
+- G1 regression re-run: `TOTAL=35 PASS=35 FAIL=0`.
+
 ## Remaining precondition
 
-- None for starting G5 one-clip parity work. Any future restore or migration experiment must use a separate test root and re-verify `BACKUP_PROCEDURE.md` first.
+- None for starting G6 multi-clip core work. Any future restore or migration experiment must use a separate test root and re-verify `BACKUP_PROCEDURE.md` first.
 
 ## Next exact action
 
-Begin G5 by rendering one V2 clip and matching classic Preview/Export behavior. Do not modify the classic Editor for Timeline work.
+Begin G6 by implementing add/reorder/trim/split/delete with dependency and undo tests. Do not modify the classic Editor for Timeline work.
 
 ## Required resume command
 

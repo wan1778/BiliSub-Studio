@@ -129,6 +129,7 @@ internal static class Program
         ("timeline V2 shell stays flagged off with an isolated test root", TimelineV2ShellContract.RunAsync),
         ("timeline domain keeps microsecond time, frame grid and sequential validation", TimelineDomainContract.RunAsync),
         ("timeline schema-7 migration is a safe one-clip copy", TimelineMigrationCopyContract.RunAsync),
+        ("timeline one-clip parity maps V2 plan onto the classic render pipeline", TimelineParityContract.RunAsync),
     ];
 
     private static async Task<int> Main(string[] arguments)
