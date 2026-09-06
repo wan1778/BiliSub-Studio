@@ -42,18 +42,20 @@ public sealed class AppJob : IDisposable
     public CancellationToken CancellationToken => _cancellation.Token;
     public Task Completion => _completion.Task;
 
-    public void Cancel()
+    public void Cancel() => TryCancel();
+
+    public bool TryCancel()
     {
-        _cancellation.Cancel();
         var changed = false;
+        var waitsForCleanup = false;
         lock (_gate)
         {
             if (_done || _cancelRequested)
             {
-                return;
+                return false;
             }
             _cancelRequested = true;
-            var waitsForCleanup = PauseSupported || CleanupAwareCancel;
+            waitsForCleanup = PauseSupported || CleanupAwareCancel;
             _status = waitsForCleanup ? "cancelling" : "cancelled";
             _message = waitsForCleanup ? "Đang dừng tác vụ và dọn dữ liệu dở..." : "Đã hủy tác vụ.";
             _done = !waitsForCleanup;
@@ -64,7 +66,9 @@ public sealed class AppJob : IDisposable
                 _completion.TrySetResult(true);
             }
         }
-        if (changed) _applicationLog?.Info(Kind, PauseSupported || CleanupAwareCancel ? "Đang hủy tác vụ an toàn." : "Đã hủy tác vụ.", Id);
+        _cancellation.Cancel();
+        if (changed) _applicationLog?.Info(Kind, waitsForCleanup ? "Đang hủy tác vụ an toàn." : "Đã hủy tác vụ.", Id);
+        return changed;
     }
 
     public void CancelComplete(string? message = null)
@@ -161,7 +165,7 @@ public sealed class AppJob : IDisposable
     {
         lock (_gate)
         {
-            if (_done)
+            if (_done || _cancelRequested)
             {
                 return;
             }
@@ -227,6 +231,7 @@ public sealed class AppJob : IDisposable
     {
         lock (_gate)
         {
+            if (_done || _cancelRequested) return;
             _result = result;
         }
     }
@@ -234,6 +239,7 @@ public sealed class AppJob : IDisposable
     public void Finish(Exception? error, string message, object? result = null)
     {
         string finalMessage;
+        Exception? finalError;
         lock (_gate)
         {
             if (_done)
@@ -241,29 +247,49 @@ public sealed class AppJob : IDisposable
                 return;
             }
             _done = true;
-            _result = result;
             _pauseCompletion.TrySetResult(true);
             _completion.TrySetResult(true);
-            if (error is null)
+            if (_cancelRequested && error is not null)
+            {
+                _status = "error";
+                _result = null;
+                _error = error.Message;
+                _message = string.IsNullOrWhiteSpace(message) ? error.Message : message;
+                finalError = error;
+            }
+            else if (_cancelRequested)
+            {
+                _status = "cancelled";
+                _result = null;
+                _error = null;
+                _message = "Đã hủy tác vụ và dọn dữ liệu dở.";
+                finalError = null;
+            }
+            else if (error is null)
             {
                 _status = "done";
                 _progress = 100;
+                _result = result;
+                _message = string.IsNullOrWhiteSpace(message) ? "Hoàn tất." : message;
+                finalError = null;
             }
             else
             {
                 _status = "error";
                 _error = error.Message;
+                _result = result;
+                _message = string.IsNullOrWhiteSpace(message) ? error.Message : message;
+                finalError = error;
             }
-            _message = string.IsNullOrWhiteSpace(message) ? error?.Message ?? "Hoàn tất." : message;
             finalMessage = _message;
         }
 
-        if (error is null)
+        if (finalError is null)
             _applicationLog?.Info(Kind, finalMessage, Id);
         else
             // Capture the full exception (type, stack trace, inner exceptions), not just the
             // short user-facing message — this is what makes a submitted bug report reproducible.
-            _applicationLog?.Error(Kind, finalMessage, error, Id);
+            _applicationLog?.Error(Kind, finalMessage, finalError, Id);
     }
 
     public JobSnapshot Snapshot(int after = 0)

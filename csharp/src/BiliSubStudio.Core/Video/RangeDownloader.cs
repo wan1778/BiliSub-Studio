@@ -50,6 +50,23 @@ public sealed class RangeDownloader
             try
             {
                 (total, rangeSupported) = await ProbeAsync(current, cancellationToken);
+                // Field 2026-09-05: CDN báo Content-Range total nhỏ hơn metadata
+                // playurl (audio 74,6 MB khai còn 43,9 MB). Mọi check segment/
+                // assemble phía dưới đều dùng total này nên file thiếu vẫn "xong"
+                // và ra file mất tiếng đuôi. Không bao giờ tin total ảo.
+                if (original.Size > 0 && !ProbeTotalMatchesMetadata(total, original.Size))
+                {
+                    probeError = new InvalidDataException(
+                        $"CDN báo tổng {total} byte nhưng metadata là {original.Size} byte cho {original.Kind}; " +
+                        "làm mới tuyến và probe lại, không ghép file thiếu âm thầm.");
+                    if (refresh is not null && attempt < MaxProbeAttempts)
+                    {
+                        current = await refresh(current.Generation, cancellationToken);
+                        await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(3_000, 250 * attempt * attempt)), cancellationToken);
+                        continue;
+                    }
+                    break;
+                }
                 probeSucceeded = true;
                 probeError = null;
                 break;
@@ -67,6 +84,7 @@ public sealed class RangeDownloader
         }
         if (!probeSucceeded)
         {
+            if (probeError is InvalidDataException invalid) throw invalid;
             throw new IOException($"Probe HTTP Range thất bại sau {MaxProbeAttempts} lượt làm mới CDN.", probeError);
         }
 
@@ -249,6 +267,16 @@ public sealed class RangeDownloader
             TryDelete(output + ".assembling.tmp");
             throw;
         }
+    }
+
+    // Total từ Content-Range phải khớp metadata playurl. Lệch thiếu là file
+    // thiếu byte chắc chắn (trường hợp audio 59% gây câm đuôi); lệch thừa quá
+    // lớn là nhầm object sau refresh. Metadata approximate nên có biên độ.
+    private static bool ProbeTotalMatchesMetadata(long total, long metadataSize)
+    {
+        if (metadataSize <= 0 || total <= 0) return true;
+        var ratio = total / (double)metadataSize;
+        return ratio >= 0.995 && ratio <= 1.05;
     }
 
     private async Task<(long Total, bool Supported)> ProbeAsync(ResolvedStream stream, CancellationToken cancellationToken)

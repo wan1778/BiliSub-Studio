@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using BiliSubStudio.Core.Configuration;
@@ -92,7 +93,7 @@ public sealed class VideoDownloadService
             job.Log($"Audio CDN {Host(selection.Audio)} · endpoint {selection.Audio.EndpointIndex + 1}/{EndpointCount(selection.Audio)}");
         }
 
-        var estimatedStreams = (selection.Video?.Size ?? 0L) + (selection.Audio?.Size ?? 0L);
+        var estimatedStreams = StreamPlanningSize(selection.Video) + StreamPlanningSize(selection.Audio);
         if (estimatedStreams > 0)
         {
             const long reserve = 512L * 1024 * 1024;
@@ -340,6 +341,16 @@ public sealed class VideoDownloadService
         var temporary = output + ".muxing" + extension;
         TryDelete(temporary);
         job.Set("merging", 95, "Đang ghép bằng FFmpeg...");
+        if (!string.IsNullOrWhiteSpace(video.Path) && !string.IsNullOrWhiteSpace(audio.Path))
+        {
+            var ffprobe = await _tools.EnsureFfprobeAsync(cancellationToken);
+            var videoSeconds = await ProbeStreamSecondsAsync(ffprobe, video.Path, cancellationToken);
+            var audioSeconds = await ProbeStreamSecondsAsync(ffprobe, audio.Path, cancellationToken);
+            if (videoSeconds is not null && audioSeconds is not null)
+                ValidateMuxDurations(videoSeconds.Value, audioSeconds.Value);
+            else
+                job.Warn("Không đọc được thời lượng stream trước khi ghép; bỏ qua gate thời lượng.");
+        }
         try
         {
             var args = new List<string> { "-hide_banner", "-loglevel", "error", "-nostdin", "-y" };
@@ -380,6 +391,26 @@ public sealed class VideoDownloadService
         }
     }
 
+    private async Task<double?> ProbeStreamSecondsAsync(string ffprobe, string path, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var probe = await _processes.RunAsync(ffprobe,
+            [
+                "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                path,
+            ], cancellationToken);
+            if (probe.ExitCode != 0) return null;
+            if (double.TryParse(probe.StandardOutput.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds)
+                && double.IsFinite(seconds) && seconds > 0)
+                return seconds;
+        }
+        catch { }
+        return null;
+    }
+
     private async Task<string> FallbackAsync(
         AppJob job,
         VideoDownloadRequest request,
@@ -389,6 +420,7 @@ public sealed class VideoDownloadService
     {
         var ytDlp = await _tools.EnsureYtDlpAsync(cancellationToken);
         var prefix = Path.Combine(work, $"{stream.Kind.ToString().ToLowerInvariant()}_fallback");
+        PurgeStaleFallbackOutputs(prefix);
         CleanupFallbackTemporary(prefix);
         var args = new List<string>();
         if (!string.IsNullOrWhiteSpace(request.CookieFile)) args.AddRange(["--cookies", request.CookieFile]);
@@ -416,6 +448,7 @@ public sealed class VideoDownloadService
                 .ToArray();
             var output = candidates.LastOrDefault(x => new FileInfo(x).Length > 0)
                 ?? throw new InvalidDataException($"yt-dlp fallback {stream.Kind} không tạo file.");
+            ValidateFallbackSize(stream.Kind, new FileInfo(output).Length, stream.Size);
             job.Log($"yt-dlp fallback {stream.Kind} hoàn tất: {new FileInfo(output).Length} bytes");
             return output;
         }
@@ -423,6 +456,29 @@ public sealed class VideoDownloadService
         {
             CleanupFallbackTemporary(prefix);
         }
+    }
+
+    // yt-dlp fallback từng chấp nhận mọi file Length>0 nên file thiếu vẫn đi
+    // mux. Đối chiếu với metadata playurl, cùng biên độ với Range probe.
+    private static void ValidateFallbackSize(StreamKind kind, long actualBytes, long expectedBytes)
+    {
+        if (expectedBytes <= 0 || actualBytes <= 0) return;
+        var ratio = actualBytes / (double)expectedBytes;
+        if (ratio < 0.995 || ratio > 1.05)
+            throw new InvalidDataException($"yt-dlp fallback {kind} sai kích thước: {actualBytes}/{expectedBytes} byte; dừng để tránh file mất tiếng đuôi.");
+    }
+
+    private static long StreamPlanningSize(ResolvedStream? stream) =>
+        stream is null ? 0 : stream.Size > 0 ? stream.Size : stream.EstimatedSize;
+
+    // Gate cuối trước mux: DASH audio/video cùng playurl phải gần bằng nhau.
+    // A large difference in either direction indicates a wrong or truncated stream.
+    private static void ValidateMuxDurations(double videoSeconds, double audioSeconds)
+    {
+        if (!double.IsFinite(videoSeconds) || !double.IsFinite(audioSeconds) || videoSeconds <= 0 || audioSeconds <= 0)
+            throw new InvalidDataException("Không đọc được thời lượng stream trước khi ghép.");
+        if (Math.Abs(audioSeconds - videoSeconds) > 5.0)
+            throw new InvalidDataException($"Thời lượng audio ({audioSeconds:0.0}s) không khớp video ({videoSeconds:0.0}s); dừng ghép để tránh file sai stream hoặc mất tiếng.");
     }
 
     private static string ResumeKey(VideoDownloadRequest request, StreamSelection selection)
@@ -449,6 +505,23 @@ public sealed class VideoDownloadService
         >= 1024 => $"{bytesPerSecond / 1024:0} KiB/s",
         _ => $"{bytesPerSecond:0} B/s",
     };
+
+    // Field 2026-09-06: output fallback hoàn chỉnh cũ (audio_fallback.m4a
+    // thiếu 43,9 MB) nằm lại work dir; yt-dlp --no-overwrites sẽ tái dùng nó
+    // thay vì tải mới, khiến lần sau vẫn hỏng dù cache đã lành. Đầu mỗi
+    // fallback phải xóa output cũ, nhưng giữ .part/.ytdl cho --continue resume.
+    private static void PurgeStaleFallbackOutputs(string prefix)
+    {
+        var directory = Path.GetDirectoryName(prefix);
+        if (directory is null || !Directory.Exists(directory)) return;
+        foreach (var path in Directory.EnumerateFiles(directory, Path.GetFileName(prefix) + ".*"))
+        {
+            if (path.EndsWith(".part", StringComparison.OrdinalIgnoreCase)
+                || path.EndsWith(".ytdl", StringComparison.OrdinalIgnoreCase)
+                || path.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase)) continue;
+            TryDelete(path);
+        }
+    }
 
     private static void CleanupFallbackTemporary(string prefix)
     {

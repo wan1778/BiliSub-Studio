@@ -29,6 +29,7 @@ public sealed class BiliSubApplication : IAsyncDisposable
     private readonly LocalAsrService _asr;
     private readonly LocalTtsService _tts;
     private readonly WindowsProcessContainment _containment;
+    private readonly SequentialJobQueue _videoQueue;
 
     public BiliSubApplication(AppPaths paths)
     {
@@ -46,6 +47,7 @@ public sealed class BiliSubApplication : IAsyncDisposable
         Sessions = new SessionStore(paths);
         Authentication = new BilibiliAuthService(_http, Sessions);
         Jobs = new JobManager();
+        _videoQueue = new SequentialJobQueue();
         Updates = new UpdateService(paths, _http, Jobs);
         BugReports = new BugReportService(_http);
         Processes = new ProcessRunner();
@@ -109,9 +111,11 @@ public sealed class BiliSubApplication : IAsyncDisposable
         var bundledVideo = !bundledMedia || request.BundleVideo;
         var bundledThumbnail = bundledMedia && request.BundleThumbnail;
         var bundledSubtitle = bundledMedia && (request.BundleSubtitleIfAvailable || !string.IsNullOrWhiteSpace(request.BundleSubtitleTrack));
-        var job = Jobs.Create(bundledMedia ? "media" : "video");
-        _ = RunJobAsync(job, async () =>
+        var job = Jobs.Create(bundledMedia ? "media" : "video", cleanupAwareCancel: true);
+        try
         {
+            _videoQueue.Enqueue(job, async () =>
+            {
             await _configStore.UpdateAsync(config => config with
             {
                 VideoSpeed = request.Speed,
@@ -418,8 +422,14 @@ public sealed class BiliSubApplication : IAsyncDisposable
             var completedLabel = completed.Count > 0 ? string.Join(" + ", completed) : "không có file phù hợp";
             var warningSuffix = hasWarning ? " · có cảnh báo" : string.Empty;
             object? mediaResult = video is not null ? video : subtitle is not null ? subtitle : thumbnailPath;
-            job.Finish(null, $"Hoàn tất media · {completedLabel}{warningSuffix}: {outputDirectory}", mediaResult);
-        });
+                job.Finish(null, $"Hoàn tất media · {completedLabel}{warningSuffix}: {outputDirectory}", mediaResult);
+            });
+        }
+        catch (Exception error)
+        {
+            job.Finish(error, "Không thể thêm tác vụ media: " + error.Message);
+            throw;
+        }
         return job.Id;
     }
 
@@ -460,6 +470,25 @@ public sealed class BiliSubApplication : IAsyncDisposable
 
     public Task SaveEditorProjectAsync(EditorProject project, CancellationToken cancellationToken) =>
         _editorProjects.SaveAsync(project, cancellationToken);
+
+    public Task<IReadOnlyList<EditorProjectSummary>> ListEditorProjectsAsync(CancellationToken cancellationToken) =>
+        _editorProjects.ListAsync(cancellationToken);
+
+    public Task<EditorProject> LoadEditorProjectByIdAsync(string id, CancellationToken cancellationToken) =>
+        _editorProjects.LoadAsync(id, cancellationToken);
+
+    public Task RenameEditorProjectAsync(string id, string name, CancellationToken cancellationToken) =>
+        _editorProjects.RenameAsync(id, name, cancellationToken);
+
+    public Task DeleteEditorProjectAsync(string id, CancellationToken cancellationToken) =>
+        _editorProjects.DeleteAsync(id, cancellationToken);
+
+    public Task<EditorProject> RelinkEditorProjectSourceAsync(
+        EditorProject project,
+        string newPath,
+        MediaPreviewInfo media,
+        CancellationToken cancellationToken) =>
+        _editorProjects.RelinkAsync(project, newPath, media.Width, media.Height, media.Duration, cancellationToken);
 
     public Task<EditorSubtitleSource> LoadEditorSubtitleAsync(string path, CancellationToken cancellationToken) =>
         EditorSubtitleDocument.LoadAsync(path, cancellationToken);
@@ -764,6 +793,8 @@ public sealed class BiliSubApplication : IAsyncDisposable
 
     public void CancelJob(string id) => Jobs.Cancel(id);
 
+    public string? CancelCurrentVideo() => _videoQueue.CancelCurrent();
+
     public async Task CancelOcrScanAsync(string id, OcrScanRequest request, CancellationToken cancellationToken)
     {
         if (Jobs.TryGet(id, out var job) && job is not null)
@@ -785,16 +816,28 @@ public sealed class BiliSubApplication : IAsyncDisposable
 
     public async Task PrepareShutdownAsync(CancellationToken cancellationToken)
     {
-        foreach (var snapshot in Jobs.ActiveSnapshots().Where(x => x.PauseSupported))
+        // Pause media admission first so no new download can escape the cancellation snapshot.
+        // If another shutdown stage fails, admission is restored because the window remains open.
+        var videoDrain = _videoQueue.PauseAndDrainAsync(cancellationToken);
+        try
         {
-            await PauseJobAsync(snapshot.Id, cancellationToken);
+            foreach (var snapshot in Jobs.ActiveSnapshots().Where(x => x.PauseSupported))
+            {
+                await PauseJobAsync(snapshot.Id, cancellationToken);
+            }
+            var cleanupJobs = Jobs.ActiveSnapshots().Where(x => x.PauseSupported || x.Kind is "editor" or "editor-image" or "editor-asr" or "editor-tts" or "translation" or "translation-prepare").Select(x => x.Id).ToArray();
+            Jobs.CancelAll();
+            var completions = cleanupJobs.Select(id => Jobs.TryGet(id, out var job) && job is not null ? job.Completion : Task.CompletedTask).ToArray();
+            if (completions.Length > 0) await Task.WhenAll(completions).WaitAsync(cancellationToken);
+            await videoDrain;
+            await _ocr.StopAsync();
+            await Sessions.DeleteTemporaryAsync(cancellationToken);
         }
-        var cleanupJobs = Jobs.ActiveSnapshots().Where(x => x.PauseSupported || x.Kind is "editor" or "editor-asr" or "editor-tts" or "translation" or "translation-prepare").Select(x => x.Id).ToArray();
-        Jobs.CancelAll();
-        var completions = cleanupJobs.Select(id => Jobs.TryGet(id, out var job) && job is not null ? job.Completion : Task.CompletedTask).ToArray();
-        if (completions.Length > 0) await Task.WhenAll(completions).WaitAsync(cancellationToken);
-        await _ocr.StopAsync();
-        await Sessions.DeleteTemporaryAsync(cancellationToken);
+        catch
+        {
+            _videoQueue.Resume();
+            throw;
+        }
     }
 
     public void CleanupStorage()
@@ -850,6 +893,7 @@ public sealed class BiliSubApplication : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         Jobs.CancelAll();
+        await _videoQueue.DisposeAsync();
         await _ocr.DisposeAsync();
         try { await _editor.CleanupPreviewCacheAsync(); }
         catch { }

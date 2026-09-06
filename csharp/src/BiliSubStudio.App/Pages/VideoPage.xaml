@@ -21,7 +21,7 @@
                     <TextBlock FontSize="10" Foreground="{ThemeResource MutedTextBrush}" Text="BiliSub Studio / Tải media" />
                     <StackPanel Orientation="Horizontal" Spacing="14">
                         <TextBlock Style="{StaticResource PageTitleStyle}" Text="Tải media" />
-                        <TextBlock Margin="0,8,0,0" FontSize="11" Foreground="{ThemeResource MutedTextBrush}" Text="Một URL → Video + Thumbnail + Phụ đề trong cùng workflow" />
+                        <TextBlock Margin="0,8,0,0" FontSize="11" Foreground="{ThemeResource MutedTextBrush}" Text="Nhiều URL → tải lần lượt Video + Thumbnail + Phụ đề" />
                     </StackPanel>
                 </StackPanel>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="9" VerticalAlignment="Center">
@@ -172,7 +172,7 @@
                                 Content="Chọn thư mục lưu…"
                                 Style="{StaticResource SecondaryButtonStyle}" />
                             <Border Padding="11,9" Background="{ThemeResource AccentSoftBrush}" BorderBrush="{ThemeResource AccentPrimaryBrush}" BorderThickness="1" CornerRadius="8">
-                                <TextBlock FontSize="11" Foreground="{ThemeResource AccentPrimaryBrush}" Text="Thư mục đã chọn được dùng cho output + cache/resume của tác vụ Media." TextWrapping="Wrap" />
+                                <TextBlock FontSize="11" Foreground="{ThemeResource AccentPrimaryBrush}" Text="Mỗi lần bấm Tải media sẽ thêm một mục. Các mục tải lần lượt và giữ riêng nơi lưu, chất lượng đã chọn." TextWrapping="Wrap" />
                             </Border>
                             <Grid ColumnSpacing="9">
                                 <Grid.ColumnDefinitions>
@@ -220,6 +220,52 @@
                                 Style="{StaticResource BodyTextStyle}"
                                 Text="Sẵn sàng."
                                 AutomationProperties.LiveSetting="Polite" />
+                        </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource CardBorderStyle}">
+                        <StackPanel Spacing="10">
+                            <Grid ColumnSpacing="12">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Spacing="3">
+                                    <TextBlock Style="{StaticResource CardTitleStyle}" Text="Hàng đợi" />
+                                    <TextBlock Style="{StaticResource MutedTextStyle}" Text="Tải lần lượt; mục đã xong tự gỡ khỏi danh sách, lỗi hoặc hủy một mục không chặn mục sau." TextWrapping="Wrap" />
+                                </StackPanel>
+                                <TextBlock x:Name="QueueCountText" Grid.Column="1" VerticalAlignment="Top" Style="{StaticResource MutedTextStyle}" Text="0 đang tải · 0 đang chờ · 0 đã xong" />
+                            </Grid>
+                            <TextBlock x:Name="QueueEmptyText" Style="{StaticResource MutedTextStyle}" Text="Chưa có video trong hàng đợi." />
+                            <ListView
+                                x:Name="QueueList"
+                                MaxHeight="320"
+                                Background="Transparent"
+                                BorderThickness="0"
+                                SelectionMode="None"
+                                Visibility="Collapsed">
+                                <ListView.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Margin="0,0,0,7" Padding="10,9" Background="{ThemeResource RaisedSurfaceBrush}" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="1" CornerRadius="8">
+                                            <Grid ColumnSpacing="9" RowSpacing="6">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <Grid.RowDefinitions>
+                                                    <RowDefinition Height="Auto" />
+                                                    <RowDefinition Height="Auto" />
+                                                    <RowDefinition Height="Auto" />
+                                                </Grid.RowDefinitions>
+                                                <TextBlock Text="{Binding DisplayTitle}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                                                <Button Grid.Column="1" Grid.RowSpan="2" Padding="9,5" Content="Hủy mục" Tag="{Binding JobId}" IsEnabled="{Binding CanCancel}" Click="CancelQueueItem_Click" Style="{StaticResource SecondaryButtonStyle}" />
+                                                <TextBlock Grid.Row="1" Text="{Binding StateText}" Style="{StaticResource MutedTextStyle}" TextTrimming="CharacterEllipsis" />
+                                                <ProgressBar Grid.Row="2" Grid.ColumnSpan="2" Height="5" Minimum="0" Maximum="100" Value="{Binding Progress}" AutomationProperties.Name="Tiến độ mục trong hàng đợi" />
+                                            </Grid>
+                                        </Border>
+                                    </DataTemplate>
+                                </ListView.ItemTemplate>
+                            </ListView>
                         </StackPanel>
                     </Border>
                 </StackPanel>

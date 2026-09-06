@@ -12,7 +12,8 @@ public sealed record ResolvedStream(
     string Extension,
     long Generation,
     IReadOnlyList<string>? EndpointUrls = null,
-    int EndpointIndex = 0);
+    int EndpointIndex = 0,
+    long EstimatedSize = 0);
 
 public sealed record StreamSelection(
     string Title,

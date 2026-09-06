@@ -1,6 +1,9 @@
+using System.Collections.ObjectModel;
 using BiliSubStudio.App.Services;
+using BiliSubStudio.App.ViewModels;
 using BiliSubStudio.Core.Application;
 using BiliSubStudio.Core.Diagnostics;
+using BiliSubStudio.Core.Jobs;
 using BiliSubStudio.Core.Video;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -12,8 +15,14 @@ public sealed partial class VideoPage : Page
     private readonly BiliSubApplication _application;
     private readonly IFolderPickerService _folderPicker;
     private readonly ApplicationLog _log;
+    private readonly ObservableCollection<MediaQueueItem> _queueItems = [];
+    private int _queueCounter;
     private string? _metadataUrl;
+    private string? _metadataTitle;
     private string? _jobId;
+    private bool _monitoringQueue;
+    private bool _submitting;
+    private readonly CancellationTokenSource _queueMonitorCancellation = new();
 
     public VideoPage(BiliSubApplication application, IFolderPickerService folderPicker, ApplicationLog log)
     {
@@ -21,6 +30,7 @@ public sealed partial class VideoPage : Page
         _folderPicker = folderPicker;
         _log = log;
         InitializeComponent();
+        QueueList.ItemsSource = _queueItems;
     }
 
     public void ApplyConfiguration()
@@ -48,6 +58,7 @@ public sealed partial class VideoPage : Page
     {
         var url = UrlBox.Text.Trim();
         _metadataUrl = null;
+        _metadataTitle = null;
         StartButton.IsEnabled = false;
         QualityBox.Items.Clear();
         TrackBox.Items.Clear();
@@ -97,6 +108,7 @@ public sealed partial class VideoPage : Page
             }
 
             _metadataUrl = url;
+            _metadataTitle = metadata.Title;
             var hasThumbnail = !string.IsNullOrWhiteSpace(metadata.ThumbnailUrl);
             var hasOutput = !string.IsNullOrWhiteSpace(OutputPathBox.Text);
             var normalCount = metadata.Subtitles.Count(track => track.Official);
@@ -136,6 +148,7 @@ public sealed partial class VideoPage : Page
         if (!string.Equals(UrlBox.Text.Trim(), _metadataUrl, StringComparison.Ordinal))
         {
             _metadataUrl = null;
+            _metadataTitle = null;
             StartButton.IsEnabled = false;
             QualityBox.Items.Clear();
             TrackBox.Items.Clear();
@@ -173,12 +186,31 @@ public sealed partial class VideoPage : Page
             }
             finally
             {
-                ChooseOutputButton.IsEnabled = _jobId is null;
+                ChooseOutputButton.IsEnabled = true;
             }
             return;
         }
 
-        if (_metadataUrl is null || !string.Equals(_metadataUrl, UrlBox.Text.Trim(), StringComparison.Ordinal))
+        if (_submitting) return;
+        _submitting = true;
+        SetSubmissionControlsEnabled(false);
+        try
+        {
+            await EnqueueCurrentAsync();
+        }
+        finally
+        {
+            _submitting = false;
+            SetSubmissionControlsEnabled(true);
+            StartButton.IsEnabled = _metadataUrl is not null && !string.IsNullOrWhiteSpace(OutputPathBox.Text);
+        }
+    }
+
+    private async Task EnqueueCurrentAsync()
+    {
+        var sourceUrl = _metadataUrl;
+        var metadataTitle = _metadataTitle;
+        if (sourceUrl is null || !string.Equals(sourceUrl, UrlBox.Text.Trim(), StringComparison.Ordinal))
         {
             StatusText.Text = "URL chưa được kiểm tra hoặc đã thay đổi. Bấm Kiểm tra trước khi tải.";
             _log.Warning("Media", "Không bắt đầu tải vì URL chưa được kiểm tra hoặc đã thay đổi.");
@@ -192,8 +224,14 @@ public sealed partial class VideoPage : Page
         var downloadVideo = !hasExplicitSelection || videoSelected;
         var downloadThumbnail = !hasExplicitSelection || thumbnailSelected;
         var downloadSubtitle = !hasExplicitSelection || subtitleSelected;
+        var quality = QualityBox.SelectedItem?.ToString();
+        var container = ContainerBox.SelectedItem?.ToString() ?? "mp4";
+        var mode = ModeBox.SelectedItem?.ToString() ?? "video+audio";
+        var speed = SpeedBox.SelectedItem?.ToString() ?? "fast";
+        var subtitleFormat = FormatBox.SelectedItem?.ToString() ?? "srt";
+        var track = TrackBox.SelectedItem as SubtitleTrack;
 
-        if (downloadVideo && QualityBox.SelectedItem is null)
+        if (downloadVideo && quality is null)
         {
             StatusText.Text = "Nguồn chưa có lựa chọn chất lượng video hợp lệ.";
             _log.Warning("Media", "Không bắt đầu tải vì chưa có chất lượng video hợp lệ.");
@@ -206,6 +244,13 @@ public sealed partial class VideoPage : Page
             StatusText.Text = "Hãy chọn thư mục lưu trước khi tải.";
             StartButton.IsEnabled = false;
             _log.Warning("Media", "Không bắt đầu tải vì chưa chọn thư mục lưu.");
+            return;
+        }
+
+        if (_queueItems.Count(item => !item.Done) >= 50)
+        {
+            StatusText.Text = "Hàng đợi đã có 50 mục. Hãy đợi hoặc hủy bớt mục trước khi thêm.";
+            _log.Warning("Media", "Không thêm media vì hàng đợi đã đạt giới hạn 50 mục.");
             return;
         }
 
@@ -223,73 +268,181 @@ public sealed partial class VideoPage : Page
             return;
         }
 
-        var track = TrackBox.SelectedItem as SubtitleTrack;
         Progress.Value = 0;
         PercentText.Text = "0%";
 
-        _jobId = _application.StartVideo(new VideoDownloadRequest(
-            _metadataUrl,
-            QualityBox.SelectedItem?.ToString() ?? "best",
-            ContainerBox.SelectedItem?.ToString() ?? "mp4",
-            ModeBox.SelectedItem?.ToString() ?? "video+audio",
-            SpeedBox.SelectedItem?.ToString() ?? "fast",
+        var request = new VideoDownloadRequest(
+            sourceUrl,
+            quality ?? "best",
+            container,
+            mode,
+            speed,
             outputDirectory,
-            BundleSubtitleFormat: FormatBox.SelectedItem?.ToString() ?? "srt",
+            BundleSubtitleFormat: subtitleFormat,
             BundleSubtitleTrack: downloadSubtitle ? track?.Language ?? string.Empty : string.Empty,
             BundleSubtitleIfAvailable: downloadSubtitle,
             BundleThumbnail: downloadThumbnail,
             MediaBundle: true,
-            BundleVideo: downloadVideo));
-
-        StartButton.IsEnabled = false;
-        LoadMetadataButton.IsEnabled = false;
-        ChooseOutputButton.IsEnabled = false;
-        VideoAssetCheckBox.IsEnabled = false;
-        ThumbnailAssetCheckBox.IsEnabled = false;
-        SubtitleAssetCheckBox.IsEnabled = false;
+            BundleVideo: downloadVideo);
+        string jobId;
+        try
+        {
+            jobId = _application.StartVideo(request);
+        }
+        catch (Exception error)
+        {
+            StatusText.Text = "Không thể thêm vào hàng đợi: " + error.Message;
+            _log.Error("Media", StatusText.Text);
+            return;
+        }
+        var item = new MediaQueueItem(++_queueCounter, jobId, metadataTitle ?? sourceUrl, sourceUrl, outputDirectory);
+        _queueItems.Add(item);
+        QueueList.Visibility = Visibility.Visible;
+        QueueEmptyText.Visibility = Visibility.Collapsed;
         CancelButton.IsEnabled = true;
-        StatusText.Text = hasExplicitSelection
-            ? "Đang tải các mục bạn đã chọn..."
-            : "Đang tải bộ media đầy đủ...";
-        _log.Info("Media", hasExplicitSelection ? "Đã bắt đầu tải các asset được chọn." : "Đã bắt đầu tải bộ Media mặc định.", _jobId);
-        await MonitorJobAsync();
+        StatusText.Text = $"Đã thêm mục {item.Number} vào hàng đợi. Bạn có thể nhập URL tiếp theo.";
+        _log.Info("Media", hasExplicitSelection ? "Đã thêm các asset đã chọn vào hàng đợi." : "Đã thêm bộ Media mặc định vào hàng đợi.", jobId);
+        ResetSourceForNextItem();
+        _ = MonitorQueueAsync(_queueMonitorCancellation.Token);
+    }
+
+    private void SetSubmissionControlsEnabled(bool enabled)
+    {
+        UrlBox.IsEnabled = enabled;
+        LoadMetadataButton.IsEnabled = enabled;
+        ChooseOutputButton.IsEnabled = enabled;
+        VideoAssetCheckBox.IsEnabled = enabled;
+        ThumbnailAssetCheckBox.IsEnabled = enabled;
+        SubtitleAssetCheckBox.IsEnabled = enabled;
+        QualityBox.IsEnabled = enabled;
+        ModeBox.IsEnabled = enabled;
+        ContainerBox.IsEnabled = enabled;
+        SpeedBox.IsEnabled = enabled;
+        TrackBox.IsEnabled = enabled;
+        FormatBox.IsEnabled = enabled;
+        if (!enabled) StartButton.IsEnabled = false;
     }
 
     private void Cancel_Click(object sender, RoutedEventArgs e)
     {
-        if (_jobId is not null) _application.CancelJob(_jobId);
+        var jobId = _application.CancelCurrentVideo();
+        if (jobId is null) return;
+        _jobId = jobId;
+        var targetItem = _queueItems.FirstOrDefault(item => string.Equals(item.JobId, jobId, StringComparison.Ordinal));
+        targetItem?.Apply(_application.Jobs.GetSnapshot(jobId, int.MaxValue));
+        UpdateQueueSummary();
     }
 
-    private async Task MonitorJobAsync()
+    private void CancelQueueItem_Click(object sender, RoutedEventArgs e)
     {
-        while (_jobId is not null)
+        if (sender is not Button { Tag: string jobId }) return;
+        var item = _queueItems.FirstOrDefault(candidate => string.Equals(candidate.JobId, jobId, StringComparison.Ordinal));
+        if (item is null || item.Done) return;
+        _application.CancelJob(jobId);
+        item.Apply(_application.Jobs.GetSnapshot(jobId, int.MaxValue));
+        UpdateQueueSummary();
+    }
+
+    private void ResetSourceForNextItem()
+    {
+        _metadataUrl = null;
+        _metadataTitle = null;
+        UrlBox.Text = string.Empty;
+        QualityBox.Items.Clear();
+        TrackBox.Items.Clear();
+        MetadataText.Text = "Đã thêm vào hàng đợi. Nhập URL Bilibili tiếp theo và bấm Kiểm tra.";
+        StartButton.IsEnabled = false;
+    }
+
+    internal void StopMonitoring() => _queueMonitorCancellation.Cancel();
+
+    private async Task MonitorQueueAsync(CancellationToken cancellationToken)
+    {
+        if (_monitoringQueue) return;
+        _monitoringQueue = true;
+        try
         {
-            var snapshot = _application.Jobs.GetSnapshot(_jobId, int.MaxValue);
-            Progress.Value = Math.Max(0, snapshot.Progress);
-
-            var transport = snapshot.ActiveConnections > 0
-                ? $" · {snapshot.ActiveConnections} kết nối · {snapshot.BytesPerSecond / (1024 * 1024):0.0} MiB/s"
-                : string.Empty;
-            var range = snapshot.RangeSupported is null
-                ? string.Empty
-                : $" · Range {(snapshot.RangeSupported == true ? "ON" : "fallback")}";
-            PercentText.Text = $"{snapshot.Progress:0}%{transport}{range}";
-            StatusText.Text = snapshot.Message;
-
-            if (snapshot.Done)
+            while (true)
             {
-                CancelButton.IsEnabled = false;
-                LoadMetadataButton.IsEnabled = true;
-                ChooseOutputButton.IsEnabled = true;
-                VideoAssetCheckBox.IsEnabled = true;
-                ThumbnailAssetCheckBox.IsEnabled = true;
-                SubtitleAssetCheckBox.IsEnabled = true;
-                StartButton.IsEnabled = _metadataUrl is not null
-                    && !string.IsNullOrWhiteSpace(OutputPathBox.Text);
-                _jobId = null;
-                return;
+                var snapshots = new List<(MediaQueueItem Item, JobSnapshot Snapshot)>();
+                foreach (var item in _queueItems)
+                {
+                    if (item.Done) continue;
+                    var snapshot = _application.Jobs.GetSnapshot(item.JobId, int.MaxValue);
+                    item.Apply(snapshot);
+                    snapshots.Add((item, snapshot));
+                }
+                // QUEUE-AUTO-REMOVE: mục đã xong (hoàn tất/lỗi/hủy) tự gỡ khỏi
+                // danh sách để chừa chỗ cho mục sau; kết quả vẫn nằm ở thư mục
+                // lưu và phần trạng thái phía dưới không đổi.
+                var finished = _queueItems.Where(item => item.Done).ToList();
+                var latestFinished = finished.LastOrDefault();
+                foreach (var item in finished)
+                {
+                    if (string.Equals(item.StatusCode, "error", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(item.StatusCode, "cancelled", StringComparison.OrdinalIgnoreCase))
+                    {
+                        _log.Info("Media", $"Gỡ khỏi hàng đợi: {item.Title} · {item.Detail}");
+                    }
+                    _queueItems.Remove(item);
+                }
+                if (finished.Count > 0 && _queueItems.Count == 0)
+                {
+                    QueueList.Visibility = Visibility.Collapsed;
+                    QueueEmptyText.Visibility = Visibility.Visible;
+                }
+                UpdateQueueSummary();
+
+                var current = snapshots.FirstOrDefault(entry =>
+                    !entry.Snapshot.Done && !string.Equals(entry.Snapshot.Status, "queued", StringComparison.OrdinalIgnoreCase));
+                if (current.Item is null)
+                    current = snapshots.FirstOrDefault(entry => !entry.Snapshot.Done);
+                if (current.Item is null)
+                {
+                    _jobId = null;
+                    CancelButton.IsEnabled = false;
+                    var latest = _queueItems.LastOrDefault() ?? latestFinished;
+                    if (latest is not null)
+                    {
+                        Progress.Value = latest.Progress;
+                        PercentText.Text = $"Mục {latest.Number} · {latest.Progress:0}%";
+                        StatusText.Text = latest.Detail;
+                    }
+                    return;
+                }
+
+                _jobId = current.Item.JobId;
+                // Keep page-local technical log rendering disabled; only read the current snapshot.
+                var active = _application.Jobs.GetSnapshot(_jobId, int.MaxValue);
+                Progress.Value = Math.Max(0, active.Progress);
+                var transport = active.ActiveConnections > 0
+                    ? $" · {active.ActiveConnections} kết nối · {active.BytesPerSecond / (1024 * 1024):0.0} MiB/s"
+                    : string.Empty;
+                var range = active.RangeSupported is null
+                    ? string.Empty
+                    : $" · Range {(active.RangeSupported == true ? "ON" : "fallback")}";
+                PercentText.Text = $"Mục {current.Item.Number} · {active.Progress:0}%{transport}{range}";
+                StatusText.Text = active.Message;
+                CancelButton.IsEnabled = !active.Done && !string.Equals(active.Status, "cancelling", StringComparison.OrdinalIgnoreCase);
+                await Task.Delay(350, cancellationToken);
             }
-            await Task.Delay(350);
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        finally
+        {
+            _monitoringQueue = false;
+        }
+    }
+
+    private void UpdateQueueSummary()
+    {
+        var waiting = _queueItems.Count(item => !item.Done && string.Equals(item.StatusCode, "queued", StringComparison.OrdinalIgnoreCase));
+        var active = _queueItems.Count(item => !item.Done && !string.Equals(item.StatusCode, "queued", StringComparison.OrdinalIgnoreCase));
+        var completed = _queueItems.Count(item => item.Done);
+        QueueCountText.Text = completed > 0
+            ? $"{active} đang tải · {waiting} đang chờ · {completed} đã xong (đã gỡ khỏi danh sách)"
+            : $"{active} đang tải · {waiting} đang chờ";
     }
 }

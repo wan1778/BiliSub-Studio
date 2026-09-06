@@ -256,9 +256,15 @@ public sealed class YtDlpResolver
         IReadOnlyList<string> endpointUrls,
         int endpointIndex)
     {
-        var rawSize = format.FileSize is > 0 ? format.FileSize.Value : format.ApproximateFileSize.GetValueOrDefault();
+        // ApproximateFileSize is bitrate-derived and can differ materially for VBR media.
+        // Only an authoritative filesize may participate in truncation checks.
+        var rawSize = format.FileSize.GetValueOrDefault();
         var size = double.IsFinite(rawSize) && rawSize > 0 && rawSize <= long.MaxValue
             ? (long)Math.Floor(rawSize)
+            : 0L;
+        var rawEstimate = format.ApproximateFileSize.GetValueOrDefault();
+        var estimatedSize = double.IsFinite(rawEstimate) && rawEstimate > 0 && rawEstimate <= long.MaxValue
+            ? (long)Math.Floor(rawEstimate)
             : 0L;
         var rawHeight = format.Height.GetValueOrDefault();
         var height = double.IsFinite(rawHeight) && rawHeight > 0 && rawHeight <= int.MaxValue
@@ -276,7 +282,8 @@ public sealed class YtDlpResolver
             format.Extension,
             generation,
             endpoints,
-            activeIndex);
+            activeIndex,
+            estimatedSize);
     }
 
     private static IReadOnlyList<string> MergeEndpointUrls(string primaryUrl, IReadOnlyList<string>? rawEndpoints)

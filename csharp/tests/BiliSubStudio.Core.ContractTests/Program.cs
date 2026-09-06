@@ -36,6 +36,9 @@ internal static class Program
         ("range downloader opens parallel requests and validates bodies", RangeDownloaderParallelismAsync),
         ("completed range resume reports terminal transport progress", RangeCompletedResumeTelemetryAsync),
         ("range cancellation removes unfinished temp artifacts", RangeCancellationCleanupAsync),
+        ("range downloader rejects CDN totals disagreeing with metadata", RangeProbeTotalMismatchAsync),
+        ("truncated fallback and short audio never reach mux", MediaTruncationGuardsAsync),
+        ("stale fallback outputs are purged before retry", FallbackStaleCleanupAsync),
         ("process runner reaps child when output callback fails", ProcessRunnerCleanupAsync),
         ("owned process group reaps nested child on cancellation", OwnedProcessGroupCleanupAsync),
         ("media probe parses native preview contract", MediaProbeContractAsync),
@@ -73,6 +76,7 @@ internal static class Program
         ("editor whole-video scope canonicalizes state and spans Preview Export", EditorWholeVideoScopeContractAsync),
         ("editor timed range validates numeric and current-position Preview Export state", EditorTimedRangeContractAsync),
         ("editor project persists, isolates source drift and quarantines corrupt state", EditorProjectContractAsync),
+        ("editor project catalog lists renames and deletes without touching source files", EditorProjectCatalogContractAsync),
         ("editor project reopen preserves exact region order geometry identity and source bytes", EditorRegionProjectReopenContractAsync),
         ("editor Preview and Export preserve exact normalized region geometry within one pixel", EditorRegionPreviewExportGeometryContractAsync),
         ("editor SRT keeps exact blocks order and timecodes", EditorSubtitleDocumentContractAsync),
@@ -114,6 +118,7 @@ internal static class Program
         ("job cancellation owns immediate terminal state", JobCancellationContractAsync),
         ("pausable OCR cancellation waits for cleanup completion", PausableJobCancellationContractAsync),
         ("cleanup-aware Editor cancellation waits for FFmpeg cleanup", CleanupAwareJobCancellationContractAsync),
+        ("media queue is FIFO and preserves cancellation cleanup barriers", SequentialJobQueueContract.RunAsync),
         ("Windows output filename policy rejects reserved names", FileNamePolicyContractAsync),
         ("update version ordering respects prerelease identifiers", UpdateVersionContractAsync),
         ("updater rejects incomplete x64 PE headers", UpdatePeValidationContractAsync),
@@ -478,6 +483,98 @@ internal static class Program
             Equal((long)payload.Length, terminal.TotalBytes);
             Equal(0, terminal.ActiveConnections);
         });
+    }
+
+    // Field 2026-09-05: CDN báo Content-Range total 43,9 MB cho audio metadata
+    // 74,6 MB. Mọi check segment/assemble đều dùng total ảo nên file thiếu vẫn
+    // "hoàn tất" và ra file mất tiếng từ giữa. Total ảo phải nổ to.
+    private static async Task RangeProbeTotalMismatchAsync()
+    {
+        await WithTemporaryRootAsync(async root =>
+        {
+            var payload = new byte[8 * 1024 * 1024];
+            for (var index = 0; index < payload.Length; index++) payload[index] = (byte)(index % 251);
+            var shortTotal = (long)(payload.Length * 0.59);
+            using var lying = new HttpClient(new RangeFixtureHandler(payload, 0, shortTotal));
+            await ThrowsAsync<InvalidDataException>(() => new RangeDownloader(lying).DownloadAsync(
+                FixtureStream(payload.Length), root, "audio", 1, null, null, CancellationToken.None));
+            True(!File.Exists(Path.Combine(root, "audio.stream")), "lying CDN total must not leave a truncated stream");
+            using var honest = new HttpClient(new RangeFixtureHandler(payload, 0, shortTotal));
+            var output = await new RangeDownloader(honest).DownloadAsync(
+                FixtureStream(shortTotal), root, "audio-ok", 1, null, null, CancellationToken.None);
+            Equal(shortTotal, new FileInfo(output).Length);
+        });
+    }
+
+    private static Task MediaTruncationGuardsAsync()
+    {
+        var flags = BindingFlags.Static | BindingFlags.NonPublic;
+        var match = typeof(RangeDownloader).GetMethod("ProbeTotalMatchesMetadata", flags)
+            ?? throw new InvalidOperationException("missing probe-total metadata contract");
+        Equal(true, (bool)match.Invoke(null, [74655760L, 74655760L])!);
+        Equal(false, (bool)match.Invoke(null, [43892913L, 74655760L])!);
+        Equal(true, (bool)match.Invoke(null, [0L, 74655760L])!);
+        Equal(true, (bool)match.Invoke(null, [74655760L, 0L])!);
+
+        var service = typeof(VideoDownloadService);
+        var fallback = service.GetMethod("ValidateFallbackSize", flags)
+            ?? throw new InvalidOperationException("missing fallback size contract");
+        ExpectInvalidData(() => fallback.Invoke(null, [StreamKind.Audio, 43892913L, 74655760L]));
+        fallback.Invoke(null, [StreamKind.Audio, 74655760L, 74655760L]);
+        fallback.Invoke(null, [StreamKind.Audio, 0L, 74655760L]);
+
+        var mux = service.GetMethod("ValidateMuxDurations", flags)
+            ?? throw new InvalidOperationException("missing mux duration contract");
+        ExpectInvalidData(() => mux.Invoke(null, [7264.0, 4279.646621]));
+        mux.Invoke(null, [7264.0, 7263.5]);
+        ExpectInvalidData(() => mux.Invoke(null, [100.0, 200.0]));
+        return Task.CompletedTask;
+    }
+
+    // Field 2026-09-06: output fallback thiếu của lần trước phải bị xóa đầu
+    // lần fallback sau (nếu không --no-overwrites tái dùng file hỏng), nhưng
+    // .part/.ytdl resume và prefix stream khác phải giữ nguyên.
+    private static Task FallbackStaleCleanupAsync()
+    {
+        return WithTemporaryRootAsync(root =>
+        {
+            var flags = BindingFlags.Static | BindingFlags.NonPublic;
+            var purge = typeof(VideoDownloadService).GetMethod("PurgeStaleFallbackOutputs", flags)
+                ?? throw new InvalidOperationException("missing stale fallback purge contract");
+            var cleanup = typeof(VideoDownloadService).GetMethod("CleanupFallbackTemporary", flags)
+                ?? throw new InvalidOperationException("missing fallback cleanup contract");
+            var prefix = Path.Combine(root, "audio_fallback");
+            File.WriteAllBytes(Path.Combine(root, "audio_fallback.m4a"), new byte[16]);
+            File.WriteAllBytes(Path.Combine(root, "audio_fallback.m4a.part"), new byte[8]);
+            File.WriteAllBytes(Path.Combine(root, "audio_fallback.m4a.ytdl"), new byte[8]);
+            File.WriteAllBytes(Path.Combine(root, "audio_fallback.tmp"), new byte[4]);
+            File.WriteAllBytes(Path.Combine(root, "video_fallback.mp4"), new byte[8]);
+            purge.Invoke(null, [prefix]);
+            True(!File.Exists(Path.Combine(root, "audio_fallback.m4a")), "stale fallback output survived purge");
+            True(File.Exists(Path.Combine(root, "audio_fallback.m4a.part")), "purge removed yt-dlp resume partial");
+            True(File.Exists(Path.Combine(root, "audio_fallback.m4a.ytdl")), "purge removed yt-dlp resume metadata");
+            True(File.Exists(Path.Combine(root, "audio_fallback.tmp")), "purge stole the tmp cleanup's job");
+            True(File.Exists(Path.Combine(root, "video_fallback.mp4")), "purge removed another stream's fallback");
+            cleanup.Invoke(null, [prefix]);
+            True(!File.Exists(Path.Combine(root, "audio_fallback.tmp")), "fallback tmp survived cleanup");
+            True(File.Exists(Path.Combine(root, "audio_fallback.m4a.part")), "cleanup removed yt-dlp resume partial");
+            return Task.CompletedTask;
+        });
+    }
+
+    // MethodBase.Invoke bọc lỗi vào TargetInvocationException: mở ra để assert
+    // đúng InvalidDataException của gate, không phải lỗi reflection.
+    private static void ExpectInvalidData(Func<object?> action)
+    {
+        try
+        {
+            action();
+        }
+        catch (TargetInvocationException error) when (error.InnerException is InvalidDataException)
+        {
+            return;
+        }
+        throw new InvalidOperationException("truncation guard did not throw InvalidDataException");
     }
 
     private static async Task ProcessRunnerCleanupAsync()
@@ -1820,6 +1917,89 @@ internal static class Program
         });
     }
 
+    private static async Task EditorProjectCatalogContractAsync()
+    {
+        await WithTemporaryRootAsync(async root =>
+        {
+            var paths = AppPaths.FromRoot(root);
+            paths.EnsureBootstrapDirectories();
+            var store = new EditorProjectStore(paths);
+            var firstVideo = Path.Combine(root, "first.mp4");
+            var secondVideo = Path.Combine(root, "second.mp4");
+            var externalSrt = Path.Combine(root, "first.vi.srt");
+            var externalLogo = Path.Combine(root, "logo.png");
+            await File.WriteAllBytesAsync(firstVideo, [1, 2, 3]);
+            await File.WriteAllBytesAsync(secondVideo, [4, 5, 6]);
+            await File.WriteAllTextAsync(externalSrt, "1\n00:00:01,000 --> 00:00:02,000\nXin chào\n");
+            await File.WriteAllBytesAsync(externalLogo, [7, 8, 9]);
+
+            var subtitle = await EditorSubtitleDocument.LoadAsync(externalSrt, CancellationToken.None);
+            var first = await store.LoadOrCreateAsync(firstVideo, 1920, 1080, 120, CancellationToken.None);
+            await store.SaveAsync(first with
+            {
+                Name = "Project đầu",
+                Subtitle = new EditorSubtitleProject(
+                    subtitle.Path,
+                    subtitle.Size,
+                    subtitle.LastWriteUtcTicks,
+                    subtitle.Sha256,
+                    subtitle.Cues,
+                    EditorSubtitlePlacement.Default,
+                    string.Empty,
+                    string.Empty,
+                    string.Empty),
+            }, CancellationToken.None);
+            await Task.Delay(20);
+            var second = await store.LoadOrCreateAsync(secondVideo, 1280, 720, 60, CancellationToken.None);
+            await store.SaveAsync(second with { Name = "Project sau" }, CancellationToken.None);
+
+            var listed = await store.ListAsync(CancellationToken.None);
+            Equal(2, listed.Count);
+            Equal(second.Id, listed[0].Id);
+            Equal(first.Id, listed[1].Id);
+            True(listed.Single(project => project.Id == first.Id).HasSubtitle, "catalog lost persisted SRT status");
+
+            await store.RenameAsync(first.Id, "Tên project mới", CancellationToken.None);
+            listed = await store.ListAsync(CancellationToken.None);
+            Equal("Tên project mới", listed.Single(project => project.Id == first.Id).Name);
+
+            File.Delete(secondVideo);
+            listed = await store.ListAsync(CancellationToken.None);
+            True(!listed.Single(project => project.Id == second.Id).SourceExists,
+                "source-missing project disappeared from catalog");
+
+            var projectDirectory = Path.Combine(paths.Data, "Projects");
+            var sidecar = Path.Combine(projectDirectory, first.Id + ".images.json");
+            var asrDirectory = Path.Combine(projectDirectory, "ASR");
+            var speechDirectory = Path.Combine(projectDirectory, "Speech");
+            var translationDirectory = Path.Combine(projectDirectory, "Translation");
+            var ttsDirectory = Path.Combine(paths.Cache, "Editor", "TTS", first.Id);
+            var thumbnailDirectory = Path.Combine(paths.Cache, "Editor", "ProjectThumbnails");
+            var temporaryAsrDirectory = Path.Combine(paths.Temp, "Editor", "ASR", first.Id);
+            foreach (var directory in new[] { asrDirectory, speechDirectory, translationDirectory, ttsDirectory, thumbnailDirectory, temporaryAsrDirectory })
+                Directory.CreateDirectory(directory);
+            await File.WriteAllTextAsync(sidecar, "[]");
+            await File.WriteAllTextAsync(Path.Combine(asrDirectory, first.Id + ".json"), "{}");
+            await File.WriteAllTextAsync(Path.Combine(asrDirectory, first.Id + ".zh.srt"), string.Empty);
+            await File.WriteAllTextAsync(Path.Combine(speechDirectory, first.Id + ".fixture.speech.json"), "{}");
+            await File.WriteAllTextAsync(Path.Combine(translationDirectory, first.Id + ".json"), "{}");
+            await File.WriteAllTextAsync(Path.Combine(ttsDirectory, "clip.wav"), string.Empty);
+            await File.WriteAllTextAsync(Path.Combine(thumbnailDirectory, first.Id + ".1.2.jpg"), string.Empty);
+            await File.WriteAllTextAsync(Path.Combine(temporaryAsrDirectory, "run.tmp"), string.Empty);
+
+            await store.DeleteAsync(first.Id, CancellationToken.None);
+            listed = await store.ListAsync(CancellationToken.None);
+            Equal(1, listed.Count);
+            Equal(second.Id, listed[0].Id);
+            True(File.Exists(firstVideo), "deleting project deleted source video");
+            True(File.Exists(externalSrt), "deleting project deleted external SRT");
+            True(File.Exists(externalLogo), "deleting project deleted external logo");
+            True(!File.Exists(sidecar), "deleting project kept image sidecar");
+            True(!Directory.Exists(ttsDirectory), "deleting project kept TTS cache");
+            True(!Directory.Exists(temporaryAsrDirectory), "deleting project kept temporary ASR data");
+        });
+    }
+
     private static async Task EditorRegionProjectReopenContractAsync()
     {
         await WithTemporaryRootAsync(async root =>
@@ -1872,6 +2052,30 @@ internal static class Program
             var sourceAfterSecondSave = await File.ReadAllBytesAsync(video);
             True(sourceBytes.SequenceEqual(sourceAfterSecondSave),
                 "repeated region project reopen/save changed source media bytes");
+
+            // RELINK (kiểu Adobe): file di chuyển sang đường dẫn mới nhưng cùng
+            // nội dung thì nối lại được, giữ nguyên regions; file lạ bị từ chối.
+            var movedVideo = Path.Combine(root, "region-reopen-moved.mp4");
+            await File.WriteAllBytesAsync(movedVideo, sourceBytes);
+            var relinked = await secondStore.RelinkAsync(
+                reopenedAgain, movedVideo, width, height, duration, CancellationToken.None);
+            True(!string.Equals(relinked.Id, reopenedAgain.Id, StringComparison.Ordinal),
+                "relink kept the old path-derived project id");
+            Equal(expected.Length, relinked.Regions.Count);
+            Equal(Path.GetFullPath(movedVideo), relinked.Source.Path);
+            var relinkedAgain = await new EditorProjectStore(paths)
+                .LoadOrCreateAsync(movedVideo, width, height, duration, CancellationToken.None);
+            Equal(expected.Length, relinkedAgain.Regions.Count);
+            var collisionVideo = Path.Combine(root, "region-reopen-collision.mp4");
+            await File.WriteAllBytesAsync(collisionVideo, sourceBytes);
+            var collisionProject = await secondStore.LoadOrCreateAsync(
+                collisionVideo, width, height, duration, CancellationToken.None);
+            await secondStore.SaveAsync(collisionProject, CancellationToken.None);
+            await ThrowsAsync<InvalidDataException>(() => secondStore.RelinkAsync(
+                relinkedAgain, collisionVideo, width, height, duration, CancellationToken.None));
+            Throws<InvalidDataException>(() => EditorProjectStore.RelinkSource(reopenedAgain, movedVideo, 1280, 720, duration));
+            Throws<InvalidDataException>(() => EditorProjectStore.RelinkSource(reopenedAgain, movedVideo, width, height, duration + 5));
+            Throws<FileNotFoundException>(() => EditorProjectStore.RelinkSource(reopenedAgain, Path.Combine(root, "missing.mp4"), width, height, duration));
         });
     }
 
@@ -2327,6 +2531,28 @@ internal static class Program
         await job.Completion;
         Equal("cancelled", job.Snapshot().Status);
         Equal("FFmpeg stopped and partial render removed", job.Snapshot().Message);
+
+        using var raced = new AppJob("editor-race", "editor", cleanupAwareCancel: true);
+        raced.Cancel();
+        raced.Set("rendering", 95, "late worker update");
+        raced.SetResult("partial result");
+        raced.Finish(null, "late success", "completed result");
+        await raced.Completion;
+        var terminal = raced.Snapshot();
+        Equal("cancelled", terminal.Status);
+        Equal(true, terminal.Done);
+        Equal(null, terminal.Result);
+        True(terminal.Message.Contains("Đã hủy tác vụ", StringComparison.Ordinal),
+            "accepted cancellation was overwritten by a late successful completion");
+
+        using var failedCleanup = new AppJob("editor-cleanup-error", "editor", cleanupAwareCancel: true);
+        failedCleanup.Cancel();
+        failedCleanup.Finish(new IOException("cleanup failed"), "Không dọn được file render dở.");
+        await failedCleanup.Completion;
+        var failedTerminal = failedCleanup.Snapshot();
+        Equal("error", failedTerminal.Status);
+        Equal("cleanup failed", failedTerminal.Error);
+        Equal(null, failedTerminal.Result);
     }
 
     private static async Task InvalidOcrCheckpointContractAsync()
@@ -2449,13 +2675,13 @@ internal static class Program
                 binder: null, args: [paths], culture: null) ?? throw new InvalidOperationException("cannot create checkpoint store");
             var keyMethod = storeType.GetMethod("KeyAsync", BindingFlags.Instance | BindingFlags.NonPublic)
                 ?? throw new InvalidOperationException("missing checkpoint identity method");
-            var key = await ((Task<string>?)keyMethod.Invoke(store, [request, 15, CancellationToken.None])
+            var key = await ((Task<string>?)keyMethod.Invoke(store, [request, 18, CancellationToken.None])
                 ?? throw new InvalidOperationException("checkpoint identity did not return a task"));
             var directory = Path.Combine(paths.Data, "OCRCheckpoints");
             Directory.CreateDirectory(directory);
             await File.WriteAllTextAsync(Path.Combine(directory, key + ".json"), $$"""
                 {
-                  "schema": 15,
+                  "schema": 18,
                   "key": "{{key}}",
                   "selected_parallelism": 2,
                   "lanes": [
@@ -2695,7 +2921,7 @@ internal static class Program
 
     private static ResolvedStream FixtureStream(long size) => new(StreamKind.Video, "v1", "https://fixture.invalid/video", new Dictionary<string, string>(), size, 1080, "m4s", 1);
 
-    private sealed class RangeFixtureHandler(byte[] payload, int delayMilliseconds) : HttpMessageHandler
+    private sealed class RangeFixtureHandler(byte[] payload, int delayMilliseconds, long? advertisedTotal = null) : HttpMessageHandler
     {
         private int _active;
         private int _peak;
@@ -2711,17 +2937,18 @@ internal static class Program
             }
             try
             {
+                var total = advertisedTotal ?? payload.Length;
                 var range = request.Headers.Range?.Ranges.Single() ?? throw new InvalidOperationException("missing Range");
                 var start = range.From ?? 0;
-                var end = range.To ?? payload.Length - 1;
-                var length = checked((int)(end - start + 1));
+                var end = range.To ?? total - 1;
+                var length = checked((int)Math.Min(end - start + 1, Math.Max(0, payload.Length - start)));
                 if (!(start == 0 && end == 0) && delayMilliseconds > 0)
                     await Task.Delay(Math.Min(25, delayMilliseconds), cancellationToken);
                 var bytes = payload.AsSpan(checked((int)start), length).ToArray();
                 HttpContent content = start == 0 && end == 0
                     ? new ByteArrayContent(bytes)
                     : new StreamContent(new SlowReadStream(bytes, delayMilliseconds));
-                content.Headers.ContentRange = new ContentRangeHeaderValue(start, end, payload.Length);
+                content.Headers.ContentRange = new ContentRangeHeaderValue(start, end, total);
                 content.Headers.ContentLength = length;
                 content.Headers.ContentType = new MediaTypeHeaderValue("video/mp4");
                 return new HttpResponseMessage(HttpStatusCode.PartialContent) { Content = content };
