@@ -206,6 +206,12 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
 - `verify_timeline_parity_contract.py` plus G2/G3/G4 verifiers and
   `validate_csharp_migration.py`: PASS; code map regenerated.
 - G1 regression re-run: `TOTAL=35 PASS=35 FAIL=0`.
+- Clean-tree `verify.ps1` on `25d7c1e`: PASS (contracts 112/112, Range
+  regressions, self-contained publish, startup smoke, checksum readback).
+- G5 gate binary: exe SHA-256
+  `538be787200bd083bbfd22d52e4d88ef8d475fe65050aca5faf86d310c685cb9`,
+  source tree SHA-256
+  `951f63968b836ec687bc57f01e77ec49af5546824c5d6fb24fcf0310a51f6686`.
 
 ## Remaining precondition
 
