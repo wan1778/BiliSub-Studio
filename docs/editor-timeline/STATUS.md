@@ -7,7 +7,7 @@ Last updated: 2026-09-07
 ```text
 Program status: PLANNING APPROVED
 Current gate: G7 - Effects and subtitle ownership
-Gate state: IN_PROGRESS - source and dirty-tree gates pass; clean-tree verify pending
+Gate state: VERIFIED - ownership, dependency transactions and compiler resolution
 Timeline implementation: STARTED (through item ownership/compiler resolution; no voice/render parity)
 Classic Editor modifications for Timeline: NONE (V2-only files plus test/verifier/docs)
 ```
@@ -239,7 +239,7 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
   source tree SHA-256
   `060dd173079bf9870ecf26684a928e02f35bd5d231cf6632667e99c88802f0f7`.
 
-## G7 pre-commit verification evidence (2026-09-07)
+## G7 verification evidence (2026-09-07)
 
 - `TimelineItem` distinguishes clip-local effect/subtitle/logo ranges from
   sequence-global subtitle/music/logo ranges; all persisted times remain `long`
@@ -268,21 +268,24 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
   or schema-7 store modifications.
 - Release x64 build: 0 warnings, 0 errors; Range field regressions PASS;
   `validate_csharp_migration.py` PASS; generated code map current.
-- Clean-tree `verify.ps1`, self-contained publish/startup smoke and final
-  G7 binary/source hashes: PENDING until the G7 source is committed.
+- Clean-tree `verify.ps1` on `872907e`: PASS (contracts `114/114`, Range
+  regressions, self-contained publish, real startup smoke, worker identity,
+  PE32+ x64 and checksum readback).
+- G7 gate binary: exe SHA-256
+  `c5b5933dd917f7465b3494e8c6e6718447914310220bc06b79f883d2b870e8b1`,
+  source tree SHA-256
+  `a5953d25cf284d2ec1d83fe5ea3babe8f690a260da820cf87f11dc0681ca396e`.
 
 ## Remaining precondition
 
-- Commit the reviewed G7 source and run clean-tree `csharp/scripts/verify.ps1`
-  before changing the gate state to `VERIFIED`.
+- None for starting G8 voice/audio ownership work.
 - Any future restore or migration experiment must use a separate test root and
   re-verify `BACKUP_PROCEDURE.md` first.
 
 ## Next exact action
 
-Review and commit the G7 source, run the clean-tree Windows verification gate,
-then record the binary/source hashes. Do not modify the classic Editor for
-Timeline work.
+Begin G8 with cue-linked voice and sequence-global music synchronization
+contracts. Do not modify the classic Editor for Timeline work.
 
 ## Required resume command
 
