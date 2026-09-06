@@ -161,6 +161,12 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
 - `validate_csharp_migration.py`: PASS; code map regenerated.
 - PDEC-001/002 follow current recommendations (first-clip geometry, explicit
   FPS); final product approval still required at promotion.
+- Clean-tree `verify.ps1` on `c032308`: PASS (contracts 110/110, Range
+  regressions, self-contained publish, startup smoke, checksum readback).
+- G3 gate binary: exe SHA-256
+  `bac8ff3bd1cc44a9c92bb4a590857edd1589f18ca3a785a6ec9e609be8a291c8`,
+  source tree SHA-256
+  `6d03392fa4bd3cc330666b55b01d6a9976e4e42d423e0aa387f987a1e2a42d97`.
 
 ## Remaining precondition
 
