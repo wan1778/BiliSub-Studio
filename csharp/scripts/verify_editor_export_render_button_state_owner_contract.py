@@ -64,17 +64,19 @@ def contract_errors(xaml: str, parts: dict[str, str]) -> list[str]:
 
         required_tokens = (
             "var idle = !EditorBusy;",
+            "var cleanupPending = _cleanupDetachedJobIds.Count > 0;",
             "var hasMedia = _media is not null;",
             "var editable = idle && hasMedia && !_playback.IsPreviewMode;",
-            "var subtitleReady = _subtitleSource is not null",
+            "var subtitleReady = _subtitleSource is { Cues.Count: > 0 } && _subtitleSource.Cues.All(x => !string.IsNullOrWhiteSpace(x.VietnameseText));",
             'var audioChanged = _audioSettings.SourceMode != "keep";',
             "var hasImages = _imageFeatureInitialized && _imageOverlays.Count > 0;",
-            "editable && !_subtitleManualDirty && _path is not null",
+            "editable && !cleanupPending && _trimRangeValid && !_subtitleManualDirty && _path is not null",
             "_document.Regions.Count > 0",
             "subtitleReady",
             "audioChanged",
             "_voiceTrack is not null",
             "hasImages",
+            "trimChanged",
             "!string.IsNullOrWhiteSpace(FileNameBox.Text)",
         )
         for token in required_tokens:

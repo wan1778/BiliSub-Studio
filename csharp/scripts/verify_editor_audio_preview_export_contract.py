@@ -53,7 +53,9 @@ require("var audio = EditorProjectStore.NormalizeAudio(renderRequest.Audio);" in
         "AUDIO-SHARED Export does not normalize sliced request audio")
 require("var voice = NormalizeVoiceTrack(renderRequest.VoiceTrack, requireFile: true);" in run,
         "AUDIO-SHARED Export lost voice track")
-require("BuildRenderArguments(input, temporary, graph, audio, trim, voice, mp4)" in run,
+require("BuildConfiguredRenderArguments(" in run
+        and "input, temporary, exportGraph.FilterGraph, audio, trim, voice, mp4," in run
+        and "export, encoder, exportGraph.OutputLabel" in run,
         "AUDIO-SHARED Export bypassed common FFmpeg argument policy")
 
 preview_run = SERVICE.split("public async Task<EditorPreviewSegment> CreatePreviewSegmentAsync(", 1)[1].split(
@@ -67,15 +69,17 @@ require("BuildPreviewArguments(input, temporary, graph, sliced.Audio, sourceStar
 preview_args = SERVICE.split("internal static IReadOnlyList<string> BuildPreviewArguments(", 1)[1].split(
     "internal static IReadOnlyList<string> BuildRenderArguments", 1
 )[0]
-render_args = SERVICE.split("internal static IReadOnlyList<string> BuildRenderArguments(", 1)[1].split(
+render_args = SERVICE.split("internal static IReadOnlyList<string> BuildConfiguredRenderArguments(", 1)[1].split(
     "internal static IReadOnlyList<string> BuildAudioArguments", 1
 )[0]
 require("BuildAudioArgumentsCore(audio, mp4: true, resetTimestamps: true)" in preview_args,
         "AUDIO-SHARED Preview does not use source gain core")
-require("BuildAudioArgumentsCore(audio, mp4, resetTimestamps: true)" in render_args,
+require("BuildFinalAudioArguments(audio, export.AudioBitrateKbps, resetTimestamps: true)" in render_args,
         "AUDIO-SHARED Export does not use source gain core")
 require("BuildVoiceAudioFilter(audio, voice, 1, trim.Start)" in render_args,
         "AUDIO-SHARED Export voice mix does not use source gain")
+require("BuildConfiguredRenderArguments(input, output, graph, audioSettings, trim, voiceTrack, mp4);" in SERVICE,
+        "AUDIO-SHARED common render wrapper no longer delegates to configured policy")
 
 audio_core = SERVICE.split("private static IReadOnlyList<string> BuildAudioArgumentsCore", 1)[1].split(
     "public async Task<byte[]> GetPreviewFrameJpegAsync", 1
@@ -94,7 +98,7 @@ require('if (audio.SourceMode == "mute") return voiceChain + ";[voicea]anull[aou
 image_render = COMPOSER.split("public async Task<string> RenderAsync(", 1)[1].split(
     "private async Task ValidateAsync", 1
 )[0]
-require('"-map", "[vout]", "-map", "0:a?"' in image_render,
+require('"-map", graph.OutputLabel, "-map", "0:a?"' in image_render,
         "AUDIO-SHARED image stage lost rendered audio")
 require("volume=" not in image_render and "amix=" not in image_render,
         "AUDIO-SHARED image stage applies source gain a second time")

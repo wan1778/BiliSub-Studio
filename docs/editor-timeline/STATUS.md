@@ -6,8 +6,8 @@ Last updated: 2026-09-06
 
 ```text
 Program status: PLANNING APPROVED
-Current gate: G0 - Baseline
-Gate state: VERIFIED - source, binary and production project backup complete
+Current gate: G1 - Classic contracts
+Gate state: VERIFIED - 35/35 classic autosave/reopen/preview/export contracts pass
 Timeline implementation: NOT STARTED
 Classic Editor modifications for Timeline: NONE
 ```
@@ -105,13 +105,25 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
 7. `verify_ocr_scanner_contract.py` - STALE: requires the old NVDEC `fps={fps}` filter shape; source deliberately removed the fps filter because it rewrites PTS, sampling is now PTS-preserving in C# via `settb` + `-fps_mode passthrough` (`OcrScanner.cs:1363-1380`), covered by passing Core contract tests (OCR timebase PTS exact match and guard).
 8. `verify_editor_tts_cancel_contract.py` - GENUINE regression: `PollTtsJobAsync` detaches `_ttsJobId` after 30 s while the TTS job is still non-terminally cancelling (`EditorPage.xaml.cs:994-1000`), and source switching clears tracked IDs after only 8 s (`EditorPage.xaml.cs:1047-1060`). Violates the ownership rule "UI keeps the job ID until cleanup reaches a terminal state"; restart is still blocked by the app-level active-job gate, but the UI loses its owner and may not refresh. Must fix source before baseline promotion.
 
+## G1 verification evidence (2026-09-06)
+
+- Frozen inventory: `docs/editor-timeline/G1_CONTRACTS.md` (35 unique scripts).
+- Result: `TOTAL=35 PASS=35 FAIL=0` with `python -B`.
+- Six stale static tokens refreshed without weakening behavior:
+  `BuildConfiguredRenderArguments`, sliced `renderRequest` ASS ownership,
+  export-dialog immutable target, strengthened `subtitleReady` plus
+  `cleanupPending`/`trimChanged`, settings `ValidateWritableDirectoryAsync`,
+  image `graph.OutputLabel`.
+- Classic Editor source: unchanged for Timeline; no schema change.
+- G0 baseline tag `timeline-v2-g0-baseline-20260906` remains the recovery point.
+
 ## Remaining precondition
 
-- None for starting G1 contract/design work. Any future restore or migration experiment must use a separate test root and re-verify `BACKUP_PROCEDURE.md` first.
+- None for starting G2 shell/design work. Any future restore or migration experiment must use a separate test root and re-verify `BACKUP_PROCEDURE.md` first.
 
 ## Next exact action
 
-Begin G1 by freezing and running the classic single-video autosave/reopen/preview/export contracts. Do not modify the classic Editor for Timeline work.
+Begin G2 by creating the separate Timeline page/model/persistence/preview/export behind a flag with no production writes. Do not modify the classic Editor for Timeline work.
 
 ## Required resume command
 

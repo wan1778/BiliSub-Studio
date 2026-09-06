@@ -75,7 +75,7 @@ require(xaml.count('x:Name="EditorChooseOutputButton"') == 1,
         "EXPORT-03 requires one Choose output-directory button")
 require(xaml.count('x:Name="EditorOpenOutputButton"') == 1,
         "EXPORT-03 requires one Open output-directory button")
-require('Content="Chọn thư mục"' in xaml,
+require('Content="📁 Chọn thư mục"' in xaml and "Chọn thư mục" in xaml,
         "EXPORT-03 Choose button must remain user-visible")
 require('Click="EditorChooseOutput_Click"' not in xaml,
         "EXPORT-03 Choose button must not gain a duplicate XAML Click owner")
@@ -114,15 +114,19 @@ require("return folder?.Path;" in folder_picker,
 # Settings owns path validation and durable config mutation.
 set_output = extract_method(settings, "public async Task<SettingsSnapshot> SetOutputDirectoryAsync(")
 require(set_output, "EXPORT-03 Settings output-directory owner is missing")
+validate_helper = extract_method(settings, "private static async Task<string> ValidateWritableDirectoryAsync(")
+require(validate_helper, "EXPORT-03 Settings writable-directory validator is missing")
 for token in (
     "path = path?.Trim() ?? string.Empty;",
     "Directory.CreateDirectory(path);",
     ".bilisub-write-probe-",
     "File.WriteAllTextAsync(probe,",
-    "config => config with { OutputDirectory = path }",
 ):
-    require(token in set_output, f"EXPORT-03 Settings lost required output-directory behavior: {token}")
-require("Thư mục đã chọn không cho phép BiliSub Studio ghi tệp." in set_output,
+    require(token in validate_helper, f"EXPORT-03 Settings lost required output-directory behavior: {token}")
+require("config => config with { OutputDirectory = path }" in set_output
+        and "ValidateWritableDirectoryAsync(path, cancellationToken)" in set_output,
+        "EXPORT-03 Settings lost required output-directory behavior: config => config with { OutputDirectory = path }")
+require("Thư mục đã chọn không cho phép BiliSub Studio ghi tệp." in validate_helper,
         "EXPORT-03 unwritable selected folders must be rejected")
 
 # Config snapshot must update immediately and be written atomically for reopen.
@@ -143,7 +147,7 @@ require("Directory.Exists(_application.Config.OutputDirectory)" in refresh,
 
 # PROJECT-10: Config is authoritative at click time, then one immutable target
 # snapshot must feed every final stage so an in-flight export cannot jump folders.
-capture = extract_method(output_target, "private EditorOutputTarget CaptureEditorOutputTarget()")
+capture = extract_method(output_target, "private EditorOutputTarget CaptureEditorOutputTarget(")
 require(capture, "EXPORT-03/PROJECT-10 output target capture owner is missing")
 require("_application.Config.OutputDirectory" in capture,
         "EXPORT-03 output target must originate from the authoritative Config snapshot")
@@ -152,7 +156,7 @@ require("FileNameBox.Text" in capture,
 
 render_project = extract_method(images, "private async Task RenderProjectAsync()")
 require(render_project, "EXPORT-03 RenderProjectAsync is missing")
-require("outputTarget = CaptureEditorOutputTarget();" in render_project,
+require("outputTarget = await ShowExportDialogAsync();" in render_project,
         "EXPORT-03 final render must capture one output target")
 require("OutputDirectory = outputTarget.Directory" in render_project
         and "FileName = outputTarget.FileName" in render_project,

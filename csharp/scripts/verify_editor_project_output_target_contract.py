@@ -40,12 +40,12 @@ def method_body(source: str, signature: str) -> str:
 
 
 def verify_source(images: str, target: str) -> None:
-    capture = method_body(target, "private EditorOutputTarget CaptureEditorOutputTarget()")
+    capture = method_body(target, "private EditorOutputTarget CaptureEditorOutputTarget(")
     for token in (
         "_application.Config.OutputDirectory",
         "Path.GetFullPath(configuredDirectory)",
         "FileNameBox.Text",
-        "new EditorOutputTarget(directory, fileName)",
+        "new EditorOutputTarget(directory, fileName,",
     ):
         require(token in capture, f"PROJECT-10 click-time output target lost: {token}")
 
@@ -70,7 +70,7 @@ def verify_source(images: str, target: str) -> None:
 
     render = method_body(images, "private async Task RenderProjectAsync()")
     busy = render.find("if (EditorBusy) return;")
-    capture_at = render.find("outputTarget = CaptureEditorOutputTarget();")
+    capture_at = render.find("outputTarget = await ShowExportDialogAsync();")
     first_preflight_await = render.find("await EnsureImageProjectLoadedAsync();")
     require(0 <= busy < capture_at < first_preflight_await,
             "PROJECT-10 target must be captured before async preflight can observe later Settings/UI changes")
@@ -89,7 +89,7 @@ def verify_source(images: str, target: str) -> None:
         require(token in render, f"PROJECT-10 final render path lost locked target/validation: {token}")
 
     # Once the snapshot exists, final output branches may not read live Config/FileNameBox again.
-    after_capture = render[render.find("outputTarget = CaptureEditorOutputTarget();") + len("outputTarget = CaptureEditorOutputTarget();"):]
+    after_capture = render[render.find("outputTarget = await ShowExportDialogAsync();") + len("outputTarget = await ShowExportDialogAsync();"):]
     require("_application.Config.OutputDirectory" not in after_capture,
             "PROJECT-10 in-flight final render re-reads live output directory")
     require("composerInput, _application.Config.OutputDirectory" not in render,

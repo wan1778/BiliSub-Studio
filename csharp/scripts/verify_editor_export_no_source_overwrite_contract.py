@@ -53,8 +53,11 @@ require("FileNamePolicy.UniquePath(Path.Combine(directory, sanitized), input)" i
 # after UniquePath selected the name.
 require('var temporary = output + ".rendering" + Path.GetExtension(output);' in video_editor,
         "EXPORT-05 normal render lost separate temporary output")
-require('args.AddRange(["-progress", "pipe:1", "-nostats", temporary]);' in video_editor,
+require('var args = BuildConfiguredRenderArguments(' in video_editor
+        and 'input, temporary, exportGraph.FilterGraph' in video_editor,
         "EXPORT-05 normal FFmpeg must write the temporary path")
+require('arguments.AddRange(["-progress", "pipe:1", "-nostats", output]);' in video_editor,
+        "EXPORT-05 configured FFmpeg policy must emit its output parameter")
 require("File.Move(temporary, output);" in video_editor,
         "EXPORT-05 normal render must promote without overwrite:true")
 require("File.Move(temporary, output, overwrite: true)" not in video_editor,
@@ -74,7 +77,9 @@ require("File.Move(temporary, output, overwrite: true)" not in image_composer,
 for token in (
     'Path.Combine(_application.Paths.Temp, "Editor", "ImageBase")',
     '"editor-image-base-" + Guid.NewGuid().ToString("N") + ".mp4"',
-    "OutputDirectory = temporaryDirectory, FileName = temporaryName",
+    "OutputDirectory = temporaryDirectory,",
+    "FileName = temporaryName,",
+    "Export = intermediateExport,",
     "composerInput = result.OutputPath;",
     "File.Delete(baseOutput)",
 ):

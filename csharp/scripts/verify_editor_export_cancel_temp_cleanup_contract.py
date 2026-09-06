@@ -58,7 +58,7 @@ require(
 
 # Subtitle ASS used by final render is a temp artifact too and must be deleted on Cancel.
 require(
-    'var subtitleAss = request.Subtitle is null ? null : Path.Combine(Path.GetTempPath(), "bilisub-editor-sub-"' in video,
+    'var subtitleAss = renderRequest.Subtitle is null ? null : Path.Combine(Path.GetTempPath(), "bilisub-editor-sub-"' in video,
     "EXPORT-16 final-render ASS temp path lost",
 )
 require(
