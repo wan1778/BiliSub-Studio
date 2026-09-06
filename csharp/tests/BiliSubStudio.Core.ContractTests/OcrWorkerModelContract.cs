@@ -4,7 +4,7 @@ using BiliSubStudio.Core.Ocr;
 namespace BiliSubStudio.Core.ContractTests;
 
 // Model contract pin: installer constants == worker ready payload == validator check == validator message.
-// Production intended: PP-OCRv6_medium_det + PP-OCRv6_medium_rec (schema 15 binds Medium identity).
+// Production intended: PP-OCRv6_medium_det + PP-OCRv6_medium_rec (checkpoint schema binds Medium identity).
 // Regression: validator từng check Medium nhưng message hardcode "Small", khiến log đảo ngược sự thật.
 internal static class OcrWorkerModelContract
 {

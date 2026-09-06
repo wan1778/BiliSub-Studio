@@ -36,8 +36,13 @@ internal sealed class OcrCheckpointStore
     // detector/recognizer and allowed Accurate mode's visual-change probe to
     // skip a complete short caption. Schema 15 binds the Medium model identity
     // and exhaustive Accurate policy into the key, so old partial evidence can
-    // never be presented as a completed high-quality scan.
-    private const int Schema = 15;
+    // never be presented as a completed high-quality scan. Schema 15 can retain
+    // changing lower-right branding as part of a subtitle and split one visual
+    // caption into several cues. Schema 16 still let the same branding become
+    // standalone cues whenever no dialogue shared the frame.
+    // Schema 18 separates off-baseline scene glyphs before inline stitching and
+    // admits inflated subtitle boxes to pixel verification. Rescan old evidence.
+    private const int Schema = 18;
     private readonly AppPaths _paths;
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -106,7 +111,7 @@ internal sealed class OcrCheckpointStore
 
     public async Task RemoveAsync(OcrScanRequest request, CancellationToken cancellationToken)
     {
-        foreach (var schema in new[] { 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3 })
+        foreach (var schema in new[] { 18, 17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3 })
         {
             var key = await KeyAsync(request, schema, cancellationToken);
             var path = Path.Combine(DirectoryPath, key + ".json");

@@ -115,6 +115,32 @@ internal static class OcrTrackerModeRegression
             || Math.Abs(scriptVariantActive.End - (12d + 4d / 30d)) > .000001)
             throw new InvalidOperationException("simplified/traditional OCR variant changed exact cue timing or text");
 
+        var dressVariant = exactConstructor.Invoke([30d, .68d, true]);
+        var simplifiedDress = new OcrResult(true, true, "你在装什么", .99, []);
+        var traditionalDress = new OcrResult(true, true, "你在裝什么", .90, []);
+        observeExact.Invoke(dressVariant, [12.5d, 1d / 30d, simplifiedDress]);
+        observeExact.Invoke(dressVariant, [12.5d + 1d / 30d, 1d / 30d, simplifiedDress]);
+        observeExact.Invoke(dressVariant, [12.5d + 2d / 30d, 1d / 30d, traditionalDress]);
+        observeExact.Invoke(dressVariant, [12.5d + 3d / 30d, 1d / 30d, simplifiedDress]);
+        var dressVariantActive = (OcrCue)(exactActive.GetValue(dressVariant)
+            ?? throw new InvalidOperationException("裝/装 OCR variant unexpectedly split a continuous cue"));
+        if (dressVariantActive.Text != "你在装什么" || Math.Abs(dressVariantActive.Start - 12.5d) > .000001
+            || Math.Abs(dressVariantActive.End - (12.5d + 4d / 30d)) > .000001)
+            throw new InvalidOperationException("裝/装 OCR variant changed exact cue timing or text");
+
+        var lostVariant = exactConstructor.Invoke([30d, .68d, true]);
+        var simplifiedLost = new OcrResult(true, true, "丢不丢人", .99, []);
+        var traditionalLost = new OcrResult(true, true, "丟不丢人", .90, []);
+        observeExact.Invoke(lostVariant, [12.75d, 1d / 30d, simplifiedLost]);
+        observeExact.Invoke(lostVariant, [12.75d + 1d / 30d, 1d / 30d, simplifiedLost]);
+        observeExact.Invoke(lostVariant, [12.75d + 2d / 30d, 1d / 30d, traditionalLost]);
+        observeExact.Invoke(lostVariant, [12.75d + 3d / 30d, 1d / 30d, simplifiedLost]);
+        var lostVariantActive = (OcrCue)(exactActive.GetValue(lostVariant)
+            ?? throw new InvalidOperationException("丟/丢 OCR variant unexpectedly split a continuous cue"));
+        if (lostVariantActive.Text != "丢不丢人" || Math.Abs(lostVariantActive.Start - 12.75d) > .000001
+            || Math.Abs(lostVariantActive.End - (12.75d + 4d / 30d)) > .000001)
+            throw new InvalidOperationException("丟/丢 OCR variant changed exact cue timing or text");
+
         var punctuationVariant = exactConstructor.Invoke([30d, .68d, true]);
         var asciiQuestion = new OcrResult(true, true, "所以?", .99, []);
         var chineseQuestion = new OcrResult(true, true, "所以？", .98, []);

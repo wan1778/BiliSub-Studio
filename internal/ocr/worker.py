@@ -129,7 +129,19 @@ def _same_text_row(left, right):
     overlap = min(left_box[3], right_box[3]) - max(left_box[1], right_box[1])
     left_height = max(1, left_box[3] - left_box[1])
     right_height = max(1, right_box[3] - right_box[1])
-    return overlap >= min(left_height, right_height) * 0.55
+    short_height = min(left_height, right_height)
+    if overlap < short_height * 0.55:
+        return False
+    # Small punctuation may sit at the top, middle or bottom of a text row.
+    # Letters and digits must also agree on font height and vertical alignment.
+    smaller = left if left_height <= right_height else right
+    if any(char.isalnum() for char in smaller["text"]):
+        center_delta = abs((left_box[1] + left_box[3]) - (right_box[1] + right_box[3])) / 2
+        baseline_delta = abs(left_box[3] - right_box[3])
+        return (short_height >= max(left_height, right_height) * 0.75
+                and center_delta <= short_height * 0.25
+                and baseline_delta <= short_height * 0.25)
+    return True
 
 
 def _stitch_overlapping_text(left, right):
@@ -175,7 +187,8 @@ def merge_inline_lines(lines):
             before_box, after_box = before["box"], after["box"]
             row_height = max(before_box[3] - before_box[1], after_box[3] - after_box[1], 1)
             horizontal_gap = after_box[0] - before_box[2]
-            if horizontal_gap > max(24, int(round(row_height * 0.45))):
+            if (not _same_text_row(before, after)
+                    or horizontal_gap > max(24, int(round(row_height * 0.45)))):
                 row_output.append(line)
                 continue
             row_output[-1] = {

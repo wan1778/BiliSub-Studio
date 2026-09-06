@@ -111,7 +111,10 @@ public static class OcrCueReconciler
     private static VisualCandidacy ClassifyVisualCandidate(OcrCue previous, OcrCue cue, double continuationWindow)
     {
         var gap = cue.Start - previous.End;
-        if (!(gap <= continuationWindow))
+        // The window boundary itself is float-sensitive: a gap of exactly three
+        // native frames must stay inside it, so compare with the shared 1 ms
+        // epsilon instead of raw doubles. Real blanks (0.55s+) stay outside.
+        if (!(gap <= continuationWindow + Epsilon))
             return new VisualCandidacy(false, false, false, "non-temporal",
                 false, false, false, false, false, false, false);
         var obsA = previous.LastObservation;
@@ -149,6 +152,7 @@ public static class OcrCueReconciler
         var rectA = ContentClamped(left.BoxInOcrCrop, geometry);
         var rectB = ContentClamped(right.BoxInOcrCrop, geometry);
         if (rectA.IsEmpty || rectB.IsEmpty) return false;
+        if (Math.Min(rectA.Right, rectB.Right) <= Math.Max(rectA.Left, rectB.Left)) return false;
         var minHeight = Math.Min(rectA.Height, rectB.Height);
         if (minHeight <= 0) return false;
         var overlap = Math.Max(0, Math.Min(rectA.Bottom, rectB.Bottom) - Math.Max(rectA.Top, rectB.Top));
@@ -156,7 +160,16 @@ public static class OcrCueReconciler
         var centerDistance = Math.Abs((rectA.Top + rectA.Bottom) / 2.0 - (rectB.Top + rectB.Bottom) / 2.0);
         if (centerDistance > 0.75 * Math.Max(rectA.Height, rectB.Height)) return false;
         var ratio = rectA.Height / (double)rectB.Height;
-        return ratio >= 0.5 && ratio <= 2.0;
+        if (ratio >= 0.5 && ratio <= 2.0) return true;
+        // A stray scene glyph can inflate the union box above the subtitle.
+        // Admit bottom-aligned nested boxes to the unchanged UNION pixel check;
+        // never compare only their intersection (a real shorter caption shares it).
+        var larger = rectA.Height >= rectB.Height ? rectA : rectB;
+        var smaller = rectA.Height >= rectB.Height ? rectB : rectA;
+        return larger.Height <= smaller.Height * 4
+            && Math.Abs(larger.Bottom - smaller.Bottom) <= smaller.Height * .25
+            && smaller.Left >= larger.Left - 2 && smaller.Right <= larger.Right + 2
+            && smaller.Top >= larger.Top;
     }
 
     private static System.Drawing.Rectangle ContentClamped(OcrBox box, OcrFrameGeometry geometry)
@@ -175,7 +188,7 @@ public static class OcrCueReconciler
     // hiệu ứng nào vượt qua boundary. Không phụ thuộc text.
     internal static bool IsChainBoundary(OcrCue previous, OcrCue cue, double continuationWindow = Epsilon)
     {
-        if (cue.Start - previous.End > continuationWindow) return false;
+        if (cue.Start - previous.End > continuationWindow + Epsilon) return false;
         var obsA = previous.LastObservation;
         var obsB = cue.FirstObservation;
         if (obsA is null || obsB is null || !HasPixelProvenance(obsA) || !HasPixelProvenance(obsB)) return false;

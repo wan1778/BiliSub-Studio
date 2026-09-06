@@ -88,6 +88,57 @@ internal static class OcrExactGapRegression
         Check(distinctMerged.Count == 2 && distinctMerged.All(c => c.NeedsReview),
             "two truly different touching captions must stay separate with NeedsReview on Different pixel");
         Check(countingDistinct.Calls == 1, "touching distinct pair must reach pixel verifier once");
+
+        // 8. Field V01-I07: gap đúng 3 native frame nhưng float noise ở magnitude PTS lớn
+        // (13633.600 - 13633.500 = 0.10000000000036 > 3.0/30) từng làm MỘT câu bị tách
+        // thành hai cue mà không có cờ review => lặp trong SRT. Epsilon window phải giữ
+        // nó là candidate và merge khi pixel Same.
+        var floatEdge = new[] {
+            Prov(13633.333, 13633.500, "我为什么要知道", 1.0),
+            Prov(13633.600, 13634.600, "我为什么要知道", 1.0),
+        };
+        var edgeComparer = new FakePixelComparer(PixelCheckResult.Same);
+        var edgeMerged = await OcrCueReconciler.MergeTouchingIdenticalAsync(floatEdge, "v.mp4", edgeComparer, ct, continuationWindow: productionExhaustiveWindow);
+        Check(edgeMerged.Count == 1, "three-frame gap at large PTS magnitude must stay inside the continuation window");
+        Check(edgeComparer.Calls == 1, "three-frame float-edge gap must reach the pixel comparer");
+
+        // Inflated scene-text unions must reach the pixel gate in BOTH directions.
+        // These are the recorded boxes from the remaining V04 field boundaries.
+        foreach (var (inflated, subtitle) in new[]
+        {
+            (new OcrBox(94, 37, 930, 284), new OcrBox(449, 199, 928, 283)),
+            (new OcrBox(154, 116, 739, 271), new OcrBox(538, 209, 739, 271)),
+        })
+        foreach (var reverse in new[] { false, true })
+        foreach (var verdict in new[] { PixelCheckResult.Same, PixelCheckResult.Different, PixelCheckResult.Unavailable })
+        {
+            var a = Prov(60, 61, "自刺探情报", .9);
+            var b = Prov(61, 62, "刺探情报", .99);
+            a = a with { LastObservation = a.LastObservation! with { BoxInOcrCrop = reverse ? subtitle : inflated } };
+            b = b with { FirstObservation = b.FirstObservation! with { BoxInOcrCrop = reverse ? inflated : subtitle } };
+            var verifier = new FakePixelComparer(verdict);
+            var result = await OcrCueReconciler.MergeTouchingIdenticalAsync([a, b], "v.mp4", verifier, ct, productionExhaustiveWindow);
+            Check(verifier.Calls == 1, "nested baseline boxes must reach union pixel verification");
+            Check(result.Count == (verdict == PixelCheckResult.Same ? 1 : 2), "nested boxes must never bypass the pixel verdict");
+            if (verdict == PixelCheckResult.Same)
+                Check(result[0].Start == 60 && result[0].End == 62 && result[0].Text == b.Text,
+                    "nested-box merge must preserve instance span and evidence-selected spelling");
+
+            foreach (var blocked in new[]
+            {
+                b with { Start = 61.667 },
+                b with { FirstObservation = b.FirstObservation! with { SourcePts = null } },
+                b with { FirstObservation = b.FirstObservation! with { Geometry = TestGeo with { SourceCropX = 1 } } },
+                b with { FirstObservation = b.FirstObservation! with { BoxInOcrCrop = new OcrBox(100, 0, 200, 25) } },
+                b with { FirstObservation = b.FirstObservation! with { BoxInOcrCrop = new OcrBox(1000, 209, 1200, 271) } },
+            })
+            {
+                var guard = new FakePixelComparer(PixelCheckResult.Same);
+                var guarded = await OcrCueReconciler.MergeTouchingIdenticalAsync([a, blocked], "v.mp4", guard, ct, productionExhaustiveWindow);
+                Check(guarded.Count == 2 && guard.Calls == 0,
+                    "inflated boxes must not bypass blank/provenance/location guards");
+            }
+        }
     }
 
     private static void Check(bool valid, string message)

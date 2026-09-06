@@ -111,8 +111,8 @@ internal static class OcrFragmentContract
         originalCues.Add(new OcrCue(10, 11, "隔离", .9));
         Check(clonedCues.Count + 1 == originalCues.Count, "checkpoint snapshot shares a mutable cue list with live OCR state");
         var store = assembly.GetType("BiliSubStudio.Core.Ocr.OcrCheckpointStore")!;
-        Check((int)store.GetField("Schema", BindingFlags.Static | BindingFlags.NonPublic)!.GetRawConstantValue()! == 15,
-            "Small/adaptive Accurate checkpoint is still resume-compatible");
+        Check((int)store.GetField("Schema", BindingFlags.Static | BindingFlags.NonPublic)!.GetRawConstantValue()! == 18,
+            "standalone-branding checkpoint is still resume-compatible");
     }
 
     private static void Check(bool valid, string message)

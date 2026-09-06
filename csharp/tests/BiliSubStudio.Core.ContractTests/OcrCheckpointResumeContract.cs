@@ -103,7 +103,7 @@ internal static class OcrCheckpointResumeContract
             var loadTask = (Task)loadAsync.Invoke(store, [request, CancellationToken.None])!;
             await loadTask;
             var loaded = loadTask.GetType().GetProperty("Result")?.GetValue(loadTask);
-            Check(loaded is not null, "schema-15 checkpoint with valid provenance must load (not null)");
+            Check(loaded is not null, "current-schema checkpoint with valid provenance must load (not null)");
             var loadedCues = (System.Collections.IList)cuesProp.GetValue(
                 ((System.Collections.IList)lanesProp.GetValue(loaded)!)![0]!)!;
             Check(loadedCues.Count == 1, "loaded checkpoint must preserve the provenance cue");

@@ -1437,24 +1437,45 @@ public sealed class OcrScanner
     private static OcrResult FilterOffBaselineOverlayLines(OcrResult result, OcrRegion region)
     {
         if (!result.Ok) return result;
-        if (result.Lines.Count == 1 && IsUpperOffBaselineOverlay(result.Lines[0], region))
-            return result with { Detected = false, Text = string.Empty, Confidence = 0, Lines = [] };
+        if (result.Lines.Count == 1)
+        {
+            var only = result.Lines[0];
+            if (IsUpperOffBaselineOverlay(only, region) || IsStandaloneRightEdgeBranding(only, region))
+                return result with { Detected = false, Text = string.Empty, Confidence = 0, Lines = [] };
+        }
         if (result.Lines.Count < 2) return result;
+        var hasCenteredSubtitle = HasCenteredSubtitleLine(result);
+        var dominant = FindDominantSubtitleLine(result);
         var baseline = FindSubtitleBaseline(result);
-        if (baseline is null) return result;
+        if (baseline is null && dominant is null) return result;
+        var companionBaseline = baseline ?? dominant;
 
-        var baselineHeight = Math.Max(1, Math.Abs(baseline.Box[3] - baseline.Box[1]));
-        var baselineCenter = baseline.Box[1] + baseline.Box[3];
+        var baselineHeight = baseline is null ? 1 : Math.Max(1, Math.Abs(baseline.Box[3] - baseline.Box[1]));
+        var baselineCenter = baseline is null ? 0 : baseline.Box[1] + baseline.Box[3];
         var retained = result.Lines.Where(line =>
         {
-            if (ReferenceEquals(line, baseline) || line.Box.Length < 4) return true;
+            if (line.Box.Length < 4) return true;
+            if (!hasCenteredSubtitle && IsStandaloneRightEdgeBranding(line, region)) return false;
+            if (companionBaseline is not null && IsRightEdgeBrandingCompanion(line, companionBaseline, region)) return false;
+            if (baseline is null) return true;
+            if (ReferenceEquals(line, baseline)) return true;
             var width = Math.Abs(line.Box[2] - line.Box[0]);
             var height = Math.Abs(line.Box[3] - line.Box[1]);
             var vertical = height > width * 1.5;
             var farAbove = baselineCenter - (line.Box[1] + line.Box[3]) > baselineHeight * 3;
-            return !(vertical || farAbove || IsTinyNonChineseCompanion(line, baseline));
+            // Separate scene glyphs beside a centered caption are not inline
+            // subtitle fragments when both their size and baseline disagree.
+            var sceneCompanion = region.Y >= .5
+                && baseline.Box[0] < 640 && baseline.Box[2] > 640
+                && (line.Box[2] <= baseline.Box[0] || line.Box[0] >= baseline.Box[2])
+                && (height > baselineHeight * 1.35 || height < baselineHeight * .75)
+                && Math.Abs(line.Box[3] - baseline.Box[3]) > Math.Min(height, baselineHeight) * .25
+                && ChineseSubtitleNormalizer.TryNormalize(line.Text, out _);
+            return !(vertical || farAbove || sceneCompanion || IsTinyNonChineseCompanion(line, baseline));
         }).ToArray();
         if (retained.Length == result.Lines.Count) return result;
+        if (retained.Length == 0)
+            return result with { Detected = false, Text = string.Empty, Confidence = 0, Lines = [] };
         return result with
         {
             Text = string.Join("\n", retained.Select(line => line.Text)),
@@ -1462,6 +1483,15 @@ public sealed class OcrScanner
             Lines = retained,
         };
     }
+
+    // A genuine caption occupies the horizontal center of the 1280-wide OCR
+    // canvas. Lower-right branding never spans the center, so its presence is
+    // the signal that a corner detection is a companion, not a standalone cue.
+    private static bool HasCenteredSubtitleLine(OcrResult result) => result.Lines.Any(line =>
+        line.Box.Length >= 4
+        && Math.Min(line.Box[0], line.Box[2]) < 560
+        && Math.Max(line.Box[0], line.Box[2]) > 720
+        && ChineseSubtitleNormalizer.TryNormalize(line.Text, out _));
 
     private static bool HasTinyNonChineseCompanion(OcrResult result)
     {
@@ -1471,14 +1501,72 @@ public sealed class OcrScanner
             !ReferenceEquals(line, baseline) && IsTinyNonChineseCompanion(line, baseline));
     }
 
+    // A genuine caption occupies the horizontal center of the 1280-wide OCR
+    // canvas, so a detection that starts at the right edge is never the
+    // baseline. Excluding it here keeps the companion rule anchored to real
+    // dialogue even when the branding reads with high confidence.
     private static OcrLine? FindSubtitleBaseline(OcrResult result) => result.Lines
         .Where(line => line.Box.Length >= 4
-            && line.Confidence >= .90
+            && Math.Min(line.Box[0], line.Box[2]) < 960
+            && line.Confidence >= .50
             && ChineseSubtitleNormalizer.TryNormalize(line.Text, out _)
             && Math.Abs(line.Box[2] - line.Box[0]) >= Math.Abs(line.Box[3] - line.Box[1]) * .8)
-        .OrderByDescending(line => line.Box[3])
+        // Prefer a centered horizontal caption over lower scene lettering.
+        .OrderByDescending(line => line.Box[0] < 640 && line.Box[2] > 640
+            && Math.Abs(line.Box[2] - line.Box[0]) >= Math.Abs(line.Box[3] - line.Box[1]) * 2)
+        .ThenByDescending(line => line.Box[3])
         .ThenByDescending(line => line.Confidence)
         .FirstOrDefault();
+
+    private static OcrLine? FindDominantSubtitleLine(OcrResult result) => result.Lines
+        .Where(line => line.Box.Length >= 4
+            && ChineseSubtitleNormalizer.TryNormalize(line.Text, out _)
+            && Math.Abs(line.Box[2] - line.Box[0]) >= Math.Abs(line.Box[3] - line.Box[1]) * .8)
+        .OrderByDescending(line => (long)Math.Abs(line.Box[2] - line.Box[0]) * Math.Abs(line.Box[3] - line.Box[1]))
+        .ThenByDescending(line => line.Confidence)
+        .FirstOrDefault();
+
+    private static bool IsRightEdgeBrandingCompanion(OcrLine line, OcrLine baseline, OcrRegion region)
+    {
+        if (region.Y < .5 || ReferenceEquals(line, baseline) || line.Box.Length < 4 || baseline.Box.Length < 4)
+            return false;
+        if (!HasRightEdgeBrandingToken(line.Text)) return false;
+
+        // OCR frames use a 1280-wide canvas. A centered subtitle can coexist with
+        // a much shorter changing quality/channel mark in the lower-right corner.
+        // Keep same-height inline fragments so legitimate text containing digits survives.
+        if (baseline.Box[0] >= 640 || baseline.Box[2] <= 640 || line.Box[0] < 960) return false;
+        var height = Math.Max(1, Math.Abs(line.Box[3] - line.Box[1]));
+        var baselineHeight = Math.Max(1, Math.Abs(baseline.Box[3] - baseline.Box[1]));
+        var baselineOffset = Math.Abs(line.Box[3] - baseline.Box[3]);
+        if ((long)height * 4 > (long)baselineHeight * 3
+            && baselineOffset <= Math.Min(height, baselineHeight) / 4) return false;
+        var horizontallySeparated = line.Box[0] - baseline.Box[2] >= Math.Max(8, baselineHeight / 8);
+        var belowBaseline = line.Box[1] >= baseline.Box[3] - Math.Max(2, baselineHeight / 12);
+        return horizontallySeparated || belowBaseline;
+    }
+
+    // A lone detection in the lower-right corner is the same quality/channel
+    // branding that the companion rule strips beside real dialogue. Frames
+    // without a subtitle must not turn it into a cue of its own, otherwise the
+    // changing OCR reading of the mark fragments into repeated SRT entries.
+    private static bool IsStandaloneRightEdgeBranding(OcrLine line, OcrRegion region)
+    {
+        if (region.Y < .5 || line.Box.Length < 4) return false;
+        if (!HasRightEdgeBrandingToken(line.Text)) return false;
+        var left = Math.Min(line.Box[0], line.Box[2]);
+        var right = Math.Max(line.Box[0], line.Box[2]);
+        var bottom = Math.Max(line.Box[1], line.Box[3]);
+        if (left < 960 || right < 1152) return false;
+        return bottom >= 240;
+    }
+
+    private static bool HasRightEdgeBrandingToken(string text)
+    {
+        var asciiDigits = text.Count(character => character is >= '0' and <= '9');
+        return asciiDigits >= 4
+            || text.Contains('版') && text.Any(character => char.IsAsciiLetterOrDigit(character));
+    }
 
     private static bool IsTinyNonChineseCompanion(OcrLine line, OcrLine baseline)
     {
