@@ -130,6 +130,7 @@ internal static class Program
         ("timeline domain keeps microsecond time, frame grid and sequential validation", TimelineDomainContract.RunAsync),
         ("timeline schema-7 migration is a safe one-clip copy", TimelineMigrationCopyContract.RunAsync),
         ("timeline one-clip parity maps V2 plan onto the classic render pipeline", TimelineParityContract.RunAsync),
+        ("timeline multi-clip add reorder trim split delete keep hard cuts with atomic undo", TimelineSequenceOpsContract.RunAsync),
     ];
 
     private static async Task<int> Main(string[] arguments)

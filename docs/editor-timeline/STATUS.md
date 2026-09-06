@@ -6,9 +6,9 @@ Last updated: 2026-09-06
 
 ```text
 Program status: PLANNING APPROVED
-Current gate: G5 - One-clip parity
-Gate state: VERIFIED - V2 one-clip maps onto the classic render pipeline
-Timeline implementation: STARTED (shell + domain + migration + one-clip parity)
+Current gate: G6 - Multi-clip core
+Gate state: VERIFIED - add/reorder/trim/split/delete with atomic bounded undo
+Timeline implementation: STARTED (through multi-clip core; no effects/voice/render parity)
 Classic Editor modifications for Timeline: NONE (V2-only files plus test/verifier/docs)
 ```
 
@@ -213,13 +213,33 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
   source tree SHA-256
   `951f63968b836ec687bc57f01e77ec49af5546824c5d6fb24fcf0310a51f6686`.
 
+## G6 verification evidence (2026-09-06)
+
+- `TimelineSequenceOps`: pure `Add`/`Reorder`/`Trim`/`Split`/`Delete` over
+  immutable clip lists. Every result reflows contiguous hard cuts
+  (no overlap, no gap); reorder preserves play order because
+  `ReflowContiguous` now follows caller list order instead of re-sorting by
+  stale start times (real G6 bug found by contract, fixed in
+  `TimelineSequence.cs`).
+- Split maps the cut through the rate-aware time model
+  (`SequenceToSourceUs`), keeps the left id and mints a new right id with
+  advanced SourceIn; undo restores the whole pre-split set.
+- `TimelineCommandHistory`: bounded (200) immutable-snapshot undo/redo;
+  new commit clears the redo branch; empty history is a no-op.
+- Core contracts: `113/113 passed` (new `TimelineSequenceOpsContract`:
+  add/reorder/trim/split/delete invariants, 2x-rate split, delete
+  determinism, history atomicity/bounds).
+- `verify_timeline_sequence_ops_contract.py` plus G2–G5 verifiers and
+  `validate_csharp_migration.py`: PASS; code map regenerated.
+- G1 regression re-run: `TOTAL=35 PASS=35 FAIL=0`.
+
 ## Remaining precondition
 
-- None for starting G6 multi-clip core work. Any future restore or migration experiment must use a separate test root and re-verify `BACKUP_PROCEDURE.md` first.
+- None for starting G7 effects/subtitle ownership work. Any future restore or migration experiment must use a separate test root and re-verify `BACKUP_PROCEDURE.md` first.
 
 ## Next exact action
 
-Begin G6 by implementing add/reorder/trim/split/delete with dependency and undo tests. Do not modify the classic Editor for Timeline work.
+Begin G7 by attaching Blur/SRT/logo items to clips with move/split dependency semantics. Do not modify the classic Editor for Timeline work.
 
 ## Required resume command
 

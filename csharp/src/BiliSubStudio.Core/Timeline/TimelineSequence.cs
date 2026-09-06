@@ -57,15 +57,16 @@ public sealed record TimelineSequence(
         }
     }
 
-    // Recompute starts so clips join end-to-start from zero, preserving order.
-    // Used by future add/reorder (G6); pure function, no IO.
+    // Recompute starts so clips join end-to-start from zero, preserving the
+    // caller's list order. Operations that take position-based input (drag,
+    // reorder) pass their already-ordered list; G3 storage normalization may
+    // sort first. Pure function, no IO.
     public static IReadOnlyList<TimelineClip> ReflowContiguous(IReadOnlyList<TimelineClip> clips)
     {
         ArgumentNullException.ThrowIfNull(clips);
-        var ordered = clips.OrderBy(clip => clip.TimelineStartUs).ToArray();
         var cursor = 0L;
-        var result = new List<TimelineClip>(ordered.Length);
-        foreach (var clip in ordered)
+        var result = new List<TimelineClip>(clips.Count);
+        foreach (var clip in clips)
         {
             clip.ValidateShape();
             result.Add(clip with { TimelineStartUs = cursor });
