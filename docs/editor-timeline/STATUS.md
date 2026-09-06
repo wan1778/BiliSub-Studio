@@ -7,7 +7,7 @@ Last updated: 2026-09-06
 ```text
 Program status: PLANNING APPROVED
 Current gate: G0 - Baseline
-Gate state: VERIFIED - source/binary baseline tagged; production backup remains a G1 precondition
+Gate state: VERIFIED - source, binary and production project backup complete
 Timeline implementation: NOT STARTED
 Classic Editor modifications for Timeline: NONE
 ```
@@ -26,6 +26,7 @@ Classic Editor modifications for Timeline: NONE
 - Annotated tag: `timeline-v2-g0-baseline-20260906`.
 - Baseline commits: `81fef4b` OCR, `2ead6ec` media, `9c3a1aa` Editor, `1addd83` verifier/docs, `642bf8d` logging gate follow-up.
 - Timeline implementation remains absent from this baseline.
+- Production project backup evidence is recorded in `BACKUP_PROCEDURE.md`.
 
 Do not modify or move this tag. Future Timeline work must branch from or remain recoverable to this identity.
 
@@ -54,7 +55,7 @@ Do not modify or move this tag. Future Timeline work must branch from or remain 
 - [x] Record binary SHA-256 and verification evidence.
 - [x] Decide and commit the existing changes in reviewed pre-V2 groups.
 - [x] Fix/refresh stale verifiers and the cancellation ownership regression.
-- [ ] Back up production `Data/Projects` before any migration experiment.
+- [x] Back up and hash-verify production `Data/Projects` before any migration experiment.
 - [x] Obtain explicit user approval before commit/tag and baseline promotion.
 
 ## Final G0 verification evidence (2026-09-06)
@@ -69,6 +70,7 @@ Do not modify or move this tag. Future Timeline work must branch from or remain 
 - `BiliSubStudio.exe` SHA-256: `7d4086987513e7c5512868a51c536dae8d5f61847e706398e194d043dfc02de5`.
 - Source tree SHA-256: `fa2dc5888f0335f2d56c2fc1b0df6b833bc3a06efb4187ead5c6a3f3903eda66`.
 - App-bin `Data`, `Tools`, `Cache` contamination and `.codex-build` diagnostics were removed before baseline commits.
+- Production `Data/Projects` backup: 7 files / 6,366,311 bytes, manifest SHA-256 `a983c21e4adb6646f31370761e91e3abf3cb5db887bba9ba74677406dfa69138`.
 
 ## G0 diagnostic evidence (2026-09-06, dirty tree, HEAD 153f97cd)
 
@@ -105,11 +107,11 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
 
 ## Remaining precondition
 
-- Production `Data/Projects` backup strategy still needs explicit approval and execution before any migration experiment or G1 persistence write.
+- None for starting G1 contract/design work. Any future restore or migration experiment must use a separate test root and re-verify `BACKUP_PROCEDURE.md` first.
 
 ## Next exact action
 
-Define and execute the production `Data/Projects` backup procedure. Then begin only the G1 data-model/design checkpoint; do not modify the classic Editor for Timeline work.
+Begin G1 by freezing and running the classic single-video autosave/reopen/preview/export contracts. Do not modify the classic Editor for Timeline work.
 
 ## Required resume command
 
