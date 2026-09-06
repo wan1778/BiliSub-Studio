@@ -138,6 +138,12 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
 - G1 regression re-run after G2: `TOTAL=35 PASS=35 FAIL=0`.
 - Release x64 build: 0 warnings, 0 errors; code map regenerated (133 files).
 - `validate_csharp_migration.py`: PASS.
+- Clean-tree `verify.ps1` on `31b8648`: PASS (contracts 109/109, Range
+  regressions, self-contained publish, startup smoke, checksum readback).
+- G2 gate binary: exe SHA-256
+  `4b6ef2a0b1b8f83144371c66483c115eebb9a893d56e0005f1e8aa73c64e0f59`,
+  source tree SHA-256
+  `cd97f1f3d4378d0382b25c6042b864b125075f49ee6dab6c59b9b46d0384436c`.
 
 ## Remaining precondition
 
