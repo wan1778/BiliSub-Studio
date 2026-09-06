@@ -128,6 +128,7 @@ internal static class Program
         ("public OCR API does not expose internal installer", OcrPublicApiContractAsync),
         ("timeline V2 shell stays flagged off with an isolated test root", TimelineV2ShellContract.RunAsync),
         ("timeline domain keeps microsecond time, frame grid and sequential validation", TimelineDomainContract.RunAsync),
+        ("timeline schema-7 migration is a safe one-clip copy", TimelineMigrationCopyContract.RunAsync),
     ];
 
     private static async Task<int> Main(string[] arguments)

@@ -6,9 +6,9 @@ Last updated: 2026-09-06
 
 ```text
 Program status: PLANNING APPROVED
-Current gate: G3 - Domain
-Gate state: VERIFIED - microsecond time, assets/clips/tracks/sequence validated
-Timeline implementation: STARTED (shell + domain, no migration/render)
+Current gate: G4 - Migration copy
+Gate state: VERIFIED - schema-7 to one-clip V2 copy, no in-place mutation
+Timeline implementation: STARTED (shell + domain + migration copy, no render)
 Classic Editor modifications for Timeline: NONE (V2-only files plus test/verifier/docs)
 ```
 
@@ -168,13 +168,30 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
   source tree SHA-256
   `6d03392fa4bd3cc330666b55b01d6a9976e4e42d423e0aa387f987a1e2a42d97`.
 
+## G4 verification evidence (2026-09-06)
+
+- `TimelineMigrator.MigrateSchema7`: pure in-memory copy from already-loaded
+  schema-7 state to a fresh-identity V2 project (schema 2). No IO on the
+  source project file, schema-7 store, or media file; classic
+  `EditorProjectStore` untouched.
+- Copy carries one full-source clip (0..duration, 1x), first-clip geometry,
+  explicit FPS, and explicit warnings for flattened regions and dropped
+  subtitle/voice. Schema-7 trim/audio are intentionally not copied yet;
+  those belong to G5 parity decisions.
+- Core contracts: `111/111 passed` (new `TimelineMigrationCopyContract`:
+  copy identity/shape/warnings, source bytes unchanged, schema-6 rejected,
+  V2 store roundtrip).
+- `verify_timeline_migration_contract.py`, G3/G2 verifiers, and
+  `validate_csharp_migration.py`: PASS; code map regenerated.
+- G1 regression re-run: `TOTAL=35 PASS=35 FAIL=0`.
+
 ## Remaining precondition
 
-- None for starting G4 migration-copy work. Any future restore or migration experiment must use a separate test root and re-verify `BACKUP_PROCEDURE.md` first.
+- None for starting G5 one-clip parity work. Any future restore or migration experiment must use a separate test root and re-verify `BACKUP_PROCEDURE.md` first.
 
 ## Next exact action
 
-Begin G4 by implementing schema-7 to one-clip V2 copy with backup evidence and no source/schema-7 mutation. Do not modify the classic Editor for Timeline work.
+Begin G5 by rendering one V2 clip and matching classic Preview/Export behavior. Do not modify the classic Editor for Timeline work.
 
 ## Required resume command
 
