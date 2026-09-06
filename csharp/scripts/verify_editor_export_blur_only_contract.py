@@ -36,7 +36,7 @@ blur_strength = read(BLUR_STRENGTH)
 
 # UI/state gate: one committed Blur region alone is sufficient to enable Render.
 require(
-    "_document.Regions.Count > 0 || subtitleReady || audioChanged || _voiceTrack is not null || hasImages"
+    "_document.Regions.Count > 0 || subtitleReady || audioChanged || _voiceTrack is not null || hasImages || trimChanged"
     in editor,
     "EXPORT-07 RenderButton no longer accepts region-only state",
 )
@@ -60,7 +60,7 @@ require(
     "EXPORT-07 Blur region no longer qualifies as base edit",
 )
 require(
-    "_application.StartEditor(CurrentEditRequest(subtitle))" in images,
+    "var request = CurrentEditRequest(subtitle) with" in images,
     "EXPORT-07 Blur-only must use the normal Editor render service",
 )
 
@@ -135,7 +135,7 @@ require(
     "EXPORT-07 Blur-only Keep must preserve source audio when present",
 )
 require(
-    'ValidateRenderedOutputAsync(temporary, request.Duration, voice is not null || audio.SourceMode != "mute", token)'
+    'await ValidateRenderedOutputAsync(\n                temporary, trim.Duration, voice is not null || audio.SourceMode != "mute",\n                exportGraph.Dimensions, export.Codec, export.FrameRate, token);'
     in video,
     "EXPORT-07 output validation path changed unexpectedly",
 )
@@ -143,7 +143,7 @@ require(
 # Standard safe finalization remains in force.
 for token in (
     'var temporary = output + ".rendering" + Path.GetExtension(output);',
-    'args.AddRange(["-progress", "pipe:1", "-nostats", temporary]);',
+    'if (mp4) arguments.AddRange(["-movflags", "+faststart"]);',
     "File.Move(temporary, output);",
 ):
     require(token in video, f"EXPORT-07 final render lifecycle lost: {token}")

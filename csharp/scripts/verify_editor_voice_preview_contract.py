@@ -53,7 +53,7 @@ require("QueuePreviewRefresh();" in tts_poll,
 current_request = editor.split("private VideoEditRequest CurrentEditRequest(", 1)[1].split(
     "private async void Render_Click", 1
 )[0]
-require("_audioSettings," in current_request and "_voiceTrack);" in current_request,
+require("_audioSettings," in current_request and "_voiceTrack," in current_request,
         "VOICE-12 shared Preview request must carry the source audio policy and Vietnamese track")
 
 load_segment = playback.split("private async Task LoadSegmentCoreAsync(", 1)[1].split(

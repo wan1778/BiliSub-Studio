@@ -13,7 +13,7 @@ PARTIALS = sorted(PAGES.glob("EditorPage*.cs"))
 
 XAML_NS = "http://schemas.microsoft.com/winfx/2006/xaml"
 UI_EVENT_NAMES = {
-    "Click", "Checked", "Unchecked", "Toggled", "SelectionChanged", "TextChanged",
+    "Click", "ItemClick", "Checked", "Unchecked", "Toggled", "SelectionChanged", "TextChanged",
     "ValueChanged", "LostFocus", "PointerPressed", "PointerMoved", "PointerReleased",
     "PointerCanceled", "Loaded", "Unloaded", "SizeChanged", "LayoutUpdated", "KeyDown",
 }

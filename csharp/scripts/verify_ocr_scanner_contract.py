@@ -50,8 +50,18 @@ def main() -> int:
     require(set_result >= 0 and pause_complete >= 0 and set_result < pause_complete,
             "paused job can become terminal before OcrScanResult is published")
 
-    require('$"hwdownload,format=nv12|p010le|p016le,fps={fps},{crop},showinfo"' in scanner,
-            "NVDEC filter does not preserve sampled-frame PTS after software fps/crop filters")
+    # 320e07b: the fps filter was removed because it rewrites PTS (drop/duplicate) and
+    # corrupts provenance. Adaptive sampling happens in C# on absolute PTS via
+    # settb + -fps_mode passthrough; the exact timebase contract is tested by
+    # OcrTimeBaseContract in the Core contract suite.
+    require('$"hwdownload,format=nv12|p010le|p016le,settb=expr={tb},{crop},showinfo"' in scanner,
+            "NVDEC lane must pin the source timebase before showinfo so sampled PTS stay absolute")
+    require('"-fps_mode", "passthrough"' in scanner,
+            "OCR lane output must pass frames through without PTS rewriting")
+    lane_filter = scanner.split("private static IReadOnlyList<string> BuildLaneArguments", 1)[1].split(
+            "private static double Similarity", 1)[0]
+    require("fps=" not in lane_filter,
+            "OCR lane filter graph must not reintroduce a PTS-rewriting fps filter")
 
     similarity_start = scanner.find("private static double Similarity")
     require(similarity_start >= 0, "missing OCR lane similarity function")
@@ -136,7 +146,7 @@ def main() -> int:
     require("benchmark xong, khóa {selected} pipeline" in scanner and
             "{selected} FFmpeg lane + {configuredWorkers} Python worker" in scanner,
             "scanner commit log does not expose the benchmark-selected full topology")
-    require("new SubtitleTracker(mode.Fps, mode.LowConfidence, exactFrameTiming: mode.AdaptiveTiming)" in scanner,
+    require("new SubtitleTracker(mode.Fps, mode.LowConfidence, exactFrameTiming: mode.AdaptiveTiming" in scanner,
             "scan mode low-confidence threshold or exact-frame timing policy is not applied to subtitle tracking")
     require('"fast" or "nhanh" => new OcrScanMode(1.5, 8, 24, 0.22, 0.58, AdaptiveTiming: true)' in checkpoint and
             '_ => new OcrScanMode(2.5, 5, 16, 0.16, 0.62, AdaptiveTiming: true)' in checkpoint,
@@ -175,8 +185,15 @@ def main() -> int:
             "MergeLiveCueSnapshot(result.Cues)" in page and "OcrLiveCueAccumulator _liveCues" in page and
             "RefreshLiveCueView(force: snapshot.Done)" in page and "now.AddSeconds(2)" in page,
             "OCR page does not incrementally retain and throttle live cue rendering")
-    require("OcrLiveCueAccumulator" in page and "OcrCueReconciler.MergeTouchingIdentical" in live_publish and
-            "OcrCueReconciler.MergeTouchingIdentical(output.Select(item => item.Cue))" in scanner,
+    # 2941804: live preview consumes the pixel-gated CommittedView; touching-identical
+    # reconciliation of the FINAL SRT happens in ReconcileAsync (line: MergeTouchingIdentical
+    # over the owned output) plus the pixel-gated MergeTouchingIdenticalAsync path.
+    require("OcrLiveCueAccumulator" in page and
+            "OcrCueReconciler.MergeTouchingIdentical(output.Select(item => item.Cue))" in scanner and
+            "OcrCueReconciler.MergeTouchingIdenticalAsync(" in scanner and
+            "liveTail.AppendCommitted(owned)" in scanner and
+            "liveTail.CommittedView" in scanner and
+            "IReadOnlyList<OcrCue> committedView" in live_publish,
             "identical touching OCR fragments are not reconciled consistently in live history and final SRT")
     require("recoverShortBlank: tracker.Active is not null" in live_lane,
             "active short-caption recovery no longer requests a bounded tighter-box retry")
@@ -213,21 +230,26 @@ def main() -> int:
     require('path + ".tmp-" + Guid.NewGuid().ToString("N")' in application and
             "File.Move(temporary, path);" in application,
             "OCR SRT publication is not atomic")
-    require("OcrScanner.Reconcile(checkpoint.Lanes" in checkpoint and "RecoverableCues" in models,
+    require("OcrScanner.ReconcileAsync(checkpoint.Lanes" in checkpoint and "RecoverableCues" in models,
             "OCR checkpoint inspection does not expose all committed safe-frontier cues")
     require("catch (OperationCanceledException) when (job.CancellationToken.IsCancellationRequested)" in application and
             "!laneCancellation.IsCancellationRequested" in scanner and "error is OperationCanceledException" in scanner,
             "an internal OCR lane cancellation can still be mislabeled as a user cancel")
+    # a5829d9: virtualized incremental cue list. The full ordered history is retained in
+    # _cues/_visibleCues; rows render incrementally with the same compact start/end format.
     require("TakeLast(120)" not in page and "Take(10)" not in page and
-            '_visibleCues = _cues.OrderBy(cue => cue.Start).ToArray();' in page and
-            'ToString(@"hh\\:mm\\:ss\\,fff")' in page and " → " in page,
+            'var cues = _cues.OrderBy(cue => cue.Start).ToArray();' in page and
+            'start.ToString(@"hh\\:mm\\:ss\\,fff")' in page and
+            'end.ToString(@"hh\\:mm\\:ss\\,fff")' in page and " → " in page,
             "OCR page does not retain the complete compact start/end subtitle history")
-    require('Height="372"' in page_xaml and 'Text="Phụ đề OCR đã quét · 10 câu mỗi lượt xem"' in page_xaml and
+    # a5829d9: the fixed "10 cues per viewport" window became a continuously scrollable
+    # full-history list inside the same 372px compact frame.
+    require('Height="372"' in page_xaml and "Phụ đề OCR đã quét" in page_xaml and
             'ScrollViewer.VerticalScrollBarVisibility="Auto"' in page_xaml and
             '<Setter Property="Height" Value="32" />' in page_xaml and
             'HorizontalContentAlignment" Value="Stretch"' in page_xaml and
             'TextTrimming="CharacterEllipsis"' in page_xaml and 'ToolTipService.ToolTip="{Binding}"' in page_xaml,
-            "OCR cue history is not isolated in a fixed ten-row scrollable compact viewport")
+            "OCR cue history is not isolated in a fixed compact scrollable viewport")
 
     require("private OcrScanRequest? _checkpointRequest;" in page and
             "private OcrScanRequest? _activeRequest;" in page,
@@ -261,8 +283,9 @@ def main() -> int:
 
     require("File.Delete(path);" in checkpoint and "if (File.Exists(path)" in checkpoint,
             "checkpoint removal still swallows delete errors or skips absence verification")
-    require("private const int Schema = 15;" in checkpoint and "schema >= 9" in checkpoint and
-            "LegacyCheckpointIdentity" in checkpoint and "new[] { 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3 }" in checkpoint and
+    require("private const int Schema = 18;" in checkpoint and "schema >= 9" in checkpoint and
+            "LegacyCheckpointIdentity" in checkpoint and
+            "new[] { 18, 17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3 }" in checkpoint and
             "OcrInstaller.DetectionModel, OcrInstaller.RecognitionModel" in checkpoint,
             "adaptive OCR checkpoint identity cannot safely reject and explicitly remove legacy checkpoint files")
     require("Where(x => x.Start <= media + 0.001)" in checkpoint,

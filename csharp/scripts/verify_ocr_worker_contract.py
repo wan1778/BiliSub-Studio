@@ -66,6 +66,73 @@ def assert_rejected(worker, prediction, expected: str) -> None:
     raise AssertionError(f"invalid PaddleOCR result was accepted: {prediction!r}")
 
 
+def verify_inline_row_compatibility(worker) -> None:
+    separate = [
+        ("V04", ["老头也是眉开眼笑", "明"], [0.99997, 0.99999],
+         [[449, 212, 830, 267], [857, 197, 930, 283]]),
+        ("V06", ["是否取消本次任务", "雪"], [0.99973, 0.7075],
+         [[464, 186, 814, 245], [347, 196, 432, 281]]),
+        ("height only", ["Caption", "7"], [0.99, 0.98],
+         [[100, 100, 300, 160], [310, 87, 370, 173]]),
+        ("center offset", ["Caption", "7"], [0.99, 0.98],
+         [[100, 100, 300, 160], [310, 72, 370, 150]]),
+        ("baseline offset", ["Caption", "7"], [0.99, 0.98],
+         [[100, 100, 300, 160], [310, 104, 370, 182]]),
+    ]
+    for name, texts, scores, boxes in separate:
+        for scale, dx, dy in [(1, 0, 0), (2, 73, 41)]:
+            transformed = [
+                [x1 * scale + dx, y1 * scale + dy, x2 * scale + dx, y2 * scale + dy]
+                for x1, y1, x2, y2 in boxes
+            ]
+            expected = [
+                {"text": text, "confidence": score, "box": box}
+                for text, score, box in zip(texts, scores, transformed)
+            ]
+            expected.sort(key=lambda line: line["box"][1])
+            for order in [(0, 1), (1, 0)]:
+                result = worker.parse_prediction([{
+                    "rec_texts": [texts[i] for i in order],
+                    "rec_scores": [scores[i] for i in order],
+                    "rec_boxes": [transformed[i] for i in order],
+                }])
+                assert result["ok"] is True and result["detected"] is True, name
+                assert result["lines"] == expected, (name, result)
+                assert result["text"] == "\n".join(line["text"] for line in expected), name
+                assert abs(result["confidence"] - sum(scores) / len(scores)) < 1e-9, name
+
+    legitimate = [
+        (["是否取消", "本次任务"], [[100, 100, 300, 160], [310, 103, 510, 161]], "是否取消本次任务"),
+        (["第", "12", "集"], [[100, 100, 150, 160], [158, 110, 215, 158], [223, 102, 273, 161]], "第12集"),
+        (["字幕", "。"], [[100, 100, 220, 160], [228, 148, 240, 160]], "字幕。"),
+        (["字幕", "……"], [[100, 100, 220, 160], [228, 125, 252, 135]], "字幕……"),
+        (["“", "字幕"], [[100, 100, 112, 112], [120, 100, 240, 160]], "“字幕"),
+    ]
+    for texts, boxes, expected_text in legitimate:
+        for order in [list(range(len(texts))), list(reversed(range(len(texts))))]:
+            result = worker.parse_prediction([{
+                "rec_texts": [texts[i] for i in order],
+                "rec_scores": [0.99] * len(texts),
+                "rec_boxes": [boxes[i] for i in order],
+            }])
+            assert_result(result, expected_text, 0.99, [
+                min(box[0] for box in boxes), min(box[1] for box in boxes),
+                max(box[2] for box in boxes), max(box[3] for box in boxes),
+            ])
+
+    # A small punctuation box can overlap both otherwise incompatible rows.
+    bridged = worker.parse_prediction([{
+        "rec_texts": ["Caption", ".", "7"],
+        "rec_scores": [0.99, 0.99, 0.98],
+        "rec_boxes": [[100, 100, 300, 160], [305, 135, 310, 145], [315, 120, 375, 180]],
+    }])
+    assert bridged["lines"] == [
+        {"text": "Caption.", "confidence": 0.99, "box": [100, 100, 310, 160]},
+        {"text": "7", "confidence": 0.98, "box": [315, 120, 375, 180]},
+    ], bridged
+    print("PASS OCR inline row compatibility: 20 separation, 10 legitimate merge, 1 punctuation bridge cases")
+
+
 def main() -> int:
     worker = load_worker()
     source = WORKER.read_text(encoding="utf-8")
@@ -126,6 +193,7 @@ def main() -> int:
     }
     separated = worker.parse_prediction([separate_rows])
     assert separated["text"] == "第一行\n第二行" and len(separated["lines"]) == 2
+    verify_inline_row_compatibility(worker)
 
     empty = worker.parse_prediction([{"res": {"rec_texts": [], "rec_scores": [], "rec_boxes": []}}])
     assert empty["ok"] is True and empty["detected"] is False and empty["text"] == ""

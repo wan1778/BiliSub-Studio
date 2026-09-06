@@ -10,7 +10,7 @@ PAGES = ROOT / "csharp/src/BiliSubStudio.App/Pages"
 COORDINATOR = ROOT / "csharp/src/BiliSubStudio.Core/Editor/EditorPreviewRequestCoordinator.cs"
 PARTIALS = sorted(PAGES.glob("EditorPage*.cs"))
 
-EXPECTED_CTS_ALLOCATIONS = 4
+EXPECTED_CTS_ALLOCATIONS = 5
 
 
 def fail(message: str) -> None:
@@ -38,7 +38,8 @@ coordinator = COORDINATOR.read_text(encoding="utf-8")
 scoped_code = page_code + "\n" + coordinator
 
 # CLEAN-09 inventory: Editor owns two frame-preview CTS allocations, one
-# auto-composite CTS allocation, and the Core preview coordinator owns one.
+# auto-composite CTS allocation, one project-list CTS allocation, and the Core
+# preview coordinator owns one.
 require(
     count_allocations(scoped_code) == EXPECTED_CTS_ALLOCATIONS,
     f"CLEAN-09 CTS allocation inventory drift: expected {EXPECTED_CTS_ALLOCATIONS}, "
@@ -95,6 +96,20 @@ require(
     "CLEAN-09 auto-composite worker must Dispose its local CTS in finally",
 )
 
+# Project-list CTS is page-owned list-refresh state: replacement via
+# CancelProjectThumbnailLoading cancels + disposes + nulls the previous handle.
+project_list = code_by_file["EditorPage.ProjectList.cs"]
+require(
+    len(re.findall(r"private\s+CancellationTokenSource\?\s+_projectListCancellation\s*;", project_list)) == 1,
+    "CLEAN-09 project-list CTS owner field drifted",
+)
+require(
+    project_list.count("_projectListCancellation?.Cancel();") == 1
+    and project_list.count("_projectListCancellation?.Dispose();") == 1
+    and "_projectListCancellation = null;" in project_list,
+    "CLEAN-09 project-list CTS must Cancel + Dispose + clear on replacement",
+)
+
 # Preview-request coordinator owns the render/prefetch CTS and always disposes
 # it after operation/cleanup completion. CancelAsync only requests cancellation;
 # RunLatestAsync retains disposal ownership to avoid double-owner ambiguity.
@@ -129,6 +144,7 @@ require(
 
 print(
     "PASS: CLEAN-09 CTS ownership locked · "
-    "4 allocations · preview replacement/source/unload Dispose · "
-    "auto-composite finally Dispose · coordinator finally Dispose"
+    "5 allocations · preview replacement/source/unload Dispose · "
+    "auto-composite finally Dispose · project-list replacement Dispose · "
+    "coordinator finally Dispose"
 )

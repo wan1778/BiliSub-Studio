@@ -39,22 +39,25 @@ installer = read(ASR_INSTALLER)
 # editor-asr job may start. Durable ASR/model checkpoints may be reused only when they
 # still match the exact source/model identity.
 
-create_handler = editor_main.split("private async Task<bool> EnsureVoiceTimingAsync()", 1)[1].split(
-    "private async Task PollAsrJobAsync()", 1)[0]
+create_handler = editor_main.split("private async Task<bool> EnsureVoiceTimingAsync(bool force = false)", 1)[1].split(
+    "private async Task PollAsrJobAsync(", 1)[0]
 require("if (_asrJobId is not null || _project is null || _media is null || string.IsNullOrWhiteSpace(_path)) return false;" in create_handler,
         "VOICE-03 restart must be blocked only while a live ASR owner still exists or source state is missing")
-require("_asrJobId = _application.StartEditorAsr(new EditorAsrRequest(_project.Id, _path, _media.Duration));" in create_handler,
+require("_asrJobId = _application.StartEditorAsr(new EditorAsrRequest(_project.Id, _path, _media.Duration, executionMode));" in create_handler,
         "VOICE-03 every restart must create a fresh application ASR job from the current exact project/source")
 require("VoiceProgress.Value = 0;" in create_handler,
         "VOICE-03 restart must reset visible progress for the new job")
 require("VoiceStatusText.Text = status;" in create_handler,
         "VOICE-03 restart must replace stale cancel text with the automatic timing start state")
 
-poll = editor_main.split("private async Task PollAsrJobAsync()", 1)[1].split(
+poll = editor_main.split("private async Task PollAsrJobAsync(bool continueVoice)", 1)[1].split(
     "private async void GenerateTts_Click", 1)[0]
 require("if (snapshot.Done)" in poll and "_asrJobId = null;" in poll and "RefreshEditorActions();" in poll,
         "VOICE-03 terminal cancel must release ASR ownership and immediately refresh controls")
-require(poll.index("if (snapshot.Done)") < poll.index("_asrJobId = null;") < poll.index("RefreshEditorActions();", poll.index("_asrJobId = null;")),
+# Ownership must clear inside the terminal finally-block, not in the missing-job catch.
+done_block = poll.split("if (snapshot.Done)", 1)[1]
+finally_block = done_block.split("finally", 1)[1]
+require("_asrJobId = null;" in finally_block and "RefreshEditorActions();" in finally_block,
         "VOICE-03 ASR ownership must clear only after terminal cleanup, before restart controls refresh")
 require("snapshot.Result is EditorAsrResult result" in poll,
         "VOICE-03 cancelled runs must not promote partial state before restart")
@@ -63,14 +66,15 @@ refresh = editor_main.split("private void RefreshEditorActions()", 1)[1].split(
     "private static string FormatClock", 1)[0]
 require("var idle = !EditorBusy;" in refresh and "var editable = idle && hasMedia && !_playback.IsPreviewMode;" in refresh,
         "VOICE-03 restart availability must derive from current live ownership")
-require("GenerateTtsButton.IsEnabled = editable && !_subtitleManualDirty && subtitleReady;" in refresh,
+# Generate availability is now derived through the tested VoiceBlockReason policy.
+require("GenerateTtsButton.IsEnabled = voiceBlockReason is null;" in refresh,
         "VOICE-03 Create voice must re-enable when cancel cleanup releases EditorBusy")
 require("CancelVoiceButton.IsEnabled = _asrJobId is not null || _ttsJobId is not null;" in refresh,
         "VOICE-03 cancel control must disappear after the cancelled ASR owner is released")
 
-busy_decl = "private bool EditorBusy => _jobId is not null || _translationJobId is not null || _asrJobId is not null || _ttsJobId is not null || _playback.IsRendering;"
+busy_decl = "private bool EditorBusy => _jobId is not null || _asrJobId is not null || _ttsJobId is not null"
 require(busy_decl in editor_main,
-        "VOICE-03 EditorBusy must depend on live job ids, not historical cancelled jobs")
+        "VOICE-03 EditorBusy must depend on live job ids plus cleanup-detached owners, not historical cancelled jobs")
 
 start_asr = application.split("public string StartEditorAsr(EditorAsrRequest request)", 1)[1].split(
     "public string StartEditorTts", 1)[0]
@@ -148,9 +152,11 @@ require("var existing = File.Exists(partial) ? new FileInfo(partial).Length : 0;
         "VOICE-03 model restart must detect already downloaded partial bytes")
 require("request.Headers.Range = new RangeHeaderValue(existing, null);" in download,
         "VOICE-03 model restart should resume a valid partial download with HTTP Range")
-require("if (existing > 0 && response.StatusCode != HttpStatusCode.PartialContent)" in download
-        and "TryDelete(partial);" in download,
-        "VOICE-03 servers that cannot resume must force a safe clean model redownload")
+# A CDN that cannot resume answers 200 for a Range request: bytes are then rewritten
+# from zero into the partial file (FileMode.Create) before the pinned SHA-256 gate.
+require("if (response.StatusCode == HttpStatusCode.PartialContent)" in download
+        and "else if (response.StatusCode == HttpStatusCode.OK) existing = 0;" in download,
+        "VOICE-03 servers that cannot resume must rewrite the partial and re-verify before use")
 require("if (!string.Equals(actual, expectedSha, StringComparison.Ordinal))" in download,
         "VOICE-03 resumed model bytes must still pass pinned SHA-256 before becoming usable")
 

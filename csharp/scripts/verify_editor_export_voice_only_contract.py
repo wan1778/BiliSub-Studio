@@ -33,7 +33,7 @@ tts = read(TTS)
 
 # Voice track alone is a valid final-render state in the one RenderButton owner.
 require(
-    "_document.Regions.Count > 0 || subtitleReady || audioChanged || _voiceTrack is not null || hasImages"
+    "_document.Regions.Count > 0 || subtitleReady || audioChanged || _voiceTrack is not null || hasImages || trimChanged"
     in editor,
     "EXPORT-09 RenderButton no longer accepts Voice-only state",
 )
@@ -46,7 +46,7 @@ for token in (
     "_document.Regions.ToArray(),",
     "subtitle,",
     "_audioSettings,",
-    "_voiceTrack);",
+    "_voiceTrack,",
 ):
     require(token in request_body, f"EXPORT-09 CurrentEditRequest lost: {token}")
 
@@ -65,7 +65,7 @@ require(
 )
 require(
     "if (!hasImages)" in images
-    and "_application.StartEditor(CurrentEditRequest(subtitle))" in images,
+    and "var request = CurrentEditRequest(subtitle) with" in images,
     "EXPORT-09 Voice-only must use the normal Editor render service",
 )
 
@@ -91,7 +91,7 @@ require(
 
 # The final render validates the Voice master before starting FFmpeg.
 for token in (
-    "var voice = NormalizeVoiceTrack(request.VoiceTrack, requireFile: true);",
+    "var voice = NormalizeVoiceTrack(renderRequest.VoiceTrack, requireFile: true);",
     "string.IsNullOrWhiteSpace(track.Path)",
     "!double.IsFinite(track.Start) || track.Start < 0",
     "!double.IsFinite(track.Duration) || track.Duration <= 0",
@@ -103,9 +103,9 @@ for token in (
 
 # Voice is the second FFmpeg input and the shared audio owner builds [aout].
 for token in (
-    'if (voice is not null) args.AddRange(["-i", voice.Path]);',
-    "BuildVoiceAudioFilter(audio, voice, 1, sourceStart: 0)",
-    'else args.AddRange(["-map", "[aout]", "-c:a", "aac", "-b:a", "192k"]);',
+    'arguments.AddRange(["-ss", voiceSeek.ToString("0.000", CultureInfo.InvariantCulture), "-i", voice.Path]);',
+    "BuildVoiceAudioFilter(audio, voice, 1, trim.Start)",
+    'else arguments.AddRange(["-map", "[aout]", "-c:a", "aac", "-b:a", export.AudioBitrateKbps.ToString(CultureInfo.InvariantCulture) + "k"]);',
     'voice is not null || audio.SourceMode != "mute"',
 ):
     require(token in video, f"EXPORT-09 final Voice FFmpeg path lost: {token}")
@@ -132,7 +132,7 @@ for token in (
 # Standard safe finalization still owns Voice-only output.
 for token in (
     'var temporary = output + ".rendering" + Path.GetExtension(output);',
-    "ValidateRenderedOutputAsync(temporary, request.Duration",
+    'await ValidateRenderedOutputAsync(\n                temporary, trim.Duration, voice is not null || audio.SourceMode != "mute",',
     "File.Move(temporary, output);",
 ):
     require(token in video, f"EXPORT-09 final output lifecycle lost: {token}")

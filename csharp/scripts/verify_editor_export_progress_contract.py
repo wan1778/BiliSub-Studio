@@ -109,10 +109,13 @@ require(
 
 # 100 is still written only after a successful normal final result or after the image
 # composer has returned. Do not let the timer manufacture completion.
-require(images.count("Progress.Value = 100;") == 2,
-        "EXPORT-14 expected exactly two successful final 100% assignments")
-require("Progress.Value = 100;" not in bootstrap,
+# Regex keeps the VoiceProgress sample bar (a different control) out of the export
+# orchestration check; the plain-substring form falsely matched it since UI-02.
+import re
+require(len(re.findall(r"(?<!Voice)Progress\.Value = 100;", bootstrap)) == 0,
         "EXPORT-14 progress bridge must reserve 100% for final orchestration")
+require(images.count("Progress.Value = 100;") == 2,
+        "EXPORT-14 exactly the normal and image final paths may publish 100%")
 
 # Producers expose useful pre-final progress and validation/finalization milestones.
 for token in (
@@ -123,7 +126,7 @@ for token in (
     require(token in video, f"EXPORT-14 normal render milestone lost: {token}")
 for token in (
     'job.Set("image-overlay", 2, "Đang ghép ảnh/logo vào video...");',
-    'job.Set("image-validate", 97, "Đang kiểm tra video có ảnh/logo...");',
+    'job.Set("image-validate", 97, "Đang kiểm tra stream, kích thước, audio và thời lượng...");',
     'job.Set("image-complete", 99, "Đã ghép và xác minh ảnh/logo.");',
 ):
     require(token in composer, f"EXPORT-14 image render milestone lost: {token}")

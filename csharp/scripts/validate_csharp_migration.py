@@ -56,11 +56,13 @@ REQUIRED = [
 EXPECTED_JSON_FIELDS = (
     "theme",
     "output_dir",
+    "ocr_output_dir",
     "sub_format",
     "video_speed",
     "video_container",
     "video_mode",
     "check_updates",
+    "asr_execution_mode",
     "ocr_device",
     "ocr_top",
     "ocr_bottom",
@@ -301,8 +303,9 @@ toggle_playback = playback_source.split("internal async Task ToggleAsync()", 1)[
 require("await PlayFromStartAsync();" in toggle_playback
         and "SetModeAsync(enabled: true, play: true)" not in toggle_playback
         and "_page.Timeline.Value" not in toggle_playback
-        and "private Task PlayFromStartAsync() => LoadSegmentAsync(0, play: true);" in playback_source,
-        "PREVIEW-04 initial Play must request source time zero instead of the edit/seek position")
+        # a887af4: processed playback honors the trim range instead of hard-coded zero.
+        and "private Task PlayFromStartAsync() => LoadSegmentAsync(_page.CurrentTrimRange().Start, play: true);" in playback_source,
+        "PREVIEW-04 initial Play must start from the trim start instead of the edit/seek position")
 require("if (IsPlaying) PauseAtCurrentFrame();" in toggle_playback
         and "private void PauseAtCurrentFrame() => _player?.Pause();" in playback_source
         and "SetModeAsync(enabled: false" not in toggle_playback
@@ -678,8 +681,10 @@ require("candidateProject = await _application.LoadEditorProjectAsync(candidateP
         and "editor project reopen preserves exact region order geometry identity and source bytes" in contract_tests_source,
         "BLUR-16 project reopen must hydrate the exact persisted region document and prove stable non-destructive roundtrip")
 require("BuildFilterCore(sliced, subtitleAss, \"previewbase\", requireEdit: false)" in video_editor_source
-        and "var graph = BuildFilter(request, subtitleAss);" in video_editor_source
-        and "var graph = BuildFilter(new VideoEditRequest(input, \".\", \"preview.mp4\", sourceWidth, sourceHeight, duration, active));" in video_editor_source
+        # a887af4: render/preview/frame paths all funnel through BuildFilterCore with
+        # explicit graph prefixes instead of the old bare BuildFilter call shape.
+        and 'var graph = "[0:v]setpts=PTS-STARTPTS[renderbase];"' in video_editor_source
+        and 'var graph = $"[0:v]setpts=PTS-STARTPTS+{timestamp}/TB[framebase];"' in video_editor_source
         and video_editor_source.count("RegionPixels(region, request.SourceWidth, request.SourceHeight)") == 1
         and "_page.CurrentEditRequest(_page.PreviewSubtitleBurn())" in editor_partials
         and editor_partials.count("var request = CurrentEditRequest(subtitle) with") == 2

@@ -35,7 +35,7 @@ project = read(PROJECT_STORE)
 # must stay one exportable request and one final FFmpeg job. Subtitle owns the video
 # graph; Voice + Keep/Duck/Mute own [aout] independently.
 require(
-    "var subtitleReady = _subtitleSource is not null && _subtitleSource.Cues.All(x => !string.IsNullOrWhiteSpace(x.VietnameseText));"
+    "var subtitleReady = _subtitleSource is { Cues.Count: > 0 } && _subtitleSource.Cues.All(x => !string.IsNullOrWhiteSpace(x.VietnameseText));"
     in editor,
     "EXPORT-12 Render state lost completed-subtitle readiness",
 )
@@ -44,7 +44,7 @@ require(
     "EXPORT-12 Render state lost source-audio policy",
 )
 require(
-    "_document.Regions.Count > 0 || subtitleReady || audioChanged || _voiceTrack is not null || hasImages"
+    "_document.Regions.Count > 0 || subtitleReady || audioChanged || _voiceTrack is not null || hasImages || trimChanged"
     in editor,
     "EXPORT-12 combined Subtitle/Voice/Audio state no longer enables Render",
 )
@@ -53,7 +53,7 @@ require(
 require(
     "private EditorSubtitleBurn? CompletedSubtitleBurn() =>" in editor
     and "_subtitleSource.Cues.All(x => !string.IsNullOrWhiteSpace(x.VietnameseText))" in editor
-    and "new EditorSubtitleBurn(_subtitleSource.Cues, _subtitlePlacement, _cueSpeechTiming, KaraokeToggle.IsOn)"
+    and "new EditorSubtitleBurn(_subtitleSource.Cues, _subtitlePlacement, _cueSpeechTiming, KaraokeToggle.IsOn, _subtitleStyle)"
     in editor,
     "EXPORT-12 completed subtitle owner changed unexpectedly",
 )
@@ -66,7 +66,7 @@ for token in (
     "_document.Regions.ToArray(),",
     "subtitle,",
     "_audioSettings,",
-    "_voiceTrack);",
+    "_voiceTrack,",
 ):
     require(token in request_body, f"EXPORT-12 shared request lost: {token}")
 
@@ -74,9 +74,9 @@ for token in (
 # Voice each qualify as base edit; without Image/logo the same request runs directly.
 for token in (
     "var subtitle = CompletedSubtitleBurn();",
-    'var hasBaseEdit = _document.Regions.Count > 0 || subtitle is not null || _audioSettings.SourceMode != "keep" || _voiceTrack is not null;',
+    'var hasBaseEdit = _document.Regions.Count > 0 || subtitle is not null || _audioSettings.SourceMode != "keep" || _voiceTrack is not null || trimChanged;',
     "if (!hasImages)",
-    "_application.StartEditor(CurrentEditRequest(subtitle))",
+    "var request = CurrentEditRequest(subtitle) with",
 ):
     require(token in images, f"EXPORT-12 final orchestration lost: {token}")
 
@@ -87,7 +87,7 @@ for token in (
     'mode is not ("keep" or "duck" or "mute")',
     '"keep" => new EditorAudioSettings("keep", 1)',
     '"mute" => new EditorAudioSettings("mute", 0)',
-    'new EditorAudioSettings("duck", Math.Clamp(audio.SourceGain, .05, .95))',
+    'Audio = NormalizeAudio(project.Audio),',
 ):
     require(token in project, f"EXPORT-12 audio policy normalization lost: {token}")
 
@@ -97,19 +97,27 @@ run_start = video.find("public async Task<VideoEditResult> RunAsync(")
 run_end = video.find("private async Task ValidateRenderedOutputAsync", run_start)
 require(run_start >= 0 and run_end > run_start, "EXPORT-12 RunAsync block not found")
 run_body = video[run_start:run_end]
+arguments_start = video.find("internal static IReadOnlyList<string> BuildConfiguredRenderArguments(")
+arguments_end = video.find("internal static IReadOnlyList<string> BuildAudioArguments(", arguments_start)
+require(arguments_start >= 0 and arguments_end > arguments_start, "EXPORT-12 BuildConfiguredRenderArguments block not found")
+arguments_body = video[arguments_start:arguments_end]
 for token in (
-    "var subtitleAss = request.Subtitle is null ? null :",
-    "BuildAss(request.Subtitle!, request.SourceWidth, request.SourceHeight)",
-    "var graph = BuildFilter(request, subtitleAss);",
-    "var audio = EditorProjectStore.NormalizeAudio(request.Audio);",
-    "var voice = NormalizeVoiceTrack(request.VoiceTrack, requireFile: true);",
-    'if (voice is not null) args.AddRange(["-i", voice.Path]);',
-    "var combinedGraph = voice is null ? graph : graph + \";\" + BuildVoiceAudioFilter(audio, voice, 1, sourceStart: 0);",
-    '"-filter_complex", combinedGraph',
-    '"-map", "[vout]"',
-    'else args.AddRange(["-map", "[aout]", "-c:a", "aac", "-b:a", "192k"]);',
+    "var subtitleAss = renderRequest.Subtitle is null ? null :",
+    "BuildAss(renderRequest.Subtitle!, request.SourceWidth, request.SourceHeight)",
+    'var graph = "[0:v]setpts=PTS-STARTPTS[renderbase];"\n            + BuildFilterCore(renderRequest, subtitleAss, "renderbase", requireEdit: false);',
+    "var audio = EditorProjectStore.NormalizeAudio(renderRequest.Audio);",
+    "var voice = NormalizeVoiceTrack(renderRequest.VoiceTrack, requireFile: true);",
 ):
     require(token in run_body, f"EXPORT-12 combined final render lost: {token}")
+for token in (
+    'arguments.AddRange(["-ss", voiceSeek.ToString("0.000", CultureInfo.InvariantCulture), "-i", voice.Path]);',
+    'graph + ";" + BuildVoiceAudioFilter(audio, voice, 1, trim.Start)',
+    '"-filter_complex", combinedGraph',
+    'else arguments.AddRange(["-map", "[aout]", "-c:a", "aac", "-b:a", export.AudioBitrateKbps.ToString(CultureInfo.InvariantCulture) + "k"]);',
+):
+    require(token in arguments_body, f"EXPORT-12 combined final render lost: {token}")
+require("exportGraph.OutputLabel" in run_body and '"-map", videoOutputLabel' in arguments_body,
+        "EXPORT-12 combined final render lost: output map")
 
 # With Voice present, even source Mute must still require and validate an output
 # audio stream because Vietnamese Voice remains audible.
@@ -164,7 +172,7 @@ for token in (
 # Final output lifecycle remains validated temp -> promotion.
 for token in (
     'var temporary = output + ".rendering" + Path.GetExtension(output);',
-    "await ValidateRenderedOutputAsync(temporary, request.Duration",
+    'await ValidateRenderedOutputAsync(\n                temporary, trim.Duration, voice is not null || audio.SourceMode != "mute",',
     "File.Move(temporary, output);",
 ):
     require(token in run_body, f"EXPORT-12 final output lifecycle lost: {token}")

@@ -22,7 +22,7 @@ for marker in ("VOICE_REVISION", "PACKAGES", "worker_sha", 'cue["id"]', 'cue["cu
     require(marker in identity, "cache identity missing " + marker)
 cache = worker.split("def load_clip(", 1)[1].split("def synthesize_cue(", 1)[0]
 for marker in ('record["sha256"] != sha256(path)', "read_wav(path)", 'record["raw_duration"]', 'record["fitted_duration"]',
-               "native_record_valid(record, target_frames, natural_sample)"):
+               "native_record_valid(record, target_frames, natural_sample, minimum_generated_frames)"):
     require(marker in cache, "cache validation missing " + marker)
 require("final_path.replace(cached_path)" in worker and 'atomic_json(cached_path.with_suffix(".json"), record)' in worker,
         "only fully written clips and matching metadata may be reused")

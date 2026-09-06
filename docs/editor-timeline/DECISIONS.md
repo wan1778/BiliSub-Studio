@@ -1,0 +1,38 @@
+# Timeline Editor V2 - Decision Log
+
+Date established: 2026-09-06
+
+This log is append-only. Do not silently rewrite an accepted decision. A change requires a new decision that explicitly supersedes the old entry.
+
+| ID | Status | Decision | Reason |
+|---|---|---|---|
+| DEC-001 | ACCEPTED | Build Timeline Editor V2 separately from the classic Editor. | The existing Editor is working and must remain a safe fallback. |
+| DEC-002 | ACCEPTED | V2 uses a separate page, model, persistence path, preview controller and export path during development. | Prevents experimental state from contaminating production ownership. |
+| DEC-003 | ACCEPTED | V2 remains behind an internal feature flag until promotion gate G11. | Allows testing without changing the normal user path. |
+| DEC-004 | ACCEPTED | Schema-7 projects are not modified in place by experimental V2 builds. | Existing user data is a concrete compatibility requirement. |
+| DEC-005 | ACCEPTED | Migration reads schema 7 and writes a separate V2 copy with backup evidence. | Makes migration reversible and testable. |
+| DEC-006 | ACCEPTED | MVP has one sequential primary video track and hard cuts only. | Keeps the first delivery bounded and avoids generic-NLE scope. |
+| DEC-007 | ACCEPTED | Track display order is IMG, SUB, FX, V1 video, separator, source audio, voice, music. | Matches visual compositing and separates audio ownership. |
+| DEC-008 | ACCEPTED | Timeline persistence uses 64-bit microseconds. | Avoids accumulated floating-point and frame-boundary drift. |
+| DEC-009 | ACCEPTED | Blur/Mosaic/Cover and clip subtitles use clip-local anchors by default. | Dependent edits must move with their source clip. |
+| DEC-010 | ACCEPTED | Generated voice is linked to subtitle cue IDs. | Timing-only ownership is insufficient after clip reorder or subtitle edits. |
+| DEC-011 | ACCEPTED | Music is sequence-global by default. | Reordering a video clip must not unexpectedly move the soundtrack. |
+| DEC-012 | ACCEPTED | Project ID remains stable when an asset is relinked. | Source paths are not project identity in a multi-asset project. |
+| DEC-013 | ACCEPTED | Preview and Export consume one immutable `EditorRenderPlan` from `TimelineCompiler`. | Prevents preview/export timing and filter drift. |
+| DEC-014 | ACCEPTED | MVP export renders normalized segments and then concatenates them. | More observable, resumable and testable than one unbounded filter graph. |
+| DEC-015 | ACCEPTED | The classic Editor remains available for several releases after V2 promotion. | Provides field rollback after real-user adoption. |
+| DEC-016 | ACCEPTED | Only one delivery gate may be in progress. | Prevents cross-phase scope drift and forgotten acceptance criteria. |
+| DEC-017 | ACCEPTED | User approval is required before changing MVP scope or promoting V2 into the normal Edit tab. | Product decisions must not be inferred during implementation. |
+
+## Pending product decisions
+
+These decisions are intentionally deferred until the responsible gate:
+
+| ID | Needed by | Question | Current recommendation |
+|---|---|---|---|
+| PDEC-001 | G3 | Sequence output resolution default | Use the first clip, allow explicit override. |
+| PDEC-002 | G3 | Sequence FPS default | Choose one explicit sequence FPS; never vary inside output. |
+| PDEC-003 | G6 | Ripple behavior after clip delete | Ripple subsequent V1 clips; keep sequence-global items fixed. |
+| PDEC-004 | G7 | SRT import target | Attach to selected clip by default; offer sequence-global import. |
+| PDEC-005 | G8 | Maximum music tracks in MVP | One music track. |
+| PDEC-006 | G11 | Duration of classic fallback support | At least two verified public builds after promotion. |

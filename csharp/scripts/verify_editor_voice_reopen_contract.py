@@ -36,7 +36,7 @@ subtitle_fingerprint = read(SUBTITLE_FINGERPRINT)
 # track directly; it must never regenerate TTS just to preview/export the project.
 
 open_video = editor.split("private async Task OpenVideoAsync()", 1)[1].split(
-    "private async Task SaveCurrentSourceStateForSwitchAsync", 1
+    "private async Task OpenVideoPathAsync(", 1
 )[0]
 require("candidateProject = await _application.LoadEditorProjectAsync" in open_video,
         "VOICE-15 reopen must load/normalize the persisted Editor project first")
@@ -123,7 +123,7 @@ require("StartEditorTts" not in restore and "Generate" not in restore,
 current_request = editor.split("private VideoEditRequest CurrentEditRequest(", 1)[1].split(
     "private async void Render_Click", 1
 )[0]
-require("_voiceTrack);" in current_request,
+require("_voiceTrack," in current_request,
         "VOICE-15 restored runtime voice must flow into the shared edit request")
 
 preview_load = playback.split("private async Task LoadSegmentCoreAsync(", 1)[1].split(

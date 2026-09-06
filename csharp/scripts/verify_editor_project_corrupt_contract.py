@@ -20,20 +20,21 @@ def forbid(text: str, needle: str, message: str) -> None:
 
 
 source = STORE.read_text(encoding="utf-8")
+classification = source.split("private static bool IsProjectCorruption", 1)[1].split(";", 1)[0]
 
 require(source, "catch (ProjectCorruptArchiveException) { throw; }",
         "PROJECT-07 must never reinterpret a quarantine failure as ordinary corruption.")
 require(source, "catch (Exception error) when (IsProjectCorruption(error))",
         "PROJECT-07 must recover only from explicit corruption classes.")
-require(source, "error is JsonException",
+require(classification, "error is JsonException",
         "Malformed JSON must be classified as project corruption.")
-require(source, "or InvalidDataException",
+require(classification, "or InvalidDataException",
         "Invalid persisted project data must be classified as corruption.")
-require(source, "or ArgumentException",
+require(classification, "or ArgumentException",
         "Malformed persisted paths/arguments must be classified as corruption.")
-forbid(source, "error is IOException",
+forbid(classification, "error is IOException",
        "Transient filesystem IO must not be classified as project corruption.")
-forbid(source, "error is UnauthorizedAccessException",
+forbid(classification, "error is UnauthorizedAccessException",
        "Access failures must not be classified as project corruption.")
 forbid(source, "private static void Quarantine(",
        "The old best-effort quarantine that swallowed failures must not return.")

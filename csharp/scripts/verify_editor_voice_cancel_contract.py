@@ -65,7 +65,7 @@ require("| `CancelVoiceButton` | XAML | `CancelVoice_Click` | 1 |" in event_map,
         "VOICE-02 event map must keep exactly one CancelVoiceButton binding")
 
 cancel_handler = editor_main.split("private void CancelVoice_Click(", 1)[1].split(
-    "private void Karaoke_Toggled", 1)[0]
+    "private static readonly TimeSpan StuckCancellingLimit", 1)[0]
 require("var job = _ttsJobId ?? _asrJobId;" in cancel_handler,
         "VOICE-02 cancel must target the active Voice job owner")
 require("if (job is null) return;" in cancel_handler,
@@ -83,7 +83,7 @@ refresh = editor_main.split("private void RefreshEditorActions()", 1)[1].split(
 require("CancelVoiceButton.IsEnabled = _asrJobId is not null || _ttsJobId is not null;" in refresh,
         "VOICE-02 cancel must remain available while ASR cleanup owns its job id")
 
-poll = editor_main.split("private async Task PollAsrJobAsync()", 1)[1].split(
+poll = editor_main.split("private async Task PollAsrJobAsync(bool continueVoice)", 1)[1].split(
     "private async void GenerateTts_Click", 1)[0]
 require("AsrStatusText.Text = snapshot.Message;" in poll,
         "VOICE-02 polling must surface cancelling/cancelled job messages")
@@ -94,7 +94,9 @@ require("snapshot.Result is EditorAsrResult result" in done_block,
         "VOICE-02 project promotion must require a real successful ASR result")
 require("_asrJobId = null;" in done_block,
         "VOICE-02 ASR job id must be released only from the terminal branch")
-require(poll.index("if (snapshot.Done)") < poll.index("_asrJobId = null;"),
+# The catch arm around GetSnapshot may clear a vanished id; terminal release must
+# come after Done. Index the first _asrJobId = null AFTER the Done branch.
+require(poll.index("if (snapshot.Done)") < poll.index("_asrJobId = null;", poll.index("if (snapshot.Done)")),
         "VOICE-02 ASR ownership must not clear before cleanup reports Done")
 
 start_asr = application.split("public string StartEditorAsr(EditorAsrRequest request)", 1)[1].split(
@@ -107,9 +109,9 @@ require("public void CancelJob(string id) => Jobs.Cancel(id);" in application,
 require("job.Cancel();" in job_manager,
         "VOICE-02 JobManager.Cancel must signal the exact AppJob")
 
-cancel_core = app_job.split("public void Cancel()", 1)[1].split(
+cancel_core = app_job.split("public bool TryCancel()", 1)[1].split(
     "public void CancelComplete", 1)[0]
-require("var waitsForCleanup = PauseSupported || CleanupAwareCancel;" in cancel_core,
+require("waitsForCleanup = PauseSupported || CleanupAwareCancel;" in cancel_core,
         "VOICE-02 cleanup-aware cancellation must enter a non-terminal cancelling phase")
 require('_status = waitsForCleanup ? "cancelling" : "cancelled";' in cancel_core,
         "VOICE-02 cleanup-aware ASR must expose cancelling before cancelled")
@@ -140,7 +142,7 @@ require("finally" in transcribe
         and "try { await processes.StopAsync(); } catch { }" in transcribe
         and "TryDeleteDirectory(operationRoot);" in transcribe,
         "VOICE-02 ASR finally must reap children and delete only the temporary operation root")
-require('Path.Combine(_paths.Data, "Projects", "ASR", request.ProjectId + ".json")' in transcribe,
+require('Path.Combine(_paths.Data, "Projects", "ASR", request.ProjectId + (hybrid ? ".hybrid-v1.json" : ".json"))' in transcribe,
         "VOICE-02 durable checkpoint must live outside the temporary operation root")
 
 require("cancellationToken.Register(() => Kill(process))" in process_runner,

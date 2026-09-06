@@ -31,12 +31,12 @@ video = read(VIDEO_EDITOR)
 
 # UI/state gate: a complete Vietsub alone is a valid reason to enable Render.
 require(
-    'var subtitleReady = _subtitleSource is not null && _subtitleSource.Cues.All(x => !string.IsNullOrWhiteSpace(x.VietnameseText));'
+    'var subtitleReady = _subtitleSource is { Cues.Count: > 0 } && _subtitleSource.Cues.All(x => !string.IsNullOrWhiteSpace(x.VietnameseText));'
     in editor,
     "EXPORT-06 lost complete-Vietsub readiness",
 )
 require(
-    "_document.Regions.Count > 0 || subtitleReady || audioChanged || _voiceTrack is not null || hasImages"
+    "_document.Regions.Count > 0 || subtitleReady || audioChanged || _voiceTrack is not null || hasImages || trimChanged"
     in editor,
     "EXPORT-06 RenderButton no longer accepts subtitle-only state",
 )
@@ -53,20 +53,20 @@ for token in (
     "_document.Regions.ToArray(),",
     "subtitle,",
     "_audioSettings,",
-    "_voiceTrack);",
+    "_voiceTrack,",
 ):
     require(token in editor, f"EXPORT-06 CurrentEditRequest lost: {token}")
 
 # Orchestration: subtitle contributes to hasBaseEdit. With no images, the one
 # Render entry point sends the subtitle request directly to VideoEditorService.
 require(
-    "var hasBaseEdit = _document.Regions.Count > 0 || subtitle is not null || _audioSettings.SourceMode != \"keep\" || _voiceTrack is not null;"
+    "var hasBaseEdit = _document.Regions.Count > 0 || subtitle is not null || _audioSettings.SourceMode != \"keep\" || _voiceTrack is not null || trimChanged;"
     in images,
     "EXPORT-06 subtitle no longer qualifies as base edit",
 )
 require(
     "if (!hasImages)" in images
-    and "_application.StartEditor(CurrentEditRequest(subtitle))" in images,
+    and "var request = CurrentEditRequest(subtitle) with" in images,
     "EXPORT-06 subtitle-only must use the normal Editor render path",
 )
 
@@ -76,16 +76,16 @@ require(
     "EXPORT-06 backend HasEdit no longer accepts subtitle-only requests",
 )
 require(
-    'var subtitleAss = request.Subtitle is null ? null : Path.Combine(Path.GetTempPath(), "bilisub-editor-sub-"'
+    'var subtitleAss = renderRequest.Subtitle is null ? null : Path.Combine(Path.GetTempPath(), "bilisub-editor-sub-"'
     in video,
     "EXPORT-06 subtitle-only render lost temporary ASS generation",
 )
 require(
-    "BuildAss(request.Subtitle!, request.SourceWidth, request.SourceHeight)" in video,
+    "BuildAss(renderRequest.Subtitle!, request.SourceWidth, request.SourceHeight)" in video,
     "EXPORT-06 subtitle-only render lost ASS construction",
 )
 require(
-    "var graph = BuildFilter(request, subtitleAss);" in video,
+    'var graph = "[0:v]setpts=PTS-STARTPTS[renderbase];"\n            + BuildFilterCore(renderRequest, subtitleAss, "renderbase", requireEdit: false);' in video,
     "EXPORT-06 subtitle-only render lost the shared render filter",
 )
 
@@ -101,8 +101,9 @@ require(
 for token in (
     'throw new InvalidDataException("Bản Vietsub chưa hoàn tất nên chưa thể hardsub.");',
     "var placement = subtitle.Placement;",
-    "AssTime(cue.Start)",
-    "AssTime(cue.End)",
+    "start = cue.Start;",
+    "end = cue.End;",
+    "Append(AssTime(start)).Append(',').Append(AssTime(end))",
     "EscapeAssText(cue.VietnameseText)",
 ):
     require(token in video, f"EXPORT-06 hard-sub contract lost: {token}")
@@ -121,7 +122,7 @@ require(
 # Final output still follows the standard verified temp->validate->move lifecycle.
 for token in (
     'var temporary = output + ".rendering" + Path.GetExtension(output);',
-    "ValidateRenderedOutputAsync(temporary, request.Duration",
+    'await ValidateRenderedOutputAsync(\n                temporary, trim.Duration, voice is not null || audio.SourceMode != "mute",',
     "File.Move(temporary, output);",
     "finally { TryDelete(temporary); if (subtitleAss is not null) TryDelete(subtitleAss); }",
 ):

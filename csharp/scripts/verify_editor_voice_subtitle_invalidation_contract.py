@@ -72,9 +72,10 @@ require("subtitle.SourceSize <= 0" in normalize_subtitle
         and "subtitle.SourceLastWriteUtcTicks <= 0" in normalize_subtitle
         and "subtitle.SourceSha256.Length != 64" in normalize_subtitle,
         "VOICE-11 stored subtitle fingerprint fields must remain structurally validated")
-require("var info = new FileInfo(path);" in normalize_subtitle,
+require("EditorSubtitleDocument.SourceFingerprintMatchesCurrent(" in normalize_subtitle,
         "VOICE-11 source SRT validity must be checked against the current file")
-require("if (!info.Exists || info.Length != subtitle.SourceSize || !FileShaMatches(path, subtitle.SourceSha256)) return null;"
+# Fingerprint mismatch (missing/changed SRT) returns null so persisted TTS loses its owner.
+require("if (!EditorSubtitleDocument.SourceFingerprintMatchesCurrent(\n                path, subtitle.SourceSize, subtitle.SourceLastWriteUtcTicks, subtitle.SourceSha256)) return null;"
         in normalize_subtitle,
         "VOICE-11 missing/changed SRT source must invalidate saved subtitle state")
 require("SourcePath = path," in normalize_subtitle,
@@ -83,21 +84,24 @@ require("SourcePath = path," in normalize_subtitle,
 import_subtitle = editor.split("private async Task ImportSubtitleAsync()", 1)[1].split(
     "private void AttachSubtitleToProject", 1
 )[0]
-require("_voiceTrack = null;" in import_subtitle
-        and "_project = _project with { Tts = null };" in import_subtitle,
+# Voice invalidation now flows through ClearVoiceTrackState() + Tts = null in the
+# with-expression (same semantics, shared helper for cue windows).
+require("ClearVoiceTrackState();" in import_subtitle
+        and "Tts = null," in import_subtitle,
         "VOICE-11 importing/replacing SRT in the UI must invalidate old voice immediately")
 require("AttachSubtitleToProject(string.Empty);" in import_subtitle,
         "VOICE-11 replacement SRT must attach only after stale TTS is cleared")
 
-translate_all = cue_editor.split("private async Task TranslateAllWithManualStateAsync()", 1)[1].split(
-    "private async void SubtitleRetranslateCue_Click", 1
-)[0]
-apply = translate_all.split("_subtitleSource = _subtitleSource with { Cues = merged };", 1)
-require(len(apply) == 2,
-        "VOICE-11 full Vietsub result must replace cue text")
-require("_voiceTrack = null;" in apply[1]
-        and "_project = _project with { Tts = null };" in apply[1],
-        "VOICE-11 successful full Vietsub must invalidate old voice after applying new text")
+# fa87ed3 removed the in-Editor translation job (TranslateAllWithManualStateAsync,
+# RetranslateSelectedCueAsync, PollTranslationJobAsync). Voice invalidation for any
+# subtitle content change now funnels through the single MarkTranslatedOutputStale owner.
+require("ClearVoiceTrackState();" in cue_editor.split("private void MarkTranslatedOutputStale()", 1)[1].split(
+    "private async void SubtitleSaveSrt_Click", 1)[0]
+        and "Tts = null," in cue_editor.split("private void MarkTranslatedOutputStale()", 1)[1].split(
+    "private async void SubtitleSaveSrt_Click", 1)[0],
+        "VOICE-11 shared stale subtitle-output owner must clear runtime and persisted TTS")
+require("Cues = _subtitleSource?.Cues ?? _project.Subtitle.Cues" in cue_editor,
+        "VOICE-11 stale-output owner must persist the changed cue content")
 
 manual = cue_editor.split("private async Task SaveCurrentSubtitleCueAsync()", 1)[1].split(
     "private void MarkTranslatedOutputStale()", 1
@@ -105,32 +109,10 @@ manual = cue_editor.split("private async Task SaveCurrentSubtitleCueAsync()", 1)
 require("MarkTranslatedOutputStale();" in manual,
         "VOICE-11 saved manual cue edits must invalidate the old generated voice")
 
-stale = cue_editor.split("private void MarkTranslatedOutputStale()", 1)[1].split(
-    "private async Task TranslateAllWithManualStateAsync()", 1
-)[0]
-require("_voiceTrack = null;" in stale and "Tts = null," in stale,
-        "VOICE-11 shared stale subtitle-output owner must clear runtime and persisted TTS")
-require("Cues = _subtitleSource?.Cues ?? _project.Subtitle.Cues" in stale,
-        "VOICE-11 stale-output owner must persist the changed cue content")
-
-retranslate = cue_editor.split("private async Task RetranslateSelectedCueAsync()", 1)[1].split(
-    "private async void SubtitleSaveSrt_Click", 1
-)[0]
-require("MarkTranslatedOutputStale();" in retranslate,
-        "VOICE-11 successful single-cue retranslation must invalidate old voice")
-
-compat_translation = editor.split("private async Task PollTranslationJobAsync(bool preparing)", 1)[1].split(
-    "private async void SaveKaraokeAss_Click", 1
-)[0]
-require("_subtitleSource = _subtitleSource with { Cues = result.Cues };" in compat_translation
-        and "_voiceTrack = null;" in compat_translation
-        and "Tts = null," in compat_translation,
-        "VOICE-11 compatibility translation promotion path must invalidate stale voice too")
-
-asr = editor.split("private async Task PollAsrJobAsync()", 1)[1].split(
+asr = editor.split("private async Task PollAsrJobAsync(bool continueVoice)", 1)[1].split(
     "private async void GenerateTts_Click", 1
 )[0]
-require("_voiceTrack = null;" in asr and "Tts = null," in asr,
+require("ClearVoiceTrackState();" in asr and "Tts = null," in asr,
         "VOICE-11 refreshed ASR/subtitle analysis must not retain a previous TTS track")
 
 # Subtitle placement and karaoke styling do not change the spoken Vietnamese text.
@@ -154,7 +136,7 @@ for forbidden in ("_voiceTrack = null", "Tts = null"):
 current_edit = editor.split("private VideoEditRequest CurrentEditRequest(", 1)[1].split(
     "private async void Render_Click", 1
 )[0]
-require("_voiceTrack);" in current_edit,
+require("_voiceTrack," in current_edit,
         "VOICE-11 Preview/Export share the runtime voice track, so stale invalidation must clear that owner")
 
 # Small persistence fixture: an unchanged subtitle keeps TTS; missing/changed

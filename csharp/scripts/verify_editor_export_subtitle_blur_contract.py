@@ -33,12 +33,12 @@ video = read(VIDEO_EDITOR)
 # one exportable state and one FFmpeg visual graph. Blur is applied first; ASS is
 # deliberately applied after region effects so the Vietnamese caption stays sharp.
 require(
-    "var subtitleReady = _subtitleSource is not null && _subtitleSource.Cues.All(x => !string.IsNullOrWhiteSpace(x.VietnameseText));"
+    "var subtitleReady = _subtitleSource is { Cues.Count: > 0 } && _subtitleSource.Cues.All(x => !string.IsNullOrWhiteSpace(x.VietnameseText));"
     in editor,
     "EXPORT-11 Render state lost completed-subtitle readiness",
 )
 require(
-    "_document.Regions.Count > 0 || subtitleReady || audioChanged || _voiceTrack is not null || hasImages"
+    "_document.Regions.Count > 0 || subtitleReady || audioChanged || _voiceTrack is not null || hasImages || trimChanged"
     in editor,
     "EXPORT-11 Render state owner no longer accepts combined Subtitle + Blur",
 )
@@ -47,7 +47,7 @@ require(
 require(
     "private EditorSubtitleBurn? CompletedSubtitleBurn() =>" in editor
     and "_subtitleSource.Cues.All(x => !string.IsNullOrWhiteSpace(x.VietnameseText))" in editor
-    and "new EditorSubtitleBurn(_subtitleSource.Cues, _subtitlePlacement, _cueSpeechTiming, KaraokeToggle.IsOn)"
+    and "new EditorSubtitleBurn(_subtitleSource.Cues, _subtitlePlacement, _cueSpeechTiming, KaraokeToggle.IsOn, _subtitleStyle)"
     in editor,
     "EXPORT-11 completed subtitle owner changed unexpectedly",
 )
@@ -60,7 +60,7 @@ for token in (
     "_document.Regions.ToArray(),",
     "subtitle,",
     "_audioSettings,",
-    "_voiceTrack);",
+    "_voiceTrack,",
 ):
     require(token in request_body, f"EXPORT-11 combined request lost: {token}")
 
@@ -71,13 +71,13 @@ require(
     "EXPORT-11 final render no longer snapshots completed subtitle",
 )
 require(
-    'var hasBaseEdit = _document.Regions.Count > 0 || subtitle is not null || _audioSettings.SourceMode != "keep" || _voiceTrack is not null;'
+    'var hasBaseEdit = _document.Regions.Count > 0 || subtitle is not null || _audioSettings.SourceMode != "keep" || _voiceTrack is not null || trimChanged;'
     in images,
     "EXPORT-11 combined Subtitle + Blur no longer qualifies as base edit",
 )
 require(
     "if (!hasImages)" in images
-    and "_application.StartEditor(CurrentEditRequest(subtitle))" in images,
+    and "var request = CurrentEditRequest(subtitle) with" in images,
     "EXPORT-11 no-image combined render must use the single normal render service",
 )
 
@@ -86,14 +86,20 @@ run_start = video.find("public async Task<VideoEditResult> RunAsync(")
 run_end = video.find("private async Task ValidateRenderedOutputAsync", run_start)
 require(run_start >= 0 and run_end > run_start, "EXPORT-11 RunAsync block not found")
 run_body = video[run_start:run_end]
+arguments_start = video.find("internal static IReadOnlyList<string> BuildConfiguredRenderArguments(")
+arguments_end = video.find("internal static IReadOnlyList<string> BuildAudioArguments(", arguments_start)
+require(arguments_start >= 0 and arguments_end > arguments_start, "EXPORT-11 BuildConfiguredRenderArguments block not found")
+arguments_body = video[arguments_start:arguments_end]
 for token in (
-    "var subtitleAss = request.Subtitle is null ? null :",
-    "BuildAss(request.Subtitle!, request.SourceWidth, request.SourceHeight)",
-    "var graph = BuildFilter(request, subtitleAss);",
-    '"-filter_complex", combinedGraph',
-    '"-map", "[vout]"',
+    "var subtitleAss = renderRequest.Subtitle is null ? null :",
+    "BuildAss(renderRequest.Subtitle!, request.SourceWidth, request.SourceHeight)",
+    'var graph = "[0:v]setpts=PTS-STARTPTS[renderbase];"\n            + BuildFilterCore(renderRequest, subtitleAss, "renderbase", requireEdit: false);',
 ):
     require(token in run_body, f"EXPORT-11 single render graph lost: {token}")
+require('"-filter_complex", combinedGraph' in arguments_body,
+        'EXPORT-11 single render graph lost: "-filter_complex", combinedGraph')
+require("exportGraph.OutputLabel" in run_body and '"-map", videoOutputLabel' in arguments_body,
+        "EXPORT-11 single render graph lost: configured output map")
 
 # BuildFilterCore must process all committed regions first.
 filter_start = video.find("private static string BuildFilterCore(")
@@ -156,7 +162,7 @@ require(
 # Safe finalization remains one temp artifact -> validation -> promotion.
 for token in (
     'var temporary = output + ".rendering" + Path.GetExtension(output);',
-    "await ValidateRenderedOutputAsync(temporary, request.Duration",
+    'await ValidateRenderedOutputAsync(\n                temporary, trim.Duration, voice is not null || audio.SourceMode != "mute",',
     "File.Move(temporary, output);",
 ):
     require(token in run_body, f"EXPORT-11 final output lifecycle lost: {token}")

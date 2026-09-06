@@ -68,19 +68,19 @@ require("| `CreateAsrButton` |" not in event_map
         and "GenerateTts_Click\n  -> EnsureVoiceTimingAsync" in event_map,
         "VOICE-01 event map must describe the single voice entry point")
 
-ensure_timing = editor_main.split("private async Task<bool> EnsureVoiceTimingAsync()", 1)[1].split(
-    "private async Task PollAsrJobAsync()", 1)[0]
-require('if (_project?.Speech is { Status: "complete" }) return true;' in ensure_timing,
+ensure_timing = editor_main.split("private async Task<bool> EnsureVoiceTimingAsync(bool force = false)", 1)[1].split(
+    "private async Task PollAsrJobAsync(", 1)[0]
+require("if (!force && _project?.Speech is { Status: \"complete\" }) return true;" in ensure_timing,
         "VOICE-01 valid cached timing must be reused without a second analysis")
 require("if (_asrJobId is not null || _project is null || _media is null || string.IsNullOrWhiteSpace(_path)) return false;" in ensure_timing,
         "VOICE-01 automatic timing must reject overlapping or incomplete editor state")
-require("_asrJobId = _application.StartEditorAsr(new EditorAsrRequest(_project.Id, _path, _media.Duration));" in ensure_timing,
+require("_asrJobId = _application.StartEditorAsr(new EditorAsrRequest(_project.Id, _path, _media.Duration, executionMode));" in ensure_timing,
         "VOICE-01 automatic timing must pass project id, exact source path and media duration to ASR")
-require("VoiceProgress.Value = 0;" in ensure_timing and "await PollAsrJobAsync();" in ensure_timing,
+require("VoiceProgress.Value = 0;" in ensure_timing and "await PollAsrJobAsync(continueVoice: !force);" in ensure_timing,
         "VOICE-01 automatic timing must reset progress and wait for its owned job")
 require(ensure_timing.index("_asrJobId = _application.StartEditorAsr")
         < ensure_timing.index("RefreshEditorActions();")
-        < ensure_timing.index("await PollAsrJobAsync();"),
+        < ensure_timing.index("await PollAsrJobAsync(continueVoice: !force);"),
         "VOICE-01 timing job id must lock controls before polling")
 
 generate_handler = editor_main.split("private async void GenerateTts_Click", 1)[1].split(
@@ -108,7 +108,7 @@ require("GenerateTtsButton.IsEnabled = voiceBlockReason is null;" in refresh_act
 require("CancelVoiceButton.IsEnabled = _asrJobId is not null || _ttsJobId is not null;" in refresh_actions,
         "VOICE-01 automatic timing must expose the Voice cancel path")
 
-busy_decl = "private bool EditorBusy => _jobId is not null || _asrJobId is not null || _ttsJobId is not null || _playback.IsRendering;"
+busy_decl = "private bool EditorBusy => _jobId is not null || _asrJobId is not null || _ttsJobId is not null"
 require(busy_decl in editor_main,
         "VOICE-01 active ASR job must participate in the single Editor busy owner")
 
@@ -139,7 +139,7 @@ require("var ffmpeg = await _tools.EnsureFfmpegAsync(job.CancellationToken);" in
 require("await using var processes = new OwnedProcessGroup();" in transcribe,
         "VOICE-01 ASR processes must be owned for cleanup-aware cancellation")
 require('job.Set("asr-probe-audio", 19,' in transcribe
-        and "var selection = await SelectRuntimeAsync(runtime, probeAudio, probeDuration, processes, job);" in transcribe,
+        and "var selection = await SelectRuntimeAsync(runtime, probeAudio, probeDuration, processes, job, request.ExecutionMode);" in transcribe,
         "VOICE-01 real audio benchmark must run before full transcription")
 
 validation = local_asr.split("private static void ValidateRequest(EditorAsrRequest request)", 1)[1].split(
@@ -165,8 +165,8 @@ require("local_files_only=True" in worker,
         "VOICE-01 Whisper worker must load only the prepared local model")
 require('language="zh"' in worker and 'task="transcribe"' in worker,
         "VOICE-01 Whisper start must target Chinese transcription")
-require('choices=("cpu", "cuda")' in worker,
-        "VOICE-01 worker execution devices must remain local CPU/CUDA only")
+require('choices=("cpu", "cuda", "hybrid")' in worker,
+        "VOICE-01 worker execution devices must remain local CPU/CUDA/hybrid only")
 require("emit({\"event\": \"ready\"" in worker,
         "VOICE-01 worker must emit ready after the local model is initialized")
 require("ensure_ascii=False" in worker,

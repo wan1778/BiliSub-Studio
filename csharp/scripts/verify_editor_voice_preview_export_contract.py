@@ -169,8 +169,16 @@ require("MediaSource.CreateFromStorageFile(file)" in activate,
         "VOICE-14 Player must play the rendered processed segment, not raw source media")
 
 # Encoding/performance differences are allowed; semantic audio/voice/effect state is not.
-require('"-preset", "medium", "-crf", "18"' in render_args,
-        "VOICE-14 fixture expects final Export quality settings to remain independent")
+# Export encoding moved into EditorExportPolicy: the software path keeps medium/CRF 18
+# while the hardware path maps quality through NVENC; Preview retains ultrafast/23.
+export_policy = video_editor.split("arguments.AddRange(EditorExportPolicy.BuildVideoEncoderArguments(export, encoder, mp4));", 1)[0]
+require("arguments.AddRange(EditorExportPolicy.BuildVideoEncoderArguments(export, encoder, mp4));" in video_editor,
+        "VOICE-14 Export encoder policy must stay delegated to the tested EditorExportPolicy owner")
+export_settings = (ROOT / "csharp/src/BiliSubStudio.Core/Editor/EditorExportSettings.cs").read_text(encoding="utf-8")
+require('arguments.AddRange(["-preset", "medium", "-crf", quality.ToString(CultureInfo.InvariantCulture)]);' in export_settings,
+        "VOICE-14 Export software encoding must keep the reviewed medium/CRF quality mapping")
+require('("h264", "high") => 18,' in export_settings,
+        "VOICE-14 H.264 high quality must keep CRF 18")
 require('"-preset", "ultrafast", "-crf", "23"' in preview_args,
         "VOICE-14 fixture expects Preview to retain its faster encoder")
 

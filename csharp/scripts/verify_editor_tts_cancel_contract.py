@@ -11,12 +11,40 @@ editor = read("csharp/src/BiliSubStudio.App/Pages/EditorPage.xaml.cs")
 application = read("csharp/src/BiliSubStudio.Core/Application/BiliSubApplication.cs")
 job = read("csharp/src/BiliSubStudio.Core/Jobs/AppJob.cs")
 runner = read("csharp/src/BiliSubStudio.Core/Processes/ProcessRunner.cs")
-cancel = editor.split("private void CancelVoice_Click(", 1)[1].split("private void Karaoke_Toggled", 1)[0]
+cancel = editor.split("private void CancelVoice_Click(", 1)[1].split("private static readonly TimeSpan StuckCancellingLimit", 1)[0]
 require("_application.CancelJob(job);" in cancel and "_ttsJobId = null" not in cancel,
         "cancel must retain ownership until terminal cleanup")
 poll = editor.split("private async Task PollTtsJobAsync()", 1)[1].split("private void CancelVoice_Click", 1)[0]
-require(poll.index("if (snapshot.Done)") < poll.index("_ttsJobId = null;"),
+# Ownership release must live inside the terminal Done finally-block; the missing-job
+# catch and the watchdog detach path are outside that terminal ownership rule.
+done_block = poll.split("if (snapshot.Done)", 1)[1]
+finally_block = done_block.split("finally", 1)[1]
+require("_ttsJobId = null;" in finally_block,
         "UI must not clear live job before cleanup finishes")
+# EDIT-CANCEL-OWNERSHIP: watchdog detach moves the id into an observed cleanup set.
+# Source switching stays available, while new render/ASR/TTS jobs remain blocked.
+watchdog = poll.split("CheckStuckCancelling(", 1)[1]
+require("DetachEditorJob(jobId);" in watchdog,
+        "watchdog detach must move the job id into the cleanup-detached ownership set")
+require("var sourceRevision = _editorSourceRevision;" in poll and
+        "string.Equals(_ttsJobId, jobId, StringComparison.Ordinal)" in poll and
+        "sourceRevision == _editorSourceRevision" in poll,
+        "TTS poll must not publish an old job into a newly selected source")
+observer = editor.split("private async Task ObserveDetachedEditorJobAsync", 1)[1].split(
+    "private void PruneDetachedEditorJobs", 1)[0]
+require("GetSnapshot(jobId).Done" in observer and
+        "_cleanupDetachedJobIds.Remove(jobId);" in observer and
+        "RefreshEditorActions();" in observer,
+        "detached ownership must observe terminal cleanup and refresh the UI")
+actions = editor.split("private void RefreshEditorActions()", 1)[1].split(
+    "private static string FormatClock", 1)[0]
+require("var cleanupPending = _cleanupDetachedJobIds.Count > 0;" in actions and
+        "editable && !cleanupPending" in actions and
+        "!idle || cleanupPending" in actions,
+        "detached cleanup must block new jobs without blocking source switching")
+require("PruneDetachedEditorJobs();" in editor.split("private void RefreshEditorActions()", 1)[1].split(
+    "private static string FormatClock", 1)[0],
+        "detached ownership must be pruned against live job state on every refresh")
 require("snapshot.Result is EditorTtsResult result" in poll, "cancel may not promote partial master")
 for marker in ('Jobs.Create("editor-tts", cleanupAwareCancel: true)', "catch (OperationCanceledException)",
                "if (!job.Snapshot().Done) job.CancelComplete();"):

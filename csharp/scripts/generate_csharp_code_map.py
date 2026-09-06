@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import difflib
 import re
+import sys
 from pathlib import Path
 
 
@@ -56,6 +57,8 @@ def generate() -> str:
 
 
 def main() -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args()

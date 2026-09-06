@@ -33,7 +33,7 @@ for field in ("Path", "X", "Y", "Width", "Height", "Opacity", "PixelWidth", "Pix
             f"IMAGE-14 persisted image state is missing {field}")
 
 open_video = page.split("private async Task OpenVideoAsync()", 1)[1].split(
-    "private async Task SaveCurrentSourceStateForSwitchAsync()", 1
+    "private async Task OpenVideoPathAsync(", 1
 )[0]
 restore_call = "await EnsureImageProjectLoadedAsync();"
 require(open_video.count(restore_call) == 1,

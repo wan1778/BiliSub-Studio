@@ -58,7 +58,7 @@ def verify_core(core: str) -> None:
     save = method_body(core, "public async Task SaveAsync(")
     fingerprint = save.find("var normalizedSource = Fingerprint(")
     guard = save.find("if (SourceFingerprintChanged(project.Source, normalizedSource))")
-    write = save.find("JsonSerializer.SerializeAsync")
+    write = save.find("WriteStoredFileAsync(normalized, cancellationToken)")
     require(0 <= fingerprint < guard < write,
             "PROJECT-05 SaveAsync must reject a replaced source before writing any project state")
     require("Video nguồn đã thay đổi ngoài ứng dụng" in save,

@@ -18,6 +18,7 @@ subtitle_policy = read("csharp/src/BiliSubStudio.Core/Video/SubtitleTrackPolicy.
 download = read("csharp/src/BiliSubStudio.Core/Video/VideoDownloadService.cs")
 range_downloader = read("csharp/src/BiliSubStudio.Core/Video/RangeDownloader.cs")
 application = read("csharp/src/BiliSubStudio.Core/Application/BiliSubApplication.cs")
+job_queue = read("csharp/src/BiliSubStudio.Core/Jobs/SequentialJobQueue.cs")
 subtitle = read("csharp/src/BiliSubStudio.Core/Subtitle/SubtitleService.cs")
 page = read("csharp/src/BiliSubStudio.App/Pages/VideoPage.xaml.cs")
 xaml = read("csharp/src/BiliSubStudio.App/Pages/VideoPage.xaml")
@@ -165,6 +166,18 @@ require("thumbnail" in xaml_lower and "phụ đề nếu nguồn có" in xaml_lo
 require("1. nguồn bilibili" in xaml_lower and "4. nơi lưu và bắt đầu" in xaml_lower, "media page must keep the clearer staged visual hierarchy")
 
 require("var bundledMedia = request.MediaBundle" in application, "parent job must use explicit media-bundle mode")
+require('Jobs.Create(bundledMedia ? "media" : "video", cleanupAwareCancel: true)' in application,
+        "media queue jobs must keep cancellation nonterminal until cleanup finishes")
+require("_videoQueue.Enqueue(job, async () =>" in application,
+        "all video/media work must enter the Core-owned sequential queue")
+require("SingleReader = true" in job_queue and "TryStart()" in job_queue,
+        "media dispatcher must retain one FIFO consumer")
+require('Job.CancelComplete("Đã hủy mục đang chờ.")' in job_queue,
+        "cancelling a waiting item must skip it immediately")
+require("var videoDrain = _videoQueue.PauseAndDrainAsync(cancellationToken)" in application and "await videoDrain" in application,
+        "shutdown must pause media admission and wait for active cleanup before disposing shared services")
+require("_videoQueue.Resume()" in application,
+        "a failed safe shutdown must restore media queue admission")
 require("var bundledVideo = !bundledMedia || request.BundleVideo" in application, "legacy video behavior and separate video selection must coexist")
 require("var bundledThumbnail = bundledMedia && request.BundleThumbnail" in application, "thumbnail must be optional in bundle mode")
 require("if (bundledVideo)" in application and '"bundle-video"' in application, "video phase must run only when video is selected")
@@ -173,6 +186,12 @@ require("if (bundledSubtitle)" in application and "subtitleTrack is null" in app
 require("không có track phù hợp; đã bỏ qua" in application_lower, "missing subtitle must remain a non-fatal skip")
 require("nguồn không cung cấp thumbnail; bỏ qua" in application_lower, "missing thumbnail must remain a non-fatal skip")
 require("tác vụ đã hoàn tất; có mục bị bỏ qua/cảnh báo" in application_lower, "partial media completion must be explicit")
+require('x:Name="QueueList"' in xaml and 'Text="Hàng đợi"' in xaml,
+        "Media UI must expose the session download queue")
+require("ObservableCollection<MediaQueueItem>" in page and "CancelQueueItem_Click" in page,
+        "Media UI must retain per-item state and cancellation")
+require("ResetSourceForNextItem()" in page,
+        "Media UI must let users inspect and enqueue the next URL while work is active")
 
 require("128L * 1024 * 1024" in subtitle, "long-video subtitle cap must remain 128 MiB")
 require("for (var attempt = 1; attempt <= 4; attempt++)" in subtitle, "subtitle HTTP retry contract is missing")

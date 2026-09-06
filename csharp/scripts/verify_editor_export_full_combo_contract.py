@@ -39,10 +39,10 @@ composer = read(COMPOSER)
 
 # All five edit families remain exportable from the single Render state owner.
 for token in (
-    "var subtitleReady = _subtitleSource is not null && _subtitleSource.Cues.All(x => !string.IsNullOrWhiteSpace(x.VietnameseText));",
+    "var subtitleReady = _subtitleSource is { Cues.Count: > 0 } && _subtitleSource.Cues.All(x => !string.IsNullOrWhiteSpace(x.VietnameseText));",
     'var audioChanged = _audioSettings.SourceMode != "keep";',
     "var hasImages = _imageFeatureInitialized && _imageOverlays.Count > 0;",
-    "_document.Regions.Count > 0 || subtitleReady || audioChanged || _voiceTrack is not null || hasImages",
+    "_document.Regions.Count > 0 || subtitleReady || audioChanged || _voiceTrack is not null || hasImages || trimChanged",
 ):
     require(token in editor, f"EXPORT-13 Render state lost: {token}")
 
@@ -54,24 +54,30 @@ for token in (
     "_document.Regions.ToArray(),",
     "subtitle,",
     "_audioSettings,",
-    "_voiceTrack);",
+    "_voiceTrack,",
 ):
     require(token in request_body, f"EXPORT-13 shared base request lost: {token}")
 
 # Full combo orchestration: base edit first, then image stage.
 for token in (
     "var subtitle = CompletedSubtitleBurn();",
-    'var hasBaseEdit = _document.Regions.Count > 0 || subtitle is not null || _audioSettings.SourceMode != "keep" || _voiceTrack is not null;',
+    'var hasBaseEdit = _document.Regions.Count > 0 || subtitle is not null || _audioSettings.SourceMode != "keep" || _voiceTrack is not null || trimChanged;',
     "var hasImages = _imageOverlays.Count > 0;",
     'var temporaryDirectory = Path.Combine(_application.Paths.Temp, "Editor", "ImageBase");',
     'var temporaryName = "editor-image-base-" + Guid.NewGuid().ToString("N") + ".mp4";',
-    "var request = CurrentEditRequest(subtitle) with { OutputDirectory = temporaryDirectory, FileName = temporaryName };",
+    'var request = CurrentEditRequest(subtitle) with',
+    "{",
+    "OutputDirectory = temporaryDirectory,",
+    "FileName = temporaryName,",
+    "Export = intermediateExport,",
+    "};",
     "_jobId = _application.StartEditor(request);",
     "baseOutput = result.OutputPath;",
     "composerInput = result.OutputPath;",
     "var specs = _imageOverlays.Select(image => new EditorImageOverlaySpec(",
     "image.Path, image.X, image.Y, image.Width, image.Height, image.Opacity",
-    "_media.Width, _media.Height, _media.Duration, specs, copyAudio: hasBaseEdit",
+    "_media.Width, _media.Height, trimChanged ? trim.Duration : _media.Duration, specs,",
+    "copyAudio: hasBaseEdit, exportSettings: outputTarget.Settings",
 ):
     require(token in images, f"EXPORT-13 two-stage orchestration lost: {token}")
 
@@ -106,18 +112,25 @@ run_start = video.find("public async Task<VideoEditResult> RunAsync(")
 run_end = video.find("private async Task ValidateRenderedOutputAsync", run_start)
 require(run_start >= 0 and run_end > run_start, "EXPORT-13 RunAsync block missing")
 run_body = video[run_start:run_end]
+arguments_start = video.find("internal static IReadOnlyList<string> BuildConfiguredRenderArguments(")
+arguments_end = video.find("internal static IReadOnlyList<string> BuildAudioArguments(", arguments_start)
+require(arguments_start >= 0 and arguments_end > arguments_start, "EXPORT-13 BuildConfiguredRenderArguments block missing")
+arguments_body = video[arguments_start:arguments_end]
 for token in (
-    "BuildAss(request.Subtitle!, request.SourceWidth, request.SourceHeight)",
-    "var graph = BuildFilter(request, subtitleAss);",
-    "var audio = EditorProjectStore.NormalizeAudio(request.Audio);",
-    "var voice = NormalizeVoiceTrack(request.VoiceTrack, requireFile: true);",
-    'if (voice is not null) args.AddRange(["-i", voice.Path]);',
-    'var combinedGraph = voice is null ? graph : graph + ";" + BuildVoiceAudioFilter(audio, voice, 1, sourceStart: 0);',
-    '"-filter_complex", combinedGraph',
-    'else args.AddRange(["-map", "[aout]", "-c:a", "aac", "-b:a", "192k"]);',
+    "BuildAss(renderRequest.Subtitle!, request.SourceWidth, request.SourceHeight)",
+    'var graph = "[0:v]setpts=PTS-STARTPTS[renderbase];"\n            + BuildFilterCore(renderRequest, subtitleAss, "renderbase", requireEdit: false);',
+    "var audio = EditorProjectStore.NormalizeAudio(renderRequest.Audio);",
+    "var voice = NormalizeVoiceTrack(renderRequest.VoiceTrack, requireFile: true);",
     'voice is not null || audio.SourceMode != "mute"',
 ):
     require(token in run_body, f"EXPORT-13 base audio/voice render lost: {token}")
+for token in (
+    'arguments.AddRange(["-ss", voiceSeek.ToString("0.000", CultureInfo.InvariantCulture), "-i", voice.Path]);',
+    'graph + ";" + BuildVoiceAudioFilter(audio, voice, 1, trim.Start)',
+    '"-filter_complex", combinedGraph',
+    'else arguments.AddRange(["-map", "[aout]", "-c:a", "aac", "-b:a", export.AudioBitrateKbps.ToString(CultureInfo.InvariantCulture) + "k"]);',
+):
+    require(token in arguments_body, f"EXPORT-13 base audio/voice render lost: {token}")
 
 voice_start = video.find("private static string BuildVoiceAudioFilter")
 voice_end = video.find("public static bool IsActiveAt", voice_start)
@@ -137,9 +150,10 @@ for token in (
 for token in (
     "var input = Path.GetFullPath(inputPath.Trim());",
     '"-y", "-hide_banner", "-loglevel", "error", "-nostdin", "-i", input,',
-    "var graph = BuildGraph(normalized, sourceWidth, sourceHeight);",
-    '"-filter_complex", graph,',
-    '"-map", "[vout]", "-map", "0:a?", "-map_metadata", "0", "-sn", "-dn",',
+    "var graph = EditorExportPolicy.BuildVideoGraph(",
+    "BuildGraph(normalized, sourceWidth, sourceHeight), export, sourceWidth, sourceHeight);",
+    '"-filter_complex", graph.FilterGraph,',
+    '"-map", graph.OutputLabel, "-map", "0:a?", "-map_metadata", "0", "-sn", "-dn",',
     'if (copyAudio) args.AddRange(["-c:a", "copy"]);',
 ):
     require(token in composer, f"EXPORT-13 image post-stage lost: {token}")
@@ -162,14 +176,16 @@ for token in (
 # Safe output lifecycle in both stages.
 for token in (
     'var temporary = output + ".rendering" + Path.GetExtension(output);',
-    "await ValidateRenderedOutputAsync(temporary, request.Duration",
+    'await ValidateRenderedOutputAsync(\n                temporary, trim.Duration, voice is not null || audio.SourceMode != "mute",',
     "File.Move(temporary, output);",
 ):
     require(token in run_body, f"EXPORT-13 base output safety lost: {token}")
 for token in (
     "var output = FileNamePolicy.UniquePath(Path.Combine(directory, sanitized), input);",
     'var temporary = output + ".rendering" + extension;',
-    "await ValidateAsync(temporary, sourceWidth, sourceHeight, duration, job.CancellationToken);",
+    "await ValidateAsync(",
+    "temporary, graph.Dimensions.Width, graph.Dimensions.Height, duration, expectAudio,",
+    "export.Codec, job.CancellationToken);",
     "File.Move(temporary, output);",
 ):
     require(token in composer, f"EXPORT-13 final image output safety lost: {token}")

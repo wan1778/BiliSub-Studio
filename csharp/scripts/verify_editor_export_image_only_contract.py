@@ -35,14 +35,14 @@ require(
     "EXPORT-10 Render state owner lost Image/logo state",
 )
 require(
-    "_document.Regions.Count > 0 || subtitleReady || audioChanged || _voiceTrack is not null || hasImages"
+    "_document.Regions.Count > 0 || subtitleReady || audioChanged || _voiceTrack is not null || hasImages || trimChanged"
     in editor,
     "EXPORT-10 Image-only state no longer enables Render",
 )
 
 # One final-render orchestrator accepts images even when no base edit exists.
 for token in (
-    'var hasBaseEdit = _document.Regions.Count > 0 || subtitle is not null || _audioSettings.SourceMode != "keep" || _voiceTrack is not null;',
+    'var hasBaseEdit = _document.Regions.Count > 0 || subtitle is not null || _audioSettings.SourceMode != "keep" || _voiceTrack is not null || trimChanged;',
     "var hasImages = _imageOverlays.Count > 0;",
     "if (!hasBaseEdit && !hasImages)",
 ):
@@ -54,7 +54,7 @@ require("var composerInput = _path;" in images, "EXPORT-10 composer input must s
 require(
     "if (hasBaseEdit)" in images
     and 'var temporaryDirectory = Path.Combine(_application.Paths.Temp, "Editor", "ImageBase");' in images
-    and "composerInput = snapshot.Result.OutputPath;" in images,
+    and "composerInput = result.OutputPath;" in images,
     "EXPORT-10 base-render branch changed unexpectedly",
 )
 
@@ -65,7 +65,8 @@ require(
 )
 for token in (
     "image.Path, image.X, image.Y, image.Width, image.Height, image.Opacity",
-    "_media.Width, _media.Height, _media.Duration, specs, copyAudio: hasBaseEdit",
+    "_media.Width, _media.Height, trimChanged ? trim.Duration : _media.Duration, specs,",
+    "copyAudio: hasBaseEdit, exportSettings: outputTarget.Settings",
 ):
     require(token in images, f"EXPORT-10 final image state lost: {token}")
 
@@ -93,11 +94,11 @@ for token in (
 # Image-only must keep source-audio content when present. Optional audio mapping also
 # permits legitimate video-only sources. The current Image-only path transcodes source
 # audio once to AAC for output compatibility; a base-edited temporary can stream-copy.
-require('"-map", "[vout]", "-map", "0:a?"' in composer,
+require('"-map", graph.OutputLabel, "-map", "0:a?"' in composer,
         "EXPORT-10 composer must retain optional source audio")
 require('if (copyAudio) args.AddRange(["-c:a", "copy"]);' in composer,
         "EXPORT-10 base-edited image path lost audio stream-copy")
-require('else args.AddRange(["-c:a", "aac", "-b:a", "192k"]);' in composer,
+require('else args.AddRange(["-c:a", "aac", "-b:a", export.AudioBitrateKbps.ToString(CultureInfo.InvariantCulture) + "k"]);' in composer,
         "EXPORT-10 Image-only source audio compatibility encode changed")
 require('"-an"' not in composer,
         "EXPORT-10 image composer must never mute source audio")
@@ -106,7 +107,9 @@ require('"-an"' not in composer,
 for token in (
     "var output = FileNamePolicy.UniquePath(Path.Combine(directory, sanitized), input);",
     'var temporary = output + ".rendering" + extension;',
-    "await ValidateAsync(temporary, sourceWidth, sourceHeight, duration, job.CancellationToken);",
+    "await ValidateAsync(",
+    "temporary, graph.Dimensions.Width, graph.Dimensions.Height, duration, expectAudio,",
+    "export.Codec, job.CancellationToken);",
     "File.Move(temporary, output);",
     "TryDelete(temporary);",
 ):
@@ -115,7 +118,8 @@ for token in (
 # Validation locks the final picture size and duration.
 for token in (
     "if (width == expectedWidth && height == expectedHeight) validVideo = true;",
-    'if (!validVideo) throw new InvalidDataException("Kích thước video sau khi ghép ảnh/logo bị thay đổi ngoài dự kiến.");',
+    "if (videoStreams == 0 || !validVideo)",
+    'throw new InvalidDataException("Kích thước video sau khi ghép ảnh/logo bị thay đổi ngoài dự kiến.");',
     "if (Math.Abs(duration - expectedDuration) > tolerance)",
 ):
     require(token in composer, f"EXPORT-10 output validation lost: {token}")

@@ -75,7 +75,9 @@ def verify_source(main: str, persistence: str, editor: str, images: str, store: 
     project_id = method_body(store, "private static string ProjectId(")
     require("Path.GetFullPath(inputPath).ToUpperInvariant()" in project_id and "SHA256.HashData" in project_id, "PROJECT-04 project identity must stay deterministic across app processes")
     save = method_body(store, "public async Task SaveAsync(")
-    require('var temporary = path + ".tmp-" + Guid.NewGuid().ToString("N");' in save and "File.Move(temporary, path, overwrite: true);" in save, "PROJECT-04 project persistence must stay atomic across process restart")
+    writer = method_body(store, "private async Task WriteStoredFileAsync(")
+    require("await WriteStoredFileAsync(normalized, cancellationToken)" in save, "PROJECT-04 SaveAsync must use the atomic project writer")
+    require('var temporary = path + ".tmp-" + Guid.NewGuid().ToString("N");' in writer and "File.Move(temporary, path, overwrite: true);" in writer, "PROJECT-04 project persistence must stay atomic across process restart")
 
     require("public Task<EditorProject> LoadEditorProjectAsync" in app and "_editorProjects.LoadOrCreateAsync" in app, "PROJECT-04 fresh EditorPage must reopen through EditorProjectStore")
 
