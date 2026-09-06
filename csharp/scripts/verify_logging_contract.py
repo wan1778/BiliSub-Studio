@@ -41,7 +41,8 @@ for marker in (
 require("File.AppendAllText(" not in log_code, "ApplicationLog must not restore synchronous File.AppendAllText")
 require(log_code.index("_writeQueue.Writer.TryWrite(new LogWriteItem(line, null))") < log_code.index("var subscribers = EntryAdded"),
         "disk queue enqueue must happen before EntryAdded publication")
-require("_applicationLog?.Error(Kind, finalMessage, error, Id);" in job_code,
+require("finalError = error;" in job_code and
+        "_applicationLog?.Error(Kind, finalMessage, finalError, Id);" in job_code,
         "AppJob.Finish must publish the full exception to ApplicationLog")
 require("LogRedactor.Redact(note)" in bug_code and "LogRedactor.Redact(x.Value)" in bug_code,
         "BugReportService must reuse LogRedactor")
