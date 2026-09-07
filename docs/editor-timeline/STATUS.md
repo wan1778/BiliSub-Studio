@@ -7,7 +7,7 @@ Last updated: 2026-09-07
 ```text
 Program status: PLANNING APPROVED
 Current gate: G12 - Mux
-Gate state: IN_PROGRESS - source and dirty-tree gates pass; clean-tree verify pending
+Gate state: VERIFIED - real FFmpeg mux with normalized segments, ordered concat and drift validation
 Timeline implementation: STARTED (through real FFmpeg mux for video plus source audio; no Edit-tab merge, flag default off)
 Classic Editor modifications for Timeline: NONE (V2-only files plus test/verifier/docs)
 ```
@@ -429,7 +429,7 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
   source tree SHA-256
   `30af182670443b7190422ee67ee656ab6752ac2817e6400156c83b1860e9d174`.
 
-## G12 pre-commit verification evidence (2026-09-07)
+## G12 verification evidence (2026-09-07)
 
 - User accepted DEC-022: real multi-clip mux for video plus clip source audio
   only; items, subtitle/voice cues and music reject explicitly until ported.
@@ -454,22 +454,27 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
   schema-7 store unchanged.
 - Release x64 build: 0 warnings, 0 errors; Range field regressions PASS;
   `validate_csharp_migration.py` PASS; generated code map current.
-- Clean-tree `verify.ps1`, self-contained publish/startup smoke and final G12
-  binary/source hashes: PENDING until the G12 source is committed.
+- Clean-tree `verify.ps1` on `b07db49`: PASS (contracts `120/120`, Range
+  regressions, self-contained publish, real startup smoke, worker identity,
+  PE32+ x64 and checksum readback).
+- G12 gate binary: exe SHA-256
+  `559716bb747070f8267cdf7046714e0ce927b9fbd21a9ccaaa1edf0757873fae`,
+  source tree SHA-256
+  `aa9accee485e20c63f614cfe5bd2bfab2e703cc58320490c2c5f0fea1cffe1c1`.
 
 ## Remaining precondition
 
-- Commit the reviewed G12 source and run clean-tree `csharp/scripts/verify.ps1`
-  before changing the gate state to `VERIFIED`. The field mux contract needs
-  FFmpeg/FFprobe on PATH.
+- None. All G0-G12 gates are verified; any Edit-tab merge, flag-default
+  change, or effect/subtitle/voice/music graph port needs a new user-approved
+  decision per DEC-017.
 - Any future restore or migration experiment must use a separate test root and
   re-verify `BACKUP_PROCEDURE.md` first.
+- The field mux contract needs FFmpeg/FFprobe on PATH.
 
 ## Next exact action
 
-Review and commit the G12 source, run the clean-tree Windows verification gate,
-then record binary/source hashes. Do not modify the classic Editor for
-Timeline work.
+Program complete through G12. Next work needs a new approved gate. Do not
+modify the classic Editor for Timeline work.
 
 ## Required resume command
 
