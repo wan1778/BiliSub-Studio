@@ -38,6 +38,10 @@ require("BILISUB_TIMELINE_V2" in flag and "public static bool IsEnabled" in flag
         and "public static bool Parse(string? value)" in flag,
         "G2 flag must be env-gated with a testable parser")
 require("IsEnabled => Parse(" in flag, "G2 flag must default through the parser")
+require("public static bool IsSuppressed" in flag
+        and "public static bool IsEntryVisible" in flag
+        and '"0"' in flag,
+        "G14 kill-switch must hide the Timeline entry only on explicit opt-out (DEC-024)")
 
 store = read(CORE / "TimelineProjectStoreV2.cs")
 for token in (
@@ -75,7 +79,8 @@ for token in ("VideoEditorService", "EditorPlaybackController", "TimelineOneClip
     require(token not in export,
             f"G10 export service coupled to classic owner: {token}")
 
-# App shell page is separate from EditorPage and MainWindow XAML stays classic.
+# App page stays separate from EditorPage; G14 promotes its navigation entry
+# while the classic items and default selection stay untouched.
 require((PAGES / "TimelineEditorPage.xaml").exists(), "G2 TimelineEditorPage.xaml missing")
 require((PAGES / "TimelineEditorPage.xaml.cs").exists(), "G2 TimelineEditorPage.xaml.cs missing")
 page_cs = read(PAGES / "TimelineEditorPage.xaml.cs")
@@ -88,13 +93,15 @@ for token in ("new EditorPage", "EditorPage.", ": EditorPage", "new EditorProjec
     require(token not in page_cs, f"G2 page must not touch classic state: {token}")
 
 main_cs = read(MAINWINDOW)
-require("TimelineFeatureFlags.IsEnabled" in main_cs
-        and '_pages["timelinev2"] = new TimelineEditorPage(_application);' in main_cs,
-        "G2 page must register only behind the internal flag")
+require('_pages["timelinev2"] = new TimelineEditorPage(_application, folderPicker);' in main_cs,
+        "G14 page must register in the normal navigation")
+require("TimelineFeatureFlags.IsSuppressed" in main_cs
+        and 'Tag as string, "timelinev2"' in main_cs,
+        "G14 must hide the Timeline entry only on kill-switch (DEC-024)")
 main_xaml = read(MAIN_XAML)
-require("timelinev2" not in main_xaml and "Timeline V2" not in main_xaml,
-        "G2 must not change classic navigation XAML")
+require('Tag="timelinev2"' in main_xaml and "Timeline V2 (dev)" not in main_xaml,
+        "G14 navigation must carry a permanent Timeline entry without the dev label")
 for tag in ('Tag="video"', 'Tag="ocr"', 'Tag="editor"', 'Tag="settings"'):
-    require(tag in main_xaml, f"G2 must keep classic navigation item: {tag}")
+    require(tag in main_xaml, f"G14 must keep classic navigation item: {tag}")
 
 print("PASS: G2 Timeline V2 shell is flagged, separate and has no production writes")

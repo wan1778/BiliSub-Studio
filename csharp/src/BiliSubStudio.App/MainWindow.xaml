@@ -25,6 +25,7 @@
                 <NavigationViewItem Content="Tải media" Tag="video" />
                 <NavigationViewItem Content="OCR phụ đề" Tag="ocr" />
                 <NavigationViewItem Content="Chỉnh video" Tag="editor" />
+                <NavigationViewItem Content="Timeline" Tag="timelinev2" />
                 <NavigationViewItem Content="Cài đặt" Tag="settings" />
             </NavigationView.MenuItems>
             <Frame x:Name="ContentFrame" Background="{ThemeResource CanvasBrush}" />

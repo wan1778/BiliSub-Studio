@@ -18,8 +18,15 @@ internal static class TimelineV2ShellContract
         {
             Environment.SetEnvironmentVariable(TimelineFeatureFlags.EnvironmentVariable, null);
             Check(!TimelineFeatureFlags.IsEnabled, "timeline shell must stay disabled without opt-in");
+            Check(!TimelineFeatureFlags.IsSuppressed, "timeline entry must not suppress without opt-out");
+            Check(TimelineFeatureFlags.IsEntryVisible, "timeline entry must be visible by default (DEC-024)");
             Environment.SetEnvironmentVariable(TimelineFeatureFlags.EnvironmentVariable, "1");
             Check(TimelineFeatureFlags.IsEnabled, "timeline shell must enable with BILISUB_TIMELINE_V2=1");
+            Check(TimelineFeatureFlags.IsEntryVisible, "timeline entry must stay visible on opt-in");
+            Environment.SetEnvironmentVariable(TimelineFeatureFlags.EnvironmentVariable, "0");
+            Check(!TimelineFeatureFlags.IsEnabled, "timeline kill-switch must not enable the flag");
+            Check(TimelineFeatureFlags.IsSuppressed, "timeline entry must hide on BILISUB_TIMELINE_V2=0");
+            Check(!TimelineFeatureFlags.IsEntryVisible, "timeline entry must report hidden on kill-switch");
         }
         finally
         {

@@ -3,10 +3,10 @@
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     Background="{ThemeResource CanvasBrush}"
-    AutomationProperties.Name="Timeline V2 dev shell">
+    AutomationProperties.Name="Timeline">
     <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
         <StackPanel Padding="20" Spacing="12" MaxWidth="760" HorizontalAlignment="Left">
-            <TextBlock FontSize="18" FontWeight="SemiBold" Text="Timeline V2 (dev shell)" />
+            <TextBlock FontSize="18" FontWeight="SemiBold" Text="Timeline" />
             <TextBlock x:Name="ShellStatusText" TextWrapping="Wrap"
                        Text="V2 shell chưa có dữ liệu. Tạo project thử nghiệm trong test root tách biệt." />
             <StackPanel Orientation="Horizontal" Spacing="8">
@@ -25,7 +25,11 @@
             </StackPanel>
             <TextBlock x:Name="PromotionStatusText" TextWrapping="Wrap" Text="" />
             <TextBlock x:Name="RootText" FontSize="11" TextWrapping="Wrap" Opacity="0.7" Text="Test root: chưa khởi tạo." />
-            <ListView x:Name="ProjectList" SelectionMode="None" IsItemClickEnabled="False" MaxHeight="320" />
+            <ListView x:Name="ProjectList" SelectionMode="Single" IsItemClickEnabled="False" MaxHeight="320" />
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <Button x:Name="ExportProjectButton" Click="ExportProject_Click" Content="Xuất project đã chọn" />
+            </StackPanel>
+            <TextBlock x:Name="ExportStatusText" TextWrapping="Wrap" Text="" />
         </StackPanel>
     </ScrollViewer>
 </Page>

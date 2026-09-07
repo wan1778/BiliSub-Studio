@@ -139,6 +139,7 @@ internal static class Program
         ("timeline promotion copies real schema-7 projects with backup gate and source preservation", TimelinePromotionContract.RunAsync),
         ("timeline FFmpeg mux renders normalized segments, joins them in order and validates drift", TimelineMuxContract.RunAsync),
         ("timeline fidelity renders effects, subtitles, voice and music without silent drops", TimelineFidelityContract.RunAsync),
+        ("timeline merge keeps classic navigation default with kill-switch and pinned export wiring", TimelineMergeContract.RunAsync),
     ];
 
     private static async Task<int> Main(string[] arguments)

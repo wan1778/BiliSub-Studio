@@ -107,16 +107,19 @@ public sealed partial class MainWindow : Window
             ["editor"] = new EditorPage(_application, filePicker),
             ["settings"] = _settingsPage,
         };
-        // G2: Timeline V2 shell is registered only behind the internal flag.
-        // Flag off keeps the classic navigation and pages byte-for-byte unchanged.
-        if (TimelineFeatureFlags.IsEnabled)
+        // G14 (DEC-024, user-approved promotion): the Timeline entry ships in
+        // the normal navigation for every user. The classic pages keep their
+        // order and the default selection stays on video. The internal flag
+        // remains only as an emergency kill-switch hiding the entry again.
+        _pages["timelinev2"] = new TimelineEditorPage(_application, folderPicker);
+        if (TimelineFeatureFlags.IsSuppressed)
         {
-            _pages["timelinev2"] = new TimelineEditorPage(_application);
-            Navigation.MenuItems.Add(new NavigationViewItem
-            {
-                Content = "Timeline V2 (dev)",
-                Tag = "timelinev2",
-            });
+            var timelineItem = Navigation.MenuItems
+                .OfType<NavigationViewItem>()
+                .FirstOrDefault(item => string.Equals(
+                    item.Tag as string, "timelinev2", StringComparison.Ordinal));
+            if (timelineItem is not null)
+                Navigation.MenuItems.Remove(timelineItem);
         }
         RootGrid.Loaded += OnLoaded;
         Closed += OnClosed;

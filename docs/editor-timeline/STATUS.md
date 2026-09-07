@@ -6,9 +6,9 @@ Last updated: 2026-09-07
 
 ```text
 Program status: PLANNING APPROVED
-Current gate: G13 - Fidelity
-Gate state: VERIFIED - full-fidelity export with reused classic graphs and final voice/music mix
-Timeline implementation: STARTED (through full-fidelity export; no Edit-tab merge, flag default off)
+Current gate: G14 - Merge
+Gate state: IN_PROGRESS - source and dirty-tree gates pass; clean-tree verify pending
+Timeline implementation: STARTED (through promoted navigation with real export; classic default intact)
 Classic Editor modifications for Timeline: NONE (V2-only files plus test/verifier/docs)
 ```
 
@@ -494,6 +494,30 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
   source tree SHA-256
   `7a547af737cd3ed543d7d3216a545bc8ce27fa889fe54da485a48be6528dd0a7`.
 
+## G14 pre-commit verification evidence (2026-09-07)
+
+- User approved DEC-024 promotion merge on 2026-09-07: permanent Timeline
+  navigation entry plus a real project export path; classic order, default
+  selection and pages untouched; flag stays only as kill-switch.
+- `MainWindow.xaml` carries `Timeline/timelinev2` after Chỉnh video; code
+  registers the page unconditionally and removes the entry only on
+  `BILISUB_TIMELINE_V2=0`. Default selection stays on video.
+- `TimelineEditorPage` gains folder-picker export: selected V2 project →
+  compile → app-managed FFmpeg → cleanup-aware `timeline-export` job →
+  sanitized filename → status. Job terminal-state ownership mirrors
+  `RunJobAsync`. No `EditorPage`/schema-7/`Data/Projects` coupling.
+- G2/G11/global-log verifiers updated to the approved nav (5 items); classic
+  Editor files carry no V2 coupling tokens.
+- Core contracts: `122/122 passed` (new `TimelineMergeContract`: kill-switch
+  matrix, filename policy, export job wiring).
+- `verify_timeline_merge_contract.py` plus G2-G13 verifiers: PASS.
+- G1 frozen classic Editor contracts: `35/35 PASS`; classic Editor behavior
+  and schema-7 store unchanged.
+- Release x64 build: 0 warnings, 0 errors; Range field regressions PASS;
+  `validate_csharp_migration.py` PASS; generated code map current.
+- Clean-tree `verify.ps1`, self-contained publish/startup smoke and final G14
+  binary/source hashes: PENDING until the G14 source is committed.
+
 ## Field QA evidence (G13 binary, 2026-09-07)
 
 - Flag-on startup smoke: `BILISUB_TIMELINE_V2=1` + `--startup-smoke-test` on a
@@ -510,14 +534,16 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
 
 ## Remaining precondition
 
-- None for promotion merge design. Field contracts need FFmpeg/FFprobe on PATH.
+- Commit the reviewed G14 source and run clean-tree `csharp/scripts/verify.ps1`
+  before changing the gate state to `VERIFIED`. Field contracts need
+  FFmpeg/FFprobe on PATH.
 - Any future restore or migration experiment must use a separate test root and
   re-verify `BACKUP_PROCEDURE.md` first.
 
 ## Next exact action
 
-Promotion merge of Timeline V2 into the normal Edit tab with classic fallback
-(user-approved). Do not break the classic Editor for Timeline work.
+Review and commit the G14 source, run the clean-tree Windows verification gate,
+then record binary/source hashes. Keep the classic Editor default intact.
 
 ## Required resume command
 

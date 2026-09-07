@@ -1,23 +1,31 @@
 using BiliSubStudio.Core.Application;
 using BiliSubStudio.Core.Editor;
+using BiliSubStudio.Core.IO;
+using BiliSubStudio.Core.Jobs;
 using BiliSubStudio.Core.Timeline;
+using BiliSubStudio.App.Services;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 
 namespace BiliSubStudio.App.Pages;
 
-// G2 dev shell page. It owns only V2 session/store state and never touches
-// EditorPage mutable state, schema-7 persistence, or production Data/Projects.
+// G14 promotion page. It owns only V2 session/store state plus a real export
+// path, and never touches EditorPage mutable state, schema-7 persistence, or
+// production Data/Projects. The classic Editor stays the default fallback.
 public sealed partial class TimelineEditorPage : Page
 {
     private readonly TimelineEditorSession _session;
     private readonly BiliSubApplication _application;
+    private readonly IFolderPickerService _folderPicker;
     private IReadOnlyList<EditorProjectSummary> _classicProjects = [];
+    private IReadOnlyList<TimelineProjectV2> _v2Projects = [];
 
-    public TimelineEditorPage(BiliSubApplication application)
+    public TimelineEditorPage(BiliSubApplication application, IFolderPickerService folderPicker)
     {
         ArgumentNullException.ThrowIfNull(application);
+        ArgumentNullException.ThrowIfNull(folderPicker);
         _application = application;
+        _folderPicker = folderPicker;
         _session = new TimelineEditorSession(TimelineProjectStoreV2.FromAppPaths(application.Paths));
         InitializeComponent();
         RootText.Text = "Test root: " + _session.Store.Root;
@@ -120,16 +128,70 @@ public sealed partial class TimelineEditorPage : Page
     {
         try
         {
-            var projects = await _session.Store.ListAsync(CancellationToken.None);
-            ProjectList.ItemsSource = projects
+            _v2Projects = await _session.Store.ListAsync(CancellationToken.None);
+            ProjectList.ItemsSource = _v2Projects
                 .Select(project => $"{project.Name} · {project.Id[..8]}… · {project.UpdatedUtc:yyyy-MM-dd HH:mm:ss} UTC")
                 .ToArray();
             if (string.IsNullOrWhiteSpace(ShellStatusText.Text))
-                ShellStatusText.Text = $"Có {projects.Count} project thử nghiệm trong test root tách biệt.";
+                ShellStatusText.Text = $"Có {_v2Projects.Count} project thử nghiệm trong test root tách biệt.";
         }
         catch (Exception error)
         {
             ShellStatusText.Text = "Không đọc được test root: " + error.Message;
+        }
+    }
+
+    // G14 promotion export. Exports the selected V2 project through the real
+    // segment/concat/mix pipeline into a user-picked folder. Mirrors the
+    // BiliSubApplication.RunJobAsync ownership: the wrapper below owns the
+    // terminal job state, the service only unwinds renderer/process/cleanup.
+    private async void ExportProject_Click(object sender, RoutedEventArgs e)
+    {
+        AppJob? job = null;
+        try
+        {
+            if (ProjectList.SelectedIndex < 0 || ProjectList.SelectedIndex >= _v2Projects.Count)
+            {
+                ExportStatusText.Text = "Hãy chọn một project V2 trong danh sách trước khi xuất.";
+                return;
+            }
+            var summary = _v2Projects[ProjectList.SelectedIndex];
+            var outputDirectory = await _folderPicker.PickFolderAsync(
+                _application.Paths.DefaultDownloads);
+            if (string.IsNullOrWhiteSpace(outputDirectory))
+            {
+                ExportStatusText.Text = "Đã hủy chọn thư mục xuất.";
+                return;
+            }
+            ExportStatusText.Text = $"Đang chuẩn bị xuất {summary.Name}…";
+            var project = await _session.OpenAsync(summary.Id, CancellationToken.None);
+            var plan = TimelineCompiler.Compile(project);
+            var ffmpeg = await _application.Tools.EnsureFfmpegAsync(CancellationToken.None);
+            var ffprobe = await _application.Tools.EnsureFfprobeAsync(CancellationToken.None);
+            var service = new TimelineExportService(
+                _application.Paths,
+                new TimelineFfmpegSegmentRenderer(ffmpeg),
+                new TimelineExportConcatList(_application.Paths),
+                new TimelineFfmpegConcatenator(ffmpeg, ffprobe),
+                new TimelineFfmpegFinalMixer(ffmpeg, ffprobe));
+            job = _application.Jobs.Create("timeline-export", cleanupAwareCancel: true);
+            var fileName = FileNamePolicy.Sanitize(summary.Name + "_timeline.mp4", "Timeline.mp4");
+            var result = await service.ExportAsync(
+                job, plan, project, outputDirectory, fileName, CancellationToken.None);
+            job.Finish(null, "Xuất Timeline hoàn tất.");
+            ExportStatusText.Text = $"Đã xuất {result.SegmentCount} segment " +
+                $"({result.OutputDurationUs / 1_000_000.0:0.###}s) ra {result.OutputPath}.";
+            await RefreshAsync();
+        }
+        catch (OperationCanceledException) when (job is not null && job.CancellationToken.IsCancellationRequested)
+        {
+            if (job is not null && !job.Snapshot().Done) job.CancelComplete();
+            ExportStatusText.Text = "Đã hủy xuất Timeline và dọn dữ liệu dở.";
+        }
+        catch (Exception error)
+        {
+            if (job is not null && !job.Snapshot().Done) job.Finish(error, error.Message);
+            ExportStatusText.Text = "Không xuất được project Timeline: " + error.Message;
         }
     }
 }

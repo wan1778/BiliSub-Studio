@@ -31,6 +31,7 @@ require(nav == [
     ("Tải media", "video"),
     ("OCR phụ đề", "ocr"),
     ("Chỉnh video", "editor"),
+    ("Timeline", "timelinev2"),
     ("Cài đặt", "settings"),
 ], f"production navigation drifted: {nav}")
 for forbidden in ("Hiệu năng", "Đăng nhập", "Cập nhật &amp; hỗ trợ"):
@@ -163,4 +164,4 @@ require('if (track.Ai) return chinese ? 2 : 3;' in subtitle_policy,
 require('["application"] = string.Join' in support_code and '_log.Snapshot().TakeLast(500)' in support_code,
         "Bug reports must include the sanitized shared application log")
 
-print("PASS: four-item shell / shared log Vietsub full-job progress / no duplicate local progress / embedded settings / shared log error-state / compact media / subtitle-priority contracts")
+print("PASS: five-item shell / shared log Vietsub full-job progress / no duplicate local progress / embedded settings / shared log error-state / compact media / subtitle-priority contracts")

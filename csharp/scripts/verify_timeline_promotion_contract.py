@@ -87,9 +87,13 @@ for token in ("new EditorPage", "EditorPage.", ": EditorPage", "new EditorProjec
               "Paths.Data", "_editorProjects"):
     require(token not in page_cs, f"G11 page must not touch classic state: {token}")
 
-# Fallback stays default: flag off, classic navigation intact, no Edit-tab merge.
-require("timelinev2" not in main_xaml and "Timeline V2" not in main_xaml,
-        "G11 must not merge V2 into classic navigation XAML")
+# G14 (DEC-024, user-approved) promotes the Timeline entry into the normal
+# navigation. The kill-switch, classic order/default and fallback proofs now
+# live in the G14 merge verifier; G11 keeps pinning the dev label stays out.
+require('Tag="timelinev2"' in main_xaml and "Timeline V2 (dev)" not in main_xaml,
+        "G11 navigation expectation drifted from the approved merge")
+for tag in ('Tag="video"', 'Tag="ocr"', 'Tag="editor"', 'Tag="settings"'):
+    require(tag in main_xaml, f"G11 must keep classic navigation item: {tag}")
 require("DEC-021" in decisions and "PDEC-006" in decisions,
         "G11 fallback-duration decision was not recorded")
 require("Timeline" not in editor_store,
