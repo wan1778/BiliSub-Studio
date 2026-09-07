@@ -123,10 +123,19 @@ public static class TimelineRenderCapability
     // G13 mux boundary: video, clip effects with documented payloads,
     // subtitle cues, voice cues and at most one typed music track render.
     // G16 adds clip and sequence-global logos with documented payloads.
-    // Legacy unverified music items stay rejected.
+    // G26 adds clip color grades (deterministic eq/colorbalance chain).
+    // Legacy unverified music items stay rejected. G24 speed envelopes and
+    // G25 keyframes are model-complete but not yet wired into the mux
+    // graph; they must fail loudly instead of silently dropping.
     public static void EnsureMuxSupported(TimelineRenderPlan plan)
     {
         ArgumentNullException.ThrowIfNull(plan);
+        if (plan.SpeedEnvelopes.Count > 0)
+            throw new InvalidOperationException(
+                "Timeline FFmpeg mux chưa hỗ trợ speed envelope (G24).");
+        if (plan.KeyframeSets.Count > 0)
+            throw new InvalidOperationException(
+                "Timeline FFmpeg mux chưa hỗ trợ keyframes (G25).");
         foreach (var item in plan.Items)
         {
             if (item.Kind == TimelineItemKind.Logo)

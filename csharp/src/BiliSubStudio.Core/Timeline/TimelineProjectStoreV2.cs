@@ -54,6 +54,9 @@ public sealed class TimelineProjectStoreV2
             null,
             [],
             [],
+            [],
+            [],
+            [],
             []);
         await SaveAsync(project, cancellationToken).ConfigureAwait(false);
         return project;
@@ -172,7 +175,8 @@ public sealed class TimelineProjectStoreV2
                 TimelineProjectV2.Schema, project.Id, project.Name, project.UpdatedUtc,
                 project.Assets, project.Sequence, project.Items, project.SubtitleCues,
                 project.AudioAssets, project.SourceAudio, project.VoiceCues, project.Music,
-                project.Tracks, project.Transitions, project.TextItems);
+                project.Tracks, project.Transitions, project.TextItems,
+                project.SpeedEnvelopes, project.KeyframeSets, project.ColorGrades);
             await using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None,
                 64 * 1024, FileOptions.Asynchronous | FileOptions.WriteThrough))
             {
@@ -200,7 +204,8 @@ public sealed class TimelineProjectStoreV2
             .ConfigureAwait(false) ?? throw new InvalidDataException("Timeline V2 project rỗng.");
         // G21: schema 4 joins 2/3 as a legacy input schema; all upgrade
         // forward-only to the current schema with explicit defaults.
-        if (payload.Schema is not 2 and not 3 and not 4 and not TimelineProjectV2.Schema
+        // G24-G26: schema 5 joins the legacy set the same way.
+        if (payload.Schema is not 2 and not 3 and not 4 and not 5 and not TimelineProjectV2.Schema
             || !string.Equals(payload.Id, id, StringComparison.Ordinal))
             throw new InvalidDataException("Timeline V2 project không đúng phiên bản.");
         if (payload.Schema == 2 && payload.Items is { Count: > 0 })
@@ -231,7 +236,7 @@ public sealed class TimelineProjectStoreV2
             : payload.VoiceCues ?? throw new InvalidDataException("Timeline V2 schema 4 thiếu voice_cues.");
         var music = preAudioSchema ? null : payload.Music;
         // G21 schema 5: older payloads receive explicit empty multi-track state;
-        // schema 5 payloads must provide the arrays (possibly empty).
+        // schema 5+ payloads must provide the arrays (possibly empty).
         var tracks = legacySchema
             ? []
             : payload.Tracks ?? throw new InvalidDataException("Timeline V2 schema 5 thiếu tracks.");
@@ -241,6 +246,21 @@ public sealed class TimelineProjectStoreV2
         var textItems = legacySchema
             ? []
             : payload.TextItems ?? throw new InvalidDataException("Timeline V2 schema 5 thiếu text_items.");
+        // G24-G26 schema 6: schema 5 payloads upgrade to empty speed/keyframe/
+        // grade state; schema 6 payloads must provide the arrays.
+        var schema5Payload = payload.Schema == 5;
+        var speedEnvelopes = legacySchema || schema5Payload
+            ? []
+            : payload.SpeedEnvelopes
+                ?? throw new InvalidDataException("Timeline V2 schema 6 thiếu speed_envelopes.");
+        var keyframeSets = legacySchema || schema5Payload
+            ? []
+            : payload.KeyframeSets
+                ?? throw new InvalidDataException("Timeline V2 schema 6 thiếu keyframe_sets.");
+        var colorGrades = legacySchema || schema5Payload
+            ? []
+            : payload.ColorGrades
+                ?? throw new InvalidDataException("Timeline V2 schema 6 thiếu color_grades.");
         var project = new TimelineProjectV2(
             payload.Id,
             TimelineProjectV2.ValidateName(payload.Name),
@@ -255,7 +275,10 @@ public sealed class TimelineProjectStoreV2
             music,
             tracks,
             transitions,
-            textItems);
+            textItems,
+            speedEnvelopes,
+            keyframeSets,
+            colorGrades);
         project.Validate();
         return project;
     }
@@ -281,5 +304,8 @@ public sealed class TimelineProjectStoreV2
         TimelineMusicTrack? Music,
         IReadOnlyList<TimelineTrackV2>? Tracks = null,
         IReadOnlyList<TimelineTransition>? Transitions = null,
-        IReadOnlyList<TimelineTextItem>? TextItems = null);
+        IReadOnlyList<TimelineTextItem>? TextItems = null,
+        IReadOnlyList<TimelineSpeedEnvelope>? SpeedEnvelopes = null,
+        IReadOnlyList<TimelineKeyframes>? KeyframeSets = null,
+        IReadOnlyList<TimelineColorGradeSpec>? ColorGrades = null);
 }

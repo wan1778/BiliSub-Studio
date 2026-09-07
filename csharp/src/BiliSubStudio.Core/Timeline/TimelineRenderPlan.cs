@@ -102,7 +102,10 @@ public sealed record TimelineRenderPlan(
     TimelineResolvedAudioPlan Audio,
     IReadOnlyList<TimelineResolvedTrackClip> OverlayClips,
     IReadOnlyList<TimelineResolvedTransition> Transitions,
-    IReadOnlyList<TimelineResolvedTextItem> TextItems)
+    IReadOnlyList<TimelineResolvedTextItem> TextItems,
+    IReadOnlyList<TimelineSpeedEnvelope> SpeedEnvelopes,
+    IReadOnlyList<TimelineKeyframes> KeyframeSets,
+    IReadOnlyList<TimelineColorGradeSpec> ColorGrades)
 {
     public long TotalDurationUs => Clips.Count == 0 ? 0 : Clips.Max(clip => clip.SequenceEndUs);
 
@@ -124,13 +127,35 @@ public sealed record TimelineRenderPlan(
     {
     }
 
+    // G24-G26 backward-compatible constructor: schema-5 era consumers pass
+    // multi-track state without speed/keyframe/grade state and receive the
+    // empty G24-G26 collections.
+    public TimelineRenderPlan(
+        string ProjectId,
+        long CreatedUtcTicks,
+        int OutputWidth,
+        int OutputHeight,
+        double OutputFrameRate,
+        IReadOnlyList<TimelineResolvedClip> Clips,
+        IReadOnlyList<TimelineResolvedItem> Items,
+        IReadOnlyList<TimelineResolvedSubtitleCue> SubtitleCues,
+        TimelineResolvedAudioPlan Audio,
+        IReadOnlyList<TimelineResolvedTrackClip> OverlayClips,
+        IReadOnlyList<TimelineResolvedTransition> Transitions,
+        IReadOnlyList<TimelineResolvedTextItem> TextItems)
+        : this(ProjectId, CreatedUtcTicks, OutputWidth, OutputHeight, OutputFrameRate,
+              Clips, Items, SubtitleCues, Audio, OverlayClips, Transitions,
+              TextItems, [], [], [])
+    {
+    }
+
     public static TimelineRenderPlan Empty(string projectId)
     {
         TimelineProjectV2.ValidateId(projectId);
         return new TimelineRenderPlan(
             projectId, DateTimeOffset.UtcNow.Ticks,
             OutputWidth: 0, OutputHeight: 0, OutputFrameRate: 0,
-            [], [], [], TimelineResolvedAudioPlan.Empty, [], [], []);
+            [], [], [], TimelineResolvedAudioPlan.Empty, [], [], [], [], [], []);
     }
 
     public void ValidateOutputGeometry()
@@ -191,6 +216,8 @@ public static class TimelineCompiler
         project.Validate();
         if (project.Sequence is null)
             return TimelineRenderPlan.Empty(project.Id);
+        var speedEnvelopesByClipId = project.SpeedEnvelopes.ToDictionary(
+            envelope => envelope.ClipId, StringComparer.Ordinal);
         var resolvedClips = project.Sequence.VideoClips
             .OrderBy(clip => clip.TimelineStartUs)
             .Select(clip => new TimelineResolvedClip(
@@ -237,6 +264,17 @@ public static class TimelineCompiler
                 text.AnimationDurationUs))
             .OrderBy(text => text.SequenceStartUs)
             .ThenBy(text => text.TextItemId, StringComparer.Ordinal)
+            .ToArray();
+        // G24-G26: envelopes, keyframe sets and grades pass through unchanged
+        // (already project-validated against their owning clips).
+        var resolvedSpeedEnvelopes = project.SpeedEnvelopes
+            .OrderBy(envelope => envelope.ClipId, StringComparer.Ordinal)
+            .ToArray();
+        var resolvedKeyframeSets = project.KeyframeSets
+            .OrderBy(set => set.ClipId, StringComparer.Ordinal)
+            .ToArray();
+        var resolvedColorGrades = project.ColorGrades
+            .OrderBy(spec => spec.ClipId, StringComparer.Ordinal)
             .ToArray();
         var resolvedItems = project.Items
             .Select(item =>
@@ -408,6 +446,7 @@ public static class TimelineCompiler
             project.Sequence.OutputFrameRate,
             resolvedClips, resolvedItems,
             resolvedSubtitleCues, audio,
-            resolvedOverlayClips, resolvedTransitions, resolvedTextItems);
+            resolvedOverlayClips, resolvedTransitions, resolvedTextItems,
+            resolvedSpeedEnvelopes, resolvedKeyframeSets, resolvedColorGrades);
     }
 }

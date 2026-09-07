@@ -148,6 +148,7 @@ internal static class Program
         ("G21 multi-track tracks transforms transitions and schema upgrade stay pinned", TimelineMultiTrackContract.RunAsync),
         ("G22 transition graph pins xfade offsets and chain building", () => Task.Run(TimelineTransitionGraphContract.Run)),
         ("G23 text ASS builder pins timecodes colors alignment and fade tags", () => Task.Run(TimelineTextAssContract.Run)),
+        ("G24-G26 speed envelopes keyframes and color grades stay pinned", () => Task.Run(TimelineSpeedKeyframeGradeContract.RunAsync)),
     ];
 
     private static async Task<int> Main(string[] arguments)

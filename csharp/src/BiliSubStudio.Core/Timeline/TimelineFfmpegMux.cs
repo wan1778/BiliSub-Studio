@@ -202,6 +202,11 @@ public static class TimelineFfmpegArguments
         var rate = segment.Clip.PlaybackRate;
         if (!double.IsFinite(rate) || rate <= 0)
             throw new InvalidDataException("Timeline segment PlaybackRate không hợp lệ.");
+        // G26: the clip's grade composes into the effect head (same source-
+        // coordinate stage, deterministic eq/colorbalance chain); absent or
+        // neutral grades keep the G12 fast path byte-identical.
+        var grade = plan.ColorGrades.FirstOrDefault(spec =>
+            string.Equals(spec.ClipId, segment.Clip.ClipId, StringComparison.Ordinal))?.Grade;
 
         // Segment audio layout follows clip sources only, so every segment of
         // one export carries identical streams for the concat demuxer. Voice
@@ -231,7 +236,16 @@ public static class TimelineFfmpegArguments
         // enable windows and ASS timestamps stay exact downstream. Logos layer
         // after normalize in output coordinates with source-second windows.
         var composed = TimelineEffectGraph.BuildComposedVideoFilter(segment, assPath);
-        var head = composed is null ? "[0:v]" : $"{composed}[fx];[fx]";
+        // G26 grade prepends to the effect head: it must apply before trim so
+        // enable windows and ASS timestamps downstream stay in source time.
+        // The composed body already opens with its own [0:v] label, so the
+        // grade chain splices in right after that label.
+        var gradeFilter = TimelineColorGradeGraph.BuildFilter(grade);
+        var head = composed is null
+            ? (gradeFilter is null ? "[0:v]" : $"[0:v]{gradeFilter}[gx];[gx]")
+            : gradeFilter is null
+                ? $"{composed}[fx];[fx]"
+                : $"[0:v]{gradeFilter},{composed["[0:v]".Length..]}[fx];[fx]";
         var normalized =
             $"trim=start={startSeconds}:duration={durationSeconds}," +
             $"setpts=(PTS-STARTPTS)/{FormatNumber(rate)}[sv];" +

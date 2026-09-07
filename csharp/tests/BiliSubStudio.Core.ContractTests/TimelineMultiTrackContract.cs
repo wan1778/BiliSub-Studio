@@ -63,7 +63,7 @@ public static class TimelineMultiTrackContract
             var reloaded = await store.LoadAsync(withTracks.Id, CancellationToken.None);
             var plan = TimelineCompiler.Compile(reloaded);
 
-            Check(TimelineProjectV2.Schema == 5, "project schema constant must be 5");
+            Check(TimelineProjectV2.Schema == 6, "project schema constant must be 6");
             Check(reloaded.Tracks.Count == 3, "track count must survive persistence");
             Check(plan.OverlayClips.Count == 1, "plan must contain exactly one overlay clip");
             var resolved = plan.OverlayClips.Single();
