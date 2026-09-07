@@ -675,7 +675,13 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
 - `verify_timeline_resilience_contract.py` plus G2-G18 verifiers: PASS.
 - G1 frozen classic Editor contracts: `35/35 PASS` (10/10 autosave/project
   rerun included); Range/migration/code-map: PASS.
-- Clean-tree `verify.ps1` and final G19 hashes: PENDING until source commit.
+- Clean-tree `verify.ps1` on `1e790dc`: PASS on first attempt (contracts
+  `126/126`, Range regressions, self-contained publish, real startup smoke,
+  worker identity, PE32+ x64 and checksum readback).
+- G19 gate binary: exe SHA-256
+  `faff3a523f6855664caf73afa99c631983fb20da4a545589d759be1a0885f3af`,
+  source tree SHA-256
+  `636d83557bddad0d7d623655dab703ca5a262a78afc7620092df286f6f520047`.
 
 ## G18 final evidence (2026-09-07)
 
