@@ -23,6 +23,8 @@ This log is append-only. Do not silently rewrite an accepted decision. A change 
 | DEC-015 | ACCEPTED | The classic Editor remains available for several releases after V2 promotion. | Provides field rollback after real-user adoption. |
 | DEC-016 | ACCEPTED | Only one delivery gate may be in progress. | Prevents cross-phase scope drift and forgotten acceptance criteria. |
 | DEC-017 | ACCEPTED | User approval is required before changing MVP scope or promoting V2 into the normal Edit tab. | Product decisions must not be inferred during implementation. |
+| DEC-018 | ACCEPTED | G8 MVP supports at most one sequence-global music track. | Keeps the approved guided-editor scope bounded and resolves PDEC-005. |
+| DEC-019 | ACCEPTED | Timeline audio timing is exact in persisted/compiled microseconds; final media A/V drift may not exceed the larger of one 48 kHz sample or half one sequence video frame. | Gives G8 deterministic internal contracts and a realistic mux boundary for G10 field verification. |
 
 ## Pending product decisions
 
@@ -36,3 +38,5 @@ These decisions are intentionally deferred until the responsible gate:
 | PDEC-004 | G7 | SRT import target | Attach to selected clip by default; offer sequence-global import. |
 | PDEC-005 | G8 | Maximum music tracks in MVP | One music track. |
 | PDEC-006 | G11 | Duration of classic fallback support | At least two verified public builds after promotion. |
+
+PDEC-005 was resolved by DEC-018 on 2026-09-07.

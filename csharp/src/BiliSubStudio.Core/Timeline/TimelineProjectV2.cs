@@ -1,18 +1,22 @@
 namespace BiliSubStudio.Core.Timeline;
 
-// G3 project (MASTER_PLAN section 7), extended with persisted items in G7.
-// Schema 2 upgrades safely with an empty item set; schema 1 remains rejected
-// because output geometry/FPS cannot be inferred. Project ID stays stable
-// across asset relinks (DEC-012; relink itself arrives later).
+// G3 project (MASTER_PLAN section 7), extended with items in G7 and typed
+// cue/audio ownership in G8. Older V2 schemas receive only explicit defaults;
+// schema 1 remains rejected because output geometry/FPS cannot be inferred.
 public sealed record TimelineProjectV2(
     string Id,
     string Name,
     DateTimeOffset UpdatedUtc,
     IReadOnlyList<TimelineMediaAsset> Assets,
     TimelineSequence? Sequence,
-    IReadOnlyList<TimelineItem> Items)
+    IReadOnlyList<TimelineItem> Items,
+    IReadOnlyList<TimelineSubtitleCue> SubtitleCues,
+    IReadOnlyList<TimelineAudioAsset> AudioAssets,
+    IReadOnlyList<TimelineSourceAudioState> SourceAudio,
+    IReadOnlyList<TimelineVoiceCue> VoiceCues,
+    TimelineMusicTrack? Music)
 {
-    public const int Schema = 3;
+    public const int Schema = 4;
 
     public static string NewId() => Guid.NewGuid().ToString("N");
 
@@ -44,15 +48,30 @@ public sealed record TimelineProjectV2(
                 throw new InvalidDataException("Timeline project chứa asset trùng ID.");
         }
         Sequence?.Validate(Assets);
+        if (Sequence is not null)
+            _ = TimelineAudioTime.MaximumOutputDriftUs(Sequence.OutputFrameRate);
         ArgumentNullException.ThrowIfNull(Items);
+        ArgumentNullException.ThrowIfNull(SubtitleCues);
+        ArgumentNullException.ThrowIfNull(AudioAssets);
+        ArgumentNullException.ThrowIfNull(SourceAudio);
+        ArgumentNullException.ThrowIfNull(VoiceCues);
         if (Sequence is null)
         {
-            if (Items.Count != 0)
-                throw new InvalidDataException("Timeline project không có sequence nhưng chứa item.");
+            if (Items.Count != 0 || SubtitleCues.Count != 0 || SourceAudio.Count != 0
+                || VoiceCues.Count != 0 || Music is not null)
+                throw new InvalidDataException("Timeline project không có sequence nhưng chứa edit state.");
         }
         else
         {
             TimelineItemOps.ValidateAll(Items, Sequence.VideoClips);
         }
+        TimelineAudioValidation.ValidateProjectAudio(
+            Sequence?.VideoClips ?? [],
+            Items,
+            SubtitleCues,
+            AudioAssets,
+            SourceAudio,
+            VoiceCues,
+            Music);
     }
 }

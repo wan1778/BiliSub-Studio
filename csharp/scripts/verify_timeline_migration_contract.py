@@ -28,6 +28,7 @@ for token in (
     "TimelineSequence.Create([clip], [asset]",
     "PlaybackRate: 1.0",
     "SourceInUs: 0",
+    "HasAudio: hasAudio",
     "RegionsFlattened",
     "SubtitleDropped",
     "VoiceDropped",

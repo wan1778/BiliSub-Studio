@@ -46,7 +46,12 @@ public sealed class TimelineProjectStoreV2
             DateTimeOffset.UtcNow,
             [],
             null,
-            []);
+            [],
+            [],
+            [],
+            [],
+            [],
+            null);
         await SaveAsync(project, cancellationToken).ConfigureAwait(false);
         return project;
     }
@@ -149,7 +154,8 @@ public sealed class TimelineProjectStoreV2
         {
             var payload = new TimelineProjectV2File(
                 TimelineProjectV2.Schema, project.Id, project.Name, project.UpdatedUtc,
-                project.Assets, project.Sequence, project.Items);
+                project.Assets, project.Sequence, project.Items, project.SubtitleCues,
+                project.AudioAssets, project.SourceAudio, project.VoiceCues, project.Music);
             await using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None,
                 64 * 1024, FileOptions.Asynchronous | FileOptions.WriteThrough))
             {
@@ -175,21 +181,44 @@ public sealed class TimelineProjectStoreV2
             FileOptions.Asynchronous | FileOptions.SequentialScan);
         var payload = await JsonSerializer.DeserializeAsync<TimelineProjectV2File>(stream, Json, cancellationToken)
             .ConfigureAwait(false) ?? throw new InvalidDataException("Timeline V2 project rỗng.");
-        if (payload.Schema is not 2 and not TimelineProjectV2.Schema
+        if (payload.Schema is not 2 and not 3 and not TimelineProjectV2.Schema
             || !string.Equals(payload.Id, id, StringComparison.Ordinal))
             throw new InvalidDataException("Timeline V2 project không đúng phiên bản.");
         if (payload.Schema == 2 && payload.Items is { Count: > 0 })
             throw new InvalidDataException("Timeline V2 schema 2 không được chứa items.");
+        if (payload.Schema < TimelineProjectV2.Schema
+            && (payload.SubtitleCues is not null || payload.AudioAssets is not null
+                || payload.SourceAudio is not null || payload.VoiceCues is not null
+                || payload.Music is not null))
+            throw new InvalidDataException("Timeline V2 schema cũ không được chứa audio state G8.");
         var items = payload.Schema == 2
             ? []
-            : payload.Items ?? throw new InvalidDataException("Timeline V2 schema 3 thiếu items.");
+            : payload.Items ?? throw new InvalidDataException("Timeline V2 schema 3+ thiếu items.");
+        var clips = payload.Sequence?.VideoClips ?? [];
+        var subtitleCues = payload.Schema < TimelineProjectV2.Schema
+            ? []
+            : payload.SubtitleCues ?? throw new InvalidDataException("Timeline V2 schema 4 thiếu subtitle_cues.");
+        var audioAssets = payload.Schema < TimelineProjectV2.Schema
+            ? []
+            : payload.AudioAssets ?? throw new InvalidDataException("Timeline V2 schema 4 thiếu audio_assets.");
+        var sourceAudio = payload.Schema < TimelineProjectV2.Schema
+            ? TimelineSourceAudioState.Defaults(clips)
+            : payload.SourceAudio ?? throw new InvalidDataException("Timeline V2 schema 4 thiếu source_audio.");
+        var voiceCues = payload.Schema < TimelineProjectV2.Schema
+            ? []
+            : payload.VoiceCues ?? throw new InvalidDataException("Timeline V2 schema 4 thiếu voice_cues.");
         var project = new TimelineProjectV2(
             payload.Id,
             TimelineProjectV2.ValidateName(payload.Name),
             payload.UpdatedUtc,
             payload.Assets ?? [],
             payload.Sequence,
-            items);
+            items,
+            subtitleCues,
+            audioAssets,
+            sourceAudio,
+            voiceCues,
+            payload.Schema < TimelineProjectV2.Schema ? null : payload.Music);
         project.Validate();
         return project;
     }
@@ -207,5 +236,10 @@ public sealed class TimelineProjectStoreV2
         DateTimeOffset UpdatedUtc,
         IReadOnlyList<TimelineMediaAsset>? Assets,
         TimelineSequence? Sequence,
-        IReadOnlyList<TimelineItem>? Items);
+        IReadOnlyList<TimelineItem>? Items,
+        IReadOnlyList<TimelineSubtitleCue>? SubtitleCues,
+        IReadOnlyList<TimelineAudioAsset>? AudioAssets,
+        IReadOnlyList<TimelineSourceAudioState>? SourceAudio,
+        IReadOnlyList<TimelineVoiceCue>? VoiceCues,
+        TimelineMusicTrack? Music);
 }

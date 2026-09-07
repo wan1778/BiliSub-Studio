@@ -6,9 +6,9 @@ Last updated: 2026-09-07
 
 ```text
 Program status: PLANNING APPROVED
-Current gate: G7 - Effects and subtitle ownership
-Gate state: VERIFIED - ownership, dependency transactions and compiler resolution
-Timeline implementation: STARTED (through item ownership/compiler resolution; no voice/render parity)
+Current gate: G8 - Voice and audio ownership
+Gate state: IN_PROGRESS - source and dirty-tree gates pass; clean-tree verify pending
+Timeline implementation: STARTED (through cue-linked audio plan; no processed render parity)
 Classic Editor modifications for Timeline: NONE (V2-only files plus test/verifier/docs)
 ```
 
@@ -276,16 +276,60 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
   source tree SHA-256
   `a5953d25cf284d2ec1d83fe5ea3babe8f690a260da820cf87f11dc0681ca396e`.
 
+## G8 pre-commit verification evidence (2026-09-07)
+
+- User accepted DEC-018: MVP has at most one sequence-global music track.
+  User accepted DEC-019: persisted/compiled timing is exact microseconds;
+  final media drift may not exceed `max(1 sample @ 48 kHz, 1/2 frame)`.
+- `TimelineSubtitleCue` owns stable cue identity, spoken text and a
+  duration-bound speech revision. `TimelineVoiceCue` links only through the
+  cue ID/revision and keeps exact source-frame ranges in a fingerprinted
+  voice-master asset; stale/orphan/duplicate links are rejected.
+- `TimelineAudioDependencyOps` keeps voice linked through cue moves, reorder
+  and non-crossing split. Trim/split through spoken content rejects by default;
+  explicit `RemoveAffectedVoice` removes stale links atomically. Delete
+  cascades local cues/voice/source audio while preserving global music.
+- Every clip has exactly one `TimelineSourceAudioState` with gain `0..2`;
+  split clones the gain to the right child. Music has independent gain/source
+  frames and remains sequence-global. Legacy schema-3 music is surfaced as
+  unverified audio instead of being silently dropped.
+- Project schema 3 -> 4 persists subtitle cues, audio assets, source-audio
+  states, voice links and music. Schema 2/3 upgrade with explicit unity source
+  defaults; mixed old-schema G8 fields are rejected.
+- `TimelineCompiler` remains the only resolver and emits immutable subtitle,
+  source, voice and music operations. It carries playback rate, 48 kHz output,
+  sequence FPS/DEC-019 tolerance, clamps global cue/audio output to video
+  duration and derives voice sequence timing from the same resolved cue.
+- Schema-7 migration now receives probed `HasAudio`; classic parity rejects
+  contradictory source-audio ownership, ranges and clip duration mapping.
+- G5 classic parity now rejects non-1x clips and leading sequence gaps rather
+  than silently rendering timing it cannot reproduce.
+- Core contracts: `116/116 passed` (new `TimelineSubtitleVoiceLinkContract`
+  and `TimelineAudioSyncContract`: cue revision/link validity, edit ownership,
+  atomic undo/redo, fractional boundaries, source/no-source audio, non-1x
+  clips, one music track, tail/empty-sequence clamps, sample conversion fuzz,
+  schema-4 roundtrip/schema-3 upgrade, legacy music and deterministic
+  recompile).
+- `verify_timeline_audio_contract.py` plus G2-G7 verifiers: PASS.
+- G1 frozen classic Editor contracts: `35/35 PASS`; classic Editor and
+  schema-7 store unchanged.
+- Release x64 build: 0 warnings, 0 errors; Range field regressions PASS;
+  `validate_csharp_migration.py` PASS; generated code map current.
+- Clean-tree `verify.ps1`, self-contained publish/startup smoke and final G8
+  binary/source hashes: PENDING until the G8 source is committed.
+
 ## Remaining precondition
 
-- None for starting G8 voice/audio ownership work.
+- Commit the reviewed G8 source and run clean-tree `csharp/scripts/verify.ps1`
+  before changing the gate state to `VERIFIED`.
 - Any future restore or migration experiment must use a separate test root and
   re-verify `BACKUP_PROCEDURE.md` first.
 
 ## Next exact action
 
-Begin G8 with cue-linked voice and sequence-global music synchronization
-contracts. Do not modify the classic Editor for Timeline work.
+Review and commit the G8 source, run the clean-tree Windows verification gate,
+then record binary/source hashes. Do not modify the classic Editor for
+Timeline work.
 
 ## Required resume command
 

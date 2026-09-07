@@ -19,19 +19,30 @@ internal static class TimelineParityContract
 
     private static void MappingAndRange()
     {
-        // Asset is 300s; the clip plays sequence 10s..20s from source 100s..110s.
+        // Asset is 300s; the clip plays sequence 0s..10s from source 100s..110s.
         var asset = TimelineMediaAsset.Create(
             "C:/v/a.mp4", 1920, 1080, TimelineTime.FromSeconds(300), 30, hasAudio: true);
+        var clipId = "c".PadLeft(32, 'd');
         var plan = TimelineRenderPlan.Empty(asset.Id is { Length: 32 } ? asset.Id : throw new InvalidOperationException("asset id"))
             with
-        {
-            Clips =
-            [
-                new TimelineResolvedClip("c".PadLeft(32, 'd'), asset.Id,
-                    TimelineTime.FromSeconds(10), TimelineTime.FromSeconds(20),
+            {
+                Clips =
+                [
+                new TimelineResolvedClip(clipId, asset.Id,
+                    0, TimelineTime.FromSeconds(10),
                     TimelineTime.FromSeconds(100), TimelineTime.FromSeconds(110)),
-            ],
-        };
+                ],
+                Audio = TimelineResolvedAudioPlan.Empty with
+                {
+                    SourceAudio =
+                    [
+                        new TimelineResolvedSourceAudio(
+                            clipId, asset.Id, 0, TimelineTime.FromSeconds(10),
+                            TimelineTime.FromSeconds(100), TimelineTime.FromSeconds(110),
+                            1, 1, HasSourceStream: true),
+                    ],
+                },
+            };
         Check(TimelineOneClipParity.IsOneClip(plan), "one-clip plan not recognized");
         var request = TimelineOneClipParity.ToVideoEditRequest(
             plan, asset, outputDirectory: "C:/out", fileName: "a.mp4");
@@ -63,6 +74,18 @@ internal static class TimelineParityContract
                 new TimelineResolvedClip("c".PadLeft(32, 'd'), asset.Id,
                     0, TimelineTime.FromSeconds(300), 0, TimelineTime.FromSeconds(300)),
             ],
+            Audio = plan.Audio with
+            {
+                SourceAudio =
+                [
+                    plan.Audio.SourceAudio[0] with
+                    {
+                        SequenceEndUs = TimelineTime.FromSeconds(300),
+                        SourceInUs = 0,
+                        SourceOutUs = TimelineTime.FromSeconds(300),
+                    },
+                ],
+            },
         };
         var fullRequest = TimelineOneClipParity.ToVideoEditRequest(
             fullPlan, asset, outputDirectory: "C:/out", fileName: "a.mp4");
@@ -72,6 +95,52 @@ internal static class TimelineParityContract
         // Preview mapping reuses the same request shape the classic preview
         // path consumes (CreatePreviewSegmentAsync input).
         Check(request.Export is null, "preview request must not smuggle export settings");
+
+        var contradictory = plan with
+        {
+            Audio = plan.Audio with
+            {
+                SourceAudio = [plan.Audio.SourceAudio[0] with { HasSourceStream = false }],
+            },
+        };
+        Throws<InvalidOperationException>(
+            () => TimelineOneClipParity.ToVideoEditRequest(
+                contradictory, asset, outputDirectory: "C:/out", fileName: "a.mp4"),
+            "classic parity accepted source-audio state contradicting the asset probe");
+        Check(!TimelineOneClipParity.IsOneClip(plan with
+            {
+                SubtitleCues =
+                [
+                    new TimelineResolvedSubtitleCue(
+                        "e".PadLeft(32, 'e'), "f".PadLeft(32, 'f'), clipId,
+                        0, 1_000_000, "subtitle", new string('a', 64)),
+                ],
+            }),
+            "classic parity accepted unresolved subtitle rendering state");
+        Check(!TimelineOneClipParity.IsOneClip(plan with
+            {
+                Audio = plan.Audio with
+                {
+                    SourceAudio = [plan.Audio.SourceAudio[0] with { ClipId = "0".PadLeft(32, '0') }],
+                },
+            }),
+            "classic parity accepted mismatched source-audio ownership");
+        var durationMismatch = plan with
+        {
+            Clips = [plan.Clips[0] with { SequenceEndUs = TimelineTime.FromSeconds(5) }],
+            Audio = plan.Audio with
+            {
+                SourceAudio =
+                [
+                    plan.Audio.SourceAudio[0] with
+                    {
+                        SequenceEndUs = TimelineTime.FromSeconds(5),
+                    },
+                ],
+            },
+        };
+        Check(!TimelineOneClipParity.IsOneClip(durationMismatch),
+            "classic parity accepted sequence/source duration mismatch");
     }
 
     private static void NonOneClipRejected()
@@ -92,6 +161,25 @@ internal static class TimelineParityContract
         Throws<InvalidOperationException>(
             () => TimelineOneClipParity.ToVideoEditRequest(two, asset, "C:/out", "a.mp4"),
             "multi-clip parity mapping accepted");
+
+        var fast = TimelineRenderPlan.Empty(asset.Id) with
+        {
+            Clips = [new TimelineResolvedClip(
+                "a".PadLeft(32, 'b'), asset.Id, 0, 5_000_000, 0, 10_000_000, 2)],
+        };
+        Check(!TimelineOneClipParity.IsOneClip(fast),
+            "classic parity accepted unsupported playback rate");
+        var leadingGap = fast with
+        {
+            Clips = [fast.Clips[0] with
+            {
+                SequenceStartUs = 1_000_000,
+                SequenceEndUs = 6_000_000,
+                PlaybackRate = 1,
+            }],
+        };
+        Check(!TimelineOneClipParity.IsOneClip(leadingGap),
+            "classic parity accepted unsupported leading sequence gap");
     }
 
     private static void ServiceTypeShape()

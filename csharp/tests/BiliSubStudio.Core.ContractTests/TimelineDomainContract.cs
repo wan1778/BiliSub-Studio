@@ -168,7 +168,9 @@ internal static class TimelineDomainContract
             () => TimelineSequence.Create([first, second], [a, b], 0),
             "implicit sequence FPS accepted");
         var plan = TimelineCompiler.Compile(
-            new TimelineProjectV2("a".PadLeft(32, 'b'), "P", DateTimeOffset.UtcNow, [a, b], sequence, []));
+            new TimelineProjectV2(
+                "a".PadLeft(32, 'b'), "P", DateTimeOffset.UtcNow, [a, b], sequence,
+                [], [], [], TimelineSourceAudioState.Defaults(sequence.VideoClips), [], null));
         Check(plan.Clips.Count == 2 && plan.TotalDurationUs == 20_000_000,
             "compiler did not resolve ordered clip segments");
         Check(plan.Clips[0].SequenceStartUs == 0 && plan.Clips[1].SequenceStartUs == 10_000_000,
@@ -187,7 +189,12 @@ internal static class TimelineDomainContract
             var sequence = TimelineSequence.Create([clip], [asset], outputFrameRate: 30);
             var session = new TimelineEditorSession(store);
             var created = await session.CreateAsync("G3 kiểm tra", CancellationToken.None);
-            var full = created with { Assets = [asset], Sequence = sequence };
+            var full = created with
+            {
+                Assets = [asset],
+                Sequence = sequence,
+                SourceAudio = TimelineSourceAudioState.Defaults(sequence.VideoClips),
+            };
             await session.SaveAsync(full, CancellationToken.None);
             var reopened = await store.LoadAsync(full.Id, CancellationToken.None);
             Check(reopened.Assets.Count == 1 && reopened.Assets[0].Id == asset.Id,

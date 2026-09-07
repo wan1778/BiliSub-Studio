@@ -27,6 +27,7 @@ public static class TimelineMigrator
         int width,
         int height,
         double durationSeconds,
+        bool hasAudio,
         long size,
         long lastWriteUtcTicks)
     {
@@ -56,7 +57,7 @@ public static class TimelineMigrator
             height,
             durationUs,
             FrameRate: 1,
-            HasAudio: false,
+            HasAudio: hasAudio,
             size,
             lastWriteUtcTicks);
 
@@ -80,7 +81,12 @@ public static class TimelineMigrator
             DateTimeOffset.UtcNow,
             [asset],
             sequence,
-            []);
+            [],
+            [],
+            [],
+            TimelineSourceAudioState.Defaults([clip]),
+            [],
+            null);
         project.Validate();
 
         return new TimelineMigrationReport(project, warnings, source.Source);

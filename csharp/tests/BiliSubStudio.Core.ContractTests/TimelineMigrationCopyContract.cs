@@ -23,9 +23,10 @@ internal static class TimelineMigrationCopyContract
             var report = TimelineMigrator.MigrateSchema7(
                 schema7.project, mediaPath,
                 width: 1920, height: 1080, durationSeconds: 60,
+                hasAudio: true,
                 size: 3, lastWriteUtcTicks: 123);
 
-            Check(TimelineProjectV2.Schema == 3, "migrated copy must use current V2 schema");
+            Check(TimelineProjectV2.Schema == 4, "migrated copy must use current V2 schema");
             Check(!string.Equals(report.Project.Id, schema7.project.Id, StringComparison.Ordinal),
                 "migrated copy must own a fresh V2 identity, not the schema-7 id");
             var sequence = report.Project.Sequence
@@ -40,6 +41,9 @@ internal static class TimelineMigrationCopyContract
             Check(string.Equals(asset.Path, mediaPath, StringComparison.Ordinal),
                 "copy asset must point at the source video path");
             Check(asset.DurationUs == 60_000_000, "copy asset duration lost microsecond precision");
+            var plan = TimelineCompiler.Compile(report.Project);
+            Check(asset.HasAudio && plan.Audio.SourceAudio.Single().HasSourceStream,
+                "migration lost probed source-audio presence");
             var missing = new[]
             {
                 (TimelineMigrationWarning.RegionsFlattened, schema7.project.Regions.Count > 0),
@@ -75,7 +79,7 @@ internal static class TimelineMigrationCopyContract
             // Reject anything that is not schema 7.
             Throws<InvalidDataException>(
                 () => TimelineMigrator.MigrateSchema7(
-                    schema7.project with { Schema = 6 }, mediaPath, 1920, 1080, 60, 3, 123),
+                    schema7.project with { Schema = 6 }, mediaPath, 1920, 1080, 60, true, 3, 123),
                 "non-schema-7 project accepted");
         }
         finally

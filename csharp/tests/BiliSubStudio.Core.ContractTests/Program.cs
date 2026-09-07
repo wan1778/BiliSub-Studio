@@ -132,6 +132,8 @@ internal static class Program
         ("timeline one-clip parity maps V2 plan onto the classic render pipeline", TimelineParityContract.RunAsync),
         ("timeline multi-clip add reorder trim split delete keep hard cuts with atomic undo", TimelineSequenceOpsContract.RunAsync),
         ("timeline clip-local effects subtitle logo ride split delete without drift", TimelineItemsContract.RunAsync),
+        ("timeline generated voice stays linked to subtitle cue identity", TimelineSubtitleVoiceLinkContract.RunAsync),
+        ("timeline source voice music audio plan stays sample and microsecond synchronized", TimelineAudioSyncContract.RunAsync),
     ];
 
     private static async Task<int> Main(string[] arguments)

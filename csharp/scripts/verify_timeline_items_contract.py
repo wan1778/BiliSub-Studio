@@ -60,9 +60,9 @@ require("List<TimelineEditState> _undo" in items
         and "List<TimelineEditState> _redo" in items,
         "G7 history must snapshot clips and items atomically")
 
-require("public const int Schema = 3;" in project
+require("public const int Schema =" in project
         and "IReadOnlyList<TimelineItem> Items" in project,
-        "G7 project must persist items in schema 3")
+        "G7 project must retain persisted items in the current schema")
 require("project.Items" in store and "payload.Items" in store,
         "G7 store lost item persistence")
 require("payload.Schema == 2" in store,
@@ -70,7 +70,7 @@ require("payload.Schema == 2" in store,
 require("TimelineResolvedItem" in compiler and "project.Items" in compiler
         and "clip.TimelineStartUs + item.ClipStartUs" in compiler,
         "G7 compiler must resolve clip-local items into sequence time")
-require("plan.Clips.Count == 1 && plan.Items.Count == 0" in parity,
+require("plan.Clips.Count != 1" in parity and "plan.Items.Count != 0" in parity,
         "classic parity must reject unsupported timeline items")
 
 for body, name in ((items, "items"), (project, "project"), (compiler, "compiler")):

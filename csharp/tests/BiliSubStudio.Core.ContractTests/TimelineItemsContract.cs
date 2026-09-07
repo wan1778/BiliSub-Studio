@@ -249,11 +249,12 @@ internal static class TimelineItemsContract
                 Assets = [asset],
                 Sequence = TimelineSequence.Create(clips, [asset], 30),
                 Items = [local, global, globalSubtitle],
+                SourceAudio = TimelineSourceAudioState.Defaults(clips),
             };
             await store.SaveAsync(project, CancellationToken.None);
             var reopened = await store.LoadAsync(project.Id, CancellationToken.None);
             Check(reopened.Items.SequenceEqual(project.Items),
-                "timeline items did not survive schema-3 persistence");
+                "timeline items did not survive schema-4 persistence");
 
             var plan = TimelineCompiler.Compile(reopened);
             var resolvedLocal = plan.Items.Single(item => item.ItemId == local.Id);
@@ -272,6 +273,7 @@ internal static class TimelineItemsContract
             {
                 Sequence = TimelineSequence.Create([clips[0]], [asset], 30),
                 Items = [Effect(clips[0].Id, 1_000_000, 2_000_000, "unsupported-parity")],
+                SourceAudio = TimelineSourceAudioState.Defaults([clips[0]]),
             });
             Check(!TimelineOneClipParity.IsOneClip(oneClipWithItem),
                 "classic one-clip parity accepted unsupported G7 items");
@@ -296,22 +298,30 @@ internal static class TimelineItemsContract
             var schema2 = JsonNode.Parse(storedJson)!.AsObject();
             schema2["schema"] = 2;
             schema2.Remove("items");
+            schema2.Remove("subtitle_cues");
+            schema2.Remove("audio_assets");
+            schema2.Remove("source_audio");
+            schema2.Remove("voice_cues");
+            schema2.Remove("music");
             await File.WriteAllTextAsync(
                 projectPath,
                 schema2.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
             var upgraded = await store.LoadAsync(project.Id, CancellationToken.None);
-            Check(upgraded.Items.Count == 0,
-                "persisted schema-2 project did not upgrade with an empty G7 item set");
+            Check(upgraded.Items.Count == 0
+                && upgraded.SourceAudio.Count == clips.Count
+                && upgraded.SourceAudio.All(source => source.Gain == 1),
+                "persisted schema-2 project did not upgrade with empty items and source-audio defaults");
             await store.SaveAsync(upgraded, CancellationToken.None);
             var schema3 = JsonNode.Parse(await File.ReadAllTextAsync(projectPath))!.AsObject();
-            Check(schema3["schema"]!.GetValue<int>() == 3 && schema3["items"] is JsonArray,
-                "upgraded schema-2 project did not save back as schema 3 with items");
+            Check(schema3["schema"]!.GetValue<int>() == 4 && schema3["items"] is JsonArray,
+                "upgraded schema-2 project did not save back as schema 4 with items");
 
             var globals = new TimelineItem[] { Music(0, 5_000_000), GlobalLogo(1_000_000, 3_000_000) };
             var withoutVideo = upgraded with
             {
                 Sequence = upgraded.Sequence! with { VideoClips = [] },
                 Items = globals,
+                SourceAudio = [],
             };
             await store.SaveAsync(withoutVideo, CancellationToken.None);
             var reopenedWithoutVideo = await store.LoadAsync(project.Id, CancellationToken.None);

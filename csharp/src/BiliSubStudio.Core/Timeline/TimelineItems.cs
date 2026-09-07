@@ -14,6 +14,10 @@ public enum TimelineSubtitleSplitPolicy
     SplitAndClamp = 1,
 }
 
+public sealed record TimelineItemSplitResult(
+    IReadOnlyList<TimelineItem> Items,
+    IReadOnlyDictionary<string, string> RightItemIdsByOriginalId);
+
 // Effect/subtitle and clip-logo times are relative to their owning clip.
 // Music and logos without a ClipId use absolute sequence time.
 public sealed record TimelineItem(
@@ -172,6 +176,16 @@ public static class TimelineItemOps
         string leftClipId,
         string rightClipId,
         long cutLocalUs,
+        TimelineSubtitleSplitPolicy subtitlePolicy = TimelineSubtitleSplitPolicy.Reject) =>
+        SplitItemsWithOwnership(
+            items, oldClipId, leftClipId, rightClipId, cutLocalUs, subtitlePolicy).Items;
+
+    public static TimelineItemSplitResult SplitItemsWithOwnership(
+        IReadOnlyList<TimelineItem> items,
+        string oldClipId,
+        string leftClipId,
+        string rightClipId,
+        long cutLocalUs,
         TimelineSubtitleSplitPolicy subtitlePolicy = TimelineSubtitleSplitPolicy.Reject)
     {
         ArgumentNullException.ThrowIfNull(items);
@@ -180,6 +194,7 @@ public static class TimelineItemOps
         if (!Enum.IsDefined(subtitlePolicy))
             throw new InvalidDataException("Subtitle split policy không hợp lệ.");
         var result = new List<TimelineItem>(items.Count + 2);
+        var rightItemIds = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var item in items)
         {
             item.Validate();
@@ -210,16 +225,18 @@ public static class TimelineItemOps
                     throw new InvalidOperationException(
                         "Subtitle đi qua điểm cắt cần explicit split policy.");
                 result.Add(item with { ClipId = leftClipId, ClipEndUs = cutLocalUs });
+                var rightId = TimelineItem.NewId();
+                rightItemIds.Add(item.Id, rightId);
                 result.Add(item with
                 {
-                    Id = TimelineItem.NewId(),
+                    Id = rightId,
                     ClipId = rightClipId,
                     ClipStartUs = 0,
                     ClipEndUs = item.ClipEndUs - cutLocalUs,
                 });
             }
         }
-        return result;
+        return new TimelineItemSplitResult(result, rightItemIds);
     }
 
     // PDEC-004 recommendation: SRT attaches to the selected clip by default.

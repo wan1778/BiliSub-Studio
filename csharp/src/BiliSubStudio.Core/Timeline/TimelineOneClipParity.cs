@@ -18,7 +18,27 @@ public static class TimelineOneClipParity
     public static bool IsOneClip(TimelineRenderPlan plan)
     {
         ArgumentNullException.ThrowIfNull(plan);
-        return plan.Clips.Count == 1 && plan.Items.Count == 0;
+        if (plan.Clips.Count != 1 || plan.Items.Count != 0 || plan.SubtitleCues.Count != 0
+            || plan.Audio.VoiceCues.Count != 0 || plan.Audio.Music is not null
+            || plan.Audio.SourceAudio.Count != 1)
+            return false;
+        var clip = plan.Clips[0];
+        var source = plan.Audio.SourceAudio[0];
+        if (clip.SequenceStartUs != 0 || clip.SequenceEndUs <= clip.SequenceStartUs
+            || clip.SourceInUs < 0 || clip.SourceOutUs <= clip.SourceInUs
+            || !double.IsFinite(clip.PlaybackRate) || clip.PlaybackRate <= 0)
+            return false;
+        return clip.SequenceDurationUs
+                == TimelineTime.ClipDurationUs(clip.SourceInUs, clip.SourceOutUs, clip.PlaybackRate)
+            && Math.Abs(clip.PlaybackRate - 1) <= double.Epsilon
+            && source.ClipId == clip.ClipId
+            && source.AssetId == clip.AssetId
+            && source.SequenceStartUs == clip.SequenceStartUs
+            && source.SequenceEndUs == clip.SequenceEndUs
+            && source.SourceInUs == clip.SourceInUs
+            && source.SourceOutUs == clip.SourceOutUs
+            && Math.Abs(source.PlaybackRate - clip.PlaybackRate) <= double.Epsilon
+            && source.Gain == 1;
     }
 
     // Parity mapping. requestedStart/previewWidth/previewHeight mirror
@@ -38,6 +58,8 @@ public static class TimelineOneClipParity
         var clip = plan.Clips[0];
         if (!string.Equals(clip.AssetId, asset.Id, StringComparison.Ordinal))
             throw new InvalidOperationException("Plan clip không khớp asset.");
+        if (plan.Audio.SourceAudio[0].HasSourceStream != asset.HasAudio)
+            throw new InvalidOperationException("Plan source audio không khớp asset.");
 
         var trim = new EditorTrimRange(
             TimelineTime.ToSeconds(clip.SourceInUs),
