@@ -7,7 +7,7 @@ Last updated: 2026-09-07
 ```text
 Program status: PLANNING APPROVED
 Current gate: G8 - Voice and audio ownership
-Gate state: IN_PROGRESS - source and dirty-tree gates pass; clean-tree verify pending
+Gate state: VERIFIED - cue-linked ownership, audio plan and A/V sync contracts
 Timeline implementation: STARTED (through cue-linked audio plan; no processed render parity)
 Classic Editor modifications for Timeline: NONE (V2-only files plus test/verifier/docs)
 ```
@@ -276,7 +276,7 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
   source tree SHA-256
   `a5953d25cf284d2ec1d83fe5ea3babe8f690a260da820cf87f11dc0681ca396e`.
 
-## G8 pre-commit verification evidence (2026-09-07)
+## G8 verification evidence (2026-09-07)
 
 - User accepted DEC-018: MVP has at most one sequence-global music track.
   User accepted DEC-019: persisted/compiled timing is exact microseconds;
@@ -315,21 +315,24 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
   schema-7 store unchanged.
 - Release x64 build: 0 warnings, 0 errors; Range field regressions PASS;
   `validate_csharp_migration.py` PASS; generated code map current.
-- Clean-tree `verify.ps1`, self-contained publish/startup smoke and final G8
-  binary/source hashes: PENDING until the G8 source is committed.
+- Clean-tree `verify.ps1` on `307b49e`: PASS (contracts `116/116`, Range
+  regressions, self-contained publish, real startup smoke, worker identity,
+  PE32+ x64 and checksum readback).
+- G8 gate binary: exe SHA-256
+  `35cc7c1fd6a488591e4fb60c19cc6d9636815739023da83d28b6ec6625952881`,
+  source tree SHA-256
+  `e79c3f7d9e6e590360446882bcc0b68469c52bc7066e0f8eba0cc90d2d5c1540`.
 
 ## Remaining precondition
 
-- Commit the reviewed G8 source and run clean-tree `csharp/scripts/verify.ps1`
-  before changing the gate state to `VERIFIED`.
+- None for starting G9 processed-preview work.
 - Any future restore or migration experiment must use a separate test root and
   re-verify `BACKUP_PROCEDURE.md` first.
 
 ## Next exact action
 
-Review and commit the G8 source, run the clean-tree Windows verification gate,
-then record binary/source hashes. Do not modify the classic Editor for
-Timeline work.
+Begin G9 with revisioned proxy generation and stale-preview/process-cleanup
+contracts. Do not modify the classic Editor for Timeline work.
 
 ## Required resume command
 
