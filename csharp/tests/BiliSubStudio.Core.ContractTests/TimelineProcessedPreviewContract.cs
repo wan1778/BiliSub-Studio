@@ -202,14 +202,24 @@ internal static class TimelineProcessedPreviewContract
             var old = Path.Combine(service.PreviewDirectory, "timeline-preview-old.mp4");
             var unrelated = Path.Combine(service.PreviewDirectory, "keep.txt");
             var foreignMp4 = Path.Combine(service.PreviewDirectory, "foreign.mp4");
+            using var current = System.Diagnostics.Process.GetCurrentProcess();
+            var live = Path.Combine(service.PreviewDirectory,
+                $"timeline-preview-{Environment.ProcessId}-{current.StartTime.ToUniversalTime().Ticks}-live.mp4");
+            var dead = Path.Combine(service.PreviewDirectory,
+                "timeline-preview-2147483647-1-dead.mp4");
             await File.WriteAllTextAsync(crashed, "partial");
             await File.WriteAllTextAsync(old, "old");
             await File.WriteAllTextAsync(unrelated, "unrelated");
             await File.WriteAllTextAsync(foreignMp4, "foreign");
+            await File.WriteAllTextAsync(live, "live");
+            await File.WriteAllTextAsync(dead, "dead");
+            File.SetLastWriteTimeUtc(crashed, DateTime.UtcNow.AddDays(-2));
+            File.SetLastWriteTimeUtc(old, DateTime.UtcNow.AddDays(-2));
             await service.CleanupCacheAsync();
-            Check(!File.Exists(crashed) && !File.Exists(old)
-                && File.Exists(unrelated) && File.Exists(foreignMp4),
+            Check(!File.Exists(crashed) && !File.Exists(old) && !File.Exists(dead)
+                && File.Exists(unrelated) && File.Exists(foreignMp4) && File.Exists(live),
                 "Timeline cache cleanup crossed its managed artifact policy");
+            File.Delete(live);
 
             var failing = new TimelineProcessedPreviewService(
                 paths,

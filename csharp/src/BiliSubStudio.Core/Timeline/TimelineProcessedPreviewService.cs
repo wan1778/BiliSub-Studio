@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Diagnostics;
 using BiliSubStudio.Core.Configuration;
 using BiliSubStudio.Core.Processes;
 
@@ -45,6 +46,13 @@ public interface ITimelineProcessedPreviewGenerator
 public sealed class TimelineProcessedPreviewService : ITimelineProcessedPreviewGenerator
 {
     private const string ManagedPrefix = "timeline-preview-";
+    private static readonly TimeSpan LegacyStaleAge = TimeSpan.FromDays(1);
+    private static readonly long ProcessStartUtcTicks = GetProcessStartUtcTicks();
+    private static readonly string ProcessOwnerPrefix = ManagedPrefix
+        + Environment.ProcessId.ToString(CultureInfo.InvariantCulture)
+        + "-"
+        + ProcessStartUtcTicks.ToString(CultureInfo.InvariantCulture)
+        + "-";
     private readonly ITimelineProcessedPreviewRenderer _renderer;
     private readonly string _previewDirectory;
     private readonly string _previewPrefix;
@@ -77,7 +85,7 @@ public sealed class TimelineProcessedPreviewService : ITimelineProcessedPreviewG
         cancellationToken.ThrowIfCancellationRequested();
         Directory.CreateDirectory(_previewDirectory);
 
-        var identity = ManagedPrefix
+        var identity = ProcessOwnerPrefix
             + plan.ProjectId
             + "-"
             + revision.ToString("D20", CultureInfo.InvariantCulture)
@@ -128,10 +136,24 @@ public sealed class TimelineProcessedPreviewService : ITimelineProcessedPreviewG
     public async Task CleanupCacheAsync(CancellationToken cancellationToken = default)
     {
         if (!Directory.Exists(_previewDirectory)) return;
-        foreach (var path in Directory.EnumerateFiles(_previewDirectory, "*", SearchOption.TopDirectoryOnly))
+        var paths = await Task.Run(() =>
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (!IsManagedFileName(Path.GetFileName(path))) continue;
+            if (!Directory.Exists(_previewDirectory)) return Array.Empty<string>();
+            var abandoned = new List<string>();
+            foreach (var path in Directory.EnumerateFiles(
+                         _previewDirectory, "*", SearchOption.TopDirectoryOnly))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (IsManagedFileName(Path.GetFileName(path))
+                    && !HasLiveOwnerOrRecentLegacy(path))
+                    abandoned.Add(path);
+            }
+            return abandoned.ToArray();
+        }, cancellationToken).ConfigureAwait(false);
+        foreach (var path in paths)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
             await DeleteManagedFileAsync(path, cancellationToken).ConfigureAwait(false);
         }
     }
@@ -164,6 +186,52 @@ public sealed class TimelineProcessedPreviewService : ITimelineProcessedPreviewG
     private static bool IsManagedFileName(string fileName) =>
         fileName.StartsWith(ManagedPrefix, StringComparison.Ordinal)
         && fileName.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase);
+
+    private static bool HasLiveOwnerOrRecentLegacy(string path)
+    {
+        var fileName = Path.GetFileName(path);
+        var owner = fileName.AsSpan(ManagedPrefix.Length);
+        var firstDash = owner.IndexOf('-');
+        var secondDash = firstDash < 0 ? -1 : owner[(firstDash + 1)..].IndexOf('-');
+        if (firstDash > 0 && secondDash >= 0
+            && int.TryParse(owner[..firstDash], NumberStyles.None, CultureInfo.InvariantCulture, out var processId)
+            && long.TryParse(owner.Slice(firstDash + 1, secondDash), NumberStyles.None,
+                CultureInfo.InvariantCulture, out var processStartUtcTicks))
+            return IsProcessOwnerAlive(processId, processStartUtcTicks);
+
+        return File.GetLastWriteTimeUtc(path) > DateTime.UtcNow - LegacyStaleAge;
+    }
+
+    private static bool IsProcessOwnerAlive(int processId, long processStartUtcTicks)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(processId);
+            return !process.HasExited
+                && Math.Abs(process.StartTime.ToUniversalTime().Ticks - processStartUtcTicks)
+                    <= TimeSpan.TicksPerSecond;
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
+        catch
+        {
+            // Access-denied/process-query failures are preserved rather than
+            // risking deletion of a proxy another app instance is playing.
+            return true;
+        }
+    }
+
+    private static long GetProcessStartUtcTicks()
+    {
+        using var process = Process.GetCurrentProcess();
+        return process.StartTime.ToUniversalTime().Ticks;
+    }
 
     private static async Task DeleteManagedFileAsync(
         string path,

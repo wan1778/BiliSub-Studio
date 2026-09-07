@@ -8,6 +8,7 @@ using BiliSubStudio.App.Services;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Shapes;
@@ -43,8 +44,10 @@ public sealed partial class TimelineEditorPage : Page
     };
     private bool _timelineAutosavePending;
     private bool _timelineAutosaveBusy;
+    private bool _timelineViewportRenderQueued;
+    private long? _pendingTimelineZoomCenterUs;
+    private double _timelinePixelsPerSecond = TimelineViewport.DefaultPixelsPerSecond;
 
-    private const double TimelinePixelsPerSecond = 80;
     private const double TimelineTrackTop = 24;
     private const double TimelineTrackHeight = 66;
     private const double TimelineHandleTolerance = 10;
@@ -73,6 +76,9 @@ public sealed partial class TimelineEditorPage : Page
         _session = new TimelineEditorSession(TimelineProjectStoreV2.FromAppPaths(application.Paths));
         _editor = new TimelineEditingController(_session.Store);
         InitializeComponent();
+        TimelineZoomSlider.ValueChanged += TimelineZoomSlider_ValueChanged;
+        TimelineScroller.ViewChanged += TimelineScroller_ViewChanged;
+        TimelineSurface.SizeChanged += TimelineSurface_SizeChanged;
         InitializeTimelinePlayback();
         _timelineAutoScrollTimer.Tick += (_, _) =>
         {
@@ -429,6 +435,8 @@ public sealed partial class TimelineEditorPage : Page
             return;
         }
         _timelineAutosaveBusy = true;
+        if (_timelinePageLoaded)
+            RefreshTimelinePreviewControls();
         try
         {
             await _editor.SaveAsync(CancellationToken.None);
@@ -790,8 +798,17 @@ public sealed partial class TimelineEditorPage : Page
         }
 
         var clips = _editor.Clips;
-        TimelineSurface.Width = Math.Max(700, SequenceX(clips[^1].TimelineEndUs) + 20);
-        for (var index = 0; index < clips.Count; index++)
+        TimelineSurface.Width = TimelineViewport.SurfaceWidth(
+            clips[^1].TimelineEndUs, _timelinePixelsPerSecond, 700);
+        var viewportWidth = TimelineScroller.ViewportWidth > 0
+            ? TimelineScroller.ViewportWidth
+            : 700;
+        var visible = TimelineViewport.VisibleClipRange(
+            clips,
+            TimelineScroller.HorizontalOffset,
+            viewportWidth,
+            _timelinePixelsPerSecond);
+        for (var index = visible.StartIndex; index < visible.EndExclusive; index++)
         {
             var clip = clips[index];
             var selected = string.Equals(clip.Id, _editor.SelectedClipId, StringComparison.Ordinal);
@@ -928,14 +945,62 @@ public sealed partial class TimelineEditorPage : Page
     private long PointerSequenceUs(double x)
     {
         var total = _editor.Clips[^1].TimelineEndUs;
-        var value = Math.Round(
-            Math.Max(0, x) / TimelinePixelsPerSecond * TimelineTime.MicrosecondsPerSecond,
-            MidpointRounding.AwayFromZero);
-        return (long)Math.Clamp(value, 0, total);
+        return TimelineViewport.SequenceUs(x, _timelinePixelsPerSecond, total);
     }
 
-    private static double SequenceX(long sequenceUs) =>
-        sequenceUs / (double)TimelineTime.MicrosecondsPerSecond * TimelinePixelsPerSecond;
+    private double SequenceX(long sequenceUs) =>
+        TimelineViewport.SequenceX(sequenceUs, _timelinePixelsPerSecond);
+
+    private void TimelineZoomSlider_ValueChanged(object sender, RangeBaseValueChangedEventArgs e)
+    {
+        var maximumUs = _editor.HasOpenProject && _editor.Clips.Count > 0
+            ? _editor.Clips[^1].TimelineEndUs
+            : 0;
+        _pendingTimelineZoomCenterUs ??= TimelineViewport.SequenceUs(
+            TimelineScroller.HorizontalOffset + TimelineScroller.ViewportWidth / 2,
+            _timelinePixelsPerSecond,
+            maximumUs);
+        _timelinePixelsPerSecond = TimelineViewport.ClampPixelsPerSecond(e.NewValue);
+        TimelineZoomText.Text = $"{_timelinePixelsPerSecond:0} px/s";
+        QueueTimelineViewportRender();
+    }
+
+    private void TimelineScroller_ViewChanged(object? sender, ScrollViewerViewChangedEventArgs e) =>
+        QueueTimelineViewportRender();
+
+    private void TimelineSurface_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        ApplyPendingTimelineZoomCenter();
+    }
+
+    private void ApplyPendingTimelineZoomCenter()
+    {
+        if (_pendingTimelineZoomCenterUs is not { } centerUs)
+            return;
+        _pendingTimelineZoomCenterUs = null;
+        var targetOffset = Math.Max(
+            0,
+            TimelineViewport.SequenceX(centerUs, _timelinePixelsPerSecond)
+                - TimelineScroller.ViewportWidth / 2);
+        TimelineScroller.ChangeView(targetOffset, null, null, disableAnimation: true);
+    }
+
+    private void QueueTimelineViewportRender()
+    {
+        if (_timelineViewportRenderQueued)
+            return;
+        _timelineViewportRenderQueued = true;
+        if (!DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+            {
+                _timelineViewportRenderQueued = false;
+                var previousWidth = TimelineSurface.Width;
+                RenderTimeline();
+                if (_pendingTimelineZoomCenterUs is not null
+                    && Math.Abs(previousWidth - TimelineSurface.Width) < 0.5)
+                    ApplyPendingTimelineZoomCenter();
+            }))
+            _timelineViewportRenderQueued = false;
+    }
 
     private void AutoScrollTimeline(double pointerViewportX)
     {

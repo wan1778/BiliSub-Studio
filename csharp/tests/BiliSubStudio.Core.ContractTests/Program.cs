@@ -144,6 +144,7 @@ internal static class Program
         ("timeline pointer drag proposes frame-snapped trim and one-step reorder", TimelineDragContract.RunAsync),
         ("timeline processed preview plays the current unsaved plan through the export graph", TimelinePreviewPlaybackContract.RunAsync),
         ("timeline relink restores missing media and autosave reaps crashed writes", TimelineResilienceContract.RunAsync),
+        ("timeline scale contracts hold 100 clips six hours 10k cues and 2k effects", TimelineScaleContract.RunAsync),
     ];
 
     private static async Task<int> Main(string[] arguments)

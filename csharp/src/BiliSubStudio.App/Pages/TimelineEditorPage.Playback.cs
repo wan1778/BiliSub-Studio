@@ -51,6 +51,11 @@ public sealed partial class TimelineEditorPage
     {
         if (_timelineClosing || _timelinePreviewStopping)
             return;
+        if (_timelineAutosaveBusy)
+        {
+            TimelinePreviewStatusText.Text = "Đang tự động lưu; preview sẽ sẵn sàng ngay sau khi lưu xong.";
+            return;
+        }
         if (_timelinePreviewMediaPlayer is { } retained)
         {
             retained.Play();
@@ -129,6 +134,10 @@ public sealed partial class TimelineEditorPage
             var renderer = new TimelineFfmpegProcessedPreviewRenderer(
                 _application.Paths, ffmpeg, ffprobe, project);
             var service = new TimelineProcessedPreviewService(_application.Paths, renderer);
+            // Reap dead-owner and stale legacy proxies before taking ownership;
+            // CleanupCacheAsync preserves artifacts owned by a live process.
+            await service.CleanupCacheAsync(cancellationToken);
+            EnsureTimelinePreviewRequestCurrent(project.Id, editRevision, uiRevision, cancellationToken);
             controller = new TimelinePreviewController(service);
             _timelinePreviewService = service;
             _timelinePreviewController = controller;
@@ -346,7 +355,8 @@ public sealed partial class TimelineEditorPage
         var hasProject = _editor.HasOpenProject && _editor.Clips.Count > 0;
         var locked = TimelinePreviewLocked;
         TimelinePreviewPlayButton.IsEnabled = _timelinePageLoaded && hasProject
-            && !_timelinePreviewBusy && !_timelinePreviewStopping && !_timelineClosing;
+            && !_timelinePreviewBusy && !_timelinePreviewStopping && !_timelineClosing
+            && !_timelineAutosaveBusy;
         TimelinePreviewPlayButton.Content = _timelinePreviewMediaPlayer is null
             ? "Tạo và phát preview"
             : "Phát tiếp";

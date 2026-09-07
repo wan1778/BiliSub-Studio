@@ -62,6 +62,12 @@
             <TextBlock FontSize="14" FontWeight="SemiBold" Text="Timeline trực tiếp" />
             <TextBlock TextWrapping="Wrap" Opacity="0.8"
                        Text="Kéo thân clip để đổi thứ tự. Chọn clip rồi kéo mép trái/phải để trim; trên màn hình cảm ứng, kéo vùng KÉO hoặc vuốt phần còn lại để cuộn." />
+            <StackPanel Orientation="Horizontal" Spacing="10">
+                <TextBlock VerticalAlignment="Center" Text="Thu phóng" />
+                <Slider x:Name="TimelineZoomSlider" Width="260"
+                        Minimum="1" Maximum="320" Value="80" StepFrequency="1" />
+                <TextBlock x:Name="TimelineZoomText" VerticalAlignment="Center" Text="80 px/s" />
+            </StackPanel>
             <Border BorderBrush="#34465E" BorderThickness="1" CornerRadius="8" Background="#151D29">
                 <ScrollViewer x:Name="TimelineScroller" Height="124"
                               HorizontalScrollBarVisibility="Auto" HorizontalScrollMode="Enabled"

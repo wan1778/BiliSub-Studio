@@ -6,9 +6,9 @@ Last updated: 2026-09-07
 
 ```text
 Program status: PLANNING APPROVED
-Current gate: G19 - Resilience
-Gate state: VERIFIED - V2 relink restores missing media; crash-safe autosave owns atomic writes
-Timeline implementation: STARTED (through direct clip drag, processed playback, relink and autosave)
+Current gate: G20 - Performance targets
+Gate state: READY FOR CLEAN-TREE VERIFICATION - scale/viewport/cache contracts implemented
+Timeline implementation: STARTED (through section-13 performance targets)
 Classic Editor modifications for Timeline: NONE (V2-only files plus test/verifier/docs)
 ```
 
@@ -693,9 +693,36 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
   source tree SHA-256
   `0862edd2427699dfa25f8ac1a084255f0066306c1aaa2289e01b1a8f0174c7b9`.
 
+## G20 implementation evidence (2026-09-07)
+
+- DEC-034 pins all MASTER_PLAN section-13 targets without modifying classic
+  Editor persistence or navigation.
+- `TimelineScaleContract` exercises real validation/compiler/dependency/store
+  paths at 100 clips, six hours, 10,000 subtitle cues and 2,000 effect items;
+  each scenario has a generous 30-second regression ceiling rather than a
+  hardware-specific benchmark threshold.
+- `TimelineViewport` maps six-hour coordinates without drift and uses two
+  binary-search bounds to return only clips intersecting the viewport plus
+  overscan. Scroll/zoom events coalesce one low-priority dispatcher redraw and
+  never compile, save, wait synchronously or perform file IO.
+- The Timeline page now exposes 1..320 px/s zoom while preserving the viewport
+  center. Its Canvas keeps full scroll geometry but materializes only visible
+  clip controls.
+- Autosave and preview startup exclude each other. Preview startup reaps only
+  dead-owner V2 proxies and stale legacy leftovers before creating a new
+  controller, preserving files owned by another live app process; stop and
+  cancellation retain G18 owned-process-tree cleanup. Timeline V2 does not
+  create thumbnail or waveform caches yet.
+- Release x64 solution build: 0 warnings, 0 errors; core contracts:
+  `127/127 passed`.
+- `verify_timeline_scale_contract.py` and all G2-G20 static gates: `19/19 PASS`.
+- G1 frozen classic Editor contracts: `35/35 PASS`; Range field regressions,
+  migration validation and generated code-map check: PASS.
+- Clean-tree `verify.ps1`: pending source commit.
+
 ## Remaining precondition
 
-- None. All G0-G19 gates are verified. PDEC-001/002/003/004 are resolved
+- G20 clean-tree Windows verification remains. G0-G19 are verified. PDEC-001/002/003/004 are resolved
   (DEC-029 through DEC-032). Field contracts need FFmpeg/FFprobe on PATH;
   installer packaging needs Inno Setup 7.
 - Any future restore or migration experiment must use a separate test root and
@@ -723,9 +750,8 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
 
 ## Next exact action
 
-Program complete through G19 (all MASTER_PLAN section-1 product goals for V2
-now implemented; performance/virtualization targets from section 13 remain a
-separate future gate). Keep the classic Editor default intact.
+Commit the G20 source gate, run clean-tree `csharp/scripts/verify.ps1`, then
+record binary/source hashes and mark all section-13 performance targets verified.
 
 ## Required resume command
 

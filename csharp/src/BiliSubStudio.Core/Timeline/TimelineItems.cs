@@ -290,7 +290,9 @@ public sealed record TimelineEditState(
     {
         ArgumentNullException.ThrowIfNull(clips);
         ArgumentNullException.ThrowIfNull(items);
-        var state = new TimelineEditState(clips.ToArray(), items.ToArray());
+        var state = new TimelineEditState(
+            clips.OrderBy(clip => clip.TimelineStartUs).ToArray(),
+            items.ToArray());
         TimelineSequence.ValidateSequential(state.Clips);
         TimelineItemOps.ValidateAll(state.Items, state.Clips);
         return state;
