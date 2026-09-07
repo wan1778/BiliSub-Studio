@@ -74,6 +74,7 @@ $version = ([string]$identity.informational_version).Trim()
 if ([string]::IsNullOrWhiteSpace($version) -or $version -notmatch '^4\.0\.0-beta\.\d+-csharp-p5$') {
     throw "unexpected informational version for beta installer: $version"
 }
+Assert-TrueBoolean $identity.winui_startup_smoke "BUILD_IDENTITY.winui_startup_smoke"
 Assert-ChecksumFile $publishFull $publishSums
 
 if ([string]::IsNullOrWhiteSpace($IsccPath)) {
@@ -100,8 +101,14 @@ $outputBase = "BiliSubStudio_Setup_v${version}_${sourceTag}_x64"
 
 # Build a tiny native-AOT launcher that lives in the user-visible install root.
 # The full WinUI/.NET runtime remains isolated under Runtime\.
-$launcherPublish = Join-Path $env:RUNNER_TEMP "bilisub-root-launcher-$sourceTag"
-if (Test-Path $launcherPublish) { Remove-Item $launcherPublish -Recurse -Force }
+$workTempRoot = if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
+    [System.IO.Path]::GetTempPath()
+}
+else {
+    $env:RUNNER_TEMP
+}
+$launcherPublish = Join-Path $workTempRoot (
+    "bilisub-root-launcher-$sourceTag-" + [Guid]::NewGuid().ToString("N"))
 New-Item $launcherPublish -ItemType Directory -Force | Out-Null
 $launcherArguments = @(
     "publish",
@@ -114,6 +121,7 @@ $launcherArguments = @(
     "-p:NuGetAudit=false",
     "-o", $launcherPublish
 )
+try {
 & dotnet @launcherArguments
 if ($LASTEXITCODE -ne 0) { throw "root launcher NativeAOT publish failed with exit code $LASTEXITCODE" }
 $launcherExe = Join-Path $launcherPublish "BiliSubStudio.exe"
@@ -135,8 +143,24 @@ $legacyFlatMigrationSmoke = $false
 $rootLauncherSmoke = $false
 $installerSmokeLogName = "INSTALLER_STARTUP_SMOKE_LOG.txt"
 
-if ($env:GITHUB_ACTIONS -eq "true") {
-    $installRoot = Join-Path $env:RUNNER_TEMP "BiliSub Studio Custom Location\BiliSub Studio"
+$smokeContainer = Join-Path $workTempRoot (
+    "BiliSubStudio-InstallerSmoke-$sourceTag-" + [Guid]::NewGuid().ToString("N"))
+$installRoot = Join-Path $smokeContainer "BiliSub Studio"
+$smokeUninstaller = $null
+$smokeError = $null
+$cleanupErrors = [System.Collections.Generic.List[string]]::new()
+$productRegistrationPaths = @(
+    "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{D2393B27-9CB7-4D76-8E65-6A6BD0EC729D}_is1",
+    "HKCU:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\{D2393B27-9CB7-4D76-8E65-6A6BD0EC729D}_is1"
+)
+$productShortcut = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\BiliSub Studio\BiliSub Studio.lnk"
+$defaultInstalledLauncher = Join-Path $env:LOCALAPPDATA "Programs\BiliSub Studio\BiliSubStudio.exe"
+foreach ($existingProductPath in @($defaultInstalledLauncher, $productShortcut) + $productRegistrationPaths) {
+    if (Test-Path $existingProductPath) {
+        throw "installer smoke requires a clean user profile; existing product identity found: $existingProductPath"
+    }
+}
+try {
     if (Test-Path $installRoot) {
         throw "installer smoke requires a clean per-user install root: $installRoot"
     }
@@ -217,10 +241,15 @@ if ($env:GITHUB_ACTIONS -eq "true") {
 
     # Launch through the root EXE exactly as a user would. The launcher exits quickly,
     # while the nested WinUI app must still produce the startup sentinel and log.
+    # Compare timestamps instead of deleting the persistent user startup log.
     $startupLog = Join-Path $env:LOCALAPPDATA "BiliSub Studio\Logs\startup.log"
-    if (Test-Path $startupLog) { Remove-Item $startupLog -Force }
-    $smokeSentinel = Join-Path $env:RUNNER_TEMP "bilisub-installed-startup-smoke.txt"
-    if (Test-Path $smokeSentinel) { Remove-Item $smokeSentinel -Force }
+    $startupLogPreviousWriteUtc = if (Test-Path $startupLog -PathType Leaf) {
+        (Get-Item $startupLog).LastWriteTimeUtc
+    }
+    else {
+        [DateTime]::MinValue
+    }
+    $smokeSentinel = Join-Path $smokeContainer "installed-startup-smoke.txt"
     $launcherProcess = Start-Process -FilePath $rootLauncher -WorkingDirectory $installRoot -ArgumentList "--startup-smoke-test=`"$smokeSentinel`"" -PassThru
     if (-not $launcherProcess.WaitForExit(10000)) {
         Stop-Process -Id $launcherProcess.Id -Force -ErrorAction SilentlyContinue
@@ -233,19 +262,21 @@ if ($env:GITHUB_ACTIONS -eq "true") {
     while ([DateTime]::UtcNow -lt $deadline -and -not (Test-Path $smokeSentinel -PathType Leaf)) {
         Start-Sleep -Milliseconds 250
     }
-    if (-not (Test-Path $smokeSentinel -PathType Leaf)) {
+    if (-not (Test-Path $smokeSentinel -PathType Leaf) -or
+        (Get-Content $smokeSentinel -Raw).Trim() -ne "PASS") {
         throw "root launcher started but nested WinUI startup sentinel was not produced"
     }
-    if (-not (Test-Path $startupLog -PathType Leaf)) {
-        throw "root-launcher WinUI smoke did not produce a persistent startup log"
+    if (-not (Test-Path $startupLog -PathType Leaf) -or
+        (Get-Item $startupLog).LastWriteTimeUtc -le $startupLogPreviousWriteUtc) {
+        throw "root-launcher WinUI smoke did not refresh a persistent startup log"
     }
     Copy-Item $startupLog (Join-Path $outputFull $installerSmokeLogName) -Force
     $rootLauncherSmoke = $true
 
-    $uninstaller = Get-ChildItem (Join-Path $installRoot "Uninstall") -Recurse -File -Filter "unins*.exe" | Select-Object -First 1
-    if ($null -eq $uninstaller) { throw "installer smoke could not find the isolated uninstaller" }
+    $smokeUninstaller = Get-ChildItem (Join-Path $installRoot "Uninstall") -Recurse -File -Filter "unins*.exe" | Select-Object -First 1
+    if ($null -eq $smokeUninstaller) { throw "installer smoke could not find the isolated uninstaller" }
     $uninstallLog = Join-Path $outputFull "INNO_UNINSTALL_SMOKE_LOG.txt"
-    $uninstallProcess = Start-Process -FilePath $uninstaller.FullName -ArgumentList @(
+    $uninstallProcess = Start-Process -FilePath $smokeUninstaller.FullName -ArgumentList @(
         "/VERYSILENT",
         "/SUPPRESSMSGBOXES",
         "/NORESTART",
@@ -264,12 +295,72 @@ if ($env:GITHUB_ACTIONS -eq "true") {
     }
     $installerInstallSmoke = $true
 }
+catch {
+    $smokeError = $_
+}
+finally {
+    try {
+        if (-not $installerInstallSmoke) {
+            if ($null -eq $smokeUninstaller -and
+                (Test-Path (Join-Path $installRoot "Uninstall") -PathType Container)) {
+                $smokeUninstaller = Get-ChildItem (Join-Path $installRoot "Uninstall") -Recurse -File -Filter "unins*.exe" |
+                    Select-Object -First 1
+            }
+            if ($null -ne $smokeUninstaller -and
+                (Test-Path $smokeUninstaller.FullName -PathType Leaf)) {
+                try {
+                    $cleanupProcess = Start-Process -FilePath $smokeUninstaller.FullName -ArgumentList @(
+                        "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"
+                    ) -Wait -PassThru
+                    if ($cleanupProcess.ExitCode -ne 0) {
+                        $cleanupErrors.Add("fallback uninstaller exited $($cleanupProcess.ExitCode)")
+                    }
+                }
+                catch {
+                    $cleanupErrors.Add("fallback uninstaller failed: $($_.Exception.Message)")
+                }
+            }
+        }
+        if (Test-Path $smokeContainer) {
+            Remove-Item $smokeContainer -Recurse -Force
+        }
+    }
+    catch {
+        $cleanupErrors.Add("smoke cleanup failed: $($_.Exception.Message)")
+    }
+    foreach ($productPath in @($productShortcut) + $productRegistrationPaths) {
+        if (Test-Path $productPath) {
+            $cleanupErrors.Add("installer product identity remains: $productPath")
+        }
+    }
+}
+if ($null -ne $smokeError -or $cleanupErrors.Count -ne 0) {
+    $details = @()
+    if ($null -ne $smokeError) { $details += $smokeError.Exception.Message }
+    $details += $cleanupErrors
+    throw "installer smoke/cleanup failed: $($details -join '; ')"
+}
+
+function Assert-TrueBoolean {
+    param([object]$Value, [string]$Name)
+    if ($Value -isnot [bool] -or -not $Value) {
+        throw "$Name must be the JSON boolean true"
+    }
+}
+
+$publicBetaReady = $installerInstallSmoke -and $legacyFlatMigrationSmoke -and $rootLauncherSmoke
+$installerStatusValue = if ($publicBetaReady) {
+    "installer_built_public_beta_ready"
+}
+else {
+    "installer_smoke_incomplete"
+}
 
 $statusPath = Join-Path $outputFull "INSTALLER_GATE_STATUS.json"
 [ordered]@{
     schema = 1
     created_utc = [DateTime]::UtcNow.ToString("o")
-    status = "installer_built_public_beta_ready"
+    status = $installerStatusValue
     primary_user_artifact = [System.IO.Path]::GetFileName($installer)
     installer_sha256 = $installerHash
     installer_pe = "PE32+ x64"
@@ -286,13 +377,13 @@ $statusPath = Join-Path $outputFull "INSTALLER_GATE_STATUS.json"
     selected_parent_appends_product_directory = $true
     installer_custom_directory_smoke = $installerInstallSmoke
     legacy_flat_runtime_migration_smoke = $legacyFlatMigrationSmoke
-    winui_startup_smoke = [bool]$identity.winui_startup_smoke
+    winui_startup_smoke = $identity.winui_startup_smoke
     installer_install_smoke = $installerInstallSmoke
     installer_startup_smoke_log = $installerSmokeLogName
     startup_failure_visible = $true
     protected_roots_preserved = @("Data", "Tools", "Temp", "Cache", "Downloads")
     authenticode_status = [string]$signature.Status
-    public_beta_ready = $true
+    public_beta_ready = $publicBetaReady
     stable_release_ready = $false
     field_qa_complete = $false
     source_revision = $identity.source_revision
@@ -306,7 +397,10 @@ if ($env:GITHUB_OUTPUT) {
     "launcher_sha256=$launcherHash" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
 }
 
-Remove-Item $launcherPublish -Recurse -Force -ErrorAction SilentlyContinue
+}
+finally {
+    Remove-Item $launcherPublish -Recurse -Force -ErrorAction SilentlyContinue
+}
 
 Write-Host "PASS: one-file per-user installer compiled as PE32+ x64 with root launcher, tidy Runtime/Uninstall layout and legacy migration smoke"
 Write-Host "Root launcher SHA-256: $launcherHash"

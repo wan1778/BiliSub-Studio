@@ -29,8 +29,8 @@ No Drive file ID, Drive download URL, external mirror, arbitrary CDN URL or unve
 
 ## Promotion sequence
 
-1. Complete source review, Windows CI and real-machine field QA for an exact Git commit and installer SHA-256.
-2. Only after approval, create the GitHub Release and attach the exact WinUI portable update ZIP.
+1. Complete source review and automated Windows CI/installer gates for an exact Git commit and installer SHA-256.
+2. For public beta, CI may create the GitHub prerelease and attach the exact installer, WinUI portable update ZIP and source archive; stable still requires completed real-machine field QA and explicit approval.
 3. Calculate the final asset byte size and SHA-256 after upload/download verification.
 4. Update the relevant `update/stable.json` or `update/beta.json` on `main` with the GitHub Release asset URL, exact size/hash and `channel_ready=true`.
 5. Keep the other channel independent. Stable builds read only stable; prerelease builds read only beta.
@@ -49,4 +49,4 @@ The source migration changes only update discovery/hosting. Existing safety gate
 - updater breakaway process;
 - transactional runtime swap and rollback on failure.
 
-During the current field-QA phase both manifests remain unpublished and no GitHub Release is created automatically.
+The beta workflow may publish an exact-source prerelease and update `beta.json` after every automated gate passes. `stable.json` remains unpublished until real-machine field QA and stable approval complete.

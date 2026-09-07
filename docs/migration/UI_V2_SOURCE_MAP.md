@@ -24,7 +24,7 @@ The archive contains no `.git` directory, so the archive comment and SHA-256 are
 | Responsibility | Exact source symbol |
 |---|---|
 | WinUI startup | `csharp/src/BiliSubStudio.App/App.xaml.cs:App.OnLaunched` |
-| Four-item production navigation/composition | `csharp/src/BiliSubStudio.App/MainWindow.xaml(.cs):MainWindow` |
+| Five-item production navigation/composition (Tải media, OCR phụ đề, Chỉnh video, Timeline, Cài đặt) | `csharp/src/BiliSubStudio.App/MainWindow.xaml(.cs):MainWindow` |
 | Shared persistent diagnostic owner | `csharp/src/BiliSubStudio.Core/Diagnostics/ApplicationLog.cs:ApplicationLog` |
 | Global green/yellow/red log drawer | `csharp/src/BiliSubStudio.App/MainWindow.xaml(.cs)`, `ViewModels/GlobalLogItem.cs` |
 | Unified Bilibili media UI | `csharp/src/BiliSubStudio.App/Pages/VideoPage.xaml(.cs)` (`Tải media`) |

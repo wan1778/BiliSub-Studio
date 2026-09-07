@@ -1,6 +1,6 @@
 # Windows field checklist — CSharp P5 installer
 
-Status starts as **BLOCKED**. Record one exact branch source revision, workflow artifact source revision, app EXE SHA-256 and installer SHA-256. No merge, GitHub Release, update-channel publication or promotion is allowed until the exact installer passes this checklist on the real Windows machine.
+Status starts as **FIELD QA PENDING**. Record one exact branch source revision, workflow artifact source revision, app EXE SHA-256 and installer SHA-256. Per `PUBLIC_BETA_RELEASE_POLICY.md`, an exact public beta may publish after all automated Windows/build/installer gates pass while this real-machine checklist remains open; stable promotion is forbidden until every applicable blocker below passes.
 
 ## Rejected / superseded field candidates — never promote
 
@@ -19,7 +19,7 @@ Any replacement candidate must have a different SHA-256 and must preserve the 37
 
 ## Build and installer identity
 
-- [ ] Windows workflow runs from the intended `csharp-p5-installer` source revision with SDK `10.0.400`.
+- [ ] Windows workflow runs from the intended `main` source revision with SDK `10.0.400`.
 - [ ] `verify_global_log_ui_contract.py`, `verify_installer_runtime_layout_contract.py`, media/short-read/HTTP-503 contracts, generated code map, Core contracts, WinUI startup/layout smoke and installer packaging all pass on the same source.
 - [ ] Preserve `BUILD_IDENTITY.json`, source/publish/candidate checksum inventories, `INSTALLER_GATE_STATUS.json` and `CANDIDATE_GATE_STATUS.json`.
 - [ ] Confirm app and Setup are PE32+ x64 and hashes match every manifest.
@@ -31,7 +31,7 @@ Any replacement candidate must have a different SHA-256 and must preserve the 37
 - [ ] Default path is `%LOCALAPPDATA%\Programs\BiliSub Studio`; a custom parent/drive still appends one dedicated `BiliSub Studio` product directory.
 - [ ] User-visible product root is organized as `Runtime`, `Data`, `Tools`, `Temp`, `Cache`, `Downloads` plus installer/uninstaller/user-owned files; hundreds of DLL/locale/XBF/PRI runtime entries are **not** scattered directly in the root.
 - [ ] `Runtime\BiliSubStudio.exe` is the installed executable and all self-contained DLL/XBF/PRI/locale folders live below `Runtime\`.
-- [ ] Start Menu shortcut, optional desktop shortcut, uninstall display icon and post-install launch all point to `Runtime\BiliSubStudio.exe`.
+- [ ] Start Menu shortcut, optional desktop shortcut, uninstall display icon and post-install launch all point to the root `BiliSubStudio.exe` launcher, which starts `Runtime\BiliSubStudio.exe`.
 - [ ] Running from `Runtime\` still resolves persistent `Data/Tools/Temp/Cache/Downloads` to the parent `BiliSub Studio` root; it must not create duplicate `Runtime\Data`, `Runtime\Tools`, `Runtime\Cache`, `Runtime\Downloads` roots.
 - [ ] Install the replacement candidate directly over one of the old flat-layout field builds. Old root `BiliSubStudio.exe`, DLLs and locale/resource directories listed by the old `SHA256SUMS.txt` are removed/migrated without requiring a manual uninstall.
 - [ ] Existing `Data/Tools/Temp/Cache/Downloads` contents survive that migration unchanged.
@@ -43,7 +43,7 @@ Any replacement candidate must have a different SHA-256 and must preserve the 37
 - [ ] Install as standard user without UAC/admin prompt.
 - [ ] App starts without separately installing .NET, Python, FFmpeg, yt-dlp or PaddleOCR.
 - [ ] Startup failure must show a visible Vietnamese dialog and write `%LOCALAPPDATA%\BiliSub Studio\Logs\startup.log`.
-- [ ] Exactly four top-level navigation destinations render: `Tải media`, `OCR phụ đề`, `Chỉnh video`, `Cài đặt`.
+- [ ] Exactly five top-level navigation destinations render: `Tải media`, `OCR phụ đề`, `Chỉnh video`, `Timeline`, `Cài đặt`.
 - [ ] There is no separate top-level `Hiệu năng`, `Đăng nhập`, `Cập nhật & hỗ trợ`, `Phụ đề` or `Tải video` item.
 - [ ] Open `Cài đặt` and verify four internal sections: `Chung`, `Hiệu năng`, `Đăng nhập`, `Cập nhật & hỗ trợ`.
 - [ ] Media, OCR, Editor and all Settings sections use the same card/spacing/status-color visual language; no obvious legacy/plain page remains.
@@ -112,7 +112,7 @@ Any replacement candidate must have a different SHA-256 and must preserve the 37
 - [ ] Nested-runtime rollback staging is written under the parent protected `Temp\Update` tree, not inside user data or an arbitrary folder.
 - [ ] A valid GitHub Release payload stages, verifies PE32+ x64 and applies transactionally while preserving `Data/Tools/Temp/Cache/Downloads`.
 - [ ] Forced apply failure restores the previous runtime and the previous app can relaunch.
-- [ ] No GitHub Release or channel manifest is promoted automatically by CI.
+- [ ] Public-beta CI publishes only after exact-source automated installer evidence passes; stable release/channel promotion remains a separate explicit gate.
 
 ## Player / OCR / editor — BLOCKER
 
@@ -150,4 +150,4 @@ Any replacement candidate must have a different SHA-256 and must preserve the 37
 - [ ] Install over an existing location preserves `Data/Tools/Temp/Cache/Downloads`.
 - [ ] Uninstall removes runtime/shortcuts while protected user roots remain by default.
 
-Only after every applicable BLOCKER passes may the exact Setup EXE be marked as a release candidate or promoted.
+Only after every applicable BLOCKER passes may the exact Setup EXE be promoted to stable. Public-beta eligibility remains governed by `PUBLIC_BETA_RELEASE_POLICY.md` and requires all automated installer evidence to pass for the exact source revision.

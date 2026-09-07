@@ -169,6 +169,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          function Assert-TrueBoolean {
+            param([object]$Value, [string]$Name)
+            if ($Value -isnot [bool] -or -not $Value) { throw "$Name must be the JSON boolean true" }
+          }
           $artifactDir = (Resolve-Path "csharp/artifacts/windows-x64").Path
           $identity = Get-Content (Join-Path $artifactDir "BUILD_IDENTITY.json") -Raw | ConvertFrom-Json
           $version = ([string]$identity.informational_version).Trim()
@@ -194,15 +198,26 @@ jobs:
           if ($existingManifest.channel_ready -eq $true -and
               [string]$existingManifest.version -eq $version -and
               ([string]$existingManifest.download_url).Contains($publicUrlMarker, [StringComparison]::OrdinalIgnoreCase)) {
-            Write-Host "Public release $publicVersion for technical build $version is already published."
+            $releaseJson = gh release view $tag --repo $env:GITHUB_REPOSITORY --json targetCommitish,assets
+            if ($LASTEXITCODE -ne 0) { throw "manifest points to missing release $tag" }
+            $release = $releaseJson | ConvertFrom-Json
+            $expectedSourceRevision = ([string]$env:BILISUB_EXPECTED_SOURCE_SHA).Trim().ToLowerInvariant()
+            $expectedSourceTag = $expectedSourceRevision.Substring(0, 12)
+            $expectedSourceName = "BiliSubStudio_v${publicVersion}-source-${expectedSourceTag}.zip"
+            $assetNames = @($release.assets | ForEach-Object { [string]$_.name })
+            if (([string]$release.targetCommitish).Trim().ToLowerInvariant() -ne $expectedSourceRevision -or
+                $assetNames -notcontains $expectedSourceName) {
+              throw "technical version $version is already published from a different immutable source"
+            }
+            Write-Host "Public release $publicVersion for exact source $expectedSourceTag is already published."
             exit 0
           }
 
           $publishDir = (Resolve-Path "csharp/src/BiliSubStudio.App/bin/x64/Release/net10.0-windows10.0.26100.0/win-x64/publish").Path
           $installerStatus = Get-Content (Join-Path $artifactDir "INSTALLER_GATE_STATUS.json") -Raw | ConvertFrom-Json
-          if (-not $installerStatus.public_beta_ready -or -not $installerStatus.root_launcher_smoke -or -not $installerStatus.installer_install_smoke) {
-            throw "installer evidence is not public-beta ready"
-          }
+          Assert-TrueBoolean $installerStatus.public_beta_ready "public_beta_ready"
+          Assert-TrueBoolean $installerStatus.root_launcher_smoke "root_launcher_smoke"
+          Assert-TrueBoolean $installerStatus.installer_install_smoke "installer_install_smoke"
 
           $verifiedInstaller = Join-Path $artifactDir ([string]$installerStatus.primary_user_artifact)
           if (-not (Test-Path $verifiedInstaller -PathType Leaf)) { throw "verified installer is missing" }

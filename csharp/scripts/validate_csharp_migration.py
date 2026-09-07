@@ -152,7 +152,8 @@ require("informational_version = $informationalVersion" in verify_script,
 for marker in (
     "$version = ([string]$identity.informational_version).Trim()", "CANDIDATE_GATE_STATUS.json",
     "CANDIDATE_SHA256SUMS.txt", "SOURCE_SHA256SUMS.txt", "build_windows_installer.ps1",
-    "primary_user_artifact", "INSTALLER_STARTUP_SMOKE_LOG.txt", "installer_install_smoke = $true",
+    "primary_user_artifact", "INSTALLER_STARTUP_SMOKE_LOG.txt",
+    "installer_install_smoke = $installerStatus.installer_install_smoke", "Assert-TrueBoolean",
 ):
     require(marker in package_script, f"Windows beta packaging gate missing {marker}")
 require('BiliSubStudio_v$version-source-$sourceTag.zip' in package_script,
@@ -162,7 +163,8 @@ for marker in (
     "$version = ([string]$identity.informational_version).Trim()", "Assert-Pe32PlusX64",
     "BiliSubStudio_Setup_v${version}_${sourceTag}_x64", "INSTALLER_GATE_STATUS.json",
     'requires_admin = $false', "root_launcher_smoke = $rootLauncherSmoke",
-    "installer_install_smoke = $installerInstallSmoke", "BiliSub Studio Custom Location\\BiliSub Studio",
+    "installer_install_smoke = $installerInstallSmoke", "$smokeContainer",
+    "public_beta_ready = $publicBetaReady",
 ):
     require(marker in installer_script, f"one-file installer gate missing {marker}")
 

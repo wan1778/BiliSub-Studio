@@ -1,5 +1,9 @@
 # C# P5 installer-ready source checkpoint
 
+> Historical beta.12 checkpoint. Its no-beta-before-field-QA rule was
+> superseded by `PUBLIC_BETA_RELEASE_POLICY.md`; stable promotion still requires
+> the current Windows field checklist.
+
 Checkpoint: `CSharp-P5-InstallerReady`  
 Date: 2026-08-22 (Asia/Ho_Chi_Minh)
 

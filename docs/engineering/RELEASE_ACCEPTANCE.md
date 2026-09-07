@@ -1,6 +1,11 @@
 # BiliSub Studio Native Windows Release Acceptance
 
-Google Drive is the public beta channel. A candidate may be promoted only after the exact source/binary pair passes the automated matrix and the Windows-required field checks.
+> Historical Go-era acceptance document. Current C# beta/stable policy is
+> `docs/migration/PUBLIC_BETA_RELEASE_POLICY.md`; current update hosting is
+> `docs/migration/GITHUB_UPDATE_CHANNEL.md`. Do not use the rules below to gate
+> the C# release pipeline.
+
+Google Drive was the historical public beta channel. The matrix below describes the retired Go implementation.
 
 ## Status vocabulary
 

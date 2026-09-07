@@ -14,6 +14,8 @@ def require(condition: bool, message: str) -> None:
 
 inno = read("csharp/installer/BiliSubStudio.iss")
 installer = read("csharp/scripts/build_windows_installer.ps1")
+package = read("csharp/scripts/package_windows_candidate.ps1")
+workflow = read(".github/workflows/csharp-p5-windows-x64-installer.yml")
 paths = read("csharp/src/BiliSubStudio.Core/Configuration/AppPaths.cs")
 updater = read("csharp/src/BiliSubStudio.Core/Maintenance/UpdateService.cs")
 launcher = read("csharp/src/BiliSubStudio.Launcher/Program.cs")
@@ -55,5 +57,30 @@ require("root_launcher_smoke = $rootLauncherSmoke" in installer, "installer evid
 require("user-file-not-owned-by-runtime.keep" in installer and "DO NOT DELETE" in installer, "migration smoke must prove unknown root files survive")
 require("Assert-ChecksumFile $installedRuntime $installedSums" in installer, "installed Runtime must match the verified publish checksum inventory")
 require("-p:PublishAot=true" in installer, "packaging must build the root launcher as a small native-AOT executable")
+require("GITHUB_ACTIONS" not in installer, "local packaging must not skip the installer smoke outside CI")
+require("$workTempRoot" in installer and "$smokeContainer" in installer,
+        "installer smoke must use an isolated temporary root")
+require("try {" in installer and "finally {" in installer
+        and "Remove-Item $smokeContainer -Recurse -Force" in installer,
+        "installer smoke and launcher staging must clean up through finally")
+require('Join-Path $smokeContainer "installed-startup-smoke.txt"' in installer
+        and '(Get-Content $smokeSentinel -Raw).Trim() -ne "PASS"' in installer,
+        "installer startup smoke needs a per-run sentinel with PASS content")
+require("public_beta_ready = $publicBetaReady" in installer,
+        "installer evidence must derive readiness from completed smoke flags")
+for field in ("public_beta_ready", "installer_install_smoke", "root_launcher_smoke",
+              "legacy_flat_runtime_migration_smoke"):
+    require(f"Assert-TrueBoolean $installerStatus.{field}" in package,
+            f"candidate package fail-closed check missing: {field}")
+require("$Value -isnot [bool] -or -not $Value" in package,
+        "candidate package must reject string truthiness in JSON evidence")
+require("installer_install_smoke = $installerStatus.installer_install_smoke" in package,
+        "candidate evidence must copy the actual installer smoke result")
+require("technical version $version is already published from a different immutable source" in workflow
+        and "expectedSourceName" in workflow and "targetCommitish" in workflow,
+        "public release idempotence must verify exact immutable source identity")
+for field in ("public_beta_ready", "installer_install_smoke", "root_launcher_smoke"):
+    require(f"Assert-TrueBoolean $installerStatus.{field}" in workflow,
+            f"publication workflow strict boolean check missing: {field}")
 
 print("PASS: root launcher + tidy Runtime/Uninstall installer / legacy migration / protected-data / updater-target contracts")

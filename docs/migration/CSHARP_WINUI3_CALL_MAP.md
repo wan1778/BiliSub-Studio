@@ -19,8 +19,8 @@ App.OnLaunched
           -> one JobManager / ToolManager / ProcessRunner / HttpClient
           -> Settings, Auth, Media, Video, Subtitle, Hardware, OCR, Editor, Update, Report owners
       -> JobManager.AttachLog(ApplicationLog)
-      -> four routed native WinUI destinations
-           Tải media / OCR phụ đề / Chỉnh video / Cài đặt
+      -> five routed native WinUI destinations
+           Tải media / OCR phụ đề / Chỉnh video / Timeline / Cài đặt
       -> SettingsPage embeds four internal sections
            Chung / Hiệu năng / Đăng nhập / Cập nhật & hỗ trợ
       -> one shell-owned global diagnostic drawer shared by every routed destination
@@ -57,7 +57,7 @@ BiliSub Studio\
   Downloads\      legacy/default protected download root
 ```
 
-Start Menu, desktop shortcut, uninstall display icon and post-install launch point to `Runtime\BiliSubStudio.exe`. `AppPaths.FromExecutableDirectory` recognizes the exact `Runtime` directory name and resolves the parent as the persistent app root, so `Data/Tools/Temp/Cache/Downloads` never move inside the runtime folder.
+Start Menu, desktop shortcut, uninstall display icon and post-install launch point to the root `BiliSubStudio.exe` launcher, which NativeAOT-launches `Runtime\BiliSubStudio.exe` in process. `AppPaths.FromExecutableDirectory` recognizes the exact `Runtime` directory name and resolves the parent as the persistent app root, so `Data/Tools/Temp/Cache/Downloads` never move inside the runtime folder.
 
 Installer upgrade from the previous flat layout is checksum-owned: if root `BiliSubStudio.exe` plus root `SHA256SUMS.txt` exist, Inno removes only runtime files named by that verified inventory, then collapses empty runtime directories before installing the new publish under `Runtime\`. The migration explicitly does not delete unknown root files and never deletes `Data/Tools/Temp/Cache/Downloads`.
 
@@ -493,7 +493,7 @@ App close after prepared update
 
 The update transaction therefore replaces implementation/runtime bytes only. Persistent parent `Data/Tools/Temp/Cache/Downloads` are outside the update target in the installed layout.
 
-Channel publication policy is documented in `docs/migration/GITHUB_UPDATE_CHANNEL.md`. During field QA both repository manifests remain `channel_ready=false`; no GitHub Release is created automatically.
+Channel publication policy is documented in `docs/migration/GITHUB_UPDATE_CHANNEL.md` and `docs/migration/PUBLIC_BETA_RELEASE_POLICY.md`. Per the public-beta policy, an exact public beta may publish after every automated Windows/build/installer gate passes, even while field QA remains open, and the workflow enforces that idempotence: re-running on a published `tag` reuses the same source revision and source archive. Stable promotion is forbidden until real-machine QA is complete.
 
 ## Publish, installer and startup gates
 
@@ -511,10 +511,10 @@ verify.ps1
   -> self-contained win-x64 publish
   -> XBF + PRI validation
   -> exact published EXE startup sentinel
-  -> routed-page layout smoke at 800x600 / 1000x700 / 1500x900
-       -> Tải media / OCR / Editor / Settings
-       -> Settings internal Chung / Hiệu năng / Đăng nhập / Cập nhật & hỗ trợ
-       -> global log drawer open / closed
+-> routed-page layout smoke at 800x600 / 1000x700 / 1500x900
+        -> Tải media / OCR / Editor / Timeline / Settings
+        -> Settings internal Chung / Hiệu năng / Đăng nhập / Cập nhật & hỗ trợ
+        -> global log drawer open / closed
 
 workflow pre-gates
   -> verify_media_bundle_contract.py

@@ -16,7 +16,7 @@ Classic Editor modifications for Timeline: NONE (V2-only files plus test/verifie
 
 - Build Timeline Editor V2 separately.
 - Keep the classic Editor working and available.
-- Merge V2 into the normal Edit tab only after automated parity, Windows field verification and user approval.
+- Timeline V2 is promoted as its own normal navigation entry after automated parity and user approval; the classic Editor remains the default fallback.
 - Use the immutable objectives and gates in `MASTER_PLAN.md`.
 - Use accepted architecture decisions in `DECISIONS.md`.
 
@@ -730,7 +730,7 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
 
 - None for Timeline V2. All G0-G20 gates are verified. PDEC-001/002/003/004 are resolved
   (DEC-029 through DEC-032). Field contracts need FFmpeg/FFprobe on PATH;
-  installer packaging needs Inno Setup 7.
+  stable promotion still needs the real-machine field checklist.
 - Any future restore or migration experiment must use a separate test root and
   re-verify `BACKUP_PROCEDURE.md` first.
 
@@ -758,7 +758,8 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
 
 Program complete through G20: all MASTER_PLAN section-1 product goals and
 section-13 performance targets are implemented and verified. Keep the classic
-Editor default intact; installer packaging still requires Inno Setup 7.
+Editor default intact; automated installer packaging is the next gate, while
+stable promotion still requires the real-machine field checklist.
 
 ## Required resume command
 

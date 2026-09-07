@@ -38,6 +38,18 @@ function Assert-ChecksumFile {
     }
 }
 
+function Assert-TrueBoolean {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$Value,
+        [Parameter(Mandatory = $true)]
+        [string]$Name
+    )
+    if ($Value -isnot [bool] -or -not $Value) {
+        throw "$Name must be the JSON boolean true"
+    }
+}
+
 if ([System.Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
     throw "Windows candidate packaging must run after the Windows WinUI publish gate"
 }
@@ -135,6 +147,10 @@ if (-not (Test-Path $installerStatusPath -PathType Leaf) -or
     throw "one-file installer evidence is missing"
 }
 $installerStatus = Get-Content $installerStatusPath -Raw | ConvertFrom-Json
+Assert-TrueBoolean $installerStatus.public_beta_ready "public_beta_ready"
+Assert-TrueBoolean $installerStatus.installer_install_smoke "installer_install_smoke"
+Assert-TrueBoolean $installerStatus.root_launcher_smoke "root_launcher_smoke"
+Assert-TrueBoolean $installerStatus.legacy_flat_runtime_migration_smoke "legacy_flat_runtime_migration_smoke"
 $installerName = [string]$installerStatus.primary_user_artifact
 if ([string]::IsNullOrWhiteSpace($installerName) -or $installerName -notlike "BiliSubStudio_Setup_v$version`_$($sourceTag)_x64.exe") {
     throw "installer artifact name does not identify the exact version/source revision: $installerName"
@@ -168,14 +184,14 @@ $gateStatus = [ordered]@{
     source_archive_sha256 = $sourceArchiveHash
     executable = "BiliSubStudio.exe"
     executable_sha256 = $identity.exe_sha256
-    winui_startup_smoke = [bool]$identity.winui_startup_smoke
+    winui_startup_smoke = $identity.winui_startup_smoke
     startup_smoke_log = $identity.startup_smoke_log
     candidate_archive = $candidateArchiveName
     candidate_archive_sha256 = $candidateArchiveHash
     primary_user_artifact = $installerName
     installer_sha256 = $installerHash
     installer_status = "installer_built_field_qa_pending"
-    installer_install_smoke = $true
+    installer_install_smoke = $installerStatus.installer_install_smoke
     installer_startup_smoke_log = $installerSmokeLogName
 }
 $gateStatus | ConvertTo-Json -Depth 4 | Set-Content $gateStatusPath -Encoding UTF8

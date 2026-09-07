@@ -34,6 +34,6 @@ The Windows workflow compiles and tests the C# solution, verifies WinUI startup/
 
 ## Public beta
 
-The active public beta channel is `4.0.0-beta.12-csharp-p5`. The installed root exposes `BiliSubStudio.exe`; the full self-contained runtime lives under `Runtime\`, and user/app data roots remain separate.
+The active public beta channel is defined by `update/beta.json`. The installed root exposes `BiliSubStudio.exe`; the full self-contained runtime lives under `Runtime\`, and user/app data roots remain separate.
 
 See `ARCHITECTURE.md`, `BUILD.md`, `docs/migration/CSHARP_WINUI3_CALL_MAP.md` and `docs/migration/PUBLIC_BETA_RELEASE_POLICY.md` for current engineering and release contracts.
