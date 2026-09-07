@@ -11,26 +11,6 @@ namespace BiliSubStudio.Core.Timeline;
 // explicitly instead of being silently dropped, until their graphs are
 // ported. The caller owns processes (one OwnedProcessGroup per job) and
 // atomic promotion; every child goes through ProcessRunner with the group.
-public static class TimelineRenderCapability
-{
-    public static void EnsureVideoAudioOnly(TimelineRenderPlan plan)
-    {
-        ArgumentNullException.ThrowIfNull(plan);
-        if (plan.Items.Count != 0)
-            throw new InvalidOperationException(
-                "Timeline FFmpeg mux chưa hỗ trợ clip item/effect; plan phải chỉ có video và source audio.");
-        if (plan.SubtitleCues.Count != 0)
-            throw new InvalidOperationException(
-                "Timeline FFmpeg mux chưa hỗ trợ subtitle cue; plan phải chỉ có video và source audio.");
-        if (plan.Audio.VoiceCues.Count != 0)
-            throw new InvalidOperationException(
-                "Timeline FFmpeg mux chưa hỗ trợ voice cue; plan phải chỉ có video và source audio.");
-        if (plan.Audio.Music is not null)
-            throw new InvalidOperationException(
-                "Timeline FFmpeg mux chưa hỗ trợ music; plan phải chỉ có video và source audio.");
-    }
-}
-
 public sealed record TimelineMuxExpectation(
     int Width,
     int Height,
@@ -58,6 +38,24 @@ public static class TimelineMuxValidation
         return Math.Max(checked(4 * planDriftUs), Math.Max((long)Math.Ceiling(frameUs), 60_000));
     }
 
+    // Concat-timeline expectation: durations sum over joined clips (clip gaps
+    // collapse in the mux), and audio presence follows clip sources only.
+    // Voice/music audibility belongs to the final mix expectation instead.
+    public static bool HasAudibleSourceAudio(TimelineRenderPlan plan)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        return plan.Audio.SourceAudio
+            .Any(source => source.HasSourceStream && source.Gain > 0);
+    }
+
+    public static long ConcatDurationUs(TimelineRenderPlan plan)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        return plan.Clips
+            .OrderBy(clip => clip.SequenceStartUs)
+            .Sum(clip => clip.SequenceDurationUs);
+    }
+
     public static TimelineMuxExpectation BuildExpectation(TimelineRenderPlan plan)
     {
         ArgumentNullException.ThrowIfNull(plan);
@@ -66,8 +64,8 @@ public static class TimelineMuxValidation
             plan.OutputWidth,
             plan.OutputHeight,
             plan.OutputFrameRate,
-            plan.Audio.HasAudibleAudio,
-            plan.TotalDurationUs,
+            HasAudibleSourceAudio(plan),
+            ConcatDurationUs(plan),
             FieldDriftToleranceUs(plan.Audio.MaximumOutputDriftUs, plan.OutputFrameRate));
     }
 
@@ -189,11 +187,11 @@ public static class TimelineMuxValidation
 public static class TimelineFfmpegArguments
 {
     public static IReadOnlyList<string> BuildSegment(
-        TimelineRenderSegment segment, string renderingPath)
+        TimelineRenderSegment segment, string renderingPath, string? assPath = null)
     {
         ArgumentNullException.ThrowIfNull(segment);
         ArgumentException.ThrowIfNullOrWhiteSpace(renderingPath);
-        TimelineRenderCapability.EnsureVideoAudioOnly(segment.Plan);
+        TimelineRenderCapability.EnsureMuxSupported(segment.Plan);
         var plan = segment.Plan;
         plan.ValidateOutputGeometry();
         var sourceDurationUs = checked(segment.Clip.SourceOutUs - segment.Clip.SourceInUs);
@@ -205,7 +203,10 @@ public static class TimelineFfmpegArguments
         if (!double.IsFinite(rate) || rate <= 0)
             throw new InvalidDataException("Timeline segment PlaybackRate không hợp lệ.");
 
-        var audibleOutput = plan.Audio.HasAudibleAudio;
+        // Segment audio layout follows clip sources only, so every segment of
+        // one export carries identical streams for the concat demuxer. Voice
+        // cues and global music join later in the final mix pass.
+        var audibleOutput = TimelineMuxValidation.HasAudibleSourceAudio(plan);
         var audibleClip = segment.SourceAudio.HasSourceStream && segment.SourceAudio.Gain > 0;
         var arguments = new List<string>
         {
@@ -220,12 +221,19 @@ public static class TimelineFfmpegArguments
         }
         // Windowing stays inside the filtergraph (trim/atrim): output -ss/-t
         // cannot bound an infinite lavfi silence input, which previously left
-        // a full-window audio tail after atempo rate conversion.
-        var videoFilter =
-            $"[0:v]trim=start={startSeconds}:duration={durationSeconds}," +
+        // a full-window audio tail after atempo rate conversion. Clip effects
+        // and subtitle burns compose ahead of trim in source coordinates, so
+        // enable windows and ASS timestamps stay exact downstream.
+        var composed = TimelineEffectGraph.BuildComposedVideoFilter(segment, assPath);
+        var normalized =
+            $"trim=start={startSeconds}:duration={durationSeconds}," +
             $"setpts=(PTS-STARTPTS)/{FormatNumber(rate)}[sv];" +
             $"[sv]scale={plan.OutputWidth}:{plan.OutputHeight}," +
             $"setsar=1,fps={FormatNumber(plan.OutputFrameRate)},format=yuv420p[vout]";
+        // The classic body already opens with its own [0:v] input label.
+        var videoFilter = composed is null
+            ? $"[0:v]{normalized}"
+            : $"{composed}[fx];[fx]{normalized}";
         string audioFilter = string.Empty;
         if (audibleOutput)
         {
@@ -318,7 +326,7 @@ public sealed class TimelineFfmpegSegmentRenderer : ITimelineExportSegmentRender
         ArgumentNullException.ThrowIfNull(segment);
         ArgumentException.ThrowIfNullOrWhiteSpace(renderingPath);
         ArgumentNullException.ThrowIfNull(processes);
-        var arguments = TimelineFfmpegArguments.BuildSegment(segment, renderingPath);
+        var arguments = TimelineFfmpegArguments.BuildSegment(segment, renderingPath, segment.AssPath);
         var result = await _processes.RunAsync(
             _ffmpeg, arguments, cancellationToken, owner: processes).ConfigureAwait(false);
         if (result.ExitCode != 0)

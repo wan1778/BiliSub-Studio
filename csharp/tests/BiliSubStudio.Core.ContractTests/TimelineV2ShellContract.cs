@@ -62,7 +62,8 @@ internal static class TimelineV2ShellContract
                 AppPaths.FromRoot(testRoot),
                 new TimelineAudioContractFixture.NullSegmentRenderer(),
                 new TimelineExportConcatList(AppPaths.FromRoot(testRoot)),
-                new TimelineAudioContractFixture.NullConcatenator());
+                new TimelineAudioContractFixture.NullConcatenator(),
+                new TimelineAudioContractFixture.NullFinalMixer());
             var previewText = await preview.DescribeAsync(plan, CancellationToken.None);
             var exportText = await export.DescribeAsync(plan, CancellationToken.None);
             Check(previewText.Contains(created.Id, StringComparison.Ordinal)

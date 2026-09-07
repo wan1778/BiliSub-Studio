@@ -36,7 +36,8 @@ public sealed record TimelineRenderSegment(
     TimelineResolvedAudioPlan AudioPlan,
     TimelineRenderPlan Plan,
     long SequenceStartUs,
-    long DurationUs);
+    long DurationUs,
+    string? AssPath = null);
 
 public sealed class TimelineExportConcatList
 {
@@ -182,6 +183,7 @@ public sealed class TimelineExportService
     private readonly TimelineExportConcatList _concatList;
     private readonly ITimelineExportSegmentRenderer _renderer;
     private readonly ITimelineExportConcatenator _concatenator;
+    private readonly ITimelineFinalMixer _mixer;
     private readonly string _exportDirectory;
     private readonly string _exportPrefix;
 
@@ -189,15 +191,18 @@ public sealed class TimelineExportService
         AppPaths paths,
         ITimelineExportSegmentRenderer renderer,
         TimelineExportConcatList concatList,
-        ITimelineExportConcatenator concatenator)
+        ITimelineExportConcatenator concatenator,
+        ITimelineFinalMixer mixer)
     {
         ArgumentNullException.ThrowIfNull(paths);
         ArgumentNullException.ThrowIfNull(renderer);
         ArgumentNullException.ThrowIfNull(concatList);
         ArgumentNullException.ThrowIfNull(concatenator);
+        ArgumentNullException.ThrowIfNull(mixer);
         _renderer = renderer;
         _concatList = concatList;
         _concatenator = concatenator;
+        _mixer = mixer;
         _exportDirectory = Path.GetFullPath(Path.Combine(
             paths.Temp,
             TimelineProjectStoreV2.TestRootFolderName,
@@ -282,6 +287,24 @@ public sealed class TimelineExportService
                 var segment = new TimelineRenderSegment(
                     index, clip, asset, source, plan.Audio, plan,
                     clip.SequenceStartUs, clip.SequenceDurationUs);
+                var burn = TimelineEffectGraph.MapBurnForSegment(segment);
+                string? assPath = null;
+                if (burn is not null)
+                {
+                    var assName = TimelineExportConcatList.ManagedSegmentPrefix
+                        + jobId + "-"
+                        + index.ToString("D6", CultureInfo.InvariantCulture)
+                        + "-"
+                        + Guid.NewGuid().ToString("N")
+                        + ".ass";
+                    assPath = EnsureManagedPath(Path.Combine(_exportDirectory, assName));
+                    await File.WriteAllTextAsync(
+                        assPath,
+                        TimelineEffectGraph.BuildAssText(
+                            burn, plan.OutputWidth, plan.OutputHeight),
+                        token).ConfigureAwait(false);
+                    segment = segment with { AssPath = assPath };
+                }
                 var ratio = orderedClips.Length == 1
                     ? 1d
                     : index / (double)(orderedClips.Length - 1);
@@ -320,6 +343,9 @@ public sealed class TimelineExportService
                 {
                     await DeleteManagedFileAsync(renderingPath, CancellationToken.None)
                         .ConfigureAwait(false);
+                    if (assPath is not null)
+                        await DeleteManagedFileAsync(assPath, CancellationToken.None)
+                            .ConfigureAwait(false);
                     if (!published)
                         await DeleteManagedFileAsync(segmentFinalPath, CancellationToken.None)
                             .ConfigureAwait(false);
@@ -334,6 +360,14 @@ public sealed class TimelineExportService
                 + ".rendering.mp4";
             var concatRenderingPath = EnsureManagedPath(
                 Path.Combine(_exportDirectory, concatRenderingName));
+            var needsFinalMix = plan.Audio.VoiceCues.Count > 0 || plan.Audio.Music is not null;
+            var mixRenderingName = TimelineExportConcatList.ManagedSegmentPrefix
+                + jobId + "-mix-"
+                + Guid.NewGuid().ToString("N")
+                + ".rendering.mp4";
+            var mixRenderingPath = EnsureManagedPath(
+                Path.Combine(_exportDirectory, mixRenderingName));
+            var concatDurationUs = TimelineMuxValidation.ConcatDurationUs(plan);
             try
             {
                 job.Set("finalizing", 97, "Đang mux output V2...");
@@ -353,7 +387,25 @@ public sealed class TimelineExportService
                     || new FileInfo(concatRenderingPath).Length == 0)
                     throw new InvalidDataException(
                         "Timeline export concatenator không tạo output hợp lệ.");
-                File.Move(concatRenderingPath, finalOutputPath);
+                if (needsFinalMix)
+                {
+                    job.Set("finalizing", 98, "Đang mix voice/music V2...");
+                    await _mixer.MixFinalAsync(
+                        concatRenderingPath, plan, mixRenderingPath, processes, token)
+                        .ConfigureAwait(false);
+                    if (processes.ActiveCount != 0)
+                        throw new InvalidOperationException(
+                            "Timeline final mixer trả về khi process vẫn còn chạy.");
+                    if (!File.Exists(mixRenderingPath)
+                        || new FileInfo(mixRenderingPath).Length == 0)
+                        throw new InvalidDataException(
+                            "Timeline final mixer không tạo output hợp lệ.");
+                    File.Move(mixRenderingPath, finalOutputPath);
+                }
+                else
+                {
+                    File.Move(concatRenderingPath, finalOutputPath);
+                }
                 token.ThrowIfCancellationRequested();
                 publishedFinal = true;
                 foreach (var finished in segments)
@@ -361,11 +413,13 @@ public sealed class TimelineExportService
                         .ConfigureAwait(false);
                 job.Finish(null, "Timeline export hoàn tất.");
                 return new TimelineExportResultV2(
-                    finalOutputPath, jobId, segments.Count, plan.TotalDurationUs);
+                    finalOutputPath, jobId, segments.Count, concatDurationUs);
             }
             finally
             {
                 await DeleteManagedFileAsync(concatRenderingPath, CancellationToken.None)
+                    .ConfigureAwait(false);
+                await DeleteManagedFileAsync(mixRenderingPath, CancellationToken.None)
                     .ConfigureAwait(false);
                 await _concatList.DeleteAsync(list, CancellationToken.None)
                     .ConfigureAwait(false);

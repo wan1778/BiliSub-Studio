@@ -31,7 +31,7 @@ editor_store = EDITOR_STORE.read_text(encoding="utf-8")
 
 for token in (
     "TimelineRenderCapability",
-    "EnsureVideoAudioOnly",
+    "EnsureMuxSupported",
     "TimelineMuxExpectation",
     "TimelineMuxValidation",
     "ValidateProbe",

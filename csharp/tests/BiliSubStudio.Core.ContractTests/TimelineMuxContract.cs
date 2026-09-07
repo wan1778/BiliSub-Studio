@@ -102,59 +102,78 @@ internal static class TimelineMuxContract
     private static void CapabilityRejectsNonVideoAudioPlans()
     {
         var clean = CleanPlan().Plan;
-        TimelineRenderCapability.EnsureVideoAudioOnly(clean);
+        TimelineRenderCapability.EnsureMuxSupported(clean);
 
-        var fixture = TimelineAudioContractFixture.CreateLocalVoiceState();
-        var voiced = TimelineCompiler.Compile(
-            TimelineAudioContractFixture.Project(fixture.State, fixture.MediaAssets));
-        Throws<InvalidOperationException>(
-            () => TimelineRenderCapability.EnsureVideoAudioOnly(voiced),
-            "voice/music plan passed the video-audio-only capability gate");
-
-        var itemPlan = clean with
+        // G13 renders effects with documented payloads, subtitle/voice cues
+        // and typed music; only logos, legacy music items and opaque effect
+        // payloads stay rejected.
+        var effected = clean with
         {
             Items = [new TimelineResolvedItem(
-                TimelineItem.NewId(), TimelineItemKind.Subtitle,
-                clean.Clips[0].ClipId, 0, 1_000_000, "x.srt")],
+                TimelineItem.NewId(), TimelineItemKind.Effect,
+                clean.Clips[0].ClipId, 0, 1_000_000,
+                "blur:0.1,0.1,0.2,0.2:18")],
         };
-        Throws<InvalidOperationException>(
-            () => TimelineRenderCapability.EnsureVideoAudioOnly(itemPlan),
-            "plan with clip items passed the video-audio-only capability gate");
+        TimelineRenderCapability.EnsureMuxSupported(effected);
 
         var cue = new TimelineResolvedSubtitleCue(
             TimelineSubtitleCue.NewId(), TimelineItem.NewId(), clean.Clips[0].ClipId,
             0, 1_000_000, "text", new string('a', 64));
-        Throws<InvalidOperationException>(
-            () => TimelineRenderCapability.EnsureVideoAudioOnly(clean with { SubtitleCues = [cue] }),
-            "plan with subtitle cues passed the video-audio-only capability gate");
+        TimelineRenderCapability.EnsureMuxSupported(clean with { SubtitleCues = [cue] });
 
         var voice = new TimelineResolvedVoiceCue(
             TimelineVoiceCue.NewId(), cue.CueId, TimelineAudioAsset.NewId(),
             "C:/audio/voice.flac", new string('b', 64),
             0, 1_000_000, 0, 22_050, 22_050, 1, 1);
-        Throws<InvalidOperationException>(
-            () => TimelineRenderCapability.EnsureVideoAudioOnly(clean with
-            {
-                Audio = clean.Audio with { VoiceCues = [voice] },
-            }),
-            "plan with voice cues passed the video-audio-only capability gate");
+        TimelineRenderCapability.EnsureMuxSupported(clean with
+        {
+            Audio = clean.Audio with { VoiceCues = [voice] },
+        });
 
         var music = new TimelineResolvedMusic(
             TimelineMusicTrack.NewId(), TimelineAudioAsset.NewId(), "C:/audio/music.flac",
             new string('c', 64), 0, 1_000_000, 0, 48_000, 48_000, 2, 1, true);
+        TimelineRenderCapability.EnsureMuxSupported(clean with
+        {
+            Audio = clean.Audio with { Music = music },
+        });
+
+        var logo = clean with
+        {
+            Items = [new TimelineResolvedItem(
+                TimelineItem.NewId(), TimelineItemKind.Logo,
+                clean.Clips[0].ClipId, 0, 1_000_000, "logo.png")],
+        };
         Throws<InvalidOperationException>(
-            () => TimelineRenderCapability.EnsureVideoAudioOnly(clean with
-            {
-                Audio = clean.Audio with { Music = music },
-            }),
-            "plan with music passed the video-audio-only capability gate");
+            () => TimelineRenderCapability.EnsureMuxSupported(logo),
+            "plan with a logo passed the mux capability gate");
+
+        var legacyMusic = clean with
+        {
+            Items = [new TimelineResolvedItem(
+                TimelineItem.NewId(), TimelineItemKind.Music,
+                null, 0, 1_000_000, "C:/audio/legacy.mp3")],
+        };
+        Throws<InvalidOperationException>(
+            () => TimelineRenderCapability.EnsureMuxSupported(legacyMusic),
+            "plan with a legacy music item passed the mux capability gate");
+
+        var opaqueEffect = clean with
+        {
+            Items = [new TimelineResolvedItem(
+                TimelineItem.NewId(), TimelineItemKind.Effect,
+                clean.Clips[0].ClipId, 0, 1_000_000, "blur")],
+        };
+        Throws<InvalidOperationException>(
+            () => TimelineRenderCapability.EnsureMuxSupported(opaqueEffect),
+            "plan with an opaque effect payload passed the mux capability gate");
 
         Throws<InvalidOperationException>(
             () => TimelineFfmpegArguments.BuildSegment(
-                new TimelineRenderSegment(0, voiced.Clips[0], fixture.MediaAssets[0],
-                    voiced.Audio.SourceAudio[0], voiced.Audio, voiced, 0, 1_000_000),
+                new TimelineRenderSegment(0, logo.Clips[0], CleanPlan().Assets[0],
+                    logo.Audio.SourceAudio[0], logo.Audio, logo, 0, 1_000_000),
                 "C:/t/seg.rendering.mp4"),
-            "segment builder rendered a voice/music plan instead of rejecting it");
+            "segment builder rendered a logo plan instead of rejecting it");
     }
 
     private static void MuxValidationMathIsExact()
@@ -254,7 +273,8 @@ internal static class TimelineMuxContract
                 paths,
                 new TimelineFfmpegSegmentRenderer(ffmpeg),
                 new TimelineExportConcatList(paths),
-                new TimelineFfmpegConcatenator(ffmpeg, ffprobe));
+                new TimelineFfmpegConcatenator(ffmpeg, ffprobe),
+                new TimelineFfmpegFinalMixer(ffmpeg, ffprobe));
             using var jobs = new JobManager();
             var job = jobs.Create("timeline-export", cleanupAwareCancel: true);
             var exportTask = service.ExportAsync(

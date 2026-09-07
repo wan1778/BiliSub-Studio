@@ -442,4 +442,18 @@ internal static class TimelineAudioContractFixture
             return Task.CompletedTask;
         }
     }
+
+    public sealed class NullFinalMixer : ITimelineFinalMixer
+    {
+        public Task MixFinalAsync(
+            string concatPath,
+            TimelineRenderPlan plan,
+            string renderingPath,
+            BiliSubStudio.Core.Processes.OwnedProcessGroup processes,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        }
+    }
 }

@@ -123,7 +123,8 @@ internal static class TimelineExportContract
             var concatList = new TimelineExportConcatList(paths);
             var renderer = new RecordingSegmentRenderer();
             var concatenator = new RecordingConcatenator();
-            var service = new TimelineExportService(paths, renderer, concatList, concatenator);
+            var service = new TimelineExportService(
+                paths, renderer, concatList, concatenator, new RecordingFinalMixer());
             var project = BuildMixedProject();
             var plan = TimelineCompiler.Compile(project);
 
@@ -201,7 +202,8 @@ internal static class TimelineExportContract
                     throw new InvalidOperationException("simulated segment failure"),
             };
             var failingService = new TimelineExportService(
-                paths, failingRenderer, concatList, new RecordingConcatenator());
+                paths, failingRenderer, concatList,
+                new RecordingConcatenator(), new RecordingFinalMixer());
             using var failJobs = new JobManager();
             var failedJob = failJobs.Create("timeline-export", cleanupAwareCancel: true);
             var failProject = BuildMixedProject();
@@ -310,6 +312,21 @@ internal static class TimelineExportContract
             }
             writer.Flush();
             File.WriteAllBytes(renderingPath, stream.ToArray());
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class RecordingFinalMixer : ITimelineFinalMixer
+    {
+        public Task MixFinalAsync(
+            string concatPath,
+            TimelineRenderPlan plan,
+            string renderingPath,
+            OwnedProcessGroup processes,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            File.Copy(concatPath, renderingPath, overwrite: true);
             return Task.CompletedTask;
         }
     }

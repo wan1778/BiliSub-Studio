@@ -6,9 +6,9 @@ Last updated: 2026-09-07
 
 ```text
 Program status: PLANNING APPROVED
-Current gate: G12 - Mux
-Gate state: VERIFIED - real FFmpeg mux with normalized segments, ordered concat and drift validation
-Timeline implementation: STARTED (through real FFmpeg mux for video plus source audio; no Edit-tab merge, flag default off)
+Current gate: G13 - Fidelity
+Gate state: IN_PROGRESS - source and dirty-tree gates pass; clean-tree verify pending
+Timeline implementation: STARTED (through full-fidelity export; no Edit-tab merge, flag default off)
 Classic Editor modifications for Timeline: NONE (V2-only files plus test/verifier/docs)
 ```
 
@@ -462,19 +462,46 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
   source tree SHA-256
   `aa9accee485e20c63f614cfe5bd2bfab2e703cc58320490c2c5f0fea1cffe1c1`.
 
+## G13 pre-commit verification evidence (2026-09-07)
+
+- User accepted DEC-023: full-fidelity export reusing classic builders;
+  logos and legacy music stay rejected; documented effect payload encoding.
+- `TimelineEffectSpec` parses `effect:x,y,w,h:strength` strictly; opaque
+  legacy payloads reject explicitly instead of rendering wrong pixels.
+- `TimelineEffectGraph` maps clip items to source-second classic regions and
+  resolved cues to source-second burns (global cues anchor to the rendering
+  segment window); the classic graph composes ahead of trim/normalize and its
+  terminal shape is drift-checked. Two real field bugs found by contract:
+  missing output argv and doubled `[0:v]` composition prefix.
+- Voice cues (per-master `asplit` slices with delay/gain) and global music
+  join source audio in one final amix pass with video copy; concat positions
+  collapse clip gaps. Missing masters/assets fail explicitly.
+- `TimelineExportService` owns ASS sidecars, final-mix routing and temp
+  hygiene; no classic file modified.
+- Core contracts: `121/121 passed` (new `TimelineFidelityContract`: payload
+  matrix, source-time mapping, ASS text parity with classic, mix argv, gap
+  collapsing, real blur+burn+voice+music field export).
+- `verify_timeline_fidelity_contract.py` plus G2-G12 verifiers: PASS.
+- G1 frozen classic Editor contracts: `35/35 PASS`; classic Editor and
+  schema-7 store unchanged.
+- Release x64 build: 0 warnings, 0 errors; Range field regressions PASS;
+  `validate_csharp_migration.py` PASS; generated code map current.
+- Clean-tree `verify.ps1`, self-contained publish/startup smoke and final G13
+  binary/source hashes: PENDING until the G13 source is committed.
+
 ## Remaining precondition
 
-- None. All G0-G12 gates are verified; any Edit-tab merge, flag-default
-  change, or effect/subtitle/voice/music graph port needs a new user-approved
-  decision per DEC-017.
+- Commit the reviewed G13 source and run clean-tree `csharp/scripts/verify.ps1`
+  before changing the gate state to `VERIFIED`. Field contracts need
+  FFmpeg/FFprobe on PATH.
 - Any future restore or migration experiment must use a separate test root and
   re-verify `BACKUP_PROCEDURE.md` first.
-- The field mux contract needs FFmpeg/FFprobe on PATH.
 
 ## Next exact action
 
-Program complete through G12. Next work needs a new approved gate. Do not
-modify the classic Editor for Timeline work.
+Review and commit the G13 source, run the clean-tree Windows verification gate,
+then record binary/source hashes. Do not modify the classic Editor for
+Timeline work.
 
 ## Required resume command
 
