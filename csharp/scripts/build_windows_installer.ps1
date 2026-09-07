@@ -47,6 +47,13 @@ function Assert-Pe32PlusX64 {
     }
 }
 
+function Assert-TrueBoolean {
+    param([object]$Value, [string]$Name)
+    if ($Value -isnot [bool] -or -not $Value) {
+        throw "$Name must be the JSON boolean true"
+    }
+}
+
 if ([System.Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
     throw "The one-file installer must be compiled and verified on Windows"
 }
@@ -339,13 +346,6 @@ if ($null -ne $smokeError -or $cleanupErrors.Count -ne 0) {
     if ($null -ne $smokeError) { $details += $smokeError.Exception.Message }
     $details += $cleanupErrors
     throw "installer smoke/cleanup failed: $($details -join '; ')"
-}
-
-function Assert-TrueBoolean {
-    param([object]$Value, [string]$Name)
-    if ($Value -isnot [bool] -or -not $Value) {
-        throw "$Name must be the JSON boolean true"
-    }
 }
 
 $publicBetaReady = $installerInstallSmoke -and $legacyFlatMigrationSmoke -and $rootLauncherSmoke
