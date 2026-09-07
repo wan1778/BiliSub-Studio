@@ -143,6 +143,7 @@ internal static class Program
         ("timeline editing controller keeps selection, atomic undo and dirty save", TimelineEditingContract.RunAsync),
         ("timeline pointer drag proposes frame-snapped trim and one-step reorder", TimelineDragContract.RunAsync),
         ("timeline processed preview plays the current unsaved plan through the export graph", TimelinePreviewPlaybackContract.RunAsync),
+        ("timeline relink restores missing media and autosave reaps crashed writes", TimelineResilienceContract.RunAsync),
     ];
 
     private static async Task<int> Main(string[] arguments)

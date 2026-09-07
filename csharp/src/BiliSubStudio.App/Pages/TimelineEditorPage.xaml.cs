@@ -2,6 +2,7 @@ using BiliSubStudio.Core.Application;
 using BiliSubStudio.Core.Editor;
 using BiliSubStudio.Core.IO;
 using BiliSubStudio.Core.Jobs;
+using BiliSubStudio.Core.Media;
 using BiliSubStudio.Core.Timeline;
 using BiliSubStudio.App.Services;
 using Microsoft.UI.Xaml;
@@ -22,6 +23,7 @@ public sealed partial class TimelineEditorPage : Page
     private readonly TimelineEditorSession _session;
     private readonly BiliSubApplication _application;
     private readonly IFolderPickerService _folderPicker;
+    private readonly IFilePickerService? _filePicker;
     private readonly TimelineEditingController _editor;
     private IReadOnlyList<EditorProjectSummary> _classicProjects = [];
     private IReadOnlyList<TimelineProjectV2> _v2Projects = [];
@@ -35,6 +37,12 @@ public sealed partial class TimelineEditorPage : Page
         Interval = TimeSpan.FromMilliseconds(50),
     };
     private double? _timelineDragViewportX;
+    private readonly DispatcherTimer _timelineAutosaveTimer = new()
+    {
+        Interval = TimeSpan.FromSeconds(2),
+    };
+    private bool _timelineAutosavePending;
+    private bool _timelineAutosaveBusy;
 
     private const double TimelinePixelsPerSecond = 80;
     private const double TimelineTrackTop = 24;
@@ -55,12 +63,13 @@ public sealed partial class TimelineEditorPage : Page
         TimelineTrimProposal CandidateTrim,
         bool Dragged);
 
-    public TimelineEditorPage(BiliSubApplication application, IFolderPickerService folderPicker)
+    public TimelineEditorPage(BiliSubApplication application, IFolderPickerService folderPicker, IFilePickerService? filePicker = null)
     {
         ArgumentNullException.ThrowIfNull(application);
         ArgumentNullException.ThrowIfNull(folderPicker);
         _application = application;
         _folderPicker = folderPicker;
+        _filePicker = filePicker;
         _session = new TimelineEditorSession(TimelineProjectStoreV2.FromAppPaths(application.Paths));
         _editor = new TimelineEditingController(_session.Store);
         InitializeComponent();
@@ -74,6 +83,7 @@ public sealed partial class TimelineEditorPage : Page
             }
         };
         RootText.Text = "Test root: " + _session.Store.Root;
+        _timelineAutosaveTimer.Tick += TimelineAutosave_Tick;
         _ = RefreshAsync();
     }
 
@@ -386,6 +396,76 @@ public sealed partial class TimelineEditorPage : Page
         {
             _savingProject = false;
         }
+        _timelineAutosavePending = false;
+        UpdateTimelineAutosaveText();
+    }
+
+    // G19 autosave: one debounce timer mirrors the classic PROJECT-02 owner.
+    // It never runs while preview playback locks edits, while a save/open is
+    // in flight, or while the app is closing; a missed tick just stays pending.
+    private void QueueTimelineAutosave()
+    {
+        if (!_editor.HasOpenProject || !_editor.IsDirty || _timelineClosing)
+            return;
+        _timelineAutosavePending = true;
+        if (!_timelineAutosaveTimer.IsEnabled)
+            _timelineAutosaveTimer.Start();
+        UpdateTimelineAutosaveText();
+    }
+
+    private async void TimelineAutosave_Tick(object? sender, object e)
+    {
+        if (_timelineAutosaveBusy
+            || !_timelineAutosavePending
+            || !_editor.HasOpenProject
+            || !_editor.IsDirty
+            || _savingProject
+            || _openingProject
+            || TimelinePreviewLocked
+            || _timelineClosing)
+        {
+            if (!_timelineAutosavePending && _timelineAutosaveTimer.IsEnabled)
+                _timelineAutosaveTimer.Stop();
+            return;
+        }
+        _timelineAutosaveBusy = true;
+        try
+        {
+            await _editor.SaveAsync(CancellationToken.None);
+            _timelineAutosavePending = false;
+            if (_timelinePageLoaded)
+                EditStatusText.Text = "Tự động lưu project Timeline.";
+        }
+        catch
+        {
+            // Stay dirty and pending; the next tick retries and the explicit
+            // Save button surfaces the real error.
+        }
+        finally
+        {
+            _timelineAutosaveBusy = false;
+            if (!_timelineAutosavePending && _timelineAutosaveTimer.IsEnabled)
+                _timelineAutosaveTimer.Stop();
+            if (_timelinePageLoaded)
+            {
+                RefreshClips();
+                UpdateTimelineAutosaveText();
+            }
+        }
+    }
+
+    private void UpdateTimelineAutosaveText()
+    {
+        if (!_editor.HasOpenProject)
+        {
+            TimelineAutosaveText.Text = "Tự động lưu: chưa có project.";
+            return;
+        }
+        TimelineAutosaveText.Text = _timelineAutosavePending
+            ? "Tự động lưu: đang chờ ghi project..."
+            : _editor.IsDirty
+                ? "Tự động lưu: có thay đổi chưa ghi."
+                : "Tự động lưu: project đã ghi trên đĩa.";
     }
 
     private async Task<ContentDialogResult> ConfirmProjectSwitchAsync()
@@ -877,6 +957,99 @@ public sealed partial class TimelineEditorPage : Page
         EditStatusText.Text = $"{message} " +
             $"({_editor.Clips.Count} clip, undo {_editor.UndoCount}, redo {_editor.RedoCount}" +
             $"{(_editor.IsDirty ? ", chưa lưu" : ", đã lưu")}).";
+        if (_editor.IsDirty)
+            QueueTimelineAutosave();
+        else if (!_timelineAutosaveBusy)
+        {
+            _timelineAutosavePending = false;
+            UpdateTimelineAutosaveText();
+        }
+        UpdateRelinkMediaButton();
+    }
+
+    // G19 relink (kiểu Adobe): nguồn video mất khỏi đường dẫn cũ thì báo và
+    // cho user chỉ lại file. Project/asset/clip ID giữ nguyên; chỉ path +
+    // fingerprint của asset được đổi, và mọi clip vẫn trỏ cùng asset ID.
+    private async void RelinkMedia_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_editor.HasOpenProject)
+            return;
+        try
+        {
+            if (_savingProject || _openingProject || _timelineClosing || TimelinePreviewLocked)
+            {
+                EditStatusText.Text = "Hãy đợi thao tác đang chạy hoàn tất trước khi nối lại nguồn.";
+                return;
+            }
+            var missing = _editor.FindMissingMediaAssets();
+            if (missing.Count == 0)
+            {
+                EditStatusText.Text = "Tất cả nguồn video đều tìm thấy; không cần nối lại.";
+                return;
+            }
+            var target = missing[0];
+            EditStatusText.Text = $"Không tìm thấy nguồn ở: {target.Path}. Hãy chọn lại file đó ở vị trí mới.";
+            var pickedPath = _filePicker?.PickVideoAsync();
+            string? candidate = pickedPath is null ? null : await pickedPath;
+            if (string.IsNullOrWhiteSpace(candidate))
+            {
+                EditStatusText.Text = "Đã hủy nối lại nguồn; project giữ nguyên.";
+                return;
+            }
+            var normalized = EditorSourceSelection.NormalizeCandidatePath(candidate);
+            MediaPreviewInfo media;
+            try
+            {
+                media = await _application.Media.ProbeAsync(normalized, CancellationToken.None);
+            }
+            catch (Exception probeError)
+            {
+                EditStatusText.Text = "File được chọn không đọc được: " + probeError.Message;
+                return;
+            }
+            if (_savingProject || _openingProject || _timelineClosing)
+            {
+                EditStatusText.Text = "Project đang bận; hãy thử nối lại nguồn sau.";
+                return;
+            }
+            var size = new FileInfo(normalized).Length;
+            var lastWrite = new FileInfo(normalized).LastWriteTimeUtc.Ticks;
+            await _editor.RelinkMediaAssetAsync(
+                target.Id,
+                normalized,
+                media.Width,
+                media.Height,
+                media.Duration,
+                await _application.Media.ProbeHasAudioAsync(normalized, CancellationToken.None),
+                size,
+                lastWrite,
+                CancellationToken.None);
+            await RefreshAsync();
+            RestoreSelectedProject();
+            ReportEditState("Đã nối lại nguồn video: " + normalized);
+        }
+        catch (Exception error)
+        {
+            EditStatusText.Text = "Không nối được nguồn: " + error.Message;
+        }
+    }
+
+    private void UpdateRelinkMediaButton()
+    {
+        if (_filePicker is null || !_editor.HasOpenProject || _savingProject || _openingProject)
+        {
+            RelinkMediaButton.IsEnabled = false;
+            return;
+        }
+        try
+        {
+            RelinkMediaButton.IsEnabled = !TimelinePreviewLocked
+                && _editor.FindMissingMediaAssets().Count > 0;
+        }
+        catch
+        {
+            RelinkMediaButton.IsEnabled = false;
+        }
     }
 
     private static double ParseSeconds(string? text, string field)

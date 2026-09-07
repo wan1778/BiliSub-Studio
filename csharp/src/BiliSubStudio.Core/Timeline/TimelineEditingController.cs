@@ -164,6 +164,52 @@ public sealed class TimelineEditingController
         UpdateDirty();
     }
 
+    // G19 resilience. Relink is rejected while dirty so the atomic save
+    // baseline always matches the persisted file; the caller saves or discards
+    // first. Project ID and every clip ID survive (DEC-012); only the asset
+    // path/fingerprint changes.
+    public async Task RelinkMediaAssetAsync(
+        string assetId,
+        string newPath,
+        int width,
+        int height,
+        double durationSeconds,
+        bool hasAudio,
+        long size,
+        long lastWriteUtcTicks,
+        CancellationToken cancellationToken)
+    {
+        if (_dirty)
+            throw new InvalidOperationException(
+                "Project Timeline có thay đổi chưa lưu; hãy lưu hoặc bỏ thay đổi trước khi nối lại nguồn.");
+        var project = Project;
+        var revision = _revision;
+        var relinked = TimelineMediaRelink.RelinkMediaAsset(
+            project, assetId, newPath, width, height, durationSeconds, hasAudio, size, lastWriteUtcTicks);
+        await _store.SaveAsync(relinked, cancellationToken).ConfigureAwait(false);
+        if (_revision != revision
+            || !string.Equals(_project?.Id, project.Id, StringComparison.Ordinal))
+            throw new InvalidOperationException(
+                "Project Timeline đã thay đổi trong lúc nối lại nguồn; thao tác đã bị hủy.");
+        var state = ToAudioState(relinked);
+        _project = relinked;
+        _state = state;
+        _savedState = TimelineAudioEditState.Create(
+            state.Timeline,
+            state.SubtitleCues,
+            state.AudioAssets,
+            state.SourceAudio,
+            state.VoiceCues,
+            state.Music);
+        _dirty = false;
+    }
+
+    public IReadOnlyList<TimelineMediaAsset> FindMissingMediaAssets()
+    {
+        var project = Project;
+        return TimelineMediaRelink.FindMissingMediaAssets(project);
+    }
+
     private void Apply(Func<TimelineAudioEditState, TimelineAudioEditState> operation)
     {
         ArgumentNullException.ThrowIfNull(operation);

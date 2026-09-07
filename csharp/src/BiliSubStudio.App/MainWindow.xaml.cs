@@ -111,7 +111,7 @@ public sealed partial class MainWindow : Window
         // the normal navigation for every user. The classic pages keep their
         // order and the default selection stays on video. The internal flag
         // remains only as an emergency kill-switch hiding the entry again.
-        _pages["timelinev2"] = new TimelineEditorPage(_application, folderPicker);
+        _pages["timelinev2"] = new TimelineEditorPage(_application, folderPicker, filePicker);
         if (TimelineFeatureFlags.IsSuppressed)
         {
             var timelineItem = Navigation.MenuItems

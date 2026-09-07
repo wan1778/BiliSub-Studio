@@ -6,9 +6,9 @@ Last updated: 2026-09-07
 
 ```text
 Program status: PLANNING APPROVED
-Current gate: G18 - Preview playback
-Gate state: VERIFIED - processed proxy of the unsaved plan plays and tears down cleanly
-Timeline implementation: STARTED (through direct clip drag and processed playback)
+Current gate: G19 - Resilience
+Gate state: VERIFIED - V2 relink restores missing media; crash-safe autosave owns atomic writes
+Timeline implementation: STARTED (through direct clip drag, processed playback, relink and autosave)
 Classic Editor modifications for Timeline: NONE (V2-only files plus test/verifier/docs)
 ```
 
@@ -649,6 +649,34 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
   source tree SHA-256
   `4595be7018c75767d12e66b18caab95a0d44875a59d9920c96a9895a8347f95a`.
 
+## G19 verification evidence (2026-09-07)
+
+- User approved G19 scope (DEC-033): closes the last two open MASTER_PLAN
+  section-1 product goals for V2 (`TimelineMissingAssetRelink`,
+  `TimelineAutosaveCrashRecovery`).
+- `TimelineMediaRelink` (pure, no IO):
+  - `FindMissingMediaAssets` reports stored paths that no longer exist.
+  - `RelinkMediaAsset` keeps project/asset/clip identity (DEC-012) and swaps
+    only the asset path/fingerprint after geometry+duration validation
+    (±0.5 s tolerance; size/mtime never compared, matching classic policy).
+  - Wrong geometry/duration/unknown asset ID rejected explicitly.
+- `TimelineEditingController.RelinkMediaAssetAsync` rejects while dirty, saves
+  through the V2 store, re-checks project id/revision after the await, then
+  rewrites audio state and clears the saved baseline.
+- `TimelineProjectStoreV2.ListAsync` reaps abandoned `*.json.tmp-*` writes
+  (crash between FileStream create and File.Move); unrelated files survive.
+- Page wiring: one 2 s `DispatcherTimer` autosave (PROJECT-02-style debounce
+  owner) gated on save/open/preview-locked/closing, with pending-retry
+  semantics; explicit Save and drag/preview flows both queue it. A
+  "Nối lại nguồn" button appears only when a stored asset is missing and runs
+  pick→probe→relink through `IFilePickerService` + `MediaPreviewService`.
+- Core contracts: `126/126 passed` (detection, identity-preserving relink,
+  wrong-file rejection, dirty rejection, temp reap).
+- `verify_timeline_resilience_contract.py` plus G2-G18 verifiers: PASS.
+- G1 frozen classic Editor contracts: `35/35 PASS` (10/10 autosave/project
+  rerun included); Range/migration/code-map: PASS.
+- Clean-tree `verify.ps1` and final G19 hashes: PENDING until source commit.
+
 ## G18 final evidence (2026-09-07)
 
 - Clean-tree `verify.ps1` on `5b46d31`: PASS on first attempt (contracts
@@ -661,7 +689,7 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
 
 ## Remaining precondition
 
-- None. All G0-G18 gates are verified. PDEC-001/002/003/004 are resolved
+- None. All G0-G19 gates are verified. PDEC-001/002/003/004 are resolved
   (DEC-029 through DEC-032). Field contracts need FFmpeg/FFprobe on PATH;
   installer packaging needs Inno Setup 7.
 - Any future restore or migration experiment must use a separate test root and
@@ -689,8 +717,9 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
 
 ## Next exact action
 
-Start G18 preview playback using the existing G9 revisioned preview lifecycle;
-keep the classic Editor default intact.
+Program complete through G19 (all MASTER_PLAN section-1 product goals for V2
+now implemented; performance/virtualization targets from section 13 remain a
+separate future gate). Keep the classic Editor default intact.
 
 ## Required resume command
 

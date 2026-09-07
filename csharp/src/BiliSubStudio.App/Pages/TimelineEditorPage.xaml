@@ -99,7 +99,10 @@
                 <Button x:Name="UndoButton" Click="Undo_Click" Content="Undo" />
                 <Button x:Name="RedoButton" Click="Redo_Click" Content="Redo" />
                 <Button x:Name="SaveProjectButton" Click="SaveProject_Click" Content="Lưu" />
+                <Button x:Name="RelinkMediaButton" Click="RelinkMedia_Click" Content="Nối lại nguồn" IsEnabled="False" />
             </StackPanel>
+            <TextBlock x:Name="TimelineAutosaveText" FontSize="11" Opacity="0.7" TextWrapping="Wrap"
+                       Text="Tự động lưu: chưa có project." />
             <TextBlock x:Name="EditStatusText" TextWrapping="Wrap" Text="" />
         </StackPanel>
     </ScrollViewer>

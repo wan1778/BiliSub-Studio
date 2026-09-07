@@ -91,6 +91,7 @@ public sealed class TimelineProjectStoreV2
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            CleanupAbandonedTemporaries();
             if (!Directory.Exists(_root)) return [];
             var projects = new List<TimelineProjectV2>();
             foreach (var path in Directory.EnumerateFiles(_root, "*.json", SearchOption.TopDirectoryOnly))
@@ -132,6 +133,18 @@ public sealed class TimelineProjectStoreV2
         }
         if (segments.Length > 0 && string.Equals(segments[^1], "Projects", StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Timeline V2 không được dùng thư mục production Projects.");
+    }
+
+    // G19 crash recovery: a crash between FileStream create and File.Move
+    // leaves one atomic-write temporary behind. ListAsync runs after every
+    // restart, so abandoned temporaries (never a live write) are reaped here.
+    private void CleanupAbandonedTemporaries()
+    {
+        if (!Directory.Exists(_root)) return;
+        foreach (var path in Directory.EnumerateFiles(_root, "*.json.tmp-*", SearchOption.TopDirectoryOnly))
+        {
+            try { File.Delete(path); } catch { }
+        }
     }
 
     private string ProjectPath(string id)

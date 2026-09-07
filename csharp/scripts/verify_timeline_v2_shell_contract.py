@@ -93,7 +93,7 @@ for token in ("new EditorPage", "EditorPage.", ": EditorPage", "new EditorProjec
     require(token not in page_cs, f"G2 page must not touch classic state: {token}")
 
 main_cs = read(MAINWINDOW)
-require('_pages["timelinev2"] = new TimelineEditorPage(_application, folderPicker);' in main_cs,
+require('new TimelineEditorPage(_application, folderPicker, filePicker)' in main_cs,
         "G14 page must register in the normal navigation")
 require("TimelineFeatureFlags.IsSuppressed" in main_cs
         and 'Tag as string, "timelinev2"' in main_cs,
