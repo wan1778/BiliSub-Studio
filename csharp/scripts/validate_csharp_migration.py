@@ -88,7 +88,7 @@ def read(path: Path) -> str:
 def source_files(pattern: str) -> list[Path]:
     return [
         path for path in CSHARP.rglob(pattern)
-        if not {"bin", "obj"}.intersection(path.relative_to(CSHARP).parts)
+        if not {"bin", "obj", "artifacts"}.intersection(path.relative_to(CSHARP).parts)
     ]
 
 
