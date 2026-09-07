@@ -137,6 +137,7 @@ internal static class Program
         ("timeline processed preview keeps only the latest revision and reaps owned processes", TimelineProcessedPreviewContract.RunAsync),
         ("timeline export segments respect mixed-format plan, concat list order and cleanup-aware jobs", TimelineExportContract.RunAsync),
         ("timeline promotion copies real schema-7 projects with backup gate and source preservation", TimelinePromotionContract.RunAsync),
+        ("timeline FFmpeg mux renders normalized segments, joins them in order and validates drift", TimelineMuxContract.RunAsync),
     ];
 
     private static async Task<int> Main(string[] arguments)

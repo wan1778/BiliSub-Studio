@@ -34,6 +34,7 @@ public sealed record TimelineRenderSegment(
     TimelineMediaAsset Asset,
     TimelineResolvedSourceAudio SourceAudio,
     TimelineResolvedAudioPlan AudioPlan,
+    TimelineRenderPlan Plan,
     long SequenceStartUs,
     long DurationUs);
 
@@ -180,19 +181,23 @@ public sealed class TimelineExportService
 {
     private readonly TimelineExportConcatList _concatList;
     private readonly ITimelineExportSegmentRenderer _renderer;
+    private readonly ITimelineExportConcatenator _concatenator;
     private readonly string _exportDirectory;
     private readonly string _exportPrefix;
 
     public TimelineExportService(
         AppPaths paths,
         ITimelineExportSegmentRenderer renderer,
-        TimelineExportConcatList concatList)
+        TimelineExportConcatList concatList,
+        ITimelineExportConcatenator concatenator)
     {
         ArgumentNullException.ThrowIfNull(paths);
         ArgumentNullException.ThrowIfNull(renderer);
         ArgumentNullException.ThrowIfNull(concatList);
+        ArgumentNullException.ThrowIfNull(concatenator);
         _renderer = renderer;
         _concatList = concatList;
+        _concatenator = concatenator;
         _exportDirectory = Path.GetFullPath(Path.Combine(
             paths.Temp,
             TimelineProjectStoreV2.TestRootFolderName,
@@ -275,7 +280,7 @@ public sealed class TimelineExportService
                 var renderingPath = EnsureManagedPath(
                     Path.Combine(_exportDirectory, renderingName));
                 var segment = new TimelineRenderSegment(
-                    index, clip, asset, source, plan.Audio,
+                    index, clip, asset, source, plan.Audio, plan,
                     clip.SequenceStartUs, clip.SequenceDurationUs);
                 var ratio = orderedClips.Length == 1
                     ? 1d
@@ -323,24 +328,45 @@ public sealed class TimelineExportService
 
             job.Set("concatenating", 94, "Đang viết concat list V2...");
             var list = _concatList.Build(plan, segments, jobId);
+            var concatRenderingName = TimelineExportConcatList.ManagedSegmentPrefix
+                + jobId + "-concat-"
+                + Guid.NewGuid().ToString("N")
+                + ".rendering.mp4";
+            var concatRenderingPath = EnsureManagedPath(
+                Path.Combine(_exportDirectory, concatRenderingName));
             try
             {
-                job.Set("finalizing", 97, "Đang ghi output V2...");
+                job.Set("finalizing", 97, "Đang mux output V2...");
                 if (File.Exists(finalOutputPath))
                     throw new InvalidDataException(
                         "Timeline export sẽ overwrite output đã tồn tại (không cho phép).");
-                await File.WriteAllBytesAsync(
-                    finalOutputPath,
-                    BuildFinalPayload(segments),
+                await _concatenator.ConcatAsync(
+                    list,
+                    concatRenderingPath,
+                    TimelineMuxValidation.BuildExpectation(plan),
+                    processes,
                     token).ConfigureAwait(false);
+                if (processes.ActiveCount != 0)
+                    throw new InvalidOperationException(
+                        "Timeline export concatenator trả về khi process vẫn còn chạy.");
+                if (!File.Exists(concatRenderingPath)
+                    || new FileInfo(concatRenderingPath).Length == 0)
+                    throw new InvalidDataException(
+                        "Timeline export concatenator không tạo output hợp lệ.");
+                File.Move(concatRenderingPath, finalOutputPath);
                 token.ThrowIfCancellationRequested();
                 publishedFinal = true;
+                foreach (var finished in segments)
+                    await DeleteManagedFileAsync(finished.Path, CancellationToken.None)
+                        .ConfigureAwait(false);
                 job.Finish(null, "Timeline export hoàn tất.");
                 return new TimelineExportResultV2(
                     finalOutputPath, jobId, segments.Count, plan.TotalDurationUs);
             }
             finally
             {
+                await DeleteManagedFileAsync(concatRenderingPath, CancellationToken.None)
+                    .ConfigureAwait(false);
                 await _concatList.DeleteAsync(list, CancellationToken.None)
                     .ConfigureAwait(false);
             }
@@ -408,29 +434,5 @@ public sealed class TimelineExportService
             await Task.Delay(50, cancellationToken).ConfigureAwait(false);
         }
         throw new IOException("Không xóa được Timeline export artifact do job sở hữu.");
-    }
-
-    private static byte[] BuildFinalPayload(
-        IReadOnlyList<TimelineExportSegmentArtifact> segments)
-    {
-        using var stream = new MemoryStream();
-        using var writer = new StreamWriter(stream, leaveOpen: true);
-        foreach (var (segment, index) in segments
-            .OrderBy(segment => segment.SegmentIndex)
-            .Select((segment, index) => (segment, index)))
-        {
-            writer.Write(index);
-            writer.Write('\t');
-            writer.Write(segment.ClipId);
-            writer.Write('\t');
-            writer.Write(segment.SequenceStartUs);
-            writer.Write('\t');
-            writer.Write(segment.DurationUs);
-            writer.Write('\t');
-            writer.Write(segment.Path);
-            writer.Write('\n');
-        }
-        writer.Flush();
-        return stream.ToArray();
     }
 }

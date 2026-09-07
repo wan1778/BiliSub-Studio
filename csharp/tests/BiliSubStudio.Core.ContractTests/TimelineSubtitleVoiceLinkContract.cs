@@ -428,4 +428,18 @@ internal static class TimelineAudioContractFixture
             return Task.CompletedTask;
         }
     }
+
+    public sealed class NullConcatenator : ITimelineExportConcatenator
+    {
+        public Task ConcatAsync(
+            TimelineConcatListArtifact list,
+            string renderingPath,
+            TimelineMuxExpectation expectation,
+            BiliSubStudio.Core.Processes.OwnedProcessGroup processes,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        }
+    }
 }

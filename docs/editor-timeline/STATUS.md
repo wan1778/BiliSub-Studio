@@ -6,9 +6,9 @@ Last updated: 2026-09-07
 
 ```text
 Program status: PLANNING APPROVED
-Current gate: G11 - Promotion
-Gate state: VERIFIED - real-project copy behind backup gate with source preservation and classic fallback
-Timeline implementation: STARTED (through promotion readiness; no Edit-tab merge, flag default off)
+Current gate: G12 - Mux
+Gate state: IN_PROGRESS - source and dirty-tree gates pass; clean-tree verify pending
+Timeline implementation: STARTED (through real FFmpeg mux for video plus source audio; no Edit-tab merge, flag default off)
 Classic Editor modifications for Timeline: NONE (V2-only files plus test/verifier/docs)
 ```
 
@@ -429,18 +429,47 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
   source tree SHA-256
   `30af182670443b7190422ee67ee656ab6752ac2817e6400156c83b1860e9d174`.
 
+## G12 pre-commit verification evidence (2026-09-07)
+
+- User accepted DEC-022: real multi-clip mux for video plus clip source audio
+  only; items, subtitle/voice cues and music reject explicitly until ported.
+- `TimelineFfmpegSegmentRenderer` renders normalized H.264/AAC segments
+  (scale/setsar/fps/yuv420p, setpts/atempo rate, 48 kHz, per-clip gain;
+  generated silence for silent clips so concat inputs stay uniform).
+  Windowing lives inside the filtergraph (`trim`/`atrim`): output `-ss/-t`
+  cannot bound an infinite lavfi silence source and previously left a
+  full-window audio tail after atempo (real field bug found by contract).
+- `TimelineFfmpegConcatenator` joins segments with the concat demuxer
+  (`-c copy`, `+faststart`), probes the mux and validates geometry, codec,
+  FPS, 48 kHz audio, total duration and A/V drift against a DEC-019-derived
+  field bound. FFmpeg paths stay explicit constructor inputs (no ToolManager
+  coupling, no bundle download in tests).
+- `TimelineExportService` now drives the concatenator seam, deletes owned
+  segment files after a validated move, and keeps all G10 lifecycle tokens.
+- Core contracts: `120/120 passed` (new `TimelineMuxContract`: exact argv,
+  capability matrix, validation math, real mixed-format field mux with color
+  order proof on PATH-resolved FFmpeg).
+- `verify_timeline_mux_contract.py` plus G2-G11 verifiers: PASS.
+- G1 frozen classic Editor contracts: `35/35 PASS`; classic Editor and
+  schema-7 store unchanged.
+- Release x64 build: 0 warnings, 0 errors; Range field regressions PASS;
+  `validate_csharp_migration.py` PASS; generated code map current.
+- Clean-tree `verify.ps1`, self-contained publish/startup smoke and final G12
+  binary/source hashes: PENDING until the G12 source is committed.
+
 ## Remaining precondition
 
-- None. All G0-G11 gates are verified; any Edit-tab merge or flag-default
-  change needs a new user-approved decision per DEC-017.
+- Commit the reviewed G12 source and run clean-tree `csharp/scripts/verify.ps1`
+  before changing the gate state to `VERIFIED`. The field mux contract needs
+  FFmpeg/FFprobe on PATH.
 - Any future restore or migration experiment must use a separate test root and
   re-verify `BACKUP_PROCEDURE.md` first.
 
 ## Next exact action
 
-Program complete through G11. Next work (real multi-clip FFmpeg mux per
-DEC-020, field QA, or promotion merge) needs a new approved gate. Do not
-modify the classic Editor for Timeline work.
+Review and commit the G12 source, run the clean-tree Windows verification gate,
+then record binary/source hashes. Do not modify the classic Editor for
+Timeline work.
 
 ## Required resume command
 

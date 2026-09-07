@@ -122,7 +122,8 @@ internal static class TimelineExportContract
             var paths = AppPaths.FromRoot(root);
             var concatList = new TimelineExportConcatList(paths);
             var renderer = new RecordingSegmentRenderer();
-            var service = new TimelineExportService(paths, renderer, concatList);
+            var concatenator = new RecordingConcatenator();
+            var service = new TimelineExportService(paths, renderer, concatList, concatenator);
             var project = BuildMixedProject();
             var plan = TimelineCompiler.Compile(project);
 
@@ -199,7 +200,8 @@ internal static class TimelineExportContract
                 OnRender = (_, _, _, _) =>
                     throw new InvalidOperationException("simulated segment failure"),
             };
-            var failingService = new TimelineExportService(paths, failingRenderer, concatList);
+            var failingService = new TimelineExportService(
+                paths, failingRenderer, concatList, new RecordingConcatenator());
             using var failJobs = new JobManager();
             var failedJob = failJobs.Create("timeline-export", cleanupAwareCancel: true);
             var failProject = BuildMixedProject();
@@ -278,6 +280,38 @@ internal static class TimelineExportContract
             return;
         }
         throw new InvalidOperationException($"Expected {typeof(TException).Name}.");
+    }
+
+    private sealed class RecordingConcatenator : ITimelineExportConcatenator
+    {
+        public List<string> ConcatCalls { get; } = [];
+
+        public Task ConcatAsync(
+            TimelineConcatListArtifact list,
+            string renderingPath,
+            TimelineMuxExpectation expectation,
+            OwnedProcessGroup processes,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            ConcatCalls.Add(list.ListPath);
+            var segments = list.SegmentPaths
+                .Select((path, index) => (path, index))
+                .OrderBy(pair => pair.path, StringComparer.Ordinal)
+                .ToArray();
+            using var stream = new MemoryStream();
+            using var writer = new StreamWriter(stream, leaveOpen: true);
+            foreach (var (path, index) in segments)
+            {
+                writer.Write(index);
+                writer.Write('\t');
+                writer.Write(path);
+                writer.Write('\n');
+            }
+            writer.Flush();
+            File.WriteAllBytes(renderingPath, stream.ToArray());
+            return Task.CompletedTask;
+        }
     }
 
     private sealed class RecordingSegmentRenderer : ITimelineExportSegmentRenderer
