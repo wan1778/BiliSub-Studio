@@ -7,7 +7,7 @@ Last updated: 2026-09-07
 ```text
 Program status: PLANNING APPROVED
 Current gate: G11 - Promotion
-Gate state: IN_PROGRESS - source and dirty-tree gates pass; clean-tree verify pending
+Gate state: VERIFIED - real-project copy behind backup gate with source preservation and classic fallback
 Timeline implementation: STARTED (through promotion readiness; no Edit-tab merge, flag default off)
 Classic Editor modifications for Timeline: NONE (V2-only files plus test/verifier/docs)
 ```
@@ -397,7 +397,7 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
   source tree SHA-256
   `d17e853a4f3696d55958cf135a3f1de981158407f703d72ab1a713c9f73eb3cd`.
 
-## G11 pre-commit verification evidence (2026-09-07)
+## G11 verification evidence (2026-09-07)
 
 - User accepted readiness-only scope (no Edit-tab merge, no flag default
   change) and DEC-021: classic Editor stays available for at least two
@@ -421,21 +421,26 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
   schema-7 store unchanged.
 - Release x64 build: 0 warnings, 0 errors; Range field regressions PASS;
   `validate_csharp_migration.py` PASS; generated code map current.
-- Clean-tree `verify.ps1`, self-contained publish/startup smoke and final G11
-  binary/source hashes: PENDING until the G11 source is committed.
+- Clean-tree `verify.ps1` on `0e570f3`: PASS (contracts `119/119`, Range
+  regressions, self-contained publish, real startup smoke, worker identity,
+  PE32+ x64 and checksum readback).
+- G11 gate binary: exe SHA-256
+  `a21c3ca827301780b0676b0c7a7b4920248727a5abbd560c133b1aa28cfdf857`,
+  source tree SHA-256
+  `30af182670443b7190422ee67ee656ab6752ac2817e6400156c83b1860e9d174`.
 
 ## Remaining precondition
 
-- Commit the reviewed G11 source and run clean-tree `csharp/scripts/verify.ps1`
-  before changing the gate state to `VERIFIED`.
+- None. All G0-G11 gates are verified; any Edit-tab merge or flag-default
+  change needs a new user-approved decision per DEC-017.
 - Any future restore or migration experiment must use a separate test root and
   re-verify `BACKUP_PROCEDURE.md` first.
 
 ## Next exact action
 
-Review and commit the G11 source, run the clean-tree Windows verification gate,
-then record binary/source hashes. Do not modify the classic Editor for
-Timeline work.
+Program complete through G11. Next work (real multi-clip FFmpeg mux per
+DEC-020, field QA, or promotion merge) needs a new approved gate. Do not
+modify the classic Editor for Timeline work.
 
 ## Required resume command
 
