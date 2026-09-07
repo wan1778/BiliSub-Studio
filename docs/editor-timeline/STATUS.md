@@ -7,7 +7,7 @@ Last updated: 2026-09-07
 ```text
 Program status: PLANNING APPROVED
 Current gate: G16 - Logo
-Gate state: IN_PROGRESS - source and dirty-tree gates pass; clean-tree verify pending
+Gate state: VERIFIED - logo overlays with documented payloads, source windows and rect proof
 Timeline implementation: STARTED (through logo overlays; drag and preview playback deferred)
 Classic Editor modifications for Timeline: NONE (V2-only files plus test/verifier/docs)
 ```
@@ -568,7 +568,7 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
   source tree SHA-256
   `b1e2c3161681bee3914805ee4a8ff8a59b60ba477bb2023af01947e8611322e5`.
 
-## G16 pre-commit verification evidence (2026-09-07)
+## G16 verification evidence (2026-09-07)
 
 - User accepted DEC-026: clip-local and sequence-global logos render with the
   documented `logo|path|x,y,w,h|opacity` encoding; legacy music items stay
@@ -586,21 +586,26 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
   and schema-7 store unchanged.
 - Release x64 build: 0 warnings, 0 errors; Range field regressions PASS;
   `validate_csharp_migration.py` PASS; generated code map current.
-- Clean-tree `verify.ps1`, self-contained publish/startup smoke and final G16
-  binary/source hashes: PENDING until the G16 source is committed.
+- Clean-tree `verify.ps1` on `8b5ca94`: PASS on first attempt (contracts
+  `123/123`, Range regressions, self-contained publish, real startup smoke,
+  worker identity, PE32+ x64 and checksum readback).
+- G16 gate binary: exe SHA-256
+  `151cab99122571174d5de30aecb8f8c1c5191550d4fa809658a5d073411cac8e`,
+  source tree SHA-256
+  `b7122fc62ce236efa6b003a0d6ce31091c37329390e1f02e128acfd7d9c7734f`.
 
 ## Remaining precondition
 
-- Commit the reviewed G16 source and run clean-tree `csharp/scripts/verify.ps1`
-  before changing the gate state to `VERIFIED`. Field contracts need
-  FFmpeg/FFprobe on PATH.
+- None. All G0-G16 gates are verified. Field contracts need FFmpeg/FFprobe
+  on PATH; installer packaging needs Inno Setup 7.
 - Any future restore or migration experiment must use a separate test root and
   re-verify `BACKUP_PROCEDURE.md` first.
 
 ## Next exact action
 
-Review and commit the G16 source, run the clean-tree Windows verification gate,
-then record binary/source hashes. Keep the classic Editor default intact.
+Program complete through G16. Next work (drag interactions, preview playback,
+open PDEC-001..004) needs a new user-approved gate. Keep the classic Editor
+default intact.
 
 ## Required resume command
 
