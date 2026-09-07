@@ -48,8 +48,8 @@ public sealed partial class TimelineEditorPage : Page
     private long? _pendingTimelineZoomCenterUs;
     private double _timelinePixelsPerSecond = TimelineViewport.DefaultPixelsPerSecond;
 
-    private const double TimelineTrackTop = 24;
-    private const double TimelineTrackHeight = 66;
+    private const double TimelineTrackTop = 28;
+    private const double TimelineTrackHeight = 110;
     private const double TimelineHandleTolerance = 10;
     private const double TimelineDragThreshold = 6;
 
@@ -200,6 +200,23 @@ public sealed partial class TimelineEditorPage : Page
         {
             ShellStatusText.Text = "Không đọc được test root: " + error.Message;
         }
+    }
+
+    // Empty-state shell: hide editor workspace until a project is open so the
+    // production Timeline tab never presents a wall of disabled controls.
+    private void UpdateShellVisibility()
+    {
+        var hasProject = _editor.HasOpenProject;
+        EmptyStatePanel.Visibility = hasProject ? Visibility.Collapsed : Visibility.Visible;
+        InspectorClipLabel.Text = hasProject
+            ? (_editor.SelectedClipId is null
+                ? "Chưa chọn clip."
+                : "Clip đang chọn: " + _editor.SelectedClipId[..8] + "…")
+            : "Chưa có project để mở.";
+        UndoButton.IsEnabled = hasProject && _editor.UndoCount > 0;
+        RedoButton.IsEnabled = hasProject && _editor.RedoCount > 0;
+        SaveProjectButton.IsEnabled = hasProject;
+        ExportProjectButton.IsEnabled = hasProject;
     }
 
     // G15 editing interactions. Clip edits run through TimelineEditingController
@@ -549,7 +566,16 @@ public sealed partial class TimelineEditorPage : Page
             {
                 TrimInBox.Text = TimelineTime.FormatSeconds(selected.SourceInUs);
                 TrimOutBox.Text = TimelineTime.FormatSeconds(selected.SourceOutUs);
+                InspectorClipLabel.Text =
+                    $"[{_editor.Clips.ToList().IndexOf(selected)}] {selected.Id[..8]}… " +
+                    $"{TimelineTime.ToSeconds(selected.TimelineStartUs):0.###}s..{TimelineTime.ToSeconds(selected.TimelineEndUs):0.###}s " +
+                    $"x{selected.PlaybackRate:0.###}";
             }
+            else
+            {
+                InspectorClipLabel.Text = "Chưa chọn clip.";
+            }
+            UpdateShellVisibility();
             RenderTimeline();
         }
         finally

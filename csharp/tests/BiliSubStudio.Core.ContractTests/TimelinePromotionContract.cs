@@ -52,7 +52,7 @@ internal static class TimelinePromotionContract
                 "schema-7 project file changed during promotion");
             Check((await File.ReadAllBytesAsync(mediaPath)).SequenceEqual(mediaHashBefore),
                 "source media changed during promotion");
-            Check(TimelineProjectV2.Schema == 4, "promoted copy must use current V2 schema");
+            Check(TimelineProjectV2.Schema == 5, "promoted copy must use current V2 schema");
             Check(!string.Equals(report.Project.Id, source.Id, StringComparison.Ordinal),
                 "promoted copy must own a fresh V2 identity");
             Check(report.Project.Name == source.Name, "promoted copy lost the project name");

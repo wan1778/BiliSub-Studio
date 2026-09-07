@@ -86,7 +86,10 @@ public static class TimelineMigrator
             [],
             TimelineSourceAudioState.Defaults([clip]),
             [],
-            null);
+            null,
+            [],
+            [],
+            []);
         project.Validate();
 
         return new TimelineMigrationReport(project, warnings, source.Source);

@@ -313,8 +313,8 @@ internal static class TimelineItemsContract
                 "persisted schema-2 project did not upgrade with empty items and source-audio defaults");
             await store.SaveAsync(upgraded, CancellationToken.None);
             var schema3 = JsonNode.Parse(await File.ReadAllTextAsync(projectPath))!.AsObject();
-            Check(schema3["schema"]!.GetValue<int>() == 4 && schema3["items"] is JsonArray,
-                "upgraded schema-2 project did not save back as schema 4 with items");
+            Check(schema3["schema"]!.GetValue<int>() == TimelineProjectV2.Schema && schema3["items"] is JsonArray,
+                "upgraded schema-2 project did not save back as the current V2 schema with items");
 
             var globals = new TimelineItem[] { Music(0, 5_000_000), GlobalLogo(1_000_000, 3_000_000) };
             var withoutVideo = upgraded with

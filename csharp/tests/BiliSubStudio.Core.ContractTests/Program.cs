@@ -145,6 +145,9 @@ internal static class Program
         ("timeline processed preview plays the current unsaved plan through the export graph", TimelinePreviewPlaybackContract.RunAsync),
         ("timeline relink restores missing media and autosave reaps crashed writes", TimelineResilienceContract.RunAsync),
         ("timeline scale contracts hold 100 clips six hours 10k cues and 2k effects", TimelineScaleContract.RunAsync),
+        ("G21 multi-track tracks transforms transitions and schema upgrade stay pinned", TimelineMultiTrackContract.RunAsync),
+        ("G22 transition graph pins xfade offsets and chain building", () => Task.Run(TimelineTransitionGraphContract.Run)),
+        ("G23 text ASS builder pins timecodes colors alignment and fade tags", () => Task.Run(TimelineTextAssContract.Run)),
     ];
 
     private static async Task<int> Main(string[] arguments)

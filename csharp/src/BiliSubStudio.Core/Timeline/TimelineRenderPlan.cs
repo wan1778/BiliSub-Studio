@@ -99,9 +99,30 @@ public sealed record TimelineRenderPlan(
     IReadOnlyList<TimelineResolvedClip> Clips,
     IReadOnlyList<TimelineResolvedItem> Items,
     IReadOnlyList<TimelineResolvedSubtitleCue> SubtitleCues,
-    TimelineResolvedAudioPlan Audio)
+    TimelineResolvedAudioPlan Audio,
+    IReadOnlyList<TimelineResolvedTrackClip> OverlayClips,
+    IReadOnlyList<TimelineResolvedTransition> Transitions,
+    IReadOnlyList<TimelineResolvedTextItem> TextItems)
 {
     public long TotalDurationUs => Clips.Count == 0 ? 0 : Clips.Max(clip => clip.SequenceEndUs);
+
+    // G21 backward-compatible constructor: pre-multi-track consumers (preview,
+    // export, parity tests) compile plans without overlay/transition/text
+    // state and receive the empty collections.
+    public TimelineRenderPlan(
+        string ProjectId,
+        long CreatedUtcTicks,
+        int OutputWidth,
+        int OutputHeight,
+        double OutputFrameRate,
+        IReadOnlyList<TimelineResolvedClip> Clips,
+        IReadOnlyList<TimelineResolvedItem> Items,
+        IReadOnlyList<TimelineResolvedSubtitleCue> SubtitleCues,
+        TimelineResolvedAudioPlan Audio)
+        : this(ProjectId, CreatedUtcTicks, OutputWidth, OutputHeight, OutputFrameRate,
+              Clips, Items, SubtitleCues, Audio, [], [], [])
+    {
+    }
 
     public static TimelineRenderPlan Empty(string projectId)
     {
@@ -109,7 +130,7 @@ public sealed record TimelineRenderPlan(
         return new TimelineRenderPlan(
             projectId, DateTimeOffset.UtcNow.Ticks,
             OutputWidth: 0, OutputHeight: 0, OutputFrameRate: 0,
-            [], [], [], TimelineResolvedAudioPlan.Empty);
+            [], [], [], TimelineResolvedAudioPlan.Empty, [], [], []);
     }
 
     public void ValidateOutputGeometry()
@@ -121,6 +142,46 @@ public sealed record TimelineRenderPlan(
         _ = TimelineAudioTime.MaximumOutputDriftUs(OutputFrameRate);
     }
 }
+
+// G21 resolved overlay clip: one TimelineTrackClip pinned to its track kind
+// and ZIndex so downstream preview/export can composite deterministically.
+public sealed record TimelineResolvedTrackClip(
+    string ClipId,
+    string AssetId,
+    string Path,
+    string TrackId,
+    TimelineTrackKind TrackKind,
+    int ZIndex,
+    long SequenceStartUs,
+    long SequenceEndUs,
+    long SourceInUs,
+    long SourceOutUs,
+    double PlaybackRate,
+    TimelineClipTransform Transform,
+    bool IsVisible,
+    bool IsMuted)
+{
+    public long SequenceDurationUs => checked(SequenceEndUs - SequenceStartUs);
+}
+
+public sealed record TimelineResolvedTransition(
+    string TransitionId,
+    TimelineTransitionKind Kind,
+    string XfadeName,
+    long DurationUs,
+    string FromClipId,
+    string ToClipId);
+
+public sealed record TimelineResolvedTextItem(
+    string TextItemId,
+    string TrackId,
+    long SequenceStartUs,
+    long SequenceEndUs,
+    string Content,
+    TimelineTextStyle Style,
+    TimelineTextAlignment Alignment,
+    TimelineTextAnimation Animation,
+    int AnimationDurationUs);
 
 public static class TimelineCompiler
 {
@@ -137,6 +198,46 @@ public static class TimelineCompiler
                 clip.SourceInUs, clip.SourceOutUs, clip.PlaybackRate))
             .ToArray();
         var clipsById = project.Sequence.VideoClips.ToDictionary(clip => clip.Id, StringComparer.Ordinal);
+        var mediaAssetsById = project.Assets.ToDictionary(asset => asset.Id, StringComparer.Ordinal);
+
+        // G21: resolve overlay/secondary tracks into flat, ordered plan
+        // collections so preview and export composite deterministically.
+        var resolvedOverlayClips = project.Tracks
+            .SelectMany(track => track.Clips.Select(clip => (track, clip)))
+            .Where(pair => pair.track.Kind is TimelineTrackKind.Video or TimelineTrackKind.VideoOverlay)
+            .Select(pair =>
+            {
+                var (track, clip) = pair;
+                var asset = mediaAssetsById[clip.AssetId];
+                return new TimelineResolvedTrackClip(
+                    clip.Id, clip.AssetId, asset.Path, track.Id, track.Kind, track.ZIndex,
+                    clip.TimelineStartUs, clip.TimelineEndUs,
+                    clip.SourceInUs, clip.SourceOutUs, clip.PlaybackRate,
+                    clip.Transform, clip.IsVisible, clip.IsMuted);
+            })
+            .OrderBy(clip => clip.SequenceStartUs)
+            .ThenBy(clip => clip.ZIndex)
+            .ThenBy(clip => clip.ClipId, StringComparer.Ordinal)
+            .ToArray();
+        var resolvedTransitions = project.Transitions
+            .Select(transition => new TimelineResolvedTransition(
+                transition.Id,
+                transition.Kind,
+                transition.ToXfadeName(),
+                transition.DurationUs,
+                transition.FromClipId,
+                transition.ToClipId))
+            .OrderBy(transition => transition.DurationUs)
+            .ThenBy(transition => transition.TransitionId, StringComparer.Ordinal)
+            .ToArray();
+        var resolvedTextItems = project.TextItems
+            .Select(text => new TimelineResolvedTextItem(
+                text.Id, text.TrackId, text.TimelineStartUs, text.TimelineEndUs,
+                text.Content, text.Style, text.Alignment, text.Animation,
+                text.AnimationDurationUs))
+            .OrderBy(text => text.SequenceStartUs)
+            .ThenBy(text => text.TextItemId, StringComparer.Ordinal)
+            .ToArray();
         var resolvedItems = project.Items
             .Select(item =>
             {
@@ -185,7 +286,6 @@ public static class TimelineCompiler
             .OrderBy(cue => cue.SequenceStartUs)
             .ThenBy(cue => cue.CueId, StringComparer.Ordinal)
             .ToArray();
-        var mediaAssetsById = project.Assets.ToDictionary(asset => asset.Id, StringComparer.Ordinal);
         var sourceAudioByClipId = project.SourceAudio.ToDictionary(source => source.ClipId, StringComparer.Ordinal);
         var resolvedSourceAudio = project.Sequence.VideoClips
             .OrderBy(clip => clip.TimelineStartUs)
@@ -307,6 +407,7 @@ public static class TimelineCompiler
             project.Sequence.OutputHeight,
             project.Sequence.OutputFrameRate,
             resolvedClips, resolvedItems,
-            resolvedSubtitleCues, audio);
+            resolvedSubtitleCues, audio,
+            resolvedOverlayClips, resolvedTransitions, resolvedTextItems);
     }
 }

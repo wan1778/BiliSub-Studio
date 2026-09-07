@@ -243,9 +243,9 @@ internal static class TimelineAudioSyncContract
                 "schema-3 upgrade did not preserve items and apply explicit G8 defaults");
             await store.SaveAsync(upgraded, CancellationToken.None);
             var saved = JsonNode.Parse(await File.ReadAllTextAsync(path))!.AsObject();
-            Check(saved["schema"]!.GetValue<int>() == 4
+            Check(saved["schema"]!.GetValue<int>() == TimelineProjectV2.Schema
                 && saved["source_audio"] is JsonArray,
-                "schema-3 upgrade did not save back as schema 4");
+                "schema-3 upgrade did not save back as the current V2 schema");
 
             var legacyMusic = new TimelineItem(
                 TimelineItem.NewId(), TimelineItemKind.Music, null,

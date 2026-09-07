@@ -26,7 +26,7 @@ internal static class TimelineMigrationCopyContract
                 hasAudio: true,
                 size: 3, lastWriteUtcTicks: 123);
 
-            Check(TimelineProjectV2.Schema == 4, "migrated copy must use current V2 schema");
+            Check(TimelineProjectV2.Schema == 5, "migrated copy must use current V2 schema");
             Check(!string.Equals(report.Project.Id, schema7.project.Id, StringComparison.Ordinal),
                 "migrated copy must own a fresh V2 identity, not the schema-7 id");
             var sequence = report.Project.Sequence

@@ -51,7 +51,10 @@ public sealed class TimelineProjectStoreV2
             [],
             [],
             [],
-            null);
+            null,
+            [],
+            [],
+            []);
         await SaveAsync(project, cancellationToken).ConfigureAwait(false);
         return project;
     }
@@ -168,7 +171,8 @@ public sealed class TimelineProjectStoreV2
             var payload = new TimelineProjectV2File(
                 TimelineProjectV2.Schema, project.Id, project.Name, project.UpdatedUtc,
                 project.Assets, project.Sequence, project.Items, project.SubtitleCues,
-                project.AudioAssets, project.SourceAudio, project.VoiceCues, project.Music);
+                project.AudioAssets, project.SourceAudio, project.VoiceCues, project.Music,
+                project.Tracks, project.Transitions, project.TextItems);
             await using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None,
                 64 * 1024, FileOptions.Asynchronous | FileOptions.WriteThrough))
             {
@@ -194,12 +198,15 @@ public sealed class TimelineProjectStoreV2
             FileOptions.Asynchronous | FileOptions.SequentialScan);
         var payload = await JsonSerializer.DeserializeAsync<TimelineProjectV2File>(stream, Json, cancellationToken)
             .ConfigureAwait(false) ?? throw new InvalidDataException("Timeline V2 project rỗng.");
-        if (payload.Schema is not 2 and not 3 and not TimelineProjectV2.Schema
+        // G21: schema 4 joins 2/3 as a legacy input schema; all upgrade
+        // forward-only to the current schema with explicit defaults.
+        if (payload.Schema is not 2 and not 3 and not 4 and not TimelineProjectV2.Schema
             || !string.Equals(payload.Id, id, StringComparison.Ordinal))
             throw new InvalidDataException("Timeline V2 project không đúng phiên bản.");
         if (payload.Schema == 2 && payload.Items is { Count: > 0 })
             throw new InvalidDataException("Timeline V2 schema 2 không được chứa items.");
-        if (payload.Schema < TimelineProjectV2.Schema
+        // G8 audio state first appears in schema 4; schemas 2/3 must not carry it.
+        if (payload.Schema is 2 or 3
             && (payload.SubtitleCues is not null || payload.AudioAssets is not null
                 || payload.SourceAudio is not null || payload.VoiceCues is not null
                 || payload.Music is not null))
@@ -208,18 +215,32 @@ public sealed class TimelineProjectStoreV2
             ? []
             : payload.Items ?? throw new InvalidDataException("Timeline V2 schema 3+ thiếu items.");
         var clips = payload.Sequence?.VideoClips ?? [];
-        var subtitleCues = payload.Schema < TimelineProjectV2.Schema
+        var legacySchema = payload.Schema < TimelineProjectV2.Schema;
+        var preAudioSchema = payload.Schema is 2 or 3;
+        var subtitleCues = preAudioSchema
             ? []
             : payload.SubtitleCues ?? throw new InvalidDataException("Timeline V2 schema 4 thiếu subtitle_cues.");
-        var audioAssets = payload.Schema < TimelineProjectV2.Schema
+        var audioAssets = preAudioSchema
             ? []
             : payload.AudioAssets ?? throw new InvalidDataException("Timeline V2 schema 4 thiếu audio_assets.");
-        var sourceAudio = payload.Schema < TimelineProjectV2.Schema
+        var sourceAudio = preAudioSchema
             ? TimelineSourceAudioState.Defaults(clips)
             : payload.SourceAudio ?? throw new InvalidDataException("Timeline V2 schema 4 thiếu source_audio.");
-        var voiceCues = payload.Schema < TimelineProjectV2.Schema
+        var voiceCues = preAudioSchema
             ? []
             : payload.VoiceCues ?? throw new InvalidDataException("Timeline V2 schema 4 thiếu voice_cues.");
+        var music = preAudioSchema ? null : payload.Music;
+        // G21 schema 5: older payloads receive explicit empty multi-track state;
+        // schema 5 payloads must provide the arrays (possibly empty).
+        var tracks = legacySchema
+            ? []
+            : payload.Tracks ?? throw new InvalidDataException("Timeline V2 schema 5 thiếu tracks.");
+        var transitions = legacySchema
+            ? []
+            : payload.Transitions ?? throw new InvalidDataException("Timeline V2 schema 5 thiếu transitions.");
+        var textItems = legacySchema
+            ? []
+            : payload.TextItems ?? throw new InvalidDataException("Timeline V2 schema 5 thiếu text_items.");
         var project = new TimelineProjectV2(
             payload.Id,
             TimelineProjectV2.ValidateName(payload.Name),
@@ -231,7 +252,10 @@ public sealed class TimelineProjectStoreV2
             audioAssets,
             sourceAudio,
             voiceCues,
-            payload.Schema < TimelineProjectV2.Schema ? null : payload.Music);
+            music,
+            tracks,
+            transitions,
+            textItems);
         project.Validate();
         return project;
     }
@@ -254,5 +278,8 @@ public sealed class TimelineProjectStoreV2
         IReadOnlyList<TimelineAudioAsset>? AudioAssets,
         IReadOnlyList<TimelineSourceAudioState>? SourceAudio,
         IReadOnlyList<TimelineVoiceCue>? VoiceCues,
-        TimelineMusicTrack? Music);
+        TimelineMusicTrack? Music,
+        IReadOnlyList<TimelineTrackV2>? Tracks = null,
+        IReadOnlyList<TimelineTransition>? Transitions = null,
+        IReadOnlyList<TimelineTextItem>? TextItems = null);
 }

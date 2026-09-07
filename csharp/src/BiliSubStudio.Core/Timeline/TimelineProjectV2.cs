@@ -1,8 +1,10 @@
 namespace BiliSubStudio.Core.Timeline;
 
-// G3 project (MASTER_PLAN section 7), extended with items in G7 and typed
-// cue/audio ownership in G8. Older V2 schemas receive only explicit defaults;
-// schema 1 remains rejected because output geometry/FPS cannot be inferred.
+// G3 project (MASTER_PLAN section 7), extended with items in G7, typed
+// cue/audio ownership in G8, and multi-track/transitions/text in G21-G23
+// (schema 5, user-approved Concat parity scope 2026-09-08). Older V2 schemas
+// receive only explicit defaults; schema 1 remains rejected because output
+// geometry/FPS cannot be inferred.
 public sealed record TimelineProjectV2(
     string Id,
     string Name,
@@ -14,9 +16,32 @@ public sealed record TimelineProjectV2(
     IReadOnlyList<TimelineAudioAsset> AudioAssets,
     IReadOnlyList<TimelineSourceAudioState> SourceAudio,
     IReadOnlyList<TimelineVoiceCue> VoiceCues,
-    TimelineMusicTrack? Music)
+    TimelineMusicTrack? Music,
+    IReadOnlyList<TimelineTrackV2> Tracks,
+    IReadOnlyList<TimelineTransition> Transitions,
+    IReadOnlyList<TimelineTextItem> TextItems)
 {
-    public const int Schema = 4;
+    public const int Schema = 5;
+
+    // G21 backward-compatible constructor: pre-multi-track call sites (schema-4
+    // era tests, legacy migration fixtures) construct with the classic 11
+    // fields and receive empty multi-track state.
+    public TimelineProjectV2(
+        string Id,
+        string Name,
+        DateTimeOffset UpdatedUtc,
+        IReadOnlyList<TimelineMediaAsset> Assets,
+        TimelineSequence? Sequence,
+        IReadOnlyList<TimelineItem> Items,
+        IReadOnlyList<TimelineSubtitleCue> SubtitleCues,
+        IReadOnlyList<TimelineAudioAsset> AudioAssets,
+        IReadOnlyList<TimelineSourceAudioState> SourceAudio,
+        IReadOnlyList<TimelineVoiceCue> VoiceCues,
+        TimelineMusicTrack? Music)
+        : this(Id, Name, UpdatedUtc, Assets, Sequence, Items, SubtitleCues,
+              AudioAssets, SourceAudio, VoiceCues, Music, [], [], [])
+    {
+    }
 
     public static string NewId() => Guid.NewGuid().ToString("N");
 
@@ -73,5 +98,94 @@ public sealed record TimelineProjectV2(
             SourceAudio,
             VoiceCues,
             Music);
+        ValidateTracks(Sequence);
+        ValidateTransitions();
+        ValidateTextItems();
+    }
+
+    // G21 track ownership and cross-references. Tracks are optional for legacy
+    // schema-4 payloads but once present must be internally consistent.
+    private void ValidateTracks(TimelineSequence? sequence)
+    {
+        ArgumentNullException.ThrowIfNull(Tracks);
+        var trackIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var track in Tracks)
+        {
+            track.Validate();
+            if (!trackIds.Add(track.Id))
+                throw new InvalidDataException("Timeline project chứa track trùng ID.");
+        }
+        var knownAssetIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var asset in Assets)
+            _ = knownAssetIds.Add(asset.Id);
+        foreach (var track in Tracks)
+        {
+            foreach (var clip in track.Clips)
+            {
+                if (!knownAssetIds.Contains(clip.AssetId))
+                    throw new InvalidDataException("Timeline track clip trỏ asset không tồn tại.");
+                var asset = Assets.Single(item => string.Equals(item.Id, clip.AssetId, StringComparison.Ordinal));
+                if (clip.SourceOutUs > asset.DurationUs)
+                    throw new InvalidDataException("Timeline track clip source range vượt quá asset duration.");
+            }
+        }
+        // Overlay text tracks must exist for text items.
+        var textTrackIds = Tracks
+            .Where(track => track.Kind == TimelineTrackKind.Text)
+            .Select(track => track.Id)
+            .ToHashSet(StringComparer.Ordinal);
+        foreach (var text in TextItems)
+        {
+            if (!textTrackIds.Contains(text.TrackId))
+                throw new InvalidDataException("Timeline text item trỏ track text không tồn tại.");
+        }
+        _ = sequence; // primary sequence validation happens in Sequence.Validate.
+    }
+
+    private void ValidateTransitions()
+    {
+        ArgumentNullException.ThrowIfNull(Transitions);
+        var clipIds = new HashSet<string>(StringComparer.Ordinal);
+        if (Sequence is not null)
+            foreach (var clip in Sequence.VideoClips)
+                _ = clipIds.Add(clip.Id);
+        foreach (var track in Tracks)
+            foreach (var clip in track.Clips)
+                _ = clipIds.Add(clip.Id);
+        var transitionIds = new HashSet<string>(StringComparer.Ordinal);
+        var seenPairs = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var transition in Transitions)
+        {
+            transition.Validate();
+            if (!transitionIds.Add(transition.Id))
+                throw new InvalidDataException("Timeline project chứa transition trùng ID.");
+            if (!clipIds.Contains(transition.FromClipId)
+                || !clipIds.Contains(transition.ToClipId))
+                throw new InvalidDataException("Timeline transition trỏ clip không tồn tại.");
+            var pairKey = transition.FromClipId + ">" + transition.ToClipId;
+            if (!seenPairs.Add(pairKey))
+                throw new InvalidDataException("Timeline project chứa transition trùng cặp clip.");
+        }
+    }
+
+    private void ValidateTextItems()
+    {
+        ArgumentNullException.ThrowIfNull(TextItems);
+        var textIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var text in TextItems)
+        {
+            text.Validate();
+            if (!textIds.Add(text.Id))
+                throw new InvalidDataException("Timeline project chứa text item trùng ID.");
+            if (text.ClipId is not null)
+            {
+                var clipExists = (Sequence?.VideoClips ?? [])
+                    .Any(clip => string.Equals(clip.Id, text.ClipId, StringComparison.Ordinal))
+                    || Tracks.SelectMany(track => track.Clips)
+                        .Any(clip => string.Equals(clip.Id, text.ClipId, StringComparison.Ordinal));
+                if (!clipExists)
+                    throw new InvalidDataException("Timeline text item trỏ clip không tồn tại.");
+            }
+        }
     }
 }
