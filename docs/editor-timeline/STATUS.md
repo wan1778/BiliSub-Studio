@@ -7,7 +7,7 @@ Last updated: 2026-09-07
 ```text
 Program status: PLANNING APPROVED
 Current gate: G15 - Editing
-Gate state: IN_PROGRESS - source and dirty-tree gates pass; clean-tree verify pending
+Gate state: VERIFIED - clip editing interactions with atomic undo and dirty save
 Timeline implementation: STARTED (through clip editing interactions; drag and preview playback deferred)
 Classic Editor modifications for Timeline: NONE (V2-only files plus test/verifier/docs)
 ```
@@ -537,7 +537,7 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
   install smoke and full `WINDOWS_FIELD_CHECKLIST_CSHARP_P5.md` run on the
   G13 binary remain pending.
 
-## G15 pre-commit verification evidence (2026-09-07)
+## G15 verification evidence (2026-09-07)
 
 - User accepted DEC-025: clip editing interactions through a headless
   controller wired to explicit page controls; drag and preview playback stay
@@ -558,21 +558,28 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
   and schema-7 store unchanged.
 - Release x64 build: 0 warnings, 0 errors; Range field regressions PASS;
   `validate_csharp_migration.py` PASS; generated code map current.
-- Clean-tree `verify.ps1`, self-contained publish/startup smoke and final G15
-  binary/source hashes: PENDING until the G15 source is committed.
+- Clean-tree `verify.ps1` on `ecc5cd6`: PASS on retry (contracts `123/123`,
+  Range regressions, self-contained publish, real startup smoke, worker
+  identity, PE32+ x64 and checksum readback). The first attempt flaked inside
+  the classic Editor layout smoke (local voice preview prerequisite, untouched
+  by G15); the identical tree passed immediately on retry.
+- G15 gate binary: exe SHA-256
+  `63b09fad0196026233a45158033a32727b0c223cb8a01ad009b5143165891ad2`,
+  source tree SHA-256
+  `b1e2c3161681bee3914805ee4a8ff8a59b60ba477bb2023af01947e8611322e5`.
 
 ## Remaining precondition
 
-- Commit the reviewed G15 source and run clean-tree `csharp/scripts/verify.ps1`
-  before changing the gate state to `VERIFIED`. Field contracts need
-  FFmpeg/FFprobe on PATH.
+- None. All G0-G15 gates are verified. Field contracts need FFmpeg/FFprobe
+  on PATH; installer packaging needs Inno Setup 7.
 - Any future restore or migration experiment must use a separate test root and
   re-verify `BACKUP_PROCEDURE.md` first.
 
 ## Next exact action
 
-Review and commit the G15 source, run the clean-tree Windows verification gate,
-then record binary/source hashes. Keep the classic Editor default intact.
+Program complete through G15. Next work (drag interactions, preview playback,
+logo export, open PDEC-001..004) needs a new user-approved gate. Keep the
+classic Editor default intact.
 
 ## Required resume command
 
