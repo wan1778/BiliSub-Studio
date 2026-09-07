@@ -7,8 +7,8 @@ Last updated: 2026-09-07
 ```text
 Program status: PLANNING APPROVED
 Current gate: G20 - Performance targets
-Gate state: READY FOR CLEAN-TREE VERIFICATION - scale/viewport/cache contracts implemented
-Timeline implementation: STARTED (through section-13 performance targets)
+Gate state: VERIFIED - scale, viewport responsiveness and bounded cleanup targets pinned
+Timeline implementation: COMPLETE (product goals plus section-13 performance targets)
 Classic Editor modifications for Timeline: NONE (V2-only files plus test/verifier/docs)
 ```
 
@@ -718,11 +718,17 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
 - `verify_timeline_scale_contract.py` and all G2-G20 static gates: `19/19 PASS`.
 - G1 frozen classic Editor contracts: `35/35 PASS`; Range field regressions,
   migration validation and generated code-map check: PASS.
-- Clean-tree `verify.ps1`: pending source commit.
+- Clean-tree `verify.ps1` on `b5b6b23`: PASS on first attempt (contracts
+  `127/127`, Range regressions, self-contained publish, real startup smoke,
+  worker identity, PE32+ x64 and checksum readback).
+- G20 gate binary: exe SHA-256
+  `d417f04952272285c7a9630652bfb4691bf47b09ddb9bd9d27b97406db42cf9c`,
+  source tree SHA-256
+  `73d8564fe4d3965c85b12757db315dc1b8ad574e25b10ef39ca46bc13a729008`.
 
 ## Remaining precondition
 
-- G20 clean-tree Windows verification remains. G0-G19 are verified. PDEC-001/002/003/004 are resolved
+- None for Timeline V2. All G0-G20 gates are verified. PDEC-001/002/003/004 are resolved
   (DEC-029 through DEC-032). Field contracts need FFmpeg/FFprobe on PATH;
   installer packaging needs Inno Setup 7.
 - Any future restore or migration experiment must use a separate test root and
@@ -750,8 +756,9 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
 
 ## Next exact action
 
-Commit the G20 source gate, run clean-tree `csharp/scripts/verify.ps1`, then
-record binary/source hashes and mark all section-13 performance targets verified.
+Program complete through G20: all MASTER_PLAN section-1 product goals and
+section-13 performance targets are implemented and verified. Keep the classic
+Editor default intact; installer packaging still requires Inno Setup 7.
 
 ## Required resume command
 
