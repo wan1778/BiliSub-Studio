@@ -7,7 +7,7 @@ Last updated: 2026-09-07
 ```text
 Program status: PLANNING APPROVED
 Current gate: G14 - Merge
-Gate state: IN_PROGRESS - source and dirty-tree gates pass; clean-tree verify pending
+Gate state: VERIFIED - promoted navigation with real export, classic default and kill-switch intact
 Timeline implementation: STARTED (through promoted navigation with real export; classic default intact)
 Classic Editor modifications for Timeline: NONE (V2-only files plus test/verifier/docs)
 ```
@@ -494,7 +494,7 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
   source tree SHA-256
   `7a547af737cd3ed543d7d3216a545bc8ce27fa889fe54da485a48be6528dd0a7`.
 
-## G14 pre-commit verification evidence (2026-09-07)
+## G14 verification evidence (2026-09-07)
 
 - User approved DEC-024 promotion merge on 2026-09-07: permanent Timeline
   navigation entry plus a real project export path; classic order, default
@@ -515,8 +515,13 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
   and schema-7 store unchanged.
 - Release x64 build: 0 warnings, 0 errors; Range field regressions PASS;
   `validate_csharp_migration.py` PASS; generated code map current.
-- Clean-tree `verify.ps1`, self-contained publish/startup smoke and final G14
-  binary/source hashes: PENDING until the G14 source is committed.
+- Clean-tree `verify.ps1` on `ae0c4d9`: PASS (contracts `122/122`, Range
+  regressions, self-contained publish, real startup smoke, worker identity,
+  PE32+ x64 and checksum readback).
+- G14 gate binary: exe SHA-256
+  `9a11d450396a5a3f0748bab94aa68890468d5fd819e74ff758b4f6171da41bef`,
+  source tree SHA-256
+  `065f64ece6fbc7ceb48f783f20dd6f1b95e48f69527772c911e04339f435fcbf`.
 
 ## Field QA evidence (G13 binary, 2026-09-07)
 
@@ -534,16 +539,15 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
 
 ## Remaining precondition
 
-- Commit the reviewed G14 source and run clean-tree `csharp/scripts/verify.ps1`
-  before changing the gate state to `VERIFIED`. Field contracts need
-  FFmpeg/FFprobe on PATH.
+- None. All G0-G14 gates are verified. Field contracts need FFmpeg/FFprobe
+  on PATH; installer packaging needs Inno Setup 7.
 - Any future restore or migration experiment must use a separate test root and
   re-verify `BACKUP_PROCEDURE.md` first.
 
 ## Next exact action
 
-Review and commit the G14 source, run the clean-tree Windows verification gate,
-then record binary/source hashes. Keep the classic Editor default intact.
+Program complete through G14. Next work needs a new user-approved gate. Keep
+the classic Editor default intact.
 
 ## Required resume command
 
