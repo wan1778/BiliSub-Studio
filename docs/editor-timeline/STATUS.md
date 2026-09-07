@@ -649,9 +649,19 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
   source tree SHA-256
   `4595be7018c75767d12e66b18caab95a0d44875a59d9920c96a9895a8347f95a`.
 
+## G18 final evidence (2026-09-07)
+
+- Clean-tree `verify.ps1` on `5b46d31`: PASS on first attempt (contracts
+  `125/125`, Range regressions, self-contained publish, real startup smoke,
+  worker identity, PE32+ x64 and checksum readback).
+- G18 gate binary: exe SHA-256
+  `0fc5450964ba42fa181bbb5c906ea8480189b13bc55c81383880f649410567ff`,
+  source tree SHA-256
+  `0862edd2427699dfa25f8ac1a084255f0066306c1aaa2289e01b1a8f0174c7b9`.
+
 ## Remaining precondition
 
-- None. All G0-G17 gates are verified. Field contracts need FFmpeg/FFprobe
+- None. All G0-G18 gates are verified. Field contracts need FFmpeg/FFprobe
   on PATH; installer packaging needs Inno Setup 7.
 - Any future restore or migration experiment must use a separate test root and
   re-verify `BACKUP_PROCEDURE.md` first.
