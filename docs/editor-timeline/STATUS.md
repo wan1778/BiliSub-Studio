@@ -323,7 +323,7 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
   source tree SHA-256
   `e79c3f7d9e6e590360446882bcc0b68469c52bc7066e0f8eba0cc90d2d5c1540`.
 
-## G9 pre-commit verification evidence (2026-09-07)
+## G9 verification evidence (2026-09-07)
 
 - `TimelinePreviewController` keeps a monotonic `Revision`, publishes only
   the latest artifact and waits for the previous renderer, process group and
@@ -354,22 +354,24 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
   schema-7 store unchanged.
 - Release x64 build: 0 warnings, 0 errors; Range field regressions PASS;
   `validate_csharp_migration.py` PASS; generated code map current.
-- Clean-tree `verify.ps1` on the G9 source commit, self-contained
-  publish/startup smoke and final G9 binary/source hashes: PENDING until
-  the G9 source is committed.
+- Clean-tree `verify.ps1` on `d546a97`: PASS (contracts `117/117`, Range
+  regressions, self-contained publish, real startup smoke, worker identity,
+  PE32+ x64 and checksum readback).
+- G9 gate binary: exe SHA-256
+  `7437e161e8a0bfbde64a17f43c7c036b28ddb427bb341b9fbafc53f9838a230d`,
+  source tree SHA-256
+  `4217c439c805eaa8542269355e29829115ec917cf5e0f8a6569e2fcaf80b71aa`.
 
 ## Remaining precondition
 
-- Commit the reviewed G9 source and run clean-tree `csharp/scripts/verify.ps1`
-  before changing the gate state to `VERIFIED`.
+- None for starting G10 export render work.
 - Any future restore or migration experiment must use a separate test root and
   re-verify `BACKUP_PROCEDURE.md` first.
 
 ## Next exact action
 
-Review and commit the G9 source, run the clean-tree Windows verification gate,
-then record binary/source hashes. Do not modify the classic Editor for
-Timeline work.
+Begin G10 with multi-segment normalized rendering and concatenation for
+final export. Do not modify the classic Editor for Timeline work.
 
 ## Required resume command
 
