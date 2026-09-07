@@ -494,17 +494,30 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
   source tree SHA-256
   `7a547af737cd3ed543d7d3216a545bc8ce27fa889fe54da485a48be6528dd0a7`.
 
+## Field QA evidence (G13 binary, 2026-09-07)
+
+- Flag-on startup smoke: `BILISUB_TIMELINE_V2=1` + `--startup-smoke-test` on a
+  copy of the verified publish (`e3cfc5...6c03`) → sentinel `PASS`, no crash
+  with the V2 page registered. The verified publish directory was untouched
+  (run from a temp copy, removed afterwards).
+- Real V2 export field runs: G12/G13 contract field tests mux real generated
+  media (mixed resolution/FPS/audio, blur, ASS burn, voice, music) with
+  probe-validated output on PATH-resolved FFmpeg/FFprobe.
+- Blocked locally: one-file installer packaging needs Inno Setup 7
+  (`ISCC.exe` absent; `INNO_SETUP_ISCC` unset), so the installer candidate,
+  install smoke and full `WINDOWS_FIELD_CHECKLIST_CSHARP_P5.md` run on the
+  G13 binary remain pending.
+
 ## Remaining precondition
 
-- None for field QA. Field contracts need FFmpeg/FFprobe on PATH.
+- None for promotion merge design. Field contracts need FFmpeg/FFprobe on PATH.
 - Any future restore or migration experiment must use a separate test root and
   re-verify `BACKUP_PROCEDURE.md` first.
 
 ## Next exact action
 
-Run Windows field QA on the G13 binary (installer candidate + field
-checklist), then promotion merge. Do not modify the classic Editor for
-Timeline work.
+Promotion merge of Timeline V2 into the normal Edit tab with classic fallback
+(user-approved). Do not break the classic Editor for Timeline work.
 
 ## Required resume command
 
