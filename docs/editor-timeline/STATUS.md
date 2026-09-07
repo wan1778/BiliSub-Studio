@@ -6,9 +6,9 @@ Last updated: 2026-09-07
 
 ```text
 Program status: PLANNING APPROVED
-Current gate: G9 - Processed preview
-Gate state: VERIFIED - revisioned proxy generation and stale/process cleanup
-Timeline implementation: STARTED (through owned preview proxy lifecycle; export render parity pending)
+Current gate: G10 - Export
+Gate state: IN_PROGRESS - source and dirty-tree gates pass; clean-tree verify pending
+Timeline implementation: STARTED (through segmented export lifecycle; real FFmpeg mux deferred per DEC-020)
 Classic Editor modifications for Timeline: NONE (V2-only files plus test/verifier/docs)
 ```
 
@@ -362,16 +362,48 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
   source tree SHA-256
   `4217c439c805eaa8542269355e29829115ec917cf5e0f8a6569e2fcaf80b71aa`.
 
+## G10 pre-commit verification evidence (2026-09-07)
+
+- User accepted DEC-020: G10 verifies the multi-segment export lifecycle
+  through the `ITimelineExportSegmentRenderer` seam; the real multi-clip
+  FFmpeg mux graph is deferred to a follow-up gate.
+- `TimelineRenderPlan` now carries `OutputWidth`/`OutputHeight`/
+  `OutputFrameRate` from the sequence plus `ValidateOutputGeometry()`, so the
+  export pipeline consumes first-clip geometry and explicit FPS without a
+  second resolver (DEC-013).
+- `TimelineExportConcatList` owns `Temp/TimelineV2/Export`, writes ffmpeg
+  concat-demuxer `file '…'` lists in compiler clip order and rejects
+  out-of-order/short segment sets; per-job cleanup removes only
+  `timeline-segment-<jobId>-*` and matching list files.
+- `TimelineExportService.ExportAsync` enforces `CleanupAwareCancel=true`,
+  renders one normalized segment per clip (`*.rendering.mp4` → atomic move),
+  links job + caller cancellation tokens, reaps its `OwnedProcessGroup` and
+  deletes segment/concat/final artifacts on cancel or failure.
+- `TimelinePreviewExportService`: G5 one-clip adapter keeps its own
+  `TimelineOneClipExportResultV2` shape; the G10 `TimelineExportResultV2`
+  carries output path, job id, segment count and duration.
+- Core contracts: `118/118 passed` (new `TimelineExportContract`: mixed-format
+  plan geometry, concat-list order, cleanup-aware cancel/success/failure).
+- `verify_timeline_export_contract.py` plus G2-G9 verifiers: PASS.
+- G1 frozen classic Editor contracts: `35/35 PASS`; classic Editor and
+  schema-7 store unchanged.
+- Release x64 build: 0 warnings, 0 errors; Range field regressions PASS;
+  `validate_csharp_migration.py` PASS; generated code map current.
+- Clean-tree `verify.ps1`, self-contained publish/startup smoke and final G10
+  binary/source hashes: PENDING until the G10 source is committed.
+
 ## Remaining precondition
 
-- None for starting G10 export render work.
+- Commit the reviewed G10 source and run clean-tree `csharp/scripts/verify.ps1`
+  before changing the gate state to `VERIFIED`.
 - Any future restore or migration experiment must use a separate test root and
   re-verify `BACKUP_PROCEDURE.md` first.
 
 ## Next exact action
 
-Begin G10 with multi-segment normalized rendering and concatenation for
-final export. Do not modify the classic Editor for Timeline work.
+Review and commit the G10 source, run the clean-tree Windows verification gate,
+then record binary/source hashes. Do not modify the classic Editor for
+Timeline work.
 
 ## Required resume command
 

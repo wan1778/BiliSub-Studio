@@ -25,6 +25,7 @@ This log is append-only. Do not silently rewrite an accepted decision. A change 
 | DEC-017 | ACCEPTED | User approval is required before changing MVP scope or promoting V2 into the normal Edit tab. | Product decisions must not be inferred during implementation. |
 | DEC-018 | ACCEPTED | G8 MVP supports at most one sequence-global music track. | Keeps the approved guided-editor scope bounded and resolves PDEC-005. |
 | DEC-019 | ACCEPTED | Timeline audio timing is exact in persisted/compiled microseconds; final media A/V drift may not exceed the larger of one 48 kHz sample or half one sequence video frame. | Gives G8 deterministic internal contracts and a realistic mux boundary for G10 field verification. |
+| DEC-020 | ACCEPTED | G10 verifies the multi-segment export lifecycle (plan geometry, concat-list order, cleanup-aware AppJob, mixed-format plan matrix) through the `ITimelineExportSegmentRenderer` seam; the real multi-clip FFmpeg mux graph is deferred to a follow-up gate. | Keeps G10 honest without duplicating the classic FFmpeg graph inside the V2 namespace; user-approved scope on 2026-09-07. |
 
 ## Pending product decisions
 

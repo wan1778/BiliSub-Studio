@@ -8,7 +8,7 @@ namespace BiliSubStudio.Core.Timeline;
 
 public sealed record TimelinePreviewSegmentV2(string Path, double SourceStart, double Duration);
 
-public sealed record TimelineExportResultV2(string OutputPath);
+public sealed record TimelineOneClipExportResultV2(string OutputPath);
 
 // G5 one-clip compatibility adapter. It delegates to the proven classic
 // VideoEditorService via parity mapping and therefore returns a classic-owned
@@ -42,7 +42,7 @@ public sealed class TimelinePreviewExportService
         return new TimelinePreviewSegmentV2(segment.Path, segment.SourceStart, segment.Duration);
     }
 
-    public async Task<TimelineExportResultV2> ExportAsync(
+    public async Task<TimelineOneClipExportResultV2> ExportAsync(
         AppJob job,
         TimelineRenderPlan plan,
         TimelineMediaAsset asset,
@@ -57,7 +57,7 @@ public sealed class TimelinePreviewExportService
         var request = TimelineOneClipParity.ToVideoEditRequest(
             plan, asset, outputDirectory, fileName, export);
         var result = await _editor.RunAsync(job, request).ConfigureAwait(false);
-        return new TimelineExportResultV2(result.OutputPath);
+        return new TimelineOneClipExportResultV2(result.OutputPath);
     }
 
     public async Task DeletePreviewSegmentAsync(string? path, CancellationToken cancellationToken = default)

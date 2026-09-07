@@ -1,3 +1,4 @@
+using BiliSubStudio.Core.Configuration;
 using BiliSubStudio.Core.Timeline;
 
 namespace BiliSubStudio.Core.ContractTests;
@@ -57,7 +58,10 @@ internal static class TimelineV2ShellContract
             var plan = TimelineCompiler.Compile(created);
             Check(plan.ProjectId == created.Id, "timeline plan lost project ownership");
             var preview = new TimelinePreviewController();
-            var export = new TimelineExportService();
+            var export = new TimelineExportService(
+                AppPaths.FromRoot(testRoot),
+                new TimelineAudioContractFixture.NullSegmentRenderer(),
+                new TimelineExportConcatList(AppPaths.FromRoot(testRoot)));
             var previewText = await preview.DescribeAsync(plan, CancellationToken.None);
             var exportText = await export.DescribeAsync(plan, CancellationToken.None);
             Check(previewText.Contains(created.Id, StringComparison.Ordinal)

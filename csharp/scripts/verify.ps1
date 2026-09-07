@@ -148,6 +148,7 @@ Invoke-Checked python @("csharp/scripts/verify_timeline_sequence_ops_contract.py
 Invoke-Checked python @("csharp/scripts/verify_timeline_items_contract.py")
 Invoke-Checked python @("csharp/scripts/verify_timeline_audio_contract.py")
 Invoke-Checked python @("csharp/scripts/verify_timeline_processed_preview_contract.py")
+Invoke-Checked python @("csharp/scripts/verify_timeline_export_contract.py")
 Invoke-Checked dotnet @("restore", "csharp/BiliSubStudio.sln", "-p:Platform=x64", "-p:NuGetAudit=false")
 Invoke-Checked dotnet @("build", "csharp/BiliSubStudio.sln", "-c", "Release", "-p:Platform=x64", "-p:UseSharedCompilation=false", "-p:ContinuousIntegrationBuild=true", "--no-restore")
 Invoke-Checked dotnet @("run", "--project", "csharp/tests/BiliSubStudio.Core.ContractTests/BiliSubStudio.Core.ContractTests.csproj", "-c", "Release", "--no-build", "--no-restore")

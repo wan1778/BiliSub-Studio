@@ -415,4 +415,17 @@ internal static class TimelineAudioContractFixture
             state.SourceAudio,
             state.VoiceCues,
             state.Music);
+
+    public sealed class NullSegmentRenderer : ITimelineExportSegmentRenderer
+    {
+        public Task RenderSegmentAsync(
+            TimelineRenderSegment segment,
+            string renderingPath,
+            BiliSubStudio.Core.Processes.OwnedProcessGroup processes,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        }
+    }
 }

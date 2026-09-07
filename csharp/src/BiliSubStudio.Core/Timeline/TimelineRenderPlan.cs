@@ -93,6 +93,9 @@ public sealed record TimelineResolvedAudioPlan(
 public sealed record TimelineRenderPlan(
     string ProjectId,
     long CreatedUtcTicks,
+    int OutputWidth,
+    int OutputHeight,
+    double OutputFrameRate,
     IReadOnlyList<TimelineResolvedClip> Clips,
     IReadOnlyList<TimelineResolvedItem> Items,
     IReadOnlyList<TimelineResolvedSubtitleCue> SubtitleCues,
@@ -104,7 +107,18 @@ public sealed record TimelineRenderPlan(
     {
         TimelineProjectV2.ValidateId(projectId);
         return new TimelineRenderPlan(
-            projectId, DateTimeOffset.UtcNow.Ticks, [], [], [], TimelineResolvedAudioPlan.Empty);
+            projectId, DateTimeOffset.UtcNow.Ticks,
+            OutputWidth: 0, OutputHeight: 0, OutputFrameRate: 0,
+            [], [], [], TimelineResolvedAudioPlan.Empty);
+    }
+
+    public void ValidateOutputGeometry()
+    {
+        if (OutputWidth <= 0 || OutputHeight <= 0)
+            throw new InvalidDataException("Timeline render plan thiếu output geometry.");
+        if (!double.IsFinite(OutputFrameRate) || OutputFrameRate <= 0)
+            throw new InvalidDataException("Timeline render plan thiếu sequence FPS hữu hạn dương.");
+        _ = TimelineAudioTime.MaximumOutputDriftUs(OutputFrameRate);
     }
 }
 
@@ -288,7 +302,11 @@ public static class TimelineCompiler
             resolvedVoice,
             resolvedMusic);
         return new TimelineRenderPlan(
-            project.Id, DateTimeOffset.UtcNow.Ticks, resolvedClips, resolvedItems,
+            project.Id, DateTimeOffset.UtcNow.Ticks,
+            project.Sequence.OutputWidth,
+            project.Sequence.OutputHeight,
+            project.Sequence.OutputFrameRate,
+            resolvedClips, resolvedItems,
             resolvedSubtitleCues, audio);
     }
 }

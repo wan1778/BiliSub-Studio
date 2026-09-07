@@ -66,8 +66,14 @@ require("TimelineRenderPlan plan" in preview and "TimelineRenderPlan plan" in ex
         "G2 preview/export shells must consume the shared immutable plan")
 for token in ("VideoEditorService", "EditorPlaybackController", "ProcessRunner",
                "RunAsync(ffmpeg", "File.Move(", "File.Delete(", "File.Write"):
-    require(token not in preview and token not in export,
-            f"G2 shell must not perform media IO/process work: {token}")
+    require(token not in preview,
+            f"G2 preview shell must not perform media IO/process work: {token}")
+# G10 promotes the export shell to a real V2 segment/concat service. It may own
+# V2-root file IO, but must stay free of classic render/process owners.
+for token in ("VideoEditorService", "EditorPlaybackController", "TimelineOneClipParity",
+              "ToolManager", "EnsureFfmpegAsync"):
+    require(token not in export,
+            f"G10 export service coupled to classic owner: {token}")
 
 # App shell page is separate from EditorPage and MainWindow XAML stays classic.
 require((PAGES / "TimelineEditorPage.xaml").exists(), "G2 TimelineEditorPage.xaml missing")
