@@ -7,7 +7,7 @@ Last updated: 2026-09-07
 ```text
 Program status: PLANNING APPROVED
 Current gate: G10 - Export
-Gate state: IN_PROGRESS - source and dirty-tree gates pass; clean-tree verify pending
+Gate state: VERIFIED - segmented export lifecycle, concat order and cleanup-aware jobs
 Timeline implementation: STARTED (through segmented export lifecycle; real FFmpeg mux deferred per DEC-020)
 Classic Editor modifications for Timeline: NONE (V2-only files plus test/verifier/docs)
 ```
@@ -362,7 +362,7 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
   source tree SHA-256
   `4217c439c805eaa8542269355e29829115ec917cf5e0f8a6569e2fcaf80b71aa`.
 
-## G10 pre-commit verification evidence (2026-09-07)
+## G10 verification evidence (2026-09-07)
 
 - User accepted DEC-020: G10 verifies the multi-segment export lifecycle
   through the `ITimelineExportSegmentRenderer` seam; the real multi-clip
@@ -389,21 +389,24 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
   schema-7 store unchanged.
 - Release x64 build: 0 warnings, 0 errors; Range field regressions PASS;
   `validate_csharp_migration.py` PASS; generated code map current.
-- Clean-tree `verify.ps1`, self-contained publish/startup smoke and final G10
-  binary/source hashes: PENDING until the G10 source is committed.
+- Clean-tree `verify.ps1` on `65425f1`: PASS (contracts `118/118`, Range
+  regressions, self-contained publish, real startup smoke, worker identity,
+  PE32+ x64 and checksum readback).
+- G10 gate binary: exe SHA-256
+  `de0ba59c25271b8ecbfc9a09fad58af8652c9943cd1628604376062b233939c8`,
+  source tree SHA-256
+  `d17e853a4f3696d55958cf135a3f1de981158407f703d72ab1a713c9f73eb3cd`.
 
 ## Remaining precondition
 
-- Commit the reviewed G10 source and run clean-tree `csharp/scripts/verify.ps1`
-  before changing the gate state to `VERIFIED`.
+- None for starting G11 promotion work.
 - Any future restore or migration experiment must use a separate test root and
   re-verify `BACKUP_PROCEDURE.md` first.
 
 ## Next exact action
 
-Review and commit the G10 source, run the clean-tree Windows verification gate,
-then record binary/source hashes. Do not modify the classic Editor for
-Timeline work.
+Begin G11 with real-project copy and Windows QA for promotion. Do not modify
+the classic Editor for Timeline work.
 
 ## Required resume command
 
