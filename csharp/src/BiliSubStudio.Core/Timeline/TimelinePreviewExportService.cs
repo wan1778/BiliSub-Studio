@@ -10,25 +10,22 @@ public sealed record TimelinePreviewSegmentV2(string Path, double SourceStart, d
 
 public sealed record TimelineExportResultV2(string OutputPath);
 
-// G5 separate V2 preview/export path. It delegates to the proven classic
-// VideoEditorService (one FFmpeg graph owner) via the parity mapping, while
-// keeping V2 request/result types and V2 temp roots. No production state is
-// touched: preview artifacts live under Temp/TimelineV2/Preview.
+// G5 one-clip compatibility adapter. It delegates to the proven classic
+// VideoEditorService via parity mapping and therefore returns a classic-owned
+// preview-cache artifact. G9 owns real V2 proxy lifecycle separately.
 public sealed class TimelinePreviewExportService
 {
     private readonly VideoEditorService _editor;
     private readonly ToolManager _tools;
-    private readonly string _previewDirectory;
+    private readonly string _compatibilityOutputDirectory;
 
     public TimelinePreviewExportService(AppPaths paths, VideoEditorService editor, ToolManager tools)
     {
         ArgumentNullException.ThrowIfNull(paths);
         _editor = editor ?? throw new ArgumentNullException(nameof(editor));
         _tools = tools ?? throw new ArgumentNullException(nameof(tools));
-        _previewDirectory = Path.Combine(paths.Temp, TimelineProjectStoreV2.TestRootFolderName, "Preview");
+        _compatibilityOutputDirectory = paths.Temp;
     }
-
-    public string PreviewDirectory => _previewDirectory;
 
     public async Task<TimelinePreviewSegmentV2> CreatePreviewSegmentAsync(
         TimelineRenderPlan plan,
@@ -39,7 +36,7 @@ public sealed class TimelinePreviewExportService
         ArgumentNullException.ThrowIfNull(plan);
         ArgumentNullException.ThrowIfNull(asset);
         var request = TimelineOneClipParity.ToVideoEditRequest(
-            plan, asset, outputDirectory: _previewDirectory, fileName: string.Empty);
+            plan, asset, outputDirectory: _compatibilityOutputDirectory, fileName: string.Empty);
         var segment = await _editor.CreatePreviewSegmentAsync(request, requestedStart, cancellationToken)
             .ConfigureAwait(false);
         return new TimelinePreviewSegmentV2(segment.Path, segment.SourceStart, segment.Duration);

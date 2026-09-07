@@ -34,16 +34,17 @@ for token in (
 require("Regions: []" in parity and "Subtitle: null" in parity and "VoiceTrack: null" in parity,
         "G5 parity must not invent classic edits")
 
-# V2 service delegates to the classic pipeline; it must not build its own
-# FFmpeg graph, own process management, or write into production state.
+# G5 compatibility service delegates to the classic pipeline; it must not
+# build its own FFmpeg graph or claim ownership of the G9 V2 proxy root.
 require("VideoEditorService _editor" in service
         and "_editor.CreatePreviewSegmentAsync" in service
         and "_editor.RunAsync" in service,
         "G5 service must delegate to VideoEditorService")
 for token in ("ffmpeg", "ProcessRunner", "File.Move", "File.WriteAll", "new FileStream"):
     require(token not in service, f"G5 service must not duplicate render IO: {token}")
-require('Path.Combine(paths.Temp, TimelineProjectStoreV2.TestRootFolderName, "Preview")' in service,
-        "G5 preview artifacts must stay in the V2 test root")
+require("G9 owns real V2 proxy lifecycle separately" in service
+        and "TimelineProjectStoreV2.TestRootFolderName" not in service,
+        "G5 adapter must not overclaim ownership of the G9 V2 proxy root")
 
 # The classic pipeline remains the single FFmpeg graph owner.
 require("BuildConfiguredRenderArguments(" in editor

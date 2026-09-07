@@ -134,6 +134,7 @@ internal static class Program
         ("timeline clip-local effects subtitle logo ride split delete without drift", TimelineItemsContract.RunAsync),
         ("timeline generated voice stays linked to subtitle cue identity", TimelineSubtitleVoiceLinkContract.RunAsync),
         ("timeline source voice music audio plan stays sample and microsecond synchronized", TimelineAudioSyncContract.RunAsync),
+        ("timeline processed preview keeps only the latest revision and reaps owned processes", TimelineProcessedPreviewContract.RunAsync),
     ];
 
     private static async Task<int> Main(string[] arguments)

@@ -6,9 +6,9 @@ Last updated: 2026-09-07
 
 ```text
 Program status: PLANNING APPROVED
-Current gate: G8 - Voice and audio ownership
-Gate state: VERIFIED - cue-linked ownership, audio plan and A/V sync contracts
-Timeline implementation: STARTED (through cue-linked audio plan; no processed render parity)
+Current gate: G9 - Processed preview
+Gate state: VERIFIED - revisioned proxy generation and stale/process cleanup
+Timeline implementation: STARTED (through owned preview proxy lifecycle; export render parity pending)
 Classic Editor modifications for Timeline: NONE (V2-only files plus test/verifier/docs)
 ```
 
@@ -198,10 +198,10 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
   trim from microseconds, keep audio, no invented edits). Export range
   equals the classic trim window; a full-clip plan behaves like an
   untrimmed classic request; multi-clip plans are rejected.
-- `TimelinePreviewExportService`: separate V2 types/preview root
-  (`Temp/TimelineV2/Preview`) delegating to the proven
-  `VideoEditorService` — the single FFmpeg graph owner. No duplicated
-  filter/argument building, no direct process management.
+- `TimelinePreviewExportService`: separate V2 request/result types delegating
+  one-clip compatibility to the proven `VideoEditorService`, including its
+  classic-owned preview cache. G9 later establishes the real V2 proxy root.
+  No duplicated filter/argument building or direct process management.
 - Core contracts: `112/112 passed` (new `TimelineParityContract`).
 - `verify_timeline_parity_contract.py` plus G2/G3/G4 verifiers and
   `validate_csharp_migration.py`: PASS; code map regenerated.
@@ -323,16 +323,53 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
   source tree SHA-256
   `e79c3f7d9e6e590360446882bcc0b68469c52bc7066e0f8eba0cc90d2d5c1540`.
 
+## G9 pre-commit verification evidence (2026-09-07)
+
+- `TimelinePreviewController` keeps a monotonic `Revision`, publishes only
+  the latest artifact and waits for the previous renderer, process group and
+  temporary cleanup barrier before starting a replacement. Cancellation
+  toggles revision and disposes the captured CTS under a single lock window
+  so cancellation tokens cannot be released mid-cancel.
+- `TimelineProcessedPreviewService` is the sole owner of
+  `Temp/TimelineV2/Preview` and per-request `OwnedProcessGroup`. It allocates
+  a unique `*.rendering.mp4` path, atomic-promotes it on success and always
+  cleans up both the rendering and final proxies when the renderer faults or
+  the request is cancelled. Path validation rejects any artifact whose full
+  path escapes the V2 preview root or whose filename does not match the
+  managed prefix.
+- Renderer seam `ITimelineProcessedPreviewRenderer` deliberately stays a
+  shell: G10 supplies the multi-clip FFmpeg graph, while G9 proves
+  publication, serialization, cleanup, path confinement and process reap.
+  Renderer failure and full cleanup verified via real `--fixture-spawn-child`
+  tree with `ActiveCount == 0` and a reaped nested child.
+- `TimelinePreviewExportService`: one-clip G5 compatibility adapter now no
+  longer claims the V2 preview root; the G5 verifier checks the overclaim is
+  gone. Classic schema-7 store and Editor service remain untouched.
+- Core contracts: `117/117 passed` (new `TimelineProcessedPreviewContract`:
+  latest-wins serialization, cancellation-resistant stale result deletion,
+  failed replacement keeps the current proxy, atomic V2 publication, owned
+  process tree reap on cancel).
+- `verify_timeline_processed_preview_contract.py` plus G2-G8 verifiers: PASS.
+- G1 frozen classic Editor contracts: `35/35 PASS`; classic Editor and
+  schema-7 store unchanged.
+- Release x64 build: 0 warnings, 0 errors; Range field regressions PASS;
+  `validate_csharp_migration.py` PASS; generated code map current.
+- Clean-tree `verify.ps1` on the G9 source commit, self-contained
+  publish/startup smoke and final G9 binary/source hashes: PENDING until
+  the G9 source is committed.
+
 ## Remaining precondition
 
-- None for starting G9 processed-preview work.
+- Commit the reviewed G9 source and run clean-tree `csharp/scripts/verify.ps1`
+  before changing the gate state to `VERIFIED`.
 - Any future restore or migration experiment must use a separate test root and
   re-verify `BACKUP_PROCEDURE.md` first.
 
 ## Next exact action
 
-Begin G9 with revisioned proxy generation and stale-preview/process-cleanup
-contracts. Do not modify the classic Editor for Timeline work.
+Review and commit the G9 source, run the clean-tree Windows verification gate,
+then record binary/source hashes. Do not modify the classic Editor for
+Timeline work.
 
 ## Required resume command
 
