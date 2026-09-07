@@ -6,9 +6,9 @@ Last updated: 2026-09-07
 
 ```text
 Program status: PLANNING APPROVED
-Current gate: G16 - Logo
-Gate state: VERIFIED - logo overlays with documented payloads, source windows and rect proof
-Timeline implementation: STARTED (through logo overlays; drag and preview playback deferred)
+Current gate: G17 - Direct manipulation
+Gate state: IN_PROGRESS - clip body reorder and edge trim implemented; full verification pending
+Timeline implementation: STARTED (through direct clip drag; preview playback deferred)
 Classic Editor modifications for Timeline: NONE (V2-only files plus test/verifier/docs)
 ```
 
@@ -594,18 +594,36 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
   source tree SHA-256
   `b7122fc62ce236efa6b003a0d6ce31091c37329390e1f02e128acfd7d9c7734f`.
 
+## G17 pre-commit evidence (2026-09-07)
+
+- User accepted DEC-027: a horizontally scrollable V1 strip provides body
+  reorder and selected-edge trim while retaining the G15 buttons as fallback.
+- Pointer move changes transient proposal visuals only. Pointer release commits
+  at most one controller transaction; cancel/capture loss commits none; drag
+  never persists implicitly.
+- `TimelineDragMath` owns headless reorder targeting, sequence-frame snapping,
+  playback-rate source mapping and one-frame trim bounds.
+- Controller hardening resets history on project switch, ignores no-op trim or
+  reorder, derives dirty state from the saved baseline, rejects implicit dirty
+  project switches, and validates the rebuilt project before committing
+  history. Project/save revisions reject stale asynchronous completion.
+- Release x64 build: 0 warnings, 0 errors; core contracts: `124/124 passed`.
+- `verify_timeline_drag_contract.py` plus G2-G16 verifiers: PASS.
+- G1 frozen classic Editor contracts: `35/35 PASS`; Range field regressions,
+  migration validation and generated code-map check: PASS.
+- Clean-tree `verify.ps1` and final G17 hashes: PENDING until source commit.
+
 ## Remaining precondition
 
-- None. All G0-G16 gates are verified. Field contracts need FFmpeg/FFprobe
-  on PATH; installer packaging needs Inno Setup 7.
+- Complete G17 static/full gates and clean-tree `verify.ps1`. Field contracts
+  need FFmpeg/FFprobe on PATH; installer packaging needs Inno Setup 7.
 - Any future restore or migration experiment must use a separate test root and
   re-verify `BACKUP_PROCEDURE.md` first.
 
 ## Next exact action
 
-Program complete through G16. Next work (drag interactions, preview playback,
-open PDEC-001..004) needs a new user-approved gate. Keep the classic Editor
-default intact.
+Finish G17 verification and evidence. Preview playback remains deferred to the
+next gate; keep the classic Editor default intact.
 
 ## Required resume command
 

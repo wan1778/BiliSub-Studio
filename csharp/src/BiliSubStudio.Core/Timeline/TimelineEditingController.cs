@@ -9,11 +9,13 @@ namespace BiliSubStudio.Core.Timeline;
 public sealed class TimelineEditingController
 {
     private readonly TimelineProjectStoreV2 _store;
-    private readonly TimelineAudioEditHistory _history = new();
+    private TimelineAudioEditHistory _history = new();
     private TimelineProjectV2? _project;
     private TimelineAudioEditState? _state;
+    private TimelineAudioEditState? _savedState;
     private string? _selectedClipId;
     private bool _dirty;
+    private long _revision;
 
     public TimelineEditingController(TimelineProjectStoreV2 store)
     {
@@ -36,17 +38,36 @@ public sealed class TimelineEditingController
 
     public int RedoCount => _history.RedoCount;
 
-    public async Task OpenAsync(string id, CancellationToken cancellationToken)
+    public long Revision => _revision;
+
+    public async Task OpenAsync(
+        string id,
+        CancellationToken cancellationToken,
+        bool discardUnsavedChanges = false)
     {
         TimelineProjectV2.ValidateId(id);
+        if (_dirty && !discardUnsavedChanges)
+            throw new InvalidOperationException(
+                "Project Timeline hiện tại có thay đổi chưa lưu; cần lưu hoặc bỏ thay đổi trước khi mở project khác.");
+        var openProjectId = _project?.Id;
+        var revision = _revision;
         var project = await _store.LoadAsync(id, cancellationToken).ConfigureAwait(false);
+        if (_revision != revision
+            || !string.Equals(_project?.Id, openProjectId, StringComparison.Ordinal)
+            || (_dirty && !discardUnsavedChanges))
+            throw new InvalidOperationException(
+                "Project Timeline đã thay đổi trong lúc mở project khác; thao tác mở đã bị hủy.");
         if (project.Sequence is null)
             throw new InvalidOperationException(
                 "Project Timeline chưa có sequence để edit (copy từ project classic trước).");
+        var state = ToAudioState(project);
         _project = project;
-        _state = ToAudioState(project);
-        _selectedClipId = _state.Timeline.Clips.FirstOrDefault()?.Id;
+        _state = state;
+        _savedState = state;
+        _selectedClipId = state.Timeline.Clips.FirstOrDefault()?.Id;
+        _history = new TimelineAudioEditHistory();
         _dirty = false;
+        _revision = 0;
     }
 
     public void SelectClip(string? clipId)
@@ -66,9 +87,18 @@ public sealed class TimelineEditingController
     public void TrimSelected(
         long newSourceInUs,
         long newSourceOutUs,
-        TimelineVoiceBoundaryPolicy voicePolicy = TimelineVoiceBoundaryPolicy.Reject) =>
+        TimelineVoiceBoundaryPolicy voicePolicy = TimelineVoiceBoundaryPolicy.Reject)
+    {
+        if (!Enum.IsDefined(voicePolicy))
+            throw new InvalidDataException("Timeline voice boundary policy không hợp lệ.");
+        var clipId = SelectedClipOrThrow();
+        var clip = CurrentState().Timeline.Clips.Single(item =>
+            string.Equals(item.Id, clipId, StringComparison.Ordinal));
+        if (clip.SourceInUs == newSourceInUs && clip.SourceOutUs == newSourceOutUs)
+            return;
         Apply(state => TimelineAudioDependencyOps.Trim(
-            state, SelectedClipOrThrow(), newSourceInUs, newSourceOutUs, voicePolicy));
+            state, clipId, newSourceInUs, newSourceOutUs, voicePolicy));
+    }
 
     public void SplitSelected(
         long cutSequenceUs,
@@ -80,8 +110,18 @@ public sealed class TimelineEditingController
     public void DeleteSelected() =>
         Apply(state => TimelineAudioDependencyOps.Delete(state, SelectedClipOrThrow()));
 
-    public void MoveSelected(int newPosition) =>
-        Apply(state => TimelineAudioDependencyOps.Reorder(state, SelectedClipOrThrow(), newPosition));
+    public void MoveSelected(int newPosition)
+    {
+        var clipId = SelectedClipOrThrow();
+        var clips = CurrentState().Timeline.Clips;
+        if (newPosition < 0 || newPosition >= clips.Count)
+            throw new InvalidDataException("Vị trí đổi thứ tự clip không hợp lệ.");
+        var currentPosition = clips.ToList().FindIndex(clip =>
+            string.Equals(clip.Id, clipId, StringComparison.Ordinal));
+        if (currentPosition == newPosition)
+            return;
+        Apply(state => TimelineAudioDependencyOps.Reorder(state, clipId, newPosition));
+    }
 
     public bool Undo()
     {
@@ -91,7 +131,8 @@ public sealed class TimelineEditingController
         _state = _history.Undo(state);
         _project = ApplyToProject(_project!, _state);
         FixSelection();
-        _dirty = true;
+        _revision++;
+        UpdateDirty();
         return true;
     }
 
@@ -103,17 +144,24 @@ public sealed class TimelineEditingController
         _state = _history.Redo(state);
         _project = ApplyToProject(_project!, _state);
         FixSelection();
-        _dirty = true;
+        _revision++;
+        UpdateDirty();
         return true;
     }
 
     public async Task SaveAsync(CancellationToken cancellationToken)
     {
         var project = Project;
+        var state = CurrentState();
+        var revision = _revision;
         project = project with { UpdatedUtc = DateTimeOffset.UtcNow };
         await _store.SaveAsync(project, cancellationToken).ConfigureAwait(false);
-        _project = project;
-        _dirty = false;
+        if (_project is null || !string.Equals(_project.Id, project.Id, StringComparison.Ordinal))
+            return;
+        _savedState = state;
+        if (_revision == revision)
+            _project = project;
+        UpdateDirty();
     }
 
     private void Apply(Func<TimelineAudioEditState, TimelineAudioEditState> operation)
@@ -121,11 +169,13 @@ public sealed class TimelineEditingController
         ArgumentNullException.ThrowIfNull(operation);
         var before = CurrentState();
         var after = operation(before);
+        var project = ApplyToProject(_project!, after);
         _history.Commit(before, after);
         _state = after;
-        _project = ApplyToProject(_project!, after);
+        _project = project;
         FixSelection();
-        _dirty = true;
+        _revision++;
+        UpdateDirty();
     }
 
     private string SelectedClipOrThrow() =>
@@ -143,6 +193,20 @@ public sealed class TimelineEditingController
             return;
         _selectedClipId = clips.FirstOrDefault()?.Id;
     }
+
+    private void UpdateDirty()
+    {
+        _dirty = _savedState is null || !StatesEqual(CurrentState(), _savedState);
+    }
+
+    private static bool StatesEqual(TimelineAudioEditState left, TimelineAudioEditState right) =>
+        left.Timeline.Clips.SequenceEqual(right.Timeline.Clips)
+        && left.Timeline.Items.SequenceEqual(right.Timeline.Items)
+        && left.SubtitleCues.SequenceEqual(right.SubtitleCues)
+        && left.AudioAssets.SequenceEqual(right.AudioAssets)
+        && left.SourceAudio.SequenceEqual(right.SourceAudio)
+        && left.VoiceCues.SequenceEqual(right.VoiceCues)
+        && left.Music == right.Music;
 
     private static TimelineAudioEditState ToAudioState(TimelineProjectV2 project)
     {

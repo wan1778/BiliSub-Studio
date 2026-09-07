@@ -31,7 +31,26 @@
                 <Button x:Name="ExportProjectButton" Click="ExportProject_Click" Content="Xuất project đã chọn" />
             </StackPanel>
             <TextBlock x:Name="ExportStatusText" TextWrapping="Wrap" Text="" />
-            <TextBlock FontSize="14" FontWeight="SemiBold" Text="Sửa clip (thời gian nhập bằng giây)" />
+            <TextBlock FontSize="14" FontWeight="SemiBold" Text="Timeline trực tiếp" />
+            <TextBlock TextWrapping="Wrap" Opacity="0.8"
+                       Text="Kéo thân clip để đổi thứ tự. Chọn clip rồi kéo mép trái/phải để trim; trên màn hình cảm ứng, kéo vùng KÉO hoặc vuốt phần còn lại để cuộn." />
+            <Border BorderBrush="#34465E" BorderThickness="1" CornerRadius="8" Background="#151D29">
+                <ScrollViewer x:Name="TimelineScroller" Height="124"
+                              HorizontalScrollBarVisibility="Auto" HorizontalScrollMode="Enabled"
+                              VerticalScrollBarVisibility="Disabled" VerticalScrollMode="Disabled">
+                    <Canvas x:Name="TimelineSurface" Width="700" Height="104" Background="Transparent"
+                            AutomationProperties.AccessibilityView="Raw"
+                            PointerPressed="TimelineSurface_PointerPressed"
+                            PointerMoved="TimelineSurface_PointerMoved"
+                            PointerReleased="TimelineSurface_PointerReleased"
+                            PointerCanceled="TimelineSurface_PointerCanceled"
+                            PointerCaptureLost="TimelineSurface_PointerCaptureLost" />
+                </ScrollViewer>
+            </Border>
+            <TextBlock x:Name="TimelineDragStatusText" FontSize="12" TextWrapping="Wrap" Opacity="0.8"
+                       AutomationProperties.LiveSetting="Polite"
+                       Text="Mở project có sequence để thao tác trực tiếp." />
+            <TextBlock FontSize="14" FontWeight="SemiBold" Text="Sửa clip chính xác (thời gian nhập bằng giây)" />
             <TextBlock TextWrapping="Wrap" Opacity="0.8"
                        Text="Chọn project V2 trong danh sách rồi chọn clip. Mọi thao tác đều undo được và chỉ lưu khi bấm Lưu." />
             <ListView x:Name="ClipList" SelectionMode="Single" IsItemClickEnabled="False" MaxHeight="200"

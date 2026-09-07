@@ -11,6 +11,8 @@ internal static class TimelineEditingContract
         await UndoRedoRoundtripAsync();
         await SavePersistsAsync();
         await OpenValidationAsync();
+        await NoOpEditsStayCleanAsync();
+        await ProjectSwitchResetsHistoryAsync();
     }
 
     private static async Task OpenSelectEditFlowAsync()
@@ -121,10 +123,11 @@ internal static class TimelineEditingContract
                 && restored.SourceAudio.SequenceEqual(opened.SourceAudio)
                 && restored.VoiceCues.SequenceEqual(opened.VoiceCues)
                 && restored.Music == opened.Music
-                && controller.RedoCount == 1,
+                && controller.RedoCount == 1 && !controller.IsDirty,
                 "undo did not restore the complete pre-edit state");
             Check(controller.Redo(), "redo did not apply");
-            Check(controller.Clips.Count == 1, "redo did not restore the delete");
+            Check(controller.Clips.Count == 1 && controller.IsDirty,
+                "redo did not restore the delete and dirty state");
             controller.MoveSelected(0);
             Check(controller.RedoCount == 0,
                 "new edit did not invalidate the redo stack");
@@ -196,6 +199,68 @@ internal static class TimelineEditingContract
                 "edit without selection was accepted");
             Check(!controller.Undo() && !controller.Redo(),
                 "empty history reported an undo/redo step");
+        }
+        finally
+        {
+            TryDeleteDirectory(root);
+        }
+    }
+
+    private static async Task NoOpEditsStayCleanAsync()
+    {
+        var root = TemporaryRoot();
+        try
+        {
+            var fixture = TimelineAudioContractFixture.CreateLocalVoiceState();
+            var project = TimelineAudioContractFixture.Project(fixture.State, fixture.MediaAssets);
+            var store = new TimelineProjectStoreV2(root);
+            await store.SaveAsync(project, CancellationToken.None);
+            var controller = new TimelineEditingController(store);
+            await controller.OpenAsync(project.Id, CancellationToken.None);
+            var clip = controller.Clips[0];
+
+            controller.TrimSelected(clip.SourceInUs, clip.SourceOutUs);
+            controller.MoveSelected(0);
+            Check(controller.UndoCount == 0 && controller.RedoCount == 0
+                && controller.Revision == 0 && !controller.IsDirty,
+                "no-op trim/reorder created history or dirtied the project");
+        }
+        finally
+        {
+            TryDeleteDirectory(root);
+        }
+    }
+
+    private static async Task ProjectSwitchResetsHistoryAsync()
+    {
+        var root = TemporaryRoot();
+        try
+        {
+            var fixture = TimelineAudioContractFixture.CreateLocalVoiceState();
+            var first = TimelineAudioContractFixture.Project(fixture.State, fixture.MediaAssets);
+            var second = TimelineAudioContractFixture.Project(fixture.State, fixture.MediaAssets);
+            var store = new TimelineProjectStoreV2(root);
+            await store.SaveAsync(first, CancellationToken.None);
+            await store.SaveAsync(second, CancellationToken.None);
+            var controller = new TimelineEditingController(store);
+
+            await controller.OpenAsync(first.Id, CancellationToken.None);
+            controller.MoveSelected(1);
+            Check(controller.UndoCount == 1 && controller.IsDirty,
+                "first project edit did not create history");
+            await ThrowsAsync<InvalidOperationException>(
+                () => controller.OpenAsync(second.Id, CancellationToken.None),
+                "dirty project switch did not require an explicit discard");
+            Check(controller.Project.Id == first.Id && controller.UndoCount == 1
+                && controller.IsDirty,
+                "rejected project switch changed the current edit state");
+            await controller.OpenAsync(
+                second.Id, CancellationToken.None, discardUnsavedChanges: true);
+            Check(controller.Project.Id == second.Id && controller.UndoCount == 0
+                && controller.RedoCount == 0 && controller.Revision == 0
+                && !controller.IsDirty
+                && !controller.Undo(),
+                "opening another project retained stale history or dirty state");
         }
         finally
         {

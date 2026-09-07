@@ -5,7 +5,12 @@ using BiliSubStudio.Core.Jobs;
 using BiliSubStudio.Core.Timeline;
 using BiliSubStudio.App.Services;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Input;
+using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Shapes;
+using Windows.Foundation;
 
 namespace BiliSubStudio.App.Pages;
 
@@ -20,6 +25,35 @@ public sealed partial class TimelineEditorPage : Page
     private readonly TimelineEditingController _editor;
     private IReadOnlyList<EditorProjectSummary> _classicProjects = [];
     private IReadOnlyList<TimelineProjectV2> _v2Projects = [];
+    private TimelinePointerGesture? _timelineDrag;
+    private bool _syncingClipSelection;
+    private bool _syncingProjectSelection;
+    private bool _savingProject;
+    private bool _openingProject;
+    private readonly DispatcherTimer _timelineAutoScrollTimer = new()
+    {
+        Interval = TimeSpan.FromMilliseconds(50),
+    };
+    private double? _timelineDragViewportX;
+
+    private const double TimelinePixelsPerSecond = 80;
+    private const double TimelineTrackTop = 24;
+    private const double TimelineTrackHeight = 66;
+    private const double TimelineHandleTolerance = 10;
+    private const double TimelineDragThreshold = 6;
+
+    private sealed record TimelinePointerGesture(
+        uint PointerId,
+        string ClipId,
+        string ProjectId,
+        long Revision,
+        TimelineDragKind Kind,
+        double PressX,
+        int OriginalPosition,
+        int CandidatePosition,
+        TimelineTrimProposal OriginalTrim,
+        TimelineTrimProposal CandidateTrim,
+        bool Dragged);
 
     public TimelineEditorPage(BiliSubApplication application, IFolderPickerService folderPicker)
     {
@@ -30,6 +64,14 @@ public sealed partial class TimelineEditorPage : Page
         _session = new TimelineEditorSession(TimelineProjectStoreV2.FromAppPaths(application.Paths));
         _editor = new TimelineEditingController(_session.Store);
         InitializeComponent();
+        _timelineAutoScrollTimer.Tick += (_, _) =>
+        {
+            if (_timelineDragViewportX is { } x)
+            {
+                AutoScrollTimeline(x);
+                UpdateTimelineDragProposal(TimelineScroller.HorizontalOffset + x);
+            }
+        };
         RootText.Text = "Test root: " + _session.Store.Root;
         _ = RefreshAsync();
     }
@@ -148,18 +190,61 @@ public sealed partial class TimelineEditorPage : Page
     // report the reason instead of committing partial work.
     private async void ProjectList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        var ownsOpen = false;
         try
         {
-            if (ProjectList.SelectedIndex < 0 || ProjectList.SelectedIndex >= _v2Projects.Count)
+            if (_syncingProjectSelection
+                || ProjectList.SelectedIndex < 0
+                || ProjectList.SelectedIndex >= _v2Projects.Count)
                 return;
-            await _editor.OpenAsync(_v2Projects[ProjectList.SelectedIndex].Id, CancellationToken.None);
+            if (_openingProject)
+            {
+                RestoreSelectedProject();
+                return;
+            }
+            var target = _v2Projects[ProjectList.SelectedIndex];
+            if (_editor.HasOpenProject
+                && string.Equals(_editor.Project.Id, target.Id, StringComparison.Ordinal))
+                return;
+            _openingProject = true;
+            ownsOpen = true;
+            ProjectList.IsEnabled = false;
+            var discard = false;
+            CancelActiveTimelineDrag("Đã hủy thao tác kéo để đổi project.");
+            if (_editor.HasOpenProject && _editor.IsDirty
+                && !string.Equals(_editor.Project.Id, target.Id, StringComparison.Ordinal))
+            {
+                var choice = await ConfirmProjectSwitchAsync();
+                if (choice == ContentDialogResult.None)
+                {
+                    RestoreSelectedProject();
+                    EditStatusText.Text = "Đã giữ project hiện tại và các thay đổi chưa lưu.";
+                    return;
+                }
+                if (choice == ContentDialogResult.Primary)
+                    await SaveOpenProjectAsync();
+                else
+                    discard = true;
+            }
+            await _editor.OpenAsync(target.Id, CancellationToken.None, discard);
+            CancelActiveTimelineDrag(null);
+            RestoreSelectedProject();
             RefreshClips();
             EditStatusText.Text = $"Đã mở {_editor.Project.Name} để sửa " +
                 $"({_editor.Clips.Count} clip, undo {_editor.UndoCount}, redo {_editor.RedoCount}).";
         }
         catch (Exception error)
         {
+            RestoreSelectedProject();
             EditStatusText.Text = "Không mở được project để sửa: " + error.Message;
+        }
+        finally
+        {
+            if (ownsOpen)
+            {
+                _openingProject = false;
+                ProjectList.IsEnabled = true;
+            }
         }
     }
 
@@ -167,10 +252,11 @@ public sealed partial class TimelineEditorPage : Page
     {
         try
         {
-            if (!_editor.HasOpenProject
+            if (_syncingClipSelection || _openingProject || !_editor.HasOpenProject
                 || ClipList.SelectedIndex < 0
                 || ClipList.SelectedIndex >= _editor.Clips.Count)
                 return;
+            CancelActiveTimelineDrag("Đã hủy thao tác kéo để đổi clip.");
             _editor.SelectClip(_editor.Clips[ClipList.SelectedIndex].Id);
             ReportEditState("Đã chọn clip.");
         }
@@ -215,18 +301,24 @@ public sealed partial class TimelineEditorPage : Page
     }
 
     private void Undo_Click(object sender, RoutedEventArgs e) =>
-        RunEdit(_editor.Undo() ? "Đã undo." : "Hết lịch sử undo.", () => { });
+        RunHistoryEdit(undo: true);
 
     private void Redo_Click(object sender, RoutedEventArgs e) =>
-        RunEdit(_editor.Redo() ? "Đã redo." : "Hết lịch sử redo.", () => { });
+        RunHistoryEdit(undo: false);
 
     private async void SaveProject_Click(object sender, RoutedEventArgs e)
     {
+        if (_savingProject || _openingProject)
+            return;
         try
         {
-            await _editor.SaveAsync(CancellationToken.None);
+            CancelActiveTimelineDrag("Đã hủy thao tác kéo trước khi lưu.");
+            await SaveOpenProjectAsync();
             await RefreshAsync();
-            ReportEditState("Đã lưu project.");
+            RestoreSelectedProject();
+            ReportEditState(_editor.IsDirty
+                ? "Đã lưu snapshot; có thay đổi mới chưa lưu."
+                : "Đã lưu project.");
         }
         catch (Exception error)
         {
@@ -234,13 +326,37 @@ public sealed partial class TimelineEditorPage : Page
         }
     }
 
-    private void RunEdit(string successMessage, Action operation)
+    private bool RunEdit(string successMessage, Action operation)
     {
         try
         {
+            if (_savingProject || _openingProject)
+                throw new InvalidOperationException("Project đang được lưu hoặc mở; hãy đợi thao tác hoàn tất.");
+            CancelActiveTimelineDrag("Đã hủy thao tác kéo để chạy lệnh khác.");
             operation();
             RefreshClips();
             ReportEditState(successMessage);
+            return true;
+        }
+        catch (Exception error)
+        {
+            EditStatusText.Text = "Không sửa được clip: " + error.Message;
+            return false;
+        }
+    }
+
+    private void RunHistoryEdit(bool undo)
+    {
+        try
+        {
+            if (_savingProject || _openingProject)
+                throw new InvalidOperationException("Project đang được lưu hoặc mở; hãy đợi thao tác hoàn tất.");
+            CancelActiveTimelineDrag("Đã hủy thao tác kéo để chạy undo/redo.");
+            var applied = undo ? _editor.Undo() : _editor.Redo();
+            RefreshClips();
+            ReportEditState(applied
+                ? (undo ? "Đã undo." : "Đã redo.")
+                : (undo ? "Hết lịch sử undo." : "Hết lịch sử redo."));
         }
         catch (Exception error)
         {
@@ -248,21 +364,500 @@ public sealed partial class TimelineEditorPage : Page
         }
     }
 
-    private void RefreshClips()
+    private async Task SaveOpenProjectAsync()
+    {
+        if (_savingProject)
+            throw new InvalidOperationException("Project Timeline đang được lưu.");
+        _savingProject = true;
+        try
+        {
+            await _editor.SaveAsync(CancellationToken.None);
+        }
+        finally
+        {
+            _savingProject = false;
+        }
+    }
+
+    private async Task<ContentDialogResult> ConfirmProjectSwitchAsync()
+    {
+        var dialog = new ContentDialog
+        {
+            XamlRoot = XamlRoot,
+            Title = "Project có thay đổi chưa lưu",
+            Content = "Lưu thay đổi trước khi mở project khác?",
+            PrimaryButtonText = "Lưu",
+            SecondaryButtonText = "Bỏ thay đổi",
+            CloseButtonText = "Hủy",
+            DefaultButton = ContentDialogButton.Primary,
+        };
+        return await dialog.ShowAsync();
+    }
+
+    private void RestoreSelectedProject()
     {
         if (!_editor.HasOpenProject)
+            return;
+        var index = _v2Projects.ToList().FindIndex(project =>
+            string.Equals(project.Id, _editor.Project.Id, StringComparison.Ordinal));
+        _syncingProjectSelection = true;
+        try
         {
-            ClipList.ItemsSource = Array.Empty<string>();
+            ProjectList.SelectedIndex = index;
+        }
+        finally
+        {
+            _syncingProjectSelection = false;
+        }
+    }
+
+    private void CancelActiveTimelineDrag(string? message)
+    {
+        if (_timelineDrag is null)
+            return;
+        _timelineDrag = null;
+        _timelineDragViewportX = null;
+        _timelineAutoScrollTimer.Stop();
+        TimelineSurface.ReleasePointerCaptures();
+        RenderTimeline();
+        if (!string.IsNullOrWhiteSpace(message))
+            TimelineDragStatusText.Text = message;
+    }
+
+    private void RefreshClips()
+    {
+        _syncingClipSelection = true;
+        try
+        {
+            if (!_editor.HasOpenProject)
+            {
+                ClipList.ItemsSource = Array.Empty<string>();
+                ClipList.SelectedIndex = -1;
+                RenderTimeline();
+                return;
+            }
+            ClipList.ItemsSource = _editor.Clips
+                .Select((clip, index) =>
+                    $"[{index}] {clip.Id[..8]}… seq {TimelineTime.ToSeconds(clip.TimelineStartUs):0.###}s" +
+                    $"..{TimelineTime.ToSeconds(clip.TimelineEndUs):0.###}s" +
+                    $" src {TimelineTime.ToSeconds(clip.SourceInUs):0.###}s" +
+                    $"..{TimelineTime.ToSeconds(clip.SourceOutUs):0.###}s x{clip.PlaybackRate:0.###}" +
+                    (string.Equals(clip.Id, _editor.SelectedClipId, StringComparison.Ordinal) ? " ●" : string.Empty))
+                .ToArray();
+            ClipList.SelectedIndex = _editor.Clips.ToList().FindIndex(clip =>
+                string.Equals(clip.Id, _editor.SelectedClipId, StringComparison.Ordinal));
+            var selected = _editor.Clips.FirstOrDefault(clip =>
+                string.Equals(clip.Id, _editor.SelectedClipId, StringComparison.Ordinal));
+            if (selected is not null)
+            {
+                TrimInBox.Text = TimelineTime.FormatSeconds(selected.SourceInUs);
+                TrimOutBox.Text = TimelineTime.FormatSeconds(selected.SourceOutUs);
+            }
+            RenderTimeline();
+        }
+        finally
+        {
+            _syncingClipSelection = false;
+        }
+    }
+
+    // G17 direct manipulation. Move events only update transient proposals;
+    // release commits one controller transaction and cancel commits nothing.
+    private void TimelineSurface_PointerPressed(object sender, PointerRoutedEventArgs e)
+    {
+        if (!_editor.HasOpenProject || _timelineDrag is not null || _savingProject || _openingProject)
+            return;
+        var point = e.GetCurrentPoint(TimelineSurface);
+        var pointerType = e.Pointer.PointerDeviceType;
+        if (pointerType == Microsoft.UI.Input.PointerDeviceType.Mouse
+            ? !point.Properties.IsLeftButtonPressed
+            : !point.IsInContact)
+            return;
+        var touch = pointerType == Microsoft.UI.Input.PointerDeviceType.Touch;
+        var touchGrip = touch ? HitTestTimelineTouchGrip(point.Position) : null;
+        (TimelineClip? Clip, TimelineDragKind Kind) hit = touchGrip is null
+            ? HitTestTimeline(point.Position, touch ? 22 : TimelineHandleTolerance)
+            : (Clip: touchGrip, Kind: TimelineDragKind.Reorder);
+        if (hit.Clip is null || hit.Kind == TimelineDragKind.None)
+            return;
+        if (touch && hit.Kind == TimelineDragKind.Reorder && touchGrip is null)
+            return;
+
+        _editor.SelectClip(hit.Clip.Id);
+        var position = _editor.Clips.ToList().FindIndex(clip =>
+            string.Equals(clip.Id, hit.Clip.Id, StringComparison.Ordinal));
+        var trim = new TimelineTrimProposal(hit.Clip.SourceInUs, hit.Clip.SourceOutUs);
+        _timelineDrag = new TimelinePointerGesture(
+            e.Pointer.PointerId,
+            hit.Clip.Id,
+            _editor.Project.Id,
+            _editor.Revision,
+            hit.Kind,
+            point.Position.X,
+            position,
+            position,
+            trim,
+            trim,
+            false);
+        if (!TimelineSurface.CapturePointer(e.Pointer))
+        {
+            _timelineDrag = null;
             return;
         }
-        ClipList.ItemsSource = _editor.Clips
-            .Select((clip, index) =>
-                $"[{index}] {clip.Id[..8]}… seq {TimelineTime.ToSeconds(clip.TimelineStartUs):0.###}s" +
-                $"..{TimelineTime.ToSeconds(clip.TimelineEndUs):0.###}s" +
-                $" src {TimelineTime.ToSeconds(clip.SourceInUs):0.###}s" +
-                $"..{TimelineTime.ToSeconds(clip.SourceOutUs):0.###}s x{clip.PlaybackRate:0.###}" +
-                (string.Equals(clip.Id, _editor.SelectedClipId, StringComparison.Ordinal) ? " ●" : string.Empty))
-            .ToArray();
+        RefreshClips();
+        TimelineDragStatusText.Text = hit.Kind == TimelineDragKind.Reorder
+            ? "Đang kéo clip; thả để đổi thứ tự."
+            : "Đang kéo mép clip; trim sẽ snap theo frame của sequence.";
+        e.Handled = true;
+    }
+
+    private void TimelineSurface_PointerMoved(object sender, PointerRoutedEventArgs e)
+    {
+        var gesture = _timelineDrag;
+        if (gesture is null || gesture.PointerId != e.Pointer.PointerId)
+            return;
+        if (!_editor.HasOpenProject
+            || !string.Equals(_editor.Project.Id, gesture.ProjectId, StringComparison.Ordinal)
+            || _editor.Revision != gesture.Revision
+            || !_editor.Clips.Any(item => string.Equals(item.Id, gesture.ClipId, StringComparison.Ordinal)))
+        {
+            FinishTimelineDrag(e, commit: false);
+            return;
+        }
+        var point = e.GetCurrentPoint(TimelineSurface);
+        if (e.Pointer.PointerDeviceType == Microsoft.UI.Input.PointerDeviceType.Mouse
+            ? !point.Properties.IsLeftButtonPressed
+            : !point.IsInContact)
+            return;
+        if (!gesture.Dragged && Math.Abs(point.Position.X - gesture.PressX) < TimelineDragThreshold)
+            return;
+
+        _timelineDragViewportX = e.GetCurrentPoint(TimelineScroller).Position.X;
+        if (!_timelineAutoScrollTimer.IsEnabled)
+            _timelineAutoScrollTimer.Start();
+        AutoScrollTimeline(_timelineDragViewportX.Value);
+        UpdateTimelineDragProposal(TimelineScroller.HorizontalOffset + _timelineDragViewportX.Value);
+        e.Handled = true;
+    }
+
+    private void UpdateTimelineDragProposal(double pointerCanvasX)
+    {
+        var gesture = _timelineDrag;
+        if (gesture is null)
+            return;
+        var firstMove = !gesture.Dragged;
+        var clip = _editor.Clips.FirstOrDefault(item =>
+            string.Equals(item.Id, gesture.ClipId, StringComparison.Ordinal));
+        if (clip is null)
+            return;
+        gesture = gesture with { Dragged = true };
+        _timelineDrag = gesture;
+        if (gesture.Kind == TimelineDragKind.Reorder)
+        {
+            var target = TimelineDragMath.ReorderPosition(
+                _editor.Clips, gesture.ClipId, PointerSequenceUs(pointerCanvasX));
+            if (!firstMove && target == gesture.CandidatePosition)
+                return;
+            gesture = gesture with { CandidatePosition = target };
+            TimelineDragStatusText.Text = $"Vị trí mới: {target + 1}/{_editor.Clips.Count}.";
+        }
+        else
+        {
+            var asset = _editor.Project.Assets.Single(item =>
+                string.Equals(item.Id, clip.AssetId, StringComparison.Ordinal));
+            var proposal = TimelineDragMath.TrimProposal(
+                clip,
+                asset,
+                _editor.Project.Sequence!.OutputFrameRate,
+                gesture.Kind,
+                PointerSequenceUs(pointerCanvasX));
+            if (!firstMove && proposal == gesture.CandidateTrim)
+                return;
+            gesture = gesture with { CandidateTrim = proposal };
+            TimelineDragStatusText.Text =
+                $"Source {TimelineTime.ToSeconds(proposal.SourceInUs):0.###}s" +
+                $"..{TimelineTime.ToSeconds(proposal.SourceOutUs):0.###}s.";
+        }
+        _timelineDrag = gesture;
+        RenderTimeline();
+    }
+
+    private void TimelineSurface_PointerReleased(object sender, PointerRoutedEventArgs e) =>
+        FinishTimelineDrag(e, commit: true);
+
+    private void TimelineSurface_PointerCanceled(object sender, PointerRoutedEventArgs e) =>
+        FinishTimelineDrag(e, commit: false);
+
+    private void TimelineSurface_PointerCaptureLost(object sender, PointerRoutedEventArgs e) =>
+        FinishTimelineDrag(e, commit: false);
+
+    private void FinishTimelineDrag(PointerRoutedEventArgs e, bool commit)
+    {
+        var gesture = _timelineDrag;
+        if (gesture is null || gesture.PointerId != e.Pointer.PointerId)
+            return;
+        if (!_editor.HasOpenProject
+            || !string.Equals(_editor.Project.Id, gesture.ProjectId, StringComparison.Ordinal)
+            || _editor.Revision != gesture.Revision)
+            commit = false;
+        _timelineDrag = null;
+        _timelineDragViewportX = null;
+        _timelineAutoScrollTimer.Stop();
+        TimelineSurface.ReleasePointerCapture(e.Pointer);
+
+        if (!commit || !gesture.Dragged)
+        {
+            RenderTimeline();
+            TimelineDragStatusText.Text = commit
+                ? "Đã chọn clip; không có thay đổi để ghi."
+                : "Đã hủy thao tác kéo; project không thay đổi.";
+            e.Handled = true;
+            return;
+        }
+
+        var changed = gesture.Kind == TimelineDragKind.Reorder
+            ? gesture.CandidatePosition != gesture.OriginalPosition
+            : gesture.CandidateTrim != gesture.OriginalTrim;
+        if (!changed)
+        {
+            RenderTimeline();
+            TimelineDragStatusText.Text = "Không có thay đổi để ghi.";
+            e.Handled = true;
+            return;
+        }
+
+        var applied = RunEdit(
+            gesture.Kind == TimelineDragKind.Reorder ? "Đã kéo clip sang vị trí mới." : "Đã trim clip bằng kéo mép.",
+            () =>
+            {
+                _editor.SelectClip(gesture.ClipId);
+                if (gesture.Kind == TimelineDragKind.Reorder)
+                    _editor.MoveSelected(gesture.CandidatePosition);
+                else
+                    _editor.TrimSelected(
+                        gesture.CandidateTrim.SourceInUs,
+                        gesture.CandidateTrim.SourceOutUs);
+            });
+        TimelineDragStatusText.Text = applied
+            ? "Đã ghi một bước undo; bấm Lưu để persist project."
+            : "Không thể ghi thao tác kéo; project giữ nguyên.";
+        e.Handled = true;
+    }
+
+    private (TimelineClip? Clip, TimelineDragKind Kind) HitTestTimeline(Point point, double handleTolerance)
+    {
+        if (point.Y < TimelineTrackTop - TimelineHandleTolerance
+            || point.Y > TimelineTrackTop + TimelineTrackHeight + TimelineHandleTolerance)
+            return (null, TimelineDragKind.None);
+        var selected = _editor.Clips.FirstOrDefault(clip =>
+            string.Equals(clip.Id, _editor.SelectedClipId, StringComparison.Ordinal));
+        if (selected is not null)
+        {
+            var left = SequenceX(selected.TimelineStartUs);
+            var right = SequenceX(selected.TimelineEndUs);
+            if (Math.Abs(point.X - left) <= handleTolerance)
+                return (selected, TimelineDragKind.TrimIn);
+            if (Math.Abs(point.X - right) <= handleTolerance)
+                return (selected, TimelineDragKind.TrimOut);
+        }
+        var clip = _editor.Clips.LastOrDefault(item =>
+            point.X >= SequenceX(item.TimelineStartUs)
+            && point.X <= SequenceX(item.TimelineEndUs));
+        return clip is null
+            ? (null, TimelineDragKind.None)
+            : (clip, TimelineDragKind.Reorder);
+    }
+
+    private TimelineClip? HitTestTimelineTouchGrip(Point point)
+    {
+        if (point.Y < TimelineTrackTop + TimelineTrackHeight - 24
+            || point.Y > TimelineTrackTop + TimelineTrackHeight)
+            return null;
+        return _editor.Clips.LastOrDefault(clip =>
+        {
+            var left = SequenceX(clip.TimelineStartUs);
+            var right = SequenceX(clip.TimelineEndUs);
+            return right - left >= 52 && point.X >= right - 44 && point.X <= right;
+        });
+    }
+
+    private void RenderTimeline()
+    {
+        TimelineSurface.Children.Clear();
+        if (!_editor.HasOpenProject || _editor.Clips.Count == 0)
+        {
+            TimelineSurface.Width = 700;
+            var empty = new TextBlock
+            {
+                Text = "Timeline chưa có clip.",
+                Foreground = new SolidColorBrush(Microsoft.UI.Colors.LightGray),
+            };
+            Canvas.SetLeft(empty, 18);
+            Canvas.SetTop(empty, 40);
+            TimelineSurface.Children.Add(empty);
+            return;
+        }
+
+        var clips = _editor.Clips;
+        TimelineSurface.Width = Math.Max(700, SequenceX(clips[^1].TimelineEndUs) + 20);
+        for (var index = 0; index < clips.Count; index++)
+        {
+            var clip = clips[index];
+            var selected = string.Equals(clip.Id, _editor.SelectedClipId, StringComparison.Ordinal);
+            var left = SequenceX(clip.TimelineStartUs);
+            var width = Math.Max(2, SequenceX(clip.TimelineEndUs) - left);
+            var card = new Border
+            {
+                Width = Math.Max(1, width - 2),
+                Height = TimelineTrackHeight,
+                CornerRadius = new CornerRadius(6),
+                BorderThickness = new Thickness(selected ? 2 : 1),
+                BorderBrush = new SolidColorBrush(selected ? Microsoft.UI.Colors.DeepSkyBlue : Microsoft.UI.Colors.SlateGray),
+                Background = new SolidColorBrush(selected
+                    ? Microsoft.UI.ColorHelper.FromArgb(255, 31, 91, 153)
+                    : Microsoft.UI.ColorHelper.FromArgb(255, 40, 52, 68)),
+                Child = new TextBlock
+                {
+                    Margin = new Thickness(10, 8, 10, 6),
+                    Text = $"{index + 1}. {clip.Id[..6]}\n" +
+                        $"{TimelineTime.ToSeconds(clip.DurationUs):0.###}s · x{clip.PlaybackRate:0.###}",
+                    Foreground = new SolidColorBrush(Microsoft.UI.Colors.White),
+                    TextTrimming = TextTrimming.CharacterEllipsis,
+                },
+            };
+            AutomationProperties.SetName(card, $"Clip {index + 1}, {TimelineTime.ToSeconds(clip.DurationUs):0.###} giây");
+            Canvas.SetLeft(card, left + 1);
+            Canvas.SetTop(card, TimelineTrackTop);
+            TimelineSurface.Children.Add(card);
+
+            if (width >= 52)
+            {
+                var grip = new Border
+                {
+                    Width = 42,
+                    Height = 20,
+                    CornerRadius = new CornerRadius(4),
+                    Background = new SolidColorBrush(Microsoft.UI.ColorHelper.FromArgb(55, 255, 215, 0)),
+                    IsHitTestVisible = false,
+                    Child = new TextBlock
+                    {
+                        Text = "KÉO",
+                        FontSize = 9,
+                        FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                        Foreground = new SolidColorBrush(Microsoft.UI.Colors.Gold),
+                        HorizontalAlignment = HorizontalAlignment.Center,
+                        VerticalAlignment = VerticalAlignment.Center,
+                    },
+                };
+                Canvas.SetLeft(grip, left + width - 44);
+                Canvas.SetTop(grip, TimelineTrackTop + TimelineTrackHeight - 22);
+                TimelineSurface.Children.Add(grip);
+            }
+
+            var time = new TextBlock
+            {
+                Text = TimelineTime.ToSeconds(clip.TimelineStartUs).ToString("0.###") + "s",
+                FontSize = 10,
+                Foreground = new SolidColorBrush(Microsoft.UI.Colors.LightGray),
+            };
+            Canvas.SetLeft(time, left + 2);
+            Canvas.SetTop(time, 4);
+            TimelineSurface.Children.Add(time);
+
+            if (selected)
+            {
+                AddTimelineHandle(left);
+                AddTimelineHandle(left + width);
+            }
+        }
+
+        RenderTimelineDragProposal();
+    }
+
+    private void RenderTimelineDragProposal()
+    {
+        var gesture = _timelineDrag;
+        if (gesture is null || !gesture.Dragged)
+            return;
+        var clip = _editor.Clips.First(item =>
+            string.Equals(item.Id, gesture.ClipId, StringComparison.Ordinal));
+        if (gesture.Kind == TimelineDragKind.Reorder)
+        {
+            var target = _editor.Clips[gesture.CandidatePosition];
+            var x = gesture.CandidatePosition <= gesture.OriginalPosition
+                ? SequenceX(target.TimelineStartUs)
+                : SequenceX(target.TimelineEndUs);
+            var marker = new Rectangle
+            {
+                Width = 4,
+                Height = TimelineTrackHeight + 16,
+                Fill = new SolidColorBrush(Microsoft.UI.Colors.Gold),
+                RadiusX = 2,
+                RadiusY = 2,
+            };
+            Canvas.SetLeft(marker, x - 2);
+            Canvas.SetTop(marker, TimelineTrackTop - 8);
+            TimelineSurface.Children.Add(marker);
+            return;
+        }
+
+        var sourceSpanUs = clip.SourceOutUs - clip.SourceInUs;
+        var startRatio = (gesture.CandidateTrim.SourceInUs - clip.SourceInUs) / (double)sourceSpanUs;
+        var endRatio = (gesture.CandidateTrim.SourceOutUs - clip.SourceInUs) / (double)sourceSpanUs;
+        var left = SequenceX(clip.TimelineStartUs);
+        var width = SequenceX(clip.TimelineEndUs) - left;
+        var proposal = new Rectangle
+        {
+            Width = Math.Max(2, width * (endRatio - startRatio)),
+            Height = TimelineTrackHeight - 12,
+            Stroke = new SolidColorBrush(Microsoft.UI.Colors.Gold),
+            StrokeThickness = 2,
+            Fill = new SolidColorBrush(Microsoft.UI.ColorHelper.FromArgb(60, 255, 215, 0)),
+        };
+        Canvas.SetLeft(proposal, left + width * startRatio);
+        Canvas.SetTop(proposal, TimelineTrackTop + 6);
+        TimelineSurface.Children.Add(proposal);
+    }
+
+    private void AddTimelineHandle(double x)
+    {
+        var handle = new Rectangle
+        {
+            Width = 8,
+            Height = TimelineTrackHeight + 8,
+            RadiusX = 4,
+            RadiusY = 4,
+            Fill = new SolidColorBrush(Microsoft.UI.Colors.DeepSkyBlue),
+        };
+        Canvas.SetLeft(handle, x - 4);
+        Canvas.SetTop(handle, TimelineTrackTop - 4);
+        TimelineSurface.Children.Add(handle);
+    }
+
+    private long PointerSequenceUs(double x)
+    {
+        var total = _editor.Clips[^1].TimelineEndUs;
+        var value = Math.Round(
+            Math.Max(0, x) / TimelinePixelsPerSecond * TimelineTime.MicrosecondsPerSecond,
+            MidpointRounding.AwayFromZero);
+        return (long)Math.Clamp(value, 0, total);
+    }
+
+    private static double SequenceX(long sequenceUs) =>
+        sequenceUs / (double)TimelineTime.MicrosecondsPerSecond * TimelinePixelsPerSecond;
+
+    private void AutoScrollTimeline(double pointerViewportX)
+    {
+        const double edge = 44;
+        const double step = 36;
+        var left = TimelineScroller.HorizontalOffset;
+        double? target = null;
+        if (pointerViewportX < edge)
+            target = Math.Max(0, left - step);
+        else if (pointerViewportX > TimelineScroller.ViewportWidth - edge)
+            target = Math.Min(TimelineScroller.ScrollableWidth, left + step);
+        if (target is not null)
+            TimelineScroller.ChangeView(target, null, null, disableAnimation: true);
     }
 
     private void ReportEditState(string message)
