@@ -7,7 +7,7 @@ Last updated: 2026-09-07
 ```text
 Program status: PLANNING APPROVED
 Current gate: G13 - Fidelity
-Gate state: IN_PROGRESS - source and dirty-tree gates pass; clean-tree verify pending
+Gate state: VERIFIED - full-fidelity export with reused classic graphs and final voice/music mix
 Timeline implementation: STARTED (through full-fidelity export; no Edit-tab merge, flag default off)
 Classic Editor modifications for Timeline: NONE (V2-only files plus test/verifier/docs)
 ```
@@ -462,7 +462,7 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
   source tree SHA-256
   `aa9accee485e20c63f614cfe5bd2bfab2e703cc58320490c2c5f0fea1cffe1c1`.
 
-## G13 pre-commit verification evidence (2026-09-07)
+## G13 verification evidence (2026-09-07)
 
 - User accepted DEC-023: full-fidelity export reusing classic builders;
   logos and legacy music stay rejected; documented effect payload encoding.
@@ -486,21 +486,24 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
   schema-7 store unchanged.
 - Release x64 build: 0 warnings, 0 errors; Range field regressions PASS;
   `validate_csharp_migration.py` PASS; generated code map current.
-- Clean-tree `verify.ps1`, self-contained publish/startup smoke and final G13
-  binary/source hashes: PENDING until the G13 source is committed.
+- Clean-tree `verify.ps1` on `c1005ec`: PASS (contracts `121/121`, Range
+  regressions, self-contained publish, real startup smoke, worker identity,
+  PE32+ x64 and checksum readback).
+- G13 gate binary: exe SHA-256
+  `e3cfc528ceb44ef27748ecfa236ca6ce3da240098ecfb435c44adde6b2da6c03`,
+  source tree SHA-256
+  `7a547af737cd3ed543d7d3216a545bc8ce27fa889fe54da485a48be6528dd0a7`.
 
 ## Remaining precondition
 
-- Commit the reviewed G13 source and run clean-tree `csharp/scripts/verify.ps1`
-  before changing the gate state to `VERIFIED`. Field contracts need
-  FFmpeg/FFprobe on PATH.
+- None for field QA. Field contracts need FFmpeg/FFprobe on PATH.
 - Any future restore or migration experiment must use a separate test root and
   re-verify `BACKUP_PROCEDURE.md` first.
 
 ## Next exact action
 
-Review and commit the G13 source, run the clean-tree Windows verification gate,
-then record binary/source hashes. Do not modify the classic Editor for
+Run Windows field QA on the G13 binary (installer candidate + field
+checklist), then promotion merge. Do not modify the classic Editor for
 Timeline work.
 
 ## Required resume command
