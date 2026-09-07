@@ -140,6 +140,7 @@ internal static class Program
         ("timeline FFmpeg mux renders normalized segments, joins them in order and validates drift", TimelineMuxContract.RunAsync),
         ("timeline fidelity renders effects, subtitles, voice and music without silent drops", TimelineFidelityContract.RunAsync),
         ("timeline merge keeps classic navigation default with kill-switch and pinned export wiring", TimelineMergeContract.RunAsync),
+        ("timeline editing controller keeps selection, atomic undo and dirty save", TimelineEditingContract.RunAsync),
     ];
 
     private static async Task<int> Main(string[] arguments)

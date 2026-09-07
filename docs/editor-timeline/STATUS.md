@@ -6,9 +6,9 @@ Last updated: 2026-09-07
 
 ```text
 Program status: PLANNING APPROVED
-Current gate: G14 - Merge
-Gate state: VERIFIED - promoted navigation with real export, classic default and kill-switch intact
-Timeline implementation: STARTED (through promoted navigation with real export; classic default intact)
+Current gate: G15 - Editing
+Gate state: IN_PROGRESS - source and dirty-tree gates pass; clean-tree verify pending
+Timeline implementation: STARTED (through clip editing interactions; drag and preview playback deferred)
 Classic Editor modifications for Timeline: NONE (V2-only files plus test/verifier/docs)
 ```
 
@@ -537,17 +537,42 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
   install smoke and full `WINDOWS_FIELD_CHECKLIST_CSHARP_P5.md` run on the
   G13 binary remain pending.
 
+## G15 pre-commit verification evidence (2026-09-07)
+
+- User accepted DEC-025: clip editing interactions through a headless
+  controller wired to explicit page controls; drag and preview playback stay
+  deferred.
+- `TimelineEditingController` owns one open project, clip selection, atomic
+  undo/redo history and the dirty flag. Edits run pure dependency ops first
+  and commit history only on success, so rejected edits leave state, history,
+  selection and dirty flag untouched. Persistence goes only through the V2
+  store; empty-sequence and sequenceless projects are handled explicitly.
+- V2 page gains clip list, trim/split/delete/reorder/undo/redo/save controls
+  with second-based inputs and reason-reporting status. No `EditorPage`,
+  schema-7 or `Data/Projects` coupling.
+- Core contracts: `123/123 passed` (new `TimelineEditingContract`: edit flow,
+  rejected-edit preservation, undo/redo roundtrip, dirty save, open
+  validation).
+- `verify_timeline_editing_contract.py` plus G2-G14 verifiers: PASS.
+- G1 frozen classic Editor contracts: `35/35 PASS`; classic Editor behavior
+  and schema-7 store unchanged.
+- Release x64 build: 0 warnings, 0 errors; Range field regressions PASS;
+  `validate_csharp_migration.py` PASS; generated code map current.
+- Clean-tree `verify.ps1`, self-contained publish/startup smoke and final G15
+  binary/source hashes: PENDING until the G15 source is committed.
+
 ## Remaining precondition
 
-- None. All G0-G14 gates are verified. Field contracts need FFmpeg/FFprobe
-  on PATH; installer packaging needs Inno Setup 7.
+- Commit the reviewed G15 source and run clean-tree `csharp/scripts/verify.ps1`
+  before changing the gate state to `VERIFIED`. Field contracts need
+  FFmpeg/FFprobe on PATH.
 - Any future restore or migration experiment must use a separate test root and
   re-verify `BACKUP_PROCEDURE.md` first.
 
 ## Next exact action
 
-Program complete through G14. Next work needs a new user-approved gate. Keep
-the classic Editor default intact.
+Review and commit the G15 source, run the clean-tree Windows verification gate,
+then record binary/source hashes. Keep the classic Editor default intact.
 
 ## Required resume command
 

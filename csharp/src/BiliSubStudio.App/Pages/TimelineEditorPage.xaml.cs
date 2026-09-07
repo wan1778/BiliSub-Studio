@@ -17,6 +17,7 @@ public sealed partial class TimelineEditorPage : Page
     private readonly TimelineEditorSession _session;
     private readonly BiliSubApplication _application;
     private readonly IFolderPickerService _folderPicker;
+    private readonly TimelineEditingController _editor;
     private IReadOnlyList<EditorProjectSummary> _classicProjects = [];
     private IReadOnlyList<TimelineProjectV2> _v2Projects = [];
 
@@ -27,6 +28,7 @@ public sealed partial class TimelineEditorPage : Page
         _application = application;
         _folderPicker = folderPicker;
         _session = new TimelineEditorSession(TimelineProjectStoreV2.FromAppPaths(application.Paths));
+        _editor = new TimelineEditingController(_session.Store);
         InitializeComponent();
         RootText.Text = "Test root: " + _session.Store.Root;
         _ = RefreshAsync();
@@ -139,6 +141,145 @@ public sealed partial class TimelineEditorPage : Page
         {
             ShellStatusText.Text = "Không đọc được test root: " + error.Message;
         }
+    }
+
+    // G15 editing interactions. Clip edits run through TimelineEditingController
+    // (selection, atomic undo/redo, dirty save); rejected edits keep state and
+    // report the reason instead of committing partial work.
+    private async void ProjectList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        try
+        {
+            if (ProjectList.SelectedIndex < 0 || ProjectList.SelectedIndex >= _v2Projects.Count)
+                return;
+            await _editor.OpenAsync(_v2Projects[ProjectList.SelectedIndex].Id, CancellationToken.None);
+            RefreshClips();
+            EditStatusText.Text = $"Đã mở {_editor.Project.Name} để sửa " +
+                $"({_editor.Clips.Count} clip, undo {_editor.UndoCount}, redo {_editor.RedoCount}).";
+        }
+        catch (Exception error)
+        {
+            EditStatusText.Text = "Không mở được project để sửa: " + error.Message;
+        }
+    }
+
+    private void ClipList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        try
+        {
+            if (!_editor.HasOpenProject
+                || ClipList.SelectedIndex < 0
+                || ClipList.SelectedIndex >= _editor.Clips.Count)
+                return;
+            _editor.SelectClip(_editor.Clips[ClipList.SelectedIndex].Id);
+            ReportEditState("Đã chọn clip.");
+        }
+        catch (Exception error)
+        {
+            EditStatusText.Text = "Không chọn được clip: " + error.Message;
+        }
+    }
+
+    private void TrimClip_Click(object sender, RoutedEventArgs e) =>
+        RunEdit("Trim xong.", () =>
+        {
+            _editor.TrimSelected(
+                TimelineTime.FromSeconds(ParseSeconds(TrimInBox.Text, "SourceIn")),
+                TimelineTime.FromSeconds(ParseSeconds(TrimOutBox.Text, "SourceOut")));
+        });
+
+    private void SplitClip_Click(object sender, RoutedEventArgs e) =>
+        RunEdit("Split xong.", () =>
+        {
+            _editor.SplitSelected(
+                TimelineTime.FromSeconds(ParseSeconds(SplitAtBox.Text, "điểm cắt")));
+        });
+
+    private void DeleteClip_Click(object sender, RoutedEventArgs e) =>
+        RunEdit("Đã xóa clip.", () => _editor.DeleteSelected());
+
+    private void MoveUp_Click(object sender, RoutedEventArgs e) =>
+        RunEdit("Đã chuyển clip lên.", () => MoveSelectedBy(-1));
+
+    private void MoveDown_Click(object sender, RoutedEventArgs e) =>
+        RunEdit("Đã chuyển clip xuống.", () => MoveSelectedBy(1));
+
+    private void MoveSelectedBy(int delta)
+    {
+        var clips = _editor.Clips;
+        var index = clips.ToList().FindIndex(clip =>
+            string.Equals(clip.Id, _editor.SelectedClipId, StringComparison.Ordinal));
+        if (index < 0)
+            throw new InvalidOperationException("Chưa chọn clip Timeline để edit.");
+        _editor.MoveSelected(Math.Clamp(index + delta, 0, clips.Count - 1));
+    }
+
+    private void Undo_Click(object sender, RoutedEventArgs e) =>
+        RunEdit(_editor.Undo() ? "Đã undo." : "Hết lịch sử undo.", () => { });
+
+    private void Redo_Click(object sender, RoutedEventArgs e) =>
+        RunEdit(_editor.Redo() ? "Đã redo." : "Hết lịch sử redo.", () => { });
+
+    private async void SaveProject_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            await _editor.SaveAsync(CancellationToken.None);
+            await RefreshAsync();
+            ReportEditState("Đã lưu project.");
+        }
+        catch (Exception error)
+        {
+            EditStatusText.Text = "Không lưu được project: " + error.Message;
+        }
+    }
+
+    private void RunEdit(string successMessage, Action operation)
+    {
+        try
+        {
+            operation();
+            RefreshClips();
+            ReportEditState(successMessage);
+        }
+        catch (Exception error)
+        {
+            EditStatusText.Text = "Không sửa được clip: " + error.Message;
+        }
+    }
+
+    private void RefreshClips()
+    {
+        if (!_editor.HasOpenProject)
+        {
+            ClipList.ItemsSource = Array.Empty<string>();
+            return;
+        }
+        ClipList.ItemsSource = _editor.Clips
+            .Select((clip, index) =>
+                $"[{index}] {clip.Id[..8]}… seq {TimelineTime.ToSeconds(clip.TimelineStartUs):0.###}s" +
+                $"..{TimelineTime.ToSeconds(clip.TimelineEndUs):0.###}s" +
+                $" src {TimelineTime.ToSeconds(clip.SourceInUs):0.###}s" +
+                $"..{TimelineTime.ToSeconds(clip.SourceOutUs):0.###}s x{clip.PlaybackRate:0.###}" +
+                (string.Equals(clip.Id, _editor.SelectedClipId, StringComparison.Ordinal) ? " ●" : string.Empty))
+            .ToArray();
+    }
+
+    private void ReportEditState(string message)
+    {
+        RefreshClips();
+        EditStatusText.Text = $"{message} " +
+            $"({_editor.Clips.Count} clip, undo {_editor.UndoCount}, redo {_editor.RedoCount}" +
+            $"{(_editor.IsDirty ? ", chưa lưu" : ", đã lưu")}).";
+    }
+
+    private static double ParseSeconds(string? text, string field)
+    {
+        if (!double.TryParse(text?.Trim(), System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var seconds)
+            || !double.IsFinite(seconds) || seconds < 0)
+            throw new InvalidDataException($"Giá trị giây không hợp lệ: {field}.");
+        return seconds;
     }
 
     // G14 promotion export. Exports the selected V2 project through the real

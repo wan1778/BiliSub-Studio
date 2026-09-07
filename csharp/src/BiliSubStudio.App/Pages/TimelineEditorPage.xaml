@@ -25,11 +25,35 @@
             </StackPanel>
             <TextBlock x:Name="PromotionStatusText" TextWrapping="Wrap" Text="" />
             <TextBlock x:Name="RootText" FontSize="11" TextWrapping="Wrap" Opacity="0.7" Text="Test root: chưa khởi tạo." />
-            <ListView x:Name="ProjectList" SelectionMode="Single" IsItemClickEnabled="False" MaxHeight="320" />
+            <ListView x:Name="ProjectList" SelectionMode="Single" IsItemClickEnabled="False" MaxHeight="320"
+                      SelectionChanged="ProjectList_SelectionChanged" />
             <StackPanel Orientation="Horizontal" Spacing="8">
                 <Button x:Name="ExportProjectButton" Click="ExportProject_Click" Content="Xuất project đã chọn" />
             </StackPanel>
             <TextBlock x:Name="ExportStatusText" TextWrapping="Wrap" Text="" />
+            <TextBlock FontSize="14" FontWeight="SemiBold" Text="Sửa clip (thời gian nhập bằng giây)" />
+            <TextBlock TextWrapping="Wrap" Opacity="0.8"
+                       Text="Chọn project V2 trong danh sách rồi chọn clip. Mọi thao tác đều undo được và chỉ lưu khi bấm Lưu." />
+            <ListView x:Name="ClipList" SelectionMode="Single" IsItemClickEnabled="False" MaxHeight="200"
+                      SelectionChanged="ClipList_SelectionChanged" />
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <TextBox x:Name="TrimInBox" MinWidth="140" PlaceholderText="SourceIn (s)" />
+                <TextBox x:Name="TrimOutBox" MinWidth="140" PlaceholderText="SourceOut (s)" />
+                <Button x:Name="TrimClipButton" Click="TrimClip_Click" Content="Trim" />
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <TextBox x:Name="SplitAtBox" MinWidth="140" PlaceholderText="Cắt tại (s, sequence)" />
+                <Button x:Name="SplitClipButton" Click="SplitClip_Click" Content="Split" />
+                <Button x:Name="MoveUpButton" Click="MoveUp_Click" Content="Lên" />
+                <Button x:Name="MoveDownButton" Click="MoveDown_Click" Content="Xuống" />
+                <Button x:Name="DeleteClipButton" Click="DeleteClip_Click" Content="Xóa clip" />
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <Button x:Name="UndoButton" Click="Undo_Click" Content="Undo" />
+                <Button x:Name="RedoButton" Click="Redo_Click" Content="Redo" />
+                <Button x:Name="SaveProjectButton" Click="SaveProject_Click" Content="Lưu" />
+            </StackPanel>
+            <TextBlock x:Name="EditStatusText" TextWrapping="Wrap" Text="" />
         </StackPanel>
     </ScrollViewer>
 </Page>
