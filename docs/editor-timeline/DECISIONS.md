@@ -34,6 +34,10 @@ This log is append-only. Do not silently rewrite an accepted decision. A change 
 | DEC-026 | ACCEPTED | G16 renders clip-local and sequence-global logos with the documented `logo\|path\|x,y,w,h\|opacity` encoding, classic-composer overlay semantics (rgba scale, alpha, clamped pixels) plus source-second enable windows; legacy music items stay rejected; ASS PlayRes follows pre-scale asset frames. | Closes the last explicit mux rejection; user-approved scope on 2026-09-07. |
 | DEC-027 | ACCEPTED | G17 adds a horizontally scrollable V1 clip strip: dragging a clip body proposes reorder, dragging the selected clip edges proposes frame-snapped trim, pointer move mutates only transient visuals, and release commits at most one `TimelineEditingController` transaction; cancel/capture loss commits nothing and explicit save remains the only persistence action. | Adds direct manipulation without bypassing G15 history/dependency ownership; user-approved scope on 2026-09-07. |
 | DEC-028 | ACCEPTED | G18 renders one full-sequence processed proxy from the current unsaved `TimelineEditingController` snapshot through the existing export graph, then provides play/pause/resume/stop; preview locks edits, accepted project switch/unload/app-close detach and dispose the player before canceling/deleting the proxy, and arbitrary window seek/prefetch stays deferred. | Delivers real preview playback without duplicating FFmpeg resolution or pretending unsupported render-window slicing exists; user-approved scope on 2026-09-07. |
+| DEC-029 | ACCEPTED | PDEC-001/G3 resolution resolved (DEC-029): `TimelineSequence.Create` defaults output geometry to the first clip in sequence order; a future explicit override is preserved as a separate caller parameter that no present call site uses. | Matches the G3 recommendation already pinned by `TimelineSequence.Create` and G3 contracts, user-approved on 2026-09-07. |
+| DEC-030 | ACCEPTED | PDEC-002/G3 FPS resolved (DEC-030): the V2 sequence always declares one explicit, finite, positive FPS that the user provides; the default value for the only production call site (`TimelineMigrator`) is 30 fps, matching the classic MVP guidance. Inside a single `TimelineSequence`, FPS never varies and is exposed through `OutputFrameRate` so G12/G13 muxer, A/V drift tolerance and ASS PlayRes can rely on one frame grid. | Locks the FPS contract that DEC-019, G12 muxer, G13 ASS and G7 drift plan already assume; user-approved on 2026-09-07. |
+| DEC-031 | ACCEPTED | PDEC-003/G6 ripple resolved (DEC-031): `TimelineSequenceOps.Delete` removes the target clip and the survivors `ReflowContiguous` join end-to-start from zero; sequence-global items (`Music`, logos/subtitles without `ClipId`) keep their absolute `SequenceStartUs`/`SequenceEndUs` and remain in place. | Mirrors the G6/G7 behaviour already validated by `TimelineSequenceOpsContract` and the G15 contract; user-approved on 2026-09-07. |
+| DEC-032 | ACCEPTED | PDEC-004/G7 SRT import resolved (DEC-032): the UI defaults the import target to the currently selected clip through `TimelineItemOps.AttachSubtitleToClip`, and exposes an explicit "sequence-global" toggle that produces a `ClipId == null` subtitle via `TimelineItemOps.AttachSubtitleToSequence`. Clip-local import keeps new cues inside the selected clip's source-second window; sequence-global cues add to whatever V1 layout currently covers them. | Reuses both existing subtitle attachment helpers and the G7 ownership rule; user-approved on 2026-09-07. |
 
 ## Pending product decisions
 
@@ -47,6 +51,14 @@ These decisions are intentionally deferred until the responsible gate:
 | PDEC-004 | G7 | SRT import target | Attach to selected clip by default; offer sequence-global import. |
 | PDEC-005 | G8 | Maximum music tracks in MVP | One music track. |
 | PDEC-006 | G11 | Duration of classic fallback support | At least two verified public builds after promotion. |
+
+PDEC-001 was resolved by DEC-029 on 2026-09-07.
+
+PDEC-002 was resolved by DEC-030 on 2026-09-07.
+
+PDEC-003 was resolved by DEC-031 on 2026-09-07.
+
+PDEC-004 was resolved by DEC-032 on 2026-09-07.
 
 PDEC-005 was resolved by DEC-018 on 2026-09-07.
 

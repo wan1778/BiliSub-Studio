@@ -661,10 +661,31 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
 
 ## Remaining precondition
 
-- None. All G0-G18 gates are verified. Field contracts need FFmpeg/FFprobe
-  on PATH; installer packaging needs Inno Setup 7.
+- None. All G0-G18 gates are verified. PDEC-001/002/003/004 are resolved
+  (DEC-029 through DEC-032). Field contracts need FFmpeg/FFprobe on PATH;
+  installer packaging needs Inno Setup 7.
 - Any future restore or migration experiment must use a separate test root and
   re-verify `BACKUP_PROCEDURE.md` first.
+
+## PDEC resolution evidence (2026-09-07)
+
+- DEC-029 locks the G3 default resolution rule: `TimelineSequence.Create`
+  takes `IReadOnlyList<TimelineClip>`, `IReadOnlyList<TimelineMediaAsset>`
+  and an explicit output FPS, then assigns `firstAsset.Width/Height` to
+  `OutputWidth/OutputHeight`. Both `TimelineMigrator` and the G3 contract
+  suite already follow this.
+- DEC-030 confirms V2 FPS is always explicit and finite; `TimelineMigrator`
+  passes `30`, the only production caller. `OutputFrameRate` is reused by the
+  G12 mux framerate, the G13 ASS PlayRes matrix and the DEC-019 audio drift
+  bound, so a single grid always drives the sequence.
+- DEC-031 nails the G6 ripple contract: `TimelineSequenceOps.Delete` (line 95)
+  returns the survivors and `ReflowContiguous` joins them end-to-start from
+  zero. `TimelineItemOps` keeps sequence-global items unchanged because their
+  `SequenceStartUs/EndUs` are absolute; only `ClipId == null` items stay.
+- DEC-032 fixes SRT import target: the UI labels the two helpers
+  `AttachSubtitleToClip` (selected clip by default) and
+  `AttachSubtitleToSequence` (explicit global toggle), both already part of
+  G7 ownership verification.
 
 ## Next exact action
 
