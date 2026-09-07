@@ -41,6 +41,28 @@ public sealed class MediaPreviewService
         return ParseProbe(result.StandardOutput, Path.GetExtension(input));
     }
 
+    // G11 additive probe: reports whether the source carries at least one
+    // audio stream. Existing ProbeAsync semantics are unchanged; the Timeline
+    // promotion flow needs probed audio presence instead of a caller guess.
+    public async Task<bool> ProbeHasAudioAsync(string inputPath, CancellationToken cancellationToken)
+    {
+        var input = ValidateInput(inputPath);
+        var ffprobe = await _tools.EnsureFfprobeAsync(cancellationToken);
+        var result = await _processes.RunAsync(ffprobe,
+        [
+            "-v", "error", "-select_streams", "a:0",
+            "-show_entries", "stream=codec_type",
+            "-of", "csv=p=0", input,
+        ], cancellationToken);
+        if (result.ExitCode != 0)
+        {
+            throw new InvalidOperationException($"Đọc luồng audio: {result.StandardError.Trim()}");
+        }
+        return result.StandardOutput
+            .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
+            .Any(line => string.Equals(line.Trim(), "audio", StringComparison.OrdinalIgnoreCase));
+    }
+
     public async Task<byte[]> GetFrameJpegAsync(string inputPath, double seconds, CancellationToken cancellationToken)
     {
         var input = ValidateInput(inputPath);

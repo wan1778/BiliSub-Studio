@@ -136,6 +136,7 @@ internal static class Program
         ("timeline source voice music audio plan stays sample and microsecond synchronized", TimelineAudioSyncContract.RunAsync),
         ("timeline processed preview keeps only the latest revision and reaps owned processes", TimelineProcessedPreviewContract.RunAsync),
         ("timeline export segments respect mixed-format plan, concat list order and cleanup-aware jobs", TimelineExportContract.RunAsync),
+        ("timeline promotion copies real schema-7 projects with backup gate and source preservation", TimelinePromotionContract.RunAsync),
     ];
 
     private static async Task<int> Main(string[] arguments)

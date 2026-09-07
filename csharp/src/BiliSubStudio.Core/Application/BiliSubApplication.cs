@@ -477,6 +477,12 @@ public sealed class BiliSubApplication : IAsyncDisposable
     public Task<EditorProject> LoadEditorProjectByIdAsync(string id, CancellationToken cancellationToken) =>
         _editorProjects.LoadAsync(id, cancellationToken);
 
+    // G11 additive facade: resolves the schema-7 JSON path for a media source
+    // without exposing the store. Read-only; the Timeline promotion flow uses
+    // it only to hash-verify that the source file is never modified.
+    public string GetEditorProjectPath(string sourcePath) =>
+        _editorProjects.GetProjectPath(sourcePath);
+
     public Task RenameEditorProjectAsync(string id, string name, CancellationToken cancellationToken) =>
         _editorProjects.RenameAsync(id, name, cancellationToken);
 

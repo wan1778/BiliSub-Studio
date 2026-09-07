@@ -13,6 +13,17 @@
                 <Button x:Name="CreateTestProjectButton" Click="CreateTestProject_Click" Content="Tạo project thử nghiệm" />
                 <Button x:Name="RefreshListButton" Click="RefreshList_Click" Content="Làm mới" />
             </StackPanel>
+            <TextBlock FontSize="14" FontWeight="SemiBold" Text="Copy project classic sang V2 (G11 readiness)" />
+            <TextBlock TextWrapping="Wrap" Opacity="0.8"
+                       Text="Chỉ copy: project schema-7 và media nguồn không bao giờ bị sửa. Cần backup production đã ghi nhận trước khi copy. Bản classic vẫn mở bình thường ở tab Chỉnh video." />
+            <ComboBox x:Name="ClassicProjectCombo" MinWidth="420" PlaceholderText="Chọn project classic (schema 7)" />
+            <TextBox x:Name="BackupTagBox" MinWidth="420" PlaceholderText="Backup tag, ví dụ Projects-G0-20260906T162516Z" />
+            <TextBox x:Name="BackupManifestBox" MinWidth="420" PlaceholderText="SHA-256 manifest của bản backup (64 ký tự hex)" />
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <Button x:Name="CopyClassicProjectButton" Click="CopyClassicProject_Click" Content="Copy sang V2" />
+                <Button x:Name="RefreshClassicButton" Click="RefreshClassic_Click" Content="Nạp danh sách classic" />
+            </StackPanel>
+            <TextBlock x:Name="PromotionStatusText" TextWrapping="Wrap" Text="" />
             <TextBlock x:Name="RootText" FontSize="11" TextWrapping="Wrap" Opacity="0.7" Text="Test root: chưa khởi tạo." />
             <ListView x:Name="ProjectList" SelectionMode="None" IsItemClickEnabled="False" MaxHeight="320" />
         </StackPanel>

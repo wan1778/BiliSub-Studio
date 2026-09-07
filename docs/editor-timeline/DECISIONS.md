@@ -26,6 +26,7 @@ This log is append-only. Do not silently rewrite an accepted decision. A change 
 | DEC-018 | ACCEPTED | G8 MVP supports at most one sequence-global music track. | Keeps the approved guided-editor scope bounded and resolves PDEC-005. |
 | DEC-019 | ACCEPTED | Timeline audio timing is exact in persisted/compiled microseconds; final media A/V drift may not exceed the larger of one 48 kHz sample or half one sequence video frame. | Gives G8 deterministic internal contracts and a realistic mux boundary for G10 field verification. |
 | DEC-020 | ACCEPTED | G10 verifies the multi-segment export lifecycle (plan geometry, concat-list order, cleanup-aware AppJob, mixed-format plan matrix) through the `ITimelineExportSegmentRenderer` seam; the real multi-clip FFmpeg mux graph is deferred to a follow-up gate. | Keeps G10 honest without duplicating the classic FFmpeg graph inside the V2 namespace; user-approved scope on 2026-09-07. |
+| DEC-021 | ACCEPTED | The classic Editor remains available for at least two verified public builds after V2 promotion, with V2 staying behind the internal flag and schema-7 as the untouched fallback. | Gives field rollback a concrete minimum window; user-approved scope on 2026-09-07; resolves PDEC-006. |
 
 ## Pending product decisions
 
@@ -41,3 +42,5 @@ These decisions are intentionally deferred until the responsible gate:
 | PDEC-006 | G11 | Duration of classic fallback support | At least two verified public builds after promotion. |
 
 PDEC-005 was resolved by DEC-018 on 2026-09-07.
+
+PDEC-006 was resolved by DEC-021 on 2026-09-07.

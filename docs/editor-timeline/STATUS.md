@@ -6,9 +6,9 @@ Last updated: 2026-09-07
 
 ```text
 Program status: PLANNING APPROVED
-Current gate: G10 - Export
-Gate state: VERIFIED - segmented export lifecycle, concat order and cleanup-aware jobs
-Timeline implementation: STARTED (through segmented export lifecycle; real FFmpeg mux deferred per DEC-020)
+Current gate: G11 - Promotion
+Gate state: IN_PROGRESS - source and dirty-tree gates pass; clean-tree verify pending
+Timeline implementation: STARTED (through promotion readiness; no Edit-tab merge, flag default off)
 Classic Editor modifications for Timeline: NONE (V2-only files plus test/verifier/docs)
 ```
 
@@ -397,16 +397,45 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
   source tree SHA-256
   `d17e853a4f3696d55958cf135a3f1de981158407f703d72ab1a713c9f73eb3cd`.
 
+## G11 pre-commit verification evidence (2026-09-07)
+
+- User accepted readiness-only scope (no Edit-tab merge, no flag default
+  change) and DEC-021: classic Editor stays available for at least two
+  verified public builds after promotion; PDEC-006 resolved.
+- `TimelinePromotionService` copies one real schema-7 project into the
+  isolated V2 store behind a backup gate (`BackupTag` + 64-hex manifest SHA
+  required up front). Source JSON/media are SHA-256 snapshotted before and
+  after; any drift throws. The service writes nothing itself; the only writer
+  is `TimelineProjectStoreV2`. Missing media resolves to relink guidance.
+- Shared additive probes only: `MediaPreviewService.ProbeHasAudioAsync`
+  (audio-stream presence, existing probe semantics unchanged) and
+  `BiliSubApplication.GetEditorProjectPath` (read-only schema-7 path facade).
+- Copy entry lives only in the flag-gated V2 dev page (classic dropdown +
+  backup-tag/manifest inputs + warnings display). `EditorPage`,
+  `MainWindow.xaml` and classic navigation are untouched; flag defaults off.
+- Core contracts: `119/119 passed` (new `TimelinePromotionContract`:
+  real-shaped copy with source preservation, backup-gate rejection,
+  non-schema-7 rejection).
+- `verify_timeline_promotion_contract.py` plus G2-G10 verifiers: PASS.
+- G1 frozen classic Editor contracts: `35/35 PASS`; classic Editor and
+  schema-7 store unchanged.
+- Release x64 build: 0 warnings, 0 errors; Range field regressions PASS;
+  `validate_csharp_migration.py` PASS; generated code map current.
+- Clean-tree `verify.ps1`, self-contained publish/startup smoke and final G11
+  binary/source hashes: PENDING until the G11 source is committed.
+
 ## Remaining precondition
 
-- None for starting G11 promotion work.
+- Commit the reviewed G11 source and run clean-tree `csharp/scripts/verify.ps1`
+  before changing the gate state to `VERIFIED`.
 - Any future restore or migration experiment must use a separate test root and
   re-verify `BACKUP_PROCEDURE.md` first.
 
 ## Next exact action
 
-Begin G11 with real-project copy and Windows QA for promotion. Do not modify
-the classic Editor for Timeline work.
+Review and commit the G11 source, run the clean-tree Windows verification gate,
+then record binary/source hashes. Do not modify the classic Editor for
+Timeline work.
 
 ## Required resume command
 
