@@ -7,7 +7,7 @@ Last updated: 2026-09-07
 ```text
 Program status: PLANNING APPROVED
 Current gate: G17 - Direct manipulation
-Gate state: IN_PROGRESS - clip body reorder and edge trim implemented; full verification pending
+Gate state: VERIFIED - pointer proposals commit one atomic edit on release
 Timeline implementation: STARTED (through direct clip drag; preview playback deferred)
 Classic Editor modifications for Timeline: NONE (V2-only files plus test/verifier/docs)
 ```
@@ -594,7 +594,7 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
   source tree SHA-256
   `b7122fc62ce236efa6b003a0d6ce31091c37329390e1f02e128acfd7d9c7734f`.
 
-## G17 pre-commit evidence (2026-09-07)
+## G17 verification evidence (2026-09-07)
 
 - User accepted DEC-027: a horizontally scrollable V1 strip provides body
   reorder and selected-edge trim while retaining the G15 buttons as fallback.
@@ -611,19 +611,25 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
 - `verify_timeline_drag_contract.py` plus G2-G16 verifiers: PASS.
 - G1 frozen classic Editor contracts: `35/35 PASS`; Range field regressions,
   migration validation and generated code-map check: PASS.
-- Clean-tree `verify.ps1` and final G17 hashes: PENDING until source commit.
+- Clean-tree `verify.ps1` on `4d5d470`: PASS on first attempt (contracts
+  `124/124`, Range regressions, self-contained publish, real startup smoke,
+  worker identity, PE32+ x64 and checksum readback).
+- G17 gate binary: exe SHA-256
+  `6b0a71c574d27291bcf4bb43a53e915bc29ef17461d92509be525ed08374143e`,
+  source tree SHA-256
+  `4595be7018c75767d12e66b18caab95a0d44875a59d9920c96a9895a8347f95a`.
 
 ## Remaining precondition
 
-- Complete G17 static/full gates and clean-tree `verify.ps1`. Field contracts
-  need FFmpeg/FFprobe on PATH; installer packaging needs Inno Setup 7.
+- None. All G0-G17 gates are verified. Field contracts need FFmpeg/FFprobe
+  on PATH; installer packaging needs Inno Setup 7.
 - Any future restore or migration experiment must use a separate test root and
   re-verify `BACKUP_PROCEDURE.md` first.
 
 ## Next exact action
 
-Finish G17 verification and evidence. Preview playback remains deferred to the
-next gate; keep the classic Editor default intact.
+Start G18 preview playback using the existing G9 revisioned preview lifecycle;
+keep the classic Editor default intact.
 
 ## Required resume command
 
