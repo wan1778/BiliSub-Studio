@@ -64,6 +64,7 @@ public sealed partial class TimelineEditorPage : Page
         _session = new TimelineEditorSession(TimelineProjectStoreV2.FromAppPaths(application.Paths));
         _editor = new TimelineEditingController(_session.Store);
         InitializeComponent();
+        InitializeTimelinePlayback();
         _timelineAutoScrollTimer.Tick += (_, _) =>
         {
             if (_timelineDragViewportX is { } x)
@@ -193,7 +194,7 @@ public sealed partial class TimelineEditorPage : Page
         var ownsOpen = false;
         try
         {
-            if (_syncingProjectSelection
+            if (_syncingProjectSelection || _timelineClosing
                 || ProjectList.SelectedIndex < 0
                 || ProjectList.SelectedIndex >= _v2Projects.Count)
                 return;
@@ -226,6 +227,7 @@ public sealed partial class TimelineEditorPage : Page
                 else
                     discard = true;
             }
+            await StopTimelinePreviewAsync(updateStatus: false);
             await _editor.OpenAsync(target.Id, CancellationToken.None, discard);
             CancelActiveTimelineDrag(null);
             RestoreSelectedProject();
@@ -252,7 +254,8 @@ public sealed partial class TimelineEditorPage : Page
     {
         try
         {
-            if (_syncingClipSelection || _openingProject || !_editor.HasOpenProject
+            if (_syncingClipSelection || _openingProject || _timelineClosing
+                || !_editor.HasOpenProject
                 || ClipList.SelectedIndex < 0
                 || ClipList.SelectedIndex >= _editor.Clips.Count)
                 return;
@@ -308,7 +311,7 @@ public sealed partial class TimelineEditorPage : Page
 
     private async void SaveProject_Click(object sender, RoutedEventArgs e)
     {
-        if (_savingProject || _openingProject)
+        if (_savingProject || _openingProject || _timelineClosing)
             return;
         try
         {
@@ -330,8 +333,11 @@ public sealed partial class TimelineEditorPage : Page
     {
         try
         {
-            if (_savingProject || _openingProject)
-                throw new InvalidOperationException("Project đang được lưu hoặc mở; hãy đợi thao tác hoàn tất.");
+            if (_savingProject || _openingProject || _timelineClosing || TimelinePreviewLocked)
+                throw new InvalidOperationException(
+                    TimelinePreviewLocked
+                        ? "Hãy dừng processed preview trước khi chỉnh sửa."
+                        : "Project đang được lưu hoặc mở; hãy đợi thao tác hoàn tất.");
             CancelActiveTimelineDrag("Đã hủy thao tác kéo để chạy lệnh khác.");
             operation();
             RefreshClips();
@@ -349,8 +355,11 @@ public sealed partial class TimelineEditorPage : Page
     {
         try
         {
-            if (_savingProject || _openingProject)
-                throw new InvalidOperationException("Project đang được lưu hoặc mở; hãy đợi thao tác hoàn tất.");
+            if (_savingProject || _openingProject || _timelineClosing || TimelinePreviewLocked)
+                throw new InvalidOperationException(
+                    TimelinePreviewLocked
+                        ? "Hãy dừng processed preview trước khi undo/redo."
+                        : "Project đang được lưu hoặc mở; hãy đợi thao tác hoàn tất.");
             CancelActiveTimelineDrag("Đã hủy thao tác kéo để chạy undo/redo.");
             var applied = undo ? _editor.Undo() : _editor.Redo();
             RefreshClips();
@@ -458,6 +467,7 @@ public sealed partial class TimelineEditorPage : Page
         finally
         {
             _syncingClipSelection = false;
+            RefreshTimelinePreviewControls();
         }
     }
 
@@ -465,7 +475,8 @@ public sealed partial class TimelineEditorPage : Page
     // release commits one controller transaction and cancel commits nothing.
     private void TimelineSurface_PointerPressed(object sender, PointerRoutedEventArgs e)
     {
-        if (!_editor.HasOpenProject || _timelineDrag is not null || _savingProject || _openingProject)
+        if (!_editor.HasOpenProject || _timelineDrag is not null || _savingProject
+            || _openingProject || _timelineClosing || TimelinePreviewLocked)
             return;
         var point = e.GetCurrentPoint(TimelineSurface);
         var pointerType = e.Pointer.PointerDeviceType;
@@ -886,6 +897,8 @@ public sealed partial class TimelineEditorPage : Page
         AppJob? job = null;
         try
         {
+            if (_timelineClosing)
+                return;
             if (ProjectList.SelectedIndex < 0 || ProjectList.SelectedIndex >= _v2Projects.Count)
             {
                 ExportStatusText.Text = "Hãy chọn một project V2 trong danh sách trước khi xuất.";

@@ -141,9 +141,10 @@ public sealed class TimelinePreviewController : IAsyncDisposable
         TimelineProcessedPreviewArtifact? artifact;
         CancellationTokenSource? cancellation;
         Task completion;
+        long cancellationRevision;
         lock (_sync)
         {
-            _revision = checked(_revision + 1);
+            cancellationRevision = _revision = checked(_revision + 1);
             cancellation = _currentCancellation;
             completion = _currentCompletion;
             artifact = _currentArtifact;
@@ -160,7 +161,21 @@ public sealed class TimelinePreviewController : IAsyncDisposable
         else
             await Task.Yield();
         if (artifact is not null && _generator is not null)
-            await _generator.DeleteAsync(artifact, CancellationToken.None).ConfigureAwait(false);
+        {
+            try
+            {
+                await _generator.DeleteAsync(artifact, CancellationToken.None).ConfigureAwait(false);
+            }
+            catch
+            {
+                lock (_sync)
+                {
+                    if (_revision == cancellationRevision && _currentArtifact is null)
+                        _currentArtifact = artifact;
+                }
+                throw;
+            }
+        }
     }
 
     private static void RequestCancellation(CancellationTokenSource? cancellation)

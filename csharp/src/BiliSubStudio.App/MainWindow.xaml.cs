@@ -331,6 +331,8 @@ public sealed partial class MainWindow : Window
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(95));
             if (_pages["editor"] is EditorPage editorPage)
                 await editorPage.FlushForAppCloseAsync(timeout.Token);
+            if (_pages["timelinev2"] is TimelineEditorPage timelinePage)
+                await timelinePage.FlushForAppCloseAsync(timeout.Token);
             await _application.PrepareShutdownAsync(timeout.Token);
             _application.LaunchPendingUpdate();
             _safeToClose = true;
@@ -341,6 +343,8 @@ public sealed partial class MainWindow : Window
         catch (Exception error)
         {
             _closing = false;
+            if (_pages["timelinev2"] is TimelineEditorPage timelinePage)
+                timelinePage.AbortAppClose();
             FooterStatus.Text = "Từ chối đóng để bảo toàn dữ liệu: " + error.Message;
             _globalLog.Error("Ứng dụng", "Từ chối đóng để bảo toàn dữ liệu: " + error.Message);
             // EDIT-CLOSE: chặn im lặng khiến user tưởng app treo. Báo bằng hộp

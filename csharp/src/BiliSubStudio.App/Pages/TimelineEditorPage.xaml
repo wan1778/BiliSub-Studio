@@ -31,6 +31,34 @@
                 <Button x:Name="ExportProjectButton" Click="ExportProject_Click" Content="Xuất project đã chọn" />
             </StackPanel>
             <TextBlock x:Name="ExportStatusText" TextWrapping="Wrap" Text="" />
+            <TextBlock FontSize="14" FontWeight="SemiBold" Text="Processed preview toàn timeline" />
+            <TextBlock TextWrapping="Wrap" Opacity="0.8"
+                       Text="Preview dùng đúng render plan hiện tại, kể cả thay đổi chưa lưu. Dừng preview trước khi tiếp tục chỉnh sửa." />
+            <Border BorderBrush="#34465E" BorderThickness="1" CornerRadius="8" Background="#080C12">
+                <Grid Height="300">
+                    <MediaPlayerElement x:Name="TimelinePreviewPlayer"
+                                        AreTransportControlsEnabled="False" AutoPlay="False"
+                                        Stretch="Uniform" Visibility="Collapsed"
+                                        AutomationProperties.Name="Processed preview Timeline" />
+                    <TextBlock x:Name="TimelinePreviewPlaceholder" HorizontalAlignment="Center" VerticalAlignment="Center"
+                               Text="Bản xem trước sẽ xuất hiện ở đây" Opacity="0.65" />
+                    <ProgressRing x:Name="TimelinePreviewProgress" Width="42" Height="42"
+                                  HorizontalAlignment="Center" VerticalAlignment="Center"
+                                  IsActive="False" Visibility="Collapsed" />
+                </Grid>
+            </Border>
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <Button x:Name="TimelinePreviewPlayButton" Click="TimelinePreviewPlay_Click"
+                        Content="Tạo và phát preview" />
+                <Button x:Name="TimelinePreviewPauseButton" Click="TimelinePreviewPause_Click"
+                        Content="Tạm dừng" IsEnabled="False" />
+                <Button x:Name="TimelinePreviewStopButton" Click="TimelinePreviewStop_Click"
+                        Content="Dừng" IsEnabled="False" />
+                <TextBlock x:Name="TimelinePreviewClockText" VerticalAlignment="Center" Text="00:00 / 00:00" />
+            </StackPanel>
+            <TextBlock x:Name="TimelinePreviewStatusText" TextWrapping="Wrap" Opacity="0.8"
+                       AutomationProperties.LiveSetting="Polite"
+                       Text="Mở project có sequence để tạo preview." />
             <TextBlock FontSize="14" FontWeight="SemiBold" Text="Timeline trực tiếp" />
             <TextBlock TextWrapping="Wrap" Opacity="0.8"
                        Text="Kéo thân clip để đổi thứ tự. Chọn clip rồi kéo mép trái/phải để trim; trên màn hình cảm ứng, kéo vùng KÉO hoặc vuốt phần còn lại để cuộn." />

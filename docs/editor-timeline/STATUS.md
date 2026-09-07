@@ -6,9 +6,9 @@ Last updated: 2026-09-07
 
 ```text
 Program status: PLANNING APPROVED
-Current gate: G17 - Direct manipulation
-Gate state: VERIFIED - pointer proposals commit one atomic edit on release
-Timeline implementation: STARTED (through direct clip drag; preview playback deferred)
+Current gate: G18 - Preview playback
+Gate state: VERIFIED - processed proxy of the unsaved plan plays and tears down cleanly
+Timeline implementation: STARTED (through direct clip drag and processed playback)
 Classic Editor modifications for Timeline: NONE (V2-only files plus test/verifier/docs)
 ```
 
@@ -593,6 +593,36 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
   `151cab99122571174d5de30aecb8f8c1c5191550d4fa809658a5d073411cac8e`,
   source tree SHA-256
   `b7122fc62ce236efa6b003a0d6ce31091c37329390e1f02e128acfd7d9c7734f`.
+
+## G18 verification evidence (2026-09-07)
+
+- User accepted DEC-028: a single-page processed preview plays the current
+  unsaved `_editor.Project` snapshot through the existing export graph; only
+  full-sequence playback is offered, with play/pause/resume/stop as the only
+  explicit user controls; arbitrary window seek/prefetch stay deferred.
+- `TimelineFfmpegProcessedPreviewRenderer` is the lone G9 concrete renderer. It
+  delegates to the exact `TimelineExportService` path (segment + concat + final
+  voice/music mix) using a captured `TimelineProjectV2` snapshot, so preview and
+  export share filters, sidecars, ASS PlayRes and drift policy (DEC-013/019,
+  G13/G14/G16).
+- Lifecycle (G9 plus page-level barrier):
+  - Edit/project-switch/unload/app-close lock player/controls until stop; clean
+    app close auto-saves dirty state.
+  - Stop captures the in-flight start task before its first await, cancels, then
+    detaches player (Source→null→SetMediaPlayer(null)→Dispose) before the
+    controller deletes the proxy. Discarded go through
+    `EnsureTimelinePreviewRequestCurrent` for project id/revision/UI revision.
+  - `MediaEnded`/`MediaFailed`/Unload run cleanup through `async void` with
+    final-state guarantees and per-handler catch so cleanup failures do not
+    become unhandled exceptions.
+  - `TimelinePreviewController.CancelCoreAsync` retains artifact ownership on
+    delete failure, so the next Stop can retry instead of leaking a proxy.
+  - `MainWindow` rolls `_timelineClosing` back on refused shutdown via
+    `AbortAppClose`, so Timeline never stays permanently disabled.
+- Core contracts: `125/125 passed` (renderer delegates whole-sequence, renderer
+  delegates final mix, unsaved controller snapshot flows through the renderer).
+- `verify_timeline_preview_playback_contract.py` plus G2-G17 verifiers: PASS.
+- G1 frozen classic Editor: `35/35 PASS`; Range/migration/code-map: PASS.
 
 ## G17 verification evidence (2026-09-07)
 
