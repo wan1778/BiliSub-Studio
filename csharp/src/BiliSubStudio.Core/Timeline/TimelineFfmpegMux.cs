@@ -208,32 +208,41 @@ public static class TimelineFfmpegArguments
         // cues and global music join later in the final mix pass.
         var audibleOutput = TimelineMuxValidation.HasAudibleSourceAudio(plan);
         var audibleClip = segment.SourceAudio.HasSourceStream && segment.SourceAudio.Gain > 0;
+        var logos = TimelineEffectGraph.MapLogosForSegment(segment);
         var arguments = new List<string>
         {
             "-y", "-hide_banner", "-loglevel", "error", "-nostdin",
             "-i", segment.Asset.Path,
         };
+        foreach (var logo in logos)
+            arguments.AddRange(["-loop", "1", "-framerate", "1", "-i", logo.Path]);
+        // Logo inputs sit between the source and the optional silence input,
+        // so the audio input index shifts only when lavfi is actually added.
         var audioInput = 0;
         if (audibleOutput && !audibleClip)
         {
             arguments.AddRange(["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]);
-            audioInput = 1;
+            audioInput = 1 + logos.Count;
         }
         // Windowing stays inside the filtergraph (trim/atrim): output -ss/-t
         // cannot bound an infinite lavfi silence input, which previously left
         // a full-window audio tail after atempo rate conversion. Clip effects
         // and subtitle burns compose ahead of trim in source coordinates, so
-        // enable windows and ASS timestamps stay exact downstream.
+        // enable windows and ASS timestamps stay exact downstream. Logos layer
+        // after normalize in output coordinates with source-second windows.
         var composed = TimelineEffectGraph.BuildComposedVideoFilter(segment, assPath);
+        var head = composed is null ? "[0:v]" : $"{composed}[fx];[fx]";
         var normalized =
             $"trim=start={startSeconds}:duration={durationSeconds}," +
             $"setpts=(PTS-STARTPTS)/{FormatNumber(rate)}[sv];" +
             $"[sv]scale={plan.OutputWidth}:{plan.OutputHeight}," +
-            $"setsar=1,fps={FormatNumber(plan.OutputFrameRate)},format=yuv420p[vout]";
+            $"setsar=1,fps={FormatNumber(plan.OutputFrameRate)},format=yuv420p";
         // The classic body already opens with its own [0:v] input label.
-        var videoFilter = composed is null
-            ? $"[0:v]{normalized}"
-            : $"{composed}[fx];[fx]{normalized}";
+        // Without logos the chain stays byte-identical to the G12 graph.
+        // The logo chain terminates at [vout] itself.
+        var videoFilter = logos.Count == 0
+            ? $"{head}{normalized}[vout]"
+            : $"{head}{normalized}[nv];{BuildLogoChain(logos, "nv", ToSeconds(segment.DurationUs))}";
         string audioFilter = string.Empty;
         if (audibleOutput)
         {
@@ -260,6 +269,33 @@ public static class TimelineFfmpegArguments
         arguments.AddRange(["-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
             "-movflags", "+faststart", renderingPath]);
         return arguments;
+    }
+
+    // Logo overlays mirror the classic composer (rgba scale, alpha mixer,
+    // clamped pixels) with one documented extension: source-second enable
+    // windows for clip-local and sequence-global items. The looped still
+    // input is trimmed to the segment output duration: without a bound the
+    // infinite logo stream would keep the mux running forever.
+    private static string BuildLogoChain(
+        IReadOnlyList<TimelineLogoOverlay> logos, string current, string outputDurationSeconds)
+    {
+        var parts = new List<string>();
+        for (var index = 0; index < logos.Count; index++)
+        {
+            var logo = logos[index];
+            var label = $"l{index}";
+            var output = index == logos.Count - 1 ? "vout" : $"o{index}";
+            parts.Add($"[{index + 1}:v]trim=duration={outputDurationSeconds}," +
+                $"format=rgba,scale={logo.Width}:{logo.Height}:flags=lanczos," +
+                $"colorchannelmixer=aa={logo.Opacity.ToString("0.000", CultureInfo.InvariantCulture)}[{label}]");
+            var enable = logo.WholeVideo
+                ? string.Empty
+                : $":enable='between(t,{logo.StartSeconds.ToString("0.000", CultureInfo.InvariantCulture)}," +
+                  $"{logo.EndSeconds.ToString("0.000", CultureInfo.InvariantCulture)})'";
+            parts.Add($"[{current}][{label}]overlay={logo.X}:{logo.Y}:eof_action=repeat:shortest=0{enable}[{output}]");
+            current = output;
+        }
+        return string.Join(";", parts);
     }
 
     public static IReadOnlyList<string> BuildConcat(string listPath, string outputPath)

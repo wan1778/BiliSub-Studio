@@ -6,9 +6,9 @@ Last updated: 2026-09-07
 
 ```text
 Program status: PLANNING APPROVED
-Current gate: G15 - Editing
-Gate state: VERIFIED - clip editing interactions with atomic undo and dirty save
-Timeline implementation: STARTED (through clip editing interactions; drag and preview playback deferred)
+Current gate: G16 - Logo
+Gate state: IN_PROGRESS - source and dirty-tree gates pass; clean-tree verify pending
+Timeline implementation: STARTED (through logo overlays; drag and preview playback deferred)
 Classic Editor modifications for Timeline: NONE (V2-only files plus test/verifier/docs)
 ```
 
@@ -568,18 +568,39 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
   source tree SHA-256
   `b1e2c3161681bee3914805ee4a8ff8a59b60ba477bb2023af01947e8611322e5`.
 
+## G16 pre-commit verification evidence (2026-09-07)
+
+- User accepted DEC-026: clip-local and sequence-global logos render with the
+  documented `logo|path|x,y,w,h|opacity` encoding; legacy music items stay
+  rejected; ASS PlayRes follows pre-scale asset frames (latent G13 mismatch
+  fixed: output dims were used for a pre-scale burn).
+- Logo overlays mirror classic composer semantics (rgba scale, alpha mixer,
+  clamped pixels, `eof_action=repeat`) plus source-second enable windows.
+  Two real field bugs found by contract: infinite looped logo input hung the
+  mux (bounded with in-graph `trim`), and logo geometry used asset instead of
+  output coordinates (white box landed off-rect; proven by pixel dump).
+- Core contracts: `123/123 passed` (logo payload matrix, source-geometry
+  mapping, overlay argv, field export with rect proof).
+- `verify_timeline_logo_contract.py` plus G2-G15 verifiers: PASS.
+- G1 frozen classic Editor contracts: `35/35 PASS`; classic Editor behavior
+  and schema-7 store unchanged.
+- Release x64 build: 0 warnings, 0 errors; Range field regressions PASS;
+  `validate_csharp_migration.py` PASS; generated code map current.
+- Clean-tree `verify.ps1`, self-contained publish/startup smoke and final G16
+  binary/source hashes: PENDING until the G16 source is committed.
+
 ## Remaining precondition
 
-- None. All G0-G15 gates are verified. Field contracts need FFmpeg/FFprobe
-  on PATH; installer packaging needs Inno Setup 7.
+- Commit the reviewed G16 source and run clean-tree `csharp/scripts/verify.ps1`
+  before changing the gate state to `VERIFIED`. Field contracts need
+  FFmpeg/FFprobe on PATH.
 - Any future restore or migration experiment must use a separate test root and
   re-verify `BACKUP_PROCEDURE.md` first.
 
 ## Next exact action
 
-Program complete through G15. Next work (drag interactions, preview playback,
-logo export, open PDEC-001..004) needs a new user-approved gate. Keep the
-classic Editor default intact.
+Review and commit the G16 source, run the clean-tree Windows verification gate,
+then record binary/source hashes. Keep the classic Editor default intact.
 
 ## Required resume command
 

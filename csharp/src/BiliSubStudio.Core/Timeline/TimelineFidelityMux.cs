@@ -57,23 +57,84 @@ public sealed record TimelineEffectSpec(
     }
 }
 
+public sealed record TimelineLogoSpec(
+    string Path,
+    double X,
+    double Y,
+    double Width,
+    double Height,
+    double Opacity)
+{
+    // Documented encoding for V2 logo payloads ('|' is forbidden in Windows
+    // file names, so drive-letter paths survive splitting):
+    //   logo|{path}|{x},{y},{w},{h}|{opacity}
+    // Fractions and the 5%-100% opacity range mirror the classic composer.
+    public static TimelineLogoSpec Parse(string payload, string itemId)
+    {
+        if (string.IsNullOrWhiteSpace(payload) || string.IsNullOrWhiteSpace(itemId))
+            throw new InvalidOperationException(
+                "Timeline logo thiếu payload hoặc ID.");
+        var parts = payload.Trim().Split('|');
+        if (parts.Length != 4
+            || !string.Equals(parts[0].Trim(), "logo", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException(
+                $"Timeline logo {itemId} phải có dạng logo|path|x,y,w,h|opacity.");
+        var path = parts[1].Trim();
+        var extension = System.IO.Path.GetExtension(path).ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(path)
+            || extension is not (".png" or ".jpg" or ".jpeg"))
+            throw new InvalidOperationException(
+                $"Timeline logo {itemId} chỉ hỗ trợ PNG, JPG hoặc JPEG.");
+        var geometry = parts[2].Split(',');
+        if (geometry.Length != 4
+            || !double.TryParse(geometry[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var x)
+            || !double.TryParse(geometry[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var y)
+            || !double.TryParse(geometry[2], NumberStyles.Float, CultureInfo.InvariantCulture, out var width)
+            || !double.TryParse(geometry[3], NumberStyles.Float, CultureInfo.InvariantCulture, out var height)
+            || !double.IsFinite(x) || !double.IsFinite(y)
+            || !double.IsFinite(width) || !double.IsFinite(height)
+            || x < 0 || y < 0 || width <= 0 || height <= 0
+            || x + width > 1.0001 || y + height > 1.0001)
+            throw new InvalidOperationException(
+                $"Timeline logo {itemId} có geometry không hợp lệ.");
+        if (!double.TryParse(parts[3].Trim(), NumberStyles.Float,
+                CultureInfo.InvariantCulture, out var opacity)
+            || !double.IsFinite(opacity) || opacity is < 0.05 or > 1)
+            throw new InvalidOperationException(
+                $"Timeline logo {itemId} có opacity ngoài 5%-100%.");
+        return new TimelineLogoSpec(path, x, y, width, height, opacity);
+    }
+}
+
+public sealed record TimelineLogoOverlay(
+    string Path,
+    int X,
+    int Y,
+    int Width,
+    int Height,
+    double Opacity,
+    double StartSeconds,
+    double EndSeconds,
+    bool WholeVideo,
+    string ItemId);
+
 public static class TimelineRenderCapability
 {
     // G13 mux boundary: video, clip effects with documented payloads,
     // subtitle cues, voice cues and at most one typed music track render.
-    // Clip logos and legacy unverified music items reject explicitly.
+    // G16 adds clip and sequence-global logos with documented payloads.
+    // Legacy unverified music items stay rejected.
     public static void EnsureMuxSupported(TimelineRenderPlan plan)
     {
         ArgumentNullException.ThrowIfNull(plan);
         foreach (var item in plan.Items)
         {
             if (item.Kind == TimelineItemKind.Logo)
-                throw new InvalidOperationException(
-                    "Timeline FFmpeg mux chưa hỗ trợ logo.");
-            if (item.Kind == TimelineItemKind.Music)
+                _ = TimelineLogoSpec.Parse(item.Payload, item.ItemId);
+            else if (item.Kind == TimelineItemKind.Music)
                 throw new InvalidOperationException(
                     "Timeline FFmpeg mux chưa hỗ trợ legacy music item.");
-            if (item.Kind == TimelineItemKind.Effect)
+            else if (item.Kind == TimelineItemKind.Effect)
                 _ = TimelineEffectSpec.Parse(item.Payload, item.ItemId);
         }
     }
@@ -181,6 +242,75 @@ public static class TimelineEffectGraph
     public static string BuildAssText(EditorSubtitleBurn burn, int width, int height) =>
         VideoEditorService.BuildAss(
             burn ?? throw new ArgumentNullException(nameof(burn)), width, height);
+
+    // Maps clip-local and sequence-global logo items overlapping this clip to
+    // overlays. The overlay stage runs after normalize, so geometry resolves
+    // against the OUTPUT frames (presentation space, like the classic export
+    // composer); enable windows stay in source seconds so the downstream trim
+    // selects the rendered frames.
+    public static IReadOnlyList<TimelineLogoOverlay> MapLogosForSegment(TimelineRenderSegment segment)
+    {
+        ArgumentNullException.ThrowIfNull(segment);
+        var clip = segment.Clip;
+        var asset = segment.Asset;
+        if (!double.IsFinite(clip.PlaybackRate) || clip.PlaybackRate <= 0)
+            throw new InvalidDataException("Timeline segment PlaybackRate không hợp lệ.");
+        var outputWidth = segment.Plan.OutputWidth;
+        var outputHeight = segment.Plan.OutputHeight;
+        segment.Plan.ValidateOutputGeometry();
+        if (asset.Width <= 0 || asset.Height <= 0)
+            throw new InvalidDataException("Timeline logo cần kích thước asset hợp lệ.");
+        var segSourceInUs = clip.SourceInUs;
+        var segSourceOutUs = clip.SourceOutUs;
+        var overlays = new List<TimelineLogoOverlay>();
+        foreach (var item in segment.Plan.Items
+            .OrderBy(item => item.SequenceStartUs)
+            .ThenBy(item => item.ItemId, StringComparer.Ordinal))
+        {
+            if (item.Kind != TimelineItemKind.Logo)
+                continue;
+            var owned = string.Equals(item.ClipId, clip.ClipId, StringComparison.Ordinal);
+            var global = item.ClipId is null;
+            if (!owned && !global)
+                continue;
+            if (item.SequenceEndUs <= clip.SequenceStartUs
+                || item.SequenceStartUs >= clip.SequenceEndUs)
+                continue;
+            var spec = TimelineLogoSpec.Parse(item.Payload, item.ItemId);
+            if (!File.Exists(spec.Path))
+                throw new InvalidDataException($"Thiếu file logo {item.ItemId} cho final render.");
+            var startUs = Math.Max(
+                checked(clip.SourceInUs + (long)Math.Round(
+                    (item.SequenceStartUs - clip.SequenceStartUs) * clip.PlaybackRate,
+                    MidpointRounding.AwayFromZero)),
+                Math.Max(0, segSourceInUs));
+            var endUs = Math.Min(
+                checked(clip.SourceInUs + (long)Math.Round(
+                    (item.SequenceEndUs - clip.SequenceStartUs) * clip.PlaybackRate,
+                    MidpointRounding.AwayFromZero)),
+                Math.Min(asset.DurationUs, segSourceOutUs));
+            if (endUs <= startUs)
+                continue;
+            var width = Math.Max(2, (int)Math.Round(spec.Width * outputWidth));
+            var height = Math.Max(2, (int)Math.Round(spec.Height * outputHeight));
+            if (Math.Round(spec.Width * outputWidth) < 2
+                || Math.Round(spec.Height * outputHeight) < 2)
+                throw new InvalidOperationException(
+                    $"Timeline logo {item.ItemId} quá nhỏ để render.");
+            overlays.Add(new TimelineLogoOverlay(
+                System.IO.Path.GetFullPath(spec.Path),
+                Math.Clamp((int)Math.Round(spec.X * outputWidth), 0, Math.Max(0, outputWidth - width)),
+                Math.Clamp((int)Math.Round(spec.Y * outputHeight), 0, Math.Max(0, outputHeight - height)),
+                width,
+                height,
+                Math.Clamp(spec.Opacity, .05, 1),
+                ToSeconds(startUs),
+                ToSeconds(endUs),
+                startUs <= segSourceInUs && endUs >= segSourceOutUs,
+                item.ItemId));
+        }
+        return overlays;
+    }
 
     // Composes the classic effect/subtitle graph ahead of trim/normalize, or
     // returns null when the segment carries no visual edits (G12 fast path).

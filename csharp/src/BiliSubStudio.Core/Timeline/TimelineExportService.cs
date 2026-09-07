@@ -298,10 +298,11 @@ public sealed class TimelineExportService
                         + Guid.NewGuid().ToString("N")
                         + ".ass";
                     assPath = EnsureManagedPath(Path.Combine(_exportDirectory, assName));
+                    // PlayRes follows the pre-scale source frames the burn
+                    // filter actually sees, not the output geometry.
                     await File.WriteAllTextAsync(
                         assPath,
-                        TimelineEffectGraph.BuildAssText(
-                            burn, plan.OutputWidth, plan.OutputHeight),
+                        TimelineEffectGraph.BuildAssText(burn, asset.Width, asset.Height),
                         token).ConfigureAwait(false);
                     segment = segment with { AssPath = assPath };
                 }
