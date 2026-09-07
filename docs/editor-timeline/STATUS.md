@@ -758,8 +758,16 @@ Historical dirty-tree failures, all resolved before the tagged baseline:
 
 Program complete through G20: all MASTER_PLAN section-1 product goals and
 section-13 performance targets are implemented and verified. Keep the classic
-Editor default intact; automated installer packaging is the next gate, while
-stable promotion still requires the real-machine field checklist.
+Editor default intact. The `4.0.0-beta.71-csharp-p5` automated gate is
+verified on source commit `80e180f` (`fix(validate): exclude
+csharp/artifacts from XML/artifact glob`) with the matching beta.71
+installer/candidate/source archives produced locally (installer SHA-256
+`4ae71120fab284e1c33dd856482c1ee278d08248e2a2d8b6027694815125e0d7`, source
+tree SHA-256 `0cbea87c389766aa4e117f64d81929ff54515ef0d01e82da95420c5cbcc439a1`,
+app EXE SHA-256 `048b09cedad2f4582d04fe8bbe929045da8e567d361cf2a522971ea56d338fb5`);
+public-beta publication policy now permits the workflow to publish this
+exact set after the automated gate, while stable promotion still requires
+the real-machine field checklist.
 
 ## Required resume command
 

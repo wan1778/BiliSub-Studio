@@ -78,3 +78,31 @@ python scripts/validate_release.py <candidate.exe>
 4. Re-run release validation/hash after field testing.
 5. Only then upload EXE/source/notes and update the beta manifest.
 6. Read back uploaded EXE/source/manifest and verify size + SHA-256 before deleting the previous beta.
+
+## 2026-09-08 automated-gate evidence (C# `4.0.0-beta.71-csharp-p5`)
+
+- Clean-tree `csharp/scripts/verify.ps1` PASS on source commit
+  `80e180f` (`fix(validate): exclude csharp/artifacts from XML/artifact glob`).
+  - `BiliSubStudio.exe` SHA-256
+    `048b09cedad2f4582d04fe8bbe929045da8e567d361cf2a522971ea56d338fb5`.
+  - Source tree SHA-256
+    `0cbea87c389766aa4e117f64d81929ff54515ef0d01e82da95420c5cbcc439a1`.
+  - Core `127/127`; Range field regressions, generated code map, OCR/editor
+    contracts, publish + checksum readback, real startup smoke and PE32+ x64
+    verification: PASS.
+- `build_windows_installer.ps1` built the per-user x64 Inno Setup
+  installer from the verified publish (root launcher `BiliSubStudio.exe`
+  SHA-256
+  `47540a550df1f2a11ec77d68b03bf468e54ccbacffffb09bad1c69a95433aa15`,
+  installer SHA-256
+  `4ae71120fab284e1c33dd856482c1ee278d08248e2a2d8b6027694815125e0d7`).
+- `package_windows_candidate.ps1` produced the exact source archive
+  (SHA-256
+  `9ec0a1a2f639b88dc9171ba391226b5ee7cc3e4521fca7a152a32994c60b1519`)
+  and the build-candidate ZIP (SHA-256
+  `94604dd769f46061d8ed42d4b72cae37420760dba820019dc120bd1e7a7e4042`)
+  from the same source revision; strict-boolean
+  `CANDIDATE_GATE_STATUS.json` reports
+  `status=windows_build_verified_field_qa_pending`,
+  `release_candidate=false`, `promotion_allowed=false`,
+  `pending_gate=docs/migration/WINDOWS_FIELD_CHECKLIST_CSHARP_P5.md`.
