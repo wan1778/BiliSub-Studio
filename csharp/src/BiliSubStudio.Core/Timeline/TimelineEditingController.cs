@@ -110,6 +110,70 @@ public sealed class TimelineEditingController
     public void DeleteSelected() =>
         Apply(state => TimelineAudioDependencyOps.Delete(state, SelectedClipOrThrow()));
 
+    // G31: track visibility/mute toggles ride the same atomic undo
+    // history; the audio edit state carries the multi-track arrays.
+    public void SetTrackState(string trackId, bool? isVisible, bool? isMuted)
+    {
+        if (string.IsNullOrWhiteSpace(trackId))
+            throw new InvalidDataException("Timeline track ID không hợp lệ.");
+        Apply(state =>
+        {
+            var tracks = state.Tracks ?? [];
+            var index = tracks.ToList().FindIndex(track =>
+                string.Equals(track.Id, trackId, StringComparison.Ordinal));
+            if (index < 0)
+                throw new InvalidDataException("Timeline track không tồn tại để đổi trạng thái.");
+            var updated = tracks[index] with
+            {
+                IsVisible = isVisible ?? tracks[index].IsVisible,
+                IsMuted = isMuted ?? tracks[index].IsMuted,
+            };
+            var rebuilt = tracks.ToArray();
+            rebuilt[index] = updated;
+            return state with { Tracks = rebuilt };
+        });
+    }
+
+    // G31: add or replace a text item on an existing Text track with atomic
+    // undo; text must reference a real Text track (project validation pins it).
+    public void UpsertTextItem(TimelineTextItem item)
+    {
+        ArgumentNullException.ThrowIfNull(item);
+        item.Validate();
+        Apply(state =>
+        {
+            var tracks = state.Tracks ?? [];
+            if (!tracks.Any(track => track.Kind == TimelineTrackKind.Text
+                && string.Equals(track.Id, item.TrackId, StringComparison.Ordinal)))
+                throw new InvalidDataException("Timeline text item trỏ track text không tồn tại.");
+            var items = state.TextItems ?? [];
+            var existing = items.ToList().FindIndex(candidate =>
+                string.Equals(candidate.Id, item.Id, StringComparison.Ordinal));
+            var rebuilt = items.ToArray();
+            if (existing >= 0)
+                rebuilt[existing] = item;
+            else
+                rebuilt = [.. items, item];
+            return state with { TextItems = rebuilt };
+        });
+    }
+
+    public void DeleteTextItem(string textItemId)
+    {
+        if (string.IsNullOrWhiteSpace(textItemId))
+            throw new InvalidDataException("Timeline text item ID không hợp lệ.");
+        Apply(state =>
+        {
+            var items = state.TextItems ?? [];
+            if (!items.Any(candidate =>
+                    string.Equals(candidate.Id, textItemId, StringComparison.Ordinal)))
+                throw new InvalidDataException("Timeline text item không tồn tại để xóa.");
+            return state with { TextItems = items
+                .Where(candidate => !string.Equals(candidate.Id, textItemId, StringComparison.Ordinal))
+                .ToArray() };
+        });
+    }
+
     public void MoveSelected(int newPosition)
     {
         var clipId = SelectedClipOrThrow();
@@ -200,7 +264,9 @@ public sealed class TimelineEditingController
             state.AudioAssets,
             state.SourceAudio,
             state.VoiceCues,
-            state.Music);
+            state.Music,
+            state.Tracks,
+            state.TextItems);
         _dirty = false;
     }
 
@@ -252,7 +318,9 @@ public sealed class TimelineEditingController
         && left.AudioAssets.SequenceEqual(right.AudioAssets)
         && left.SourceAudio.SequenceEqual(right.SourceAudio)
         && left.VoiceCues.SequenceEqual(right.VoiceCues)
-        && left.Music == right.Music;
+        && left.Music == right.Music
+        && (left.Tracks ?? []).SequenceEqual(right.Tracks ?? [])
+        && (left.TextItems ?? []).SequenceEqual(right.TextItems ?? []);
 
     private static TimelineAudioEditState ToAudioState(TimelineProjectV2 project)
     {
@@ -265,7 +333,9 @@ public sealed class TimelineEditingController
             project.AudioAssets,
             project.SourceAudio,
             project.VoiceCues,
-            project.Music);
+            project.Music,
+            project.Tracks,
+            project.TextItems);
     }
 
     private static TimelineProjectV2 ApplyToProject(
@@ -290,6 +360,8 @@ public sealed class TimelineEditingController
             SourceAudio = state.SourceAudio,
             VoiceCues = state.VoiceCues,
             Music = state.Music,
+            Tracks = state.Tracks ?? project.Tracks,
+            TextItems = state.TextItems ?? project.TextItems,
         };
         updated.Validate();
         return updated;

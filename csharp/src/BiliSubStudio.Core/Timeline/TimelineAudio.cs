@@ -446,7 +446,9 @@ public sealed record TimelineAudioEditState(
     IReadOnlyList<TimelineAudioAsset> AudioAssets,
     IReadOnlyList<TimelineSourceAudioState> SourceAudio,
     IReadOnlyList<TimelineVoiceCue> VoiceCues,
-    TimelineMusicTrack? Music)
+    TimelineMusicTrack? Music,
+    IReadOnlyList<TimelineTrackV2>? Tracks = null,
+    IReadOnlyList<TimelineTextItem>? TextItems = null)
 {
     public static TimelineAudioEditState Create(
         TimelineEditState timeline,
@@ -454,7 +456,9 @@ public sealed record TimelineAudioEditState(
         IReadOnlyList<TimelineAudioAsset>? audioAssets = null,
         IReadOnlyList<TimelineSourceAudioState>? sourceAudio = null,
         IReadOnlyList<TimelineVoiceCue>? voiceCues = null,
-        TimelineMusicTrack? music = null)
+        TimelineMusicTrack? music = null,
+        IReadOnlyList<TimelineTrackV2>? tracks = null,
+        IReadOnlyList<TimelineTextItem>? textItems = null)
     {
         ArgumentNullException.ThrowIfNull(timeline);
         var frozenTimeline = TimelineEditState.Create(timeline.Clips, timeline.Items);
@@ -470,8 +474,11 @@ public sealed record TimelineAudioEditState(
             frozenSource,
             frozenVoices,
             music);
+        var frozenTracks = (tracks ?? []).ToArray();
+        var frozenTextItems = (textItems ?? []).ToArray();
         return new TimelineAudioEditState(
-            frozenTimeline, frozenCues, frozenAssets, frozenSource, frozenVoices, music);
+            frozenTimeline, frozenCues, frozenAssets, frozenSource, frozenVoices, music,
+            frozenTracks, frozenTextItems);
     }
 }
 
@@ -493,7 +500,8 @@ public static class TimelineAudioDependencyOps
         cues[index] = updatedCue;
         var voices = ReconcileVoices(state.VoiceCues, cues, voicePolicy);
         return TimelineAudioEditState.Create(
-            state.Timeline, cues, state.AudioAssets, state.SourceAudio, voices, state.Music);
+            state.Timeline, cues, state.AudioAssets, state.SourceAudio, voices, state.Music,
+            state.Tracks, state.TextItems);
     }
 
     public static TimelineAudioEditState Reorder(
@@ -508,7 +516,9 @@ public static class TimelineAudioDependencyOps
             state.AudioAssets,
             state.SourceAudio,
             state.VoiceCues,
-            state.Music);
+            state.Music,
+            state.Tracks,
+            state.TextItems);
     }
 
     public static TimelineAudioEditState Trim(
@@ -528,7 +538,8 @@ public static class TimelineAudioDependencyOps
             state.SubtitleCues, state.Timeline.Items, timeline.Items, oldClip, newClip);
         var voices = ReconcileVoices(state.VoiceCues, cues, voicePolicy);
         return TimelineAudioEditState.Create(
-            timeline, cues, state.AudioAssets, state.SourceAudio, voices, state.Music);
+            timeline, cues, state.AudioAssets, state.SourceAudio, voices, state.Music,
+            state.Tracks, state.TextItems);
     }
 
     public static TimelineAudioEditState Split(
@@ -569,7 +580,8 @@ public static class TimelineAudioDependencyOps
                 : sourceByClipId[clip.Id])
             .ToArray();
         return TimelineAudioEditState.Create(
-            timeline, cues, state.AudioAssets, sourceAudio, voices, state.Music);
+            timeline, cues, state.AudioAssets, sourceAudio, voices, state.Music,
+            state.Tracks, state.TextItems);
     }
 
     public static TimelineAudioEditState Delete(TimelineAudioEditState state, string clipId)
@@ -586,7 +598,8 @@ public static class TimelineAudioDependencyOps
             .Where(source => !string.Equals(source.ClipId, clipId, StringComparison.Ordinal))
             .ToArray();
         return TimelineAudioEditState.Create(
-            timeline, cues, state.AudioAssets, sourceAudio, voices, state.Music);
+            timeline, cues, state.AudioAssets, sourceAudio, voices, state.Music,
+            state.Tracks, state.TextItems);
     }
 
     private static IReadOnlyList<TimelineVoiceCue> ReconcileVoices(
@@ -673,6 +686,8 @@ public sealed class TimelineAudioEditHistory
             state.AudioAssets,
             state.SourceAudio,
             state.VoiceCues,
-            state.Music);
+            state.Music,
+            state.Tracks,
+            state.TextItems);
     }
 }

@@ -110,17 +110,14 @@ public sealed partial class TimelineEditorPage : Page
                 _ => TimelineTemplateKind.Default,
             };
             var project = await _session.CreateAsync("Timeline thử nghiệm", CancellationToken.None);
-            if (kind is not TimelineTemplateKind.Default)
+            var layout = TimelineTemplates.Create(
+                kind, project.Name, 1920, 1080, 30);
+            project = project with
             {
-                var layout = TimelineTemplates.Create(
-                    kind, project.Name, 1920, 1080, 30);
-                project = project with
-                {
-                    Tracks = layout.Tracks,
-                };
-                project.Validate();
-                await _session.SaveAsync(project, CancellationToken.None);
-            }
+                Tracks = layout.Tracks,
+            };
+            project.Validate();
+            await _session.SaveAsync(project, CancellationToken.None);
             var plan = TimelineCompiler.Compile(project);
             ShellStatusText.Text = $"Đã tạo {project.Name} ({project.Id[..8]}…) với {project.Tracks.Count} track phụ. Plan: preview/export dùng chung timeline plan {plan.CreatedUtcTicks}.";
             await RefreshAsync();
@@ -855,14 +852,14 @@ public sealed partial class TimelineEditorPage : Page
         var textEndUs = _editor.Project.TextItems.Select(text => text.TimelineEndUs)
             .DefaultIfEmpty(0).Max();
         var sequenceEnd = Math.Max(Math.Max(clips[^1].TimelineEndUs, trackEndUs), textEndUs);
-        TimelineSurface.Width = TimelineViewport.SurfaceWidth(
-            sequenceEnd, _timelinePixelsPerSecond, 700);
+        TimelineSurface.Width = TimelineTrackLabelWidth + TimelineViewport.SurfaceWidth(
+            sequenceEnd, _timelinePixelsPerSecond, 700 - TimelineTrackLabelWidth);
         var viewportWidth = TimelineScroller.ViewportWidth > 0
             ? TimelineScroller.ViewportWidth
             : 700;
         var visible = TimelineViewport.VisibleClipRange(
             clips,
-            TimelineScroller.HorizontalOffset,
+            Math.Max(0, TimelineScroller.HorizontalOffset - TimelineTrackLabelWidth),
             viewportWidth,
             _timelinePixelsPerSecond);
         RenderTrackLabel("Video", TimelineTrackTop, TimelineTrackHeight);
@@ -942,18 +939,20 @@ public sealed partial class TimelineEditorPage : Page
     }
 
     // G31: schema-5/6 multi-track rendering. Secondary tracks (overlay,
-    // music, audio, text) render read-only below the primary row; editing
-    // them arrives with the next G31 step. Hidden and muted tracks dim out.
+    // music, audio, text) render below the primary row. Hidden and muted
+    // tracks dim out; compact row controls edit track state atomically.
     private void RenderSecondaryTracks()
     {
         var top = TimelineSecondaryTop;
+        var visibleLeft = Math.Max(
+            0, TimelineScroller.HorizontalOffset - TimelineViewport.OverscanPixels);
+        var visibleRight = TimelineScroller.HorizontalOffset
+            + Math.Max(TimelineScroller.ViewportWidth, 700)
+            + TimelineViewport.OverscanPixels;
         foreach (var track in _editor.Project.Tracks
             .OrderBy(track => track.ZIndex)
             .ThenBy(track => track.Id, StringComparer.Ordinal))
         {
-            RenderTrackLabel(
-                track.Name + (track.IsMuted ? " (tắt tiếng)" : string.Empty),
-                top, TimelineSecondaryTrackHeight, dimmed: !track.IsVisible);
             var items = track.Kind is TimelineTrackKind.Text
                 ? _editor.Project.TextItems
                     .Where(text => string.Equals(text.TrackId, track.Id, StringComparison.Ordinal))
@@ -966,42 +965,65 @@ public sealed partial class TimelineEditorPage : Page
                         Label: $"{clip.Id[..6]} x{clip.PlaybackRate:0.###}", IsText: false))
                     .ToList();
             foreach (var element in items
-                .Where(element => element.EndUs > TimelineScroller.HorizontalOffset
-                    && element.StartUs < TimelineScroller.HorizontalOffset
-                        + Math.Max(TimelineScroller.ViewportWidth, 0) + TimelineViewport.OverscanPixels)
+                .Where(element => SequenceX(element.EndUs) > visibleLeft
+                    && SequenceX(element.StartUs) < visibleRight)
                 .OrderBy(element => element.StartUs)
                 .ThenBy(element => element.ElementId, StringComparer.Ordinal))
             {
                 var left = SequenceX(element.StartUs);
                 var width = Math.Max(2, SequenceX(element.EndUs) - left);
-                var card = new Border
+                var cardContent = new TextBlock
                 {
-                    Width = Math.Max(1, width - 2),
-                    Height = TimelineSecondaryTrackHeight,
-                    CornerRadius = new CornerRadius(4),
-                    BorderThickness = new Thickness(1),
-                    BorderBrush = new SolidColorBrush(element.IsText
-                        ? Microsoft.UI.Colors.MediumOrchid
-                        : Microsoft.UI.Colors.DarkSeaGreen),
-                    Background = new SolidColorBrush(element.IsText
-                        ? Microsoft.UI.ColorHelper.FromArgb(255, 74, 44, 94)
-                        : Microsoft.UI.ColorHelper.FromArgb(255, 44, 66, 54)),
-                    Opacity = track.IsVisible ? 1 : 0.45,
-                    Child = new TextBlock
-                    {
-                        Margin = new Thickness(6, 2, 6, 2),
-                        Text = element.Label,
-                        FontSize = 10,
-                        Foreground = new SolidColorBrush(Microsoft.UI.Colors.White),
-                        TextTrimming = TextTrimming.CharacterEllipsis,
-                        VerticalAlignment = VerticalAlignment.Center,
-                    },
+                    Margin = new Thickness(6, 2, 6, 2),
+                    Text = element.Label,
+                    FontSize = 10,
+                    Foreground = new SolidColorBrush(Microsoft.UI.Colors.White),
+                    TextTrimming = TextTrimming.CharacterEllipsis,
+                    VerticalAlignment = VerticalAlignment.Center,
                 };
+                FrameworkElement card;
+                if (element.IsText)
+                {
+                    var button = new Button
+                    {
+                        Width = Math.Max(1, width - 2),
+                        Height = TimelineSecondaryTrackHeight,
+                        MinWidth = 0,
+                        Padding = new Thickness(0),
+                        CornerRadius = new CornerRadius(4),
+                        BorderThickness = new Thickness(1),
+                        BorderBrush = new SolidColorBrush(Microsoft.UI.Colors.MediumOrchid),
+                        Background = new SolidColorBrush(
+                            Microsoft.UI.ColorHelper.FromArgb(255, 74, 44, 94)),
+                        Opacity = track.IsVisible ? 1 : 0.45,
+                        Content = cardContent,
+                        Tag = element.ElementId,
+                        HorizontalContentAlignment = HorizontalAlignment.Stretch,
+                    };
+                    button.Click += TextItemCard_Click;
+                    card = button;
+                }
+                else
+                {
+                    card = new Border
+                    {
+                        Width = Math.Max(1, width - 2),
+                        Height = TimelineSecondaryTrackHeight,
+                        CornerRadius = new CornerRadius(4),
+                        BorderThickness = new Thickness(1),
+                        BorderBrush = new SolidColorBrush(Microsoft.UI.Colors.DarkSeaGreen),
+                        Background = new SolidColorBrush(
+                            Microsoft.UI.ColorHelper.FromArgb(255, 44, 66, 54)),
+                        Opacity = track.IsVisible ? 1 : 0.45,
+                        Child = cardContent,
+                    };
+                }
                 AutomationProperties.SetName(card, $"{track.Name}: {element.Label}");
                 Canvas.SetLeft(card, left + 1);
                 Canvas.SetTop(card, top);
                 TimelineSurface.Children.Add(card);
             }
+            RenderTrackControls(track, top, TimelineSecondaryTrackHeight);
             top += TimelineSecondaryTrackHeight + 6;
         }
         TimelineSurface.Height = Math.Max(280, top + 8);
@@ -1023,6 +1045,218 @@ public sealed partial class TimelineEditorPage : Page
         Canvas.SetLeft(label, 4);
         Canvas.SetTop(label, top + (height - 14) / 2);
         TimelineSurface.Children.Add(label);
+    }
+
+    private void RenderTrackControls(TimelineTrackV2 track, double top, double height)
+    {
+        var panel = new StackPanel
+        {
+            Width = TimelineTrackLabelWidth,
+            Height = height,
+            Orientation = Orientation.Horizontal,
+            Spacing = 2,
+            Padding = new Thickness(4, 4, 3, 4),
+            Background = new SolidColorBrush(Microsoft.UI.ColorHelper.FromArgb(235, 21, 29, 41)),
+        };
+        panel.Children.Add(new TextBlock
+        {
+            Width = track.Kind is TimelineTrackKind.Text ? 39 : 61,
+            Text = track.Name,
+            FontSize = 10,
+            Foreground = new SolidColorBrush(track.IsVisible
+                ? Microsoft.UI.Colors.LightGray
+                : Microsoft.UI.Colors.Gray),
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        panel.Children.Add(CreateTrackButton(
+            track.IsVisible ? "V" : "-", track.Id,
+            track.IsVisible ? "Ẩn track" : "Hiện track", TrackVisibility_Click));
+        panel.Children.Add(CreateTrackButton(
+            track.IsMuted ? "-" : "M", track.Id,
+            track.IsMuted ? "Bật tiếng track" : "Tắt tiếng track", TrackMute_Click));
+        if (track.Kind is TimelineTrackKind.Text)
+            panel.Children.Add(CreateTrackButton(
+                "+", track.Id, "Thêm text", TextTrackAdd_Click));
+        AutomationProperties.SetName(panel,
+            $"Track {track.Name}, {(track.IsVisible ? "đang hiện" : "đang ẩn")}, "
+            + $"{(track.IsMuted ? "đang tắt tiếng" : "đang bật tiếng")}");
+        Canvas.SetLeft(panel, 0);
+        Canvas.SetTop(panel, top);
+        Canvas.SetZIndex(panel, 20);
+        TimelineSurface.Children.Add(panel);
+    }
+
+    private static Button CreateTrackButton(
+        string content,
+        string trackId,
+        string accessibleName,
+        RoutedEventHandler handler)
+    {
+        var button = new Button
+        {
+            Width = 20,
+            Height = 24,
+            MinWidth = 0,
+            Padding = new Thickness(0),
+            Content = content,
+            Tag = trackId,
+            FontSize = 9,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        AutomationProperties.SetName(button, accessibleName);
+        ToolTipService.SetToolTip(button, accessibleName);
+        button.Click += handler;
+        return button;
+    }
+
+    private void TrackVisibility_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { Tag: string trackId })
+            return;
+        try
+        {
+            var track = _editor.Project.Tracks.Single(item => item.Id == trackId);
+            _editor.SetTrackState(trackId, !track.IsVisible, null);
+            ReportEditState(track.IsVisible ? "Đã ẩn track." : "Đã hiện track.");
+        }
+        catch (Exception error)
+        {
+            EditStatusText.Text = "Không đổi được trạng thái track: " + error.Message;
+        }
+    }
+
+    private void TrackMute_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { Tag: string trackId })
+            return;
+        try
+        {
+            var track = _editor.Project.Tracks.Single(item => item.Id == trackId);
+            _editor.SetTrackState(trackId, null, !track.IsMuted);
+            ReportEditState(track.IsMuted ? "Đã bật tiếng track." : "Đã tắt tiếng track.");
+        }
+        catch (Exception error)
+        {
+            EditStatusText.Text = "Không đổi được trạng thái track: " + error.Message;
+        }
+    }
+
+    private async void TextTrackAdd_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { Tag: string trackId })
+            await ShowTextItemDialogAsync(trackId, null);
+    }
+
+    private async void TextItemCard_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { Tag: string textItemId })
+            return;
+        var item = _editor.Project.TextItems.FirstOrDefault(candidate => candidate.Id == textItemId);
+        if (item is not null)
+            await ShowTextItemDialogAsync(item.TrackId, item);
+    }
+
+    private async Task ShowTextItemDialogAsync(string trackId, TimelineTextItem? existing)
+    {
+        var contentBox = new TextBox
+        {
+            Header = "Nội dung",
+            Text = existing?.Content ?? "Text mới",
+            AcceptsReturn = true,
+            MaxLength = 2_000,
+        };
+        var startBox = new TextBox
+        {
+            Header = "Bắt đầu (giây)",
+            Text = TimelineTime.ToSeconds(existing?.TimelineStartUs ?? 0)
+                .ToString("0.###", System.Globalization.CultureInfo.InvariantCulture),
+        };
+        var durationBox = new TextBox
+        {
+            Header = "Thời lượng (giây)",
+            Text = TimelineTime.ToSeconds(existing?.DurationUs ?? 3_000_000)
+                .ToString("0.###", System.Globalization.CultureInfo.InvariantCulture),
+        };
+        var animationBox = new ComboBox
+        {
+            Header = "Chuyển động",
+            ItemsSource = Enum.GetValues<TimelineTextAnimation>(),
+            SelectedItem = existing?.Animation ?? TimelineTextAnimation.None,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+        };
+        var validationText = new TextBlock
+        {
+            Foreground = new SolidColorBrush(Microsoft.UI.Colors.OrangeRed),
+            TextWrapping = TextWrapping.Wrap,
+        };
+        var fields = new StackPanel { Spacing = 8, MinWidth = 360 };
+        fields.Children.Add(contentBox);
+        fields.Children.Add(startBox);
+        fields.Children.Add(durationBox);
+        fields.Children.Add(animationBox);
+        fields.Children.Add(validationText);
+        var dialog = new ContentDialog
+        {
+            XamlRoot = XamlRoot,
+            Title = existing is null ? "Thêm text" : "Sửa text",
+            Content = fields,
+            PrimaryButtonText = "Lưu",
+            SecondaryButtonText = existing is null ? string.Empty : "Xóa",
+            CloseButtonText = "Hủy",
+            DefaultButton = ContentDialogButton.Primary,
+        };
+        TimelineTextItem? proposed = null;
+        dialog.PrimaryButtonClick += (_, args) =>
+        {
+            try
+            {
+                var startUs = TimelineTime.FromSeconds(ParseSeconds(startBox.Text, "bắt đầu"));
+                var durationUs = TimelineTime.FromSeconds(ParseSeconds(durationBox.Text, "thời lượng"));
+                if (durationUs <= 0)
+                    throw new InvalidDataException("Thời lượng text phải lớn hơn 0 giây.");
+                var content = contentBox.Text.Trim();
+                var animation = animationBox.SelectedItem is TimelineTextAnimation selected
+                    ? selected
+                    : TimelineTextAnimation.None;
+                proposed = existing is null
+                    ? TimelineTextItem.Create(trackId, startUs, durationUs, content,
+                        animation: animation)
+                    : existing with
+                    {
+                        TimelineStartUs = startUs,
+                        DurationUs = durationUs,
+                        Content = content,
+                        Animation = animation,
+                    };
+                proposed.Validate();
+                validationText.Text = string.Empty;
+            }
+            catch (Exception error)
+            {
+                proposed = null;
+                validationText.Text = error.Message;
+                args.Cancel = true;
+            }
+        };
+        var result = await dialog.ShowAsync();
+        try
+        {
+            if (result == ContentDialogResult.Primary && proposed is not null)
+            {
+                _editor.UpsertTextItem(proposed);
+                ReportEditState(existing is null ? "Đã thêm text." : "Đã cập nhật text.");
+            }
+            else if (result == ContentDialogResult.Secondary && existing is not null)
+            {
+                _editor.DeleteTextItem(existing.Id);
+                ReportEditState("Đã xóa text.");
+            }
+        }
+        catch (Exception error)
+        {
+            EditStatusText.Text = "Không cập nhật được text: " + error.Message;
+        }
     }
 
     private void RenderTimelineDragProposal()
@@ -1102,18 +1336,21 @@ public sealed partial class TimelineEditorPage : Page
 
     private long PointerSequenceUs(double x)
     {
-        var total = _editor.Clips[^1].TimelineEndUs;
-        return TimelineViewport.SequenceUs(x, _timelinePixelsPerSecond, total);
+        var total = TimelineSequenceEndUs();
+        return TimelineViewport.SequenceUs(
+            Math.Max(0, x - TimelineTrackLabelWidth), _timelinePixelsPerSecond, total);
     }
 
     private double SequenceX(long sequenceUs) =>
-        TimelineViewport.SequenceX(sequenceUs, _timelinePixelsPerSecond);
+        TimelineTrackLabelWidth
+            + TimelineViewport.SequenceX(sequenceUs, _timelinePixelsPerSecond);
 
     private void TimelineZoomSlider_ValueChanged(object sender, RangeBaseValueChangedEventArgs e)
     {
         var maximumUs = TimelineSequenceEndUs();
         _pendingTimelineZoomCenterUs ??= TimelineViewport.SequenceUs(
-            TimelineScroller.HorizontalOffset + TimelineScroller.ViewportWidth / 2,
+            Math.Max(0, TimelineScroller.HorizontalOffset
+                + TimelineScroller.ViewportWidth / 2 - TimelineTrackLabelWidth),
             _timelinePixelsPerSecond,
             maximumUs);
         _timelinePixelsPerSecond = TimelineViewport.ClampPixelsPerSecond(e.NewValue);

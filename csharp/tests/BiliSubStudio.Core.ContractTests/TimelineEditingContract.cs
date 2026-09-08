@@ -13,6 +13,64 @@ internal static class TimelineEditingContract
         await OpenValidationAsync();
         await NoOpEditsStayCleanAsync();
         await ProjectSwitchResetsHistoryAsync();
+        await MultiTrackEditsStayAtomicAsync();
+    }
+
+    private static async Task MultiTrackEditsStayAtomicAsync()
+    {
+        var root = TemporaryRoot();
+        try
+        {
+            var fixture = TimelineAudioContractFixture.CreateLocalVoiceState();
+            var textTrack = new TimelineTrackV2(
+                TimelineTrackV2.NewId(), TimelineTrackKind.Text, "Text", 20,
+                IsVisible: true, IsMuted: false, IsLocked: false, GainDb: 0, Clips: []);
+            var text = TimelineTextItem.Create(
+                textTrack.Id, 1_000_000, 2_000_000, "G31 text");
+            var project = TimelineAudioContractFixture.Project(fixture.State, fixture.MediaAssets) with
+            {
+                Tracks = [textTrack],
+                TextItems = [text],
+            };
+            var store = new TimelineProjectStoreV2(root);
+            await store.SaveAsync(project, CancellationToken.None);
+            var controller = new TimelineEditingController(store);
+            await controller.OpenAsync(project.Id, CancellationToken.None);
+
+            controller.SetTrackState(textTrack.Id, isVisible: false, isMuted: true);
+            Check(!controller.Project.Tracks.Single().IsVisible
+                && controller.Project.Tracks.Single().IsMuted
+                && controller.IsDirty && controller.UndoCount == 1,
+                "track toggle did not enter atomic history");
+            Check(controller.Undo()
+                && controller.Project.Tracks.Single().IsVisible
+                && !controller.Project.Tracks.Single().IsMuted,
+                "undo did not restore track state");
+            Check(controller.Redo()
+                && !controller.Project.Tracks.Single().IsVisible
+                && controller.Project.Tracks.Single().IsMuted,
+                "redo did not restore track state");
+
+            controller.UpsertTextItem(text with { Content = "G31 edited" });
+            Check(controller.Project.TextItems.Single().Content == "G31 edited",
+                "text update did not reach the open project");
+            Check(controller.Undo()
+                && controller.Project.TextItems.Single().Content == "G31 text",
+                "undo did not restore text content");
+
+            controller.MoveSelected(1);
+            Check(controller.Project.Tracks.Count == 1
+                && controller.Project.TextItems.Count == 1,
+                "primary clip edit dropped schema-6 track state");
+            await controller.SaveAsync(CancellationToken.None);
+            var saved = await store.LoadAsync(project.Id, CancellationToken.None);
+            Check(saved.Tracks.Count == 1 && saved.TextItems.Single().Content == "G31 text",
+                "multi-track edits did not persist with the project");
+        }
+        finally
+        {
+            TryDeleteDirectory(root);
+        }
     }
 
     private static async Task OpenSelectEditFlowAsync()
