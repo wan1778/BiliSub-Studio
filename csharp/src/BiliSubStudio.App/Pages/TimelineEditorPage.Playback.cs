@@ -383,6 +383,7 @@ public sealed partial class TimelineEditorPage
         UndoButton.IsEnabled = editable && _editor.UndoCount > 0;
         RedoButton.IsEnabled = editable && _editor.RedoCount > 0;
         SaveProjectButton.IsEnabled = hasProject && !_savingProject && _editor.IsDirty;
+        SaveProjectButton.Content = hasProject && _editor.IsDirty ? "Lưu ●" : "Lưu";
         ExportProjectButton.IsEnabled = !locked && !_timelineClosing;
     }
 
