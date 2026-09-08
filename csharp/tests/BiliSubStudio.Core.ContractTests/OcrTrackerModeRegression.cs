@@ -155,15 +155,15 @@ internal static class OcrTrackerModeRegression
             throw new InvalidOperationException("ASCII/Chinese punctuation variant changed exact cue timing or text");
 
         var distinctText = exactConstructor.Invoke([30d, .68d, true]);
-        observeExact.Invoke(distinctText, [14d, 1d / 30d, simplified]);
-        observeExact.Invoke(distinctText, [14d + 1d / 30d, 1d / 30d, simplified]);
+        for (var index = 0; index < 6; index++)
+            observeExact.Invoke(distinctText, [14d + index / 30d, 1d / 30d, simplified]);
         var genuinelyDifferent = new OcrResult(true, true, "别睡呆了", .99, []);
-        observeExact.Invoke(distinctText, [14d + 2d / 30d, 1d / 30d, genuinelyDifferent]);
-        observeExact.Invoke(distinctText, [14d + 3d / 30d, 1d / 30d, genuinelyDifferent]);
+        observeExact.Invoke(distinctText, [14d + 6d / 30d, 1d / 30d, genuinelyDifferent]);
+        observeExact.Invoke(distinctText, [14d + 7d / 30d, 1d / 30d, genuinelyDifferent]);
         var distinctCues = (IReadOnlyList<OcrCue>)(cues.GetValue(distinctText)
             ?? throw new InvalidOperationException("missing committed cue list for distinct subtitle text"));
         if (distinctCues.Count != 1 || distinctCues[0].Text != "别睡傻了"
-            || Math.Abs(distinctCues[0].End - (14d + 2d / 30d)) > .000001)
+            || Math.Abs(distinctCues[0].End - (14d + 6d / 30d)) > .000001)
             throw new InvalidOperationException("a genuinely different subtitle was merged as a script variant");
 
         var rapid = exactConstructor.Invoke([30d, .68d, true]);
@@ -184,31 +184,31 @@ internal static class OcrTrackerModeRegression
 
         var reveal = exactConstructor.Invoke([30d, .68d, true]);
         var full = new OcrResult(true, true, "你走吧", .99, []);
-        observeExact.Invoke(reveal, [20d, 1d / 30d, full]);
-        observeExact.Invoke(reveal, [20d + 1d / 30d, 1d / 30d, full]);
-        observeExact.Invoke(reveal, [20d + 2d / 30d, 1d / 30d, new OcrResult(true, true, "走", .99, [])]);
+        for (var index = 0; index < 6; index++)
+            observeExact.Invoke(reveal, [20d + index / 30d, 1d / 30d, full]);
+        observeExact.Invoke(reveal, [20d + 6d / 30d, 1d / 30d, new OcrResult(true, true, "走", .99, [])]);
         var revealActive = (OcrCue)(exactActive.GetValue(reveal)
             ?? throw new InvalidOperationException("subtitle reveal unexpectedly split the active cue"));
         if (revealActive.Text != "你走吧")
             throw new InvalidOperationException("subtitle reveal did not retain full text");
-        observeExact.Invoke(reveal, [20d + 3d / 30d, 1d / 30d, new OcrResult(true, true, "再见", .99, [])]);
-        observeExact.Invoke(reveal, [20d + 4d / 30d, 1d / 30d, new OcrResult(true, true, "再见", .99, [])]);
+        observeExact.Invoke(reveal, [20d + 7d / 30d, 1d / 30d, new OcrResult(true, true, "再见", .99, [])]);
+        observeExact.Invoke(reveal, [20d + 8d / 30d, 1d / 30d, new OcrResult(true, true, "再见", .99, [])]);
         var revealCues = (IReadOnlyList<OcrCue>)(cues.GetValue(reveal)
             ?? throw new InvalidOperationException("subtitle reveal did not commit the previous cue"));
         if (revealCues.Count != 1 || revealCues[0].Text != "你走吧"
-            || Math.Abs(revealCues[0].End - (20d + 2d / 30d)) > .000001)
+            || Math.Abs(revealCues[0].End - (20d + 6d / 30d)) > .000001)
             throw new InvalidOperationException("an actual new subtitle was not separated after a reveal fragment");
 
         var shortCaption = exactConstructor.Invoke([30d, .68d, true]);
-        observeExact.Invoke(shortCaption, [22d, 1d / 30d, full]);
-        observeExact.Invoke(shortCaption, [22d + 1d / 30d, 1d / 30d, full]);
+        for (var index = 0; index < 6; index++)
+            observeExact.Invoke(shortCaption, [22d + index / 30d, 1d / 30d, full]);
         var oneRune = new OcrResult(true, true, "走", .99, []);
-        observeExact.Invoke(shortCaption, [22d + 2d / 30d, 1d / 30d, oneRune]);
-        observeExact.Invoke(shortCaption, [22d + 3d / 30d, 1d / 30d, oneRune]);
+        observeExact.Invoke(shortCaption, [22d + 6d / 30d, 1d / 30d, oneRune]);
+        observeExact.Invoke(shortCaption, [22d + 7d / 30d, 1d / 30d, oneRune]);
         if (((IReadOnlyList<OcrCue>)(cues.GetValue(shortCaption)
                 ?? throw new InvalidOperationException("missing short-caption cue list"))).Count != 0)
             throw new InvalidOperationException("one-rune subtext was promoted before minimum evidence");
-        for (var index = 4; index <= 11; index++)
+        for (var index = 8; index <= 15; index++)
             observeExact.Invoke(shortCaption, [22d + index / 30d, 1d / 30d, oneRune]);
         var shortCaptionCues = (IReadOnlyList<OcrCue>)(cues.GetValue(shortCaption)
             ?? throw new InvalidOperationException("missing confirmed short-caption cue list"));
@@ -216,23 +216,23 @@ internal static class OcrTrackerModeRegression
             ?? throw new InvalidOperationException("stable one-rune subtitle was discarded as a reveal fragment"));
         if (shortCaptionCues.Count != 1 || shortCaptionCues[0].Text != "你走吧"
             || shortCaptionActive.Text != "走"
-            || Math.Abs(shortCaptionActive.Start - (22d + 2d / 30d)) > .000001)
+            || Math.Abs(shortCaptionActive.Start - (22d + 6d / 30d)) > .000001)
             throw new InvalidOperationException("stable 300ms one-rune subtitle did not become its own timed cue");
 
         var repeated = exactConstructor.Invoke([30d, .68d, true]);
         var longText = new OcrResult(true, true, "天天被幸福包围", .99, []);
-        observeExact.Invoke(repeated, [30d, 1d / 30d, longText]);
-        observeExact.Invoke(repeated, [30d + 1d / 30d, 1d / 30d, longText]);
+        for (var index = 0; index < 6; index++)
+            observeExact.Invoke(repeated, [30d + index / 30d, 1d / 30d, longText]);
         for (var index = 0; index < 24; index++)
         {
-            observeExact.Invoke(repeated, [30d + (index + 2d) / 30d, 1d / 30d, new OcrResult(true, true, "幸福", .99, [])]);
+            observeExact.Invoke(repeated, [30d + (index + 6d) / 30d, 1d / 30d, new OcrResult(true, true, "幸福", .99, [])]);
         }
         var repeatedCues = (IReadOnlyList<OcrCue>)(cues.GetValue(repeated)
             ?? throw new InvalidOperationException("repeated substring did not commit the prior cue"));
         var repeatedActive = (OcrCue)(exactActive.GetValue(repeated)
             ?? throw new InvalidOperationException("repeated substring did not become a new cue"));
         if (repeatedCues.Count != 1 || repeatedCues[0].Text != "天天被幸福包围"
-            || Math.Abs(repeatedCues[0].End - (30d + 2d / 30d)) > .000001
+            || Math.Abs(repeatedCues[0].End - (30d + 6d / 30d)) > .000001
             || repeatedActive.Text != "幸福")
             throw new InvalidOperationException("persistent repeated substring was merged into the preceding subtitle");
 

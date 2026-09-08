@@ -41,6 +41,16 @@ internal static class OcrShortTextNoiseRegression
             || active.GetValue(transient) is not null)
             throw new InvalidOperationException("two-frame scene shapes became a two-rune subtitle cue");
 
+        var longTransient = constructor.Invoke([30d, .68d, true]);
+        var falseSentence = falseRead with { Text = "这不是字幕" };
+        observe.Invoke(longTransient, [15d, frame, falseSentence]);
+        observe.Invoke(longTransient, [15d + frame, frame, falseSentence]);
+        observe.Invoke(longTransient, [15d + 2 * frame, frame, blank]);
+        observe.Invoke(longTransient, [15d + 3 * frame, frame, blank]);
+        if (((IReadOnlyList<OcrCue>)cues.GetValue(longTransient)!).Count != 0
+            || active.GetValue(longTransient) is not null)
+            throw new InvalidOperationException("two-frame scene text bypassed the global time filter");
+
         var genuine = constructor.Invoke([30d, .68d, true]);
         for (var index = 0; index < 6; index++)
             observe.Invoke(genuine, [20d + index * frame, frame, falseRead]);
