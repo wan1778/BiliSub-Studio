@@ -125,17 +125,25 @@ public static class TimelineRenderCapability
     // G16 adds clip and sequence-global logos with documented payloads.
     // G26 adds clip color grades (deterministic eq/colorbalance chain).
     // G27 adds speed envelopes (piecewise setpts + per-span atempo audio).
-    // Legacy unverified music items stay rejected. G25 keyframes are
-    // model-complete but not yet wired into the mux graph; they must fail
-    // loudly instead of silently dropping.
+    // G28 wires rotation/opacity keyframes; Position/Scale keyframes need
+    // the G31 overlay compositing stage and stay rejected. Legacy unverified
+    // music items stay rejected.
     public static void EnsureMuxSupported(TimelineRenderPlan plan)
     {
         ArgumentNullException.ThrowIfNull(plan);
-        if (plan.KeyframeSets.Count > 0)
-            throw new InvalidOperationException(
-                "Timeline FFmpeg mux chưa hỗ trợ keyframes (G25).");
         foreach (var envelope in plan.SpeedEnvelopes)
             _ = TimelineSpeedMapping.BuildSpans(envelope);
+        foreach (var set in plan.KeyframeSets)
+        {
+            var wired = set.Tracks.All(track => track.Channel
+                is TimelineKeyframeChannel.RotationDegrees
+                or TimelineKeyframeChannel.Opacity);
+            if (!wired)
+                throw new InvalidOperationException(
+                    "Timeline FFmpeg mux chỉ hỗ trợ keyframes rotation/opacity (G28); Position/Scale chờ G31.");
+            foreach (var track in set.Tracks)
+                _ = TimelineKeyframeGraph.BuildExpression(track);
+        }
         foreach (var item in plan.Items)
         {
             if (item.Kind == TimelineItemKind.Logo)

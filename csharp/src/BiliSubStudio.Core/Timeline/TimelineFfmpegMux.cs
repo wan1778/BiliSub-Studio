@@ -250,6 +250,13 @@ public static class TimelineFfmpegArguments
         // The composed body already opens with its own [0:v] label, so the
         // grade chain splices in right after that label.
         var gradeFilter = TimelineColorGradeGraph.BuildFilter(grade);
+        // G28: wired keyframe channels (rotation, opacity) render as one
+        // filter stage. Rotation uses the clip-local T (source seconds); the
+        // opacity yuva420p roundtrip forces the stage after normalize, so the
+        // keyframe stage runs last, right before [vout].
+        var keyframeSet = plan.KeyframeSets.FirstOrDefault(set =>
+            string.Equals(set.ClipId, segment.Clip.ClipId, StringComparison.Ordinal));
+        var keyframeFilter = TimelineKeyframeGraph.BuildVideoFilters(keyframeSet);
         var head = composed is null
             ? (gradeFilter is null ? "[0:v]" : $"[0:v]{gradeFilter}[gx];[gx]")
             : gradeFilter is null
@@ -273,10 +280,12 @@ public static class TimelineFfmpegArguments
         }
         // The classic body already opens with its own [0:v] input label.
         // Without logos the chain stays byte-identical to the G12 graph.
-        // The logo chain terminates at [vout] itself.
+        // The logo chain terminates at [vout] itself. G28 keyframes splice
+        // between normalize and vout so the alpha roundtrip stays safe.
+        var tail = keyframeFilter is null ? string.Empty : $",{keyframeFilter}";
         var videoFilter = logos.Count == 0
-            ? $"{head}{normalized}[vout]"
-            : $"{head}{normalized}[nv];{BuildLogoChain(logos, "nv", ToSeconds(segment.DurationUs))}";
+            ? $"{head}{normalized}{tail}[vout]"
+            : $"{head}{normalized}{tail}[nv];{BuildLogoChain(logos, "nv", ToSeconds(segment.DurationUs))}";
         string audioFilter = string.Empty;
         if (audibleOutput)
         {

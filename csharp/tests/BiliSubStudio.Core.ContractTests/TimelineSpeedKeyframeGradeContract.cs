@@ -193,9 +193,28 @@ public static class TimelineSpeedKeyframeGradeContract
             keyframeProject.Validate();
             var keyframePlan = TimelineCompiler.Compile(keyframeProject);
             Check(keyframePlan.KeyframeSets.Count == 1, "plan must carry keyframe sets");
+            // G28: wired channels pass the capability gate and render.
+            TimelineRenderCapability.EnsureMuxSupported(keyframePlan);
+            var keyframeArguments = TimelineFfmpegArguments.BuildSegment(
+                MakeSegment(keyframePlan, asset),
+                Path.Combine(root, "keyframes.mp4")).ToList();
+            var keyframeGraph = keyframeArguments[keyframeArguments.IndexOf("-filter_complex") + 1];
+            Check(keyframeGraph.Contains("rotate=angle='if(lt(T,5),", StringComparison.Ordinal),
+                "segment graph must carry the piecewise rotate expression");
+            Check(keyframeGraph.Contains("geq=lum='lum(X,Y)'", StringComparison.Ordinal)
+                && keyframeGraph.Contains("p(X,Y)*(", StringComparison.Ordinal),
+                "segment graph must carry the geq opacity expression");
+            // Position/Scale channels stay unwired until G31 compositing.
+            var positionSet = TimelineKeyframes.Create(
+                clip.Id,
+                [new TimelineKeyframeTrack(
+                    TimelineKeyframeChannel.PositionX,
+                    [new TimelineKeyframe(0, 0.5, TimelineKeyframeEasing.Linear)])],
+                clip.DurationUs);
+            var positionPlan = TimelineCompiler.Compile(withSequence with { KeyframeSets = [positionSet] });
             Throws<InvalidOperationException>(
-                () => TimelineRenderCapability.EnsureMuxSupported(keyframePlan),
-                "mux must reject keyframes until their graph is wired");
+                () => TimelineRenderCapability.EnsureMuxSupported(positionPlan),
+                "position keyframes must be rejected until G31 compositing");
             Throws<InvalidDataException>(
                 () => new TimelineKeyframe(11_000_000, 1, TimelineKeyframeEasing.Linear)
                     .Validate(clip.DurationUs),
