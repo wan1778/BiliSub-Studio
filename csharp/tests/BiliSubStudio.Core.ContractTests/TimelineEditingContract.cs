@@ -14,6 +14,101 @@ internal static class TimelineEditingContract
         await NoOpEditsStayCleanAsync();
         await ProjectSwitchResetsHistoryAsync();
         await MultiTrackEditsStayAtomicAsync();
+        await TrackClipEditsStayAtomicAsync();
+    }
+
+    // G31c: secondary track clips select/move/trim/delete through the same
+    // atomic history; locked tracks and out-of-range trims reject cleanly.
+    private static async Task TrackClipEditsStayAtomicAsync()
+    {
+        var root = TemporaryRoot();
+        try
+        {
+            var fixture = TimelineAudioContractFixture.CreateLocalVoiceState();
+            var asset = fixture.MediaAssets.Single();
+            var overlay = new TimelineTrackV2(
+                TimelineTrackV2.NewId(), TimelineTrackKind.VideoOverlay, "Overlay", 10,
+                IsVisible: true, IsMuted: false, IsLocked: false, GainDb: 0, Clips: []);
+            var clip = TimelineTrackClip.Create(
+                asset.Id, overlay.Id, 1_000_000, 0, 5_000_000);
+            var project = TimelineAudioContractFixture.Project(fixture.State, fixture.MediaAssets) with
+            {
+                Tracks = [overlay with { Clips = [clip] }],
+            };
+            var store = new TimelineProjectStoreV2(root);
+            await store.SaveAsync(project, CancellationToken.None);
+            var controller = new TimelineEditingController(store);
+            await controller.OpenAsync(project.Id, CancellationToken.None);
+
+            controller.SelectTrackClip(overlay.Id, clip.Id);
+            Check(controller.SelectedTrackClip?.Id == clip.Id
+                && controller.SelectedClipId is null,
+                "track clip selection did not clear the primary selection");
+
+            controller.MoveTrackClip(overlay.Id, clip.Id, 2_000_000);
+            Check(controller.SelectedTrackClip?.TimelineStartUs == 2_000_000
+                && controller.IsDirty && controller.UndoCount == 1,
+                "track clip move did not enter atomic history");
+            var undoBeforeNoOp = controller.UndoCount;
+            controller.MoveTrackClip(overlay.Id, clip.Id, 2_000_000);
+            Check(controller.UndoCount == undoBeforeNoOp && controller.IsDirty,
+                "no-op track clip move polluted history");
+            Check(controller.Undo()
+                && controller.SelectedTrackClip?.TimelineStartUs == 1_000_000,
+                "undo did not restore track clip position");
+            Check(controller.Redo()
+                && controller.SelectedTrackClip?.TimelineStartUs == 2_000_000,
+                "redo did not restore track clip position");
+
+            controller.TrimTrackClip(overlay.Id, clip.Id, 1_000_000, 5_000_000);
+            Check(controller.SelectedTrackClip?.SourceInUs == 1_000_000,
+                "track clip trim did not update the source range");
+
+            var before = controller.Project;
+            Throws<InvalidDataException>(
+                () => controller.TrimTrackClip(overlay.Id, clip.Id, 0, 61_000_000),
+                "trim beyond asset duration did not reject");
+            Check(controller.Project == before && controller.IsDirty,
+                "rejected trim changed controller state");
+            Check(controller.UndoCount == 2,
+                "rejected trim polluted history");
+
+            controller.DeleteTrackClip(overlay.Id, clip.Id);
+            Check(controller.Project.Tracks.Single().Clips.Count == 0
+                && controller.SelectedTrackClip is null,
+                "track clip delete did not clear selection");
+            Check(controller.Undo()
+                && controller.Project.Tracks.Single().Clips.Count == 1,
+                "undo did not restore the deleted track clip");
+
+            await controller.SaveAsync(CancellationToken.None);
+            var saved = await store.LoadAsync(project.Id, CancellationToken.None);
+            Check(saved.Tracks.Single().Clips.Single().TimelineStartUs == 2_000_000,
+                "track clip edits did not persist");
+
+            // Locked track rejects with state untouched.
+            var locked = new TimelineTrackV2(
+                TimelineTrackV2.NewId(), TimelineTrackKind.Music, "Locked", 0,
+                IsVisible: true, IsMuted: false, IsLocked: true, GainDb: 0, Clips: []);
+            var lockedClip = TimelineTrackClip.Create(
+                asset.Id, locked.Id, 0, 0, 5_000_000);
+            var lockedProject = TimelineAudioContractFixture.Project(
+                fixture.State, fixture.MediaAssets, TimelineProjectV2.NewId()) with
+            {
+                Tracks = [locked with { Clips = [lockedClip] }],
+            };
+            await store.SaveAsync(lockedProject, CancellationToken.None);
+            await controller.OpenAsync(lockedProject.Id, CancellationToken.None, discardUnsavedChanges: true);
+            Throws<InvalidOperationException>(
+                () => controller.MoveTrackClip(locked.Id, lockedClip.Id, 1_000_000),
+                "move on a locked track did not reject");
+            Check(controller.UndoCount == 0 && !controller.IsDirty,
+                "locked-track rejection polluted history");
+        }
+        finally
+        {
+            TryDeleteDirectory(root);
+        }
     }
 
     private static async Task MultiTrackEditsStayAtomicAsync()

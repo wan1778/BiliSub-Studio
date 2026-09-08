@@ -1005,18 +1005,32 @@ public sealed partial class TimelineEditorPage : Page
                 }
                 else
                 {
-                    card = new Border
+                    // G31c: secondary clips are buttons so they can be
+                    // selected and edited (move/trim/delete) by mouse,
+                    // keyboard and UI Automation like text cards.
+                    var selected = string.Equals(track.Id, _editor.SelectedTrackId, StringComparison.Ordinal)
+                        && string.Equals(element.ElementId, _editor.SelectedTrackClipId, StringComparison.Ordinal);
+                    var button = new Button
                     {
                         Width = Math.Max(1, width - 2),
                         Height = TimelineSecondaryTrackHeight,
+                        MinWidth = 0,
+                        Padding = new Thickness(0),
                         CornerRadius = new CornerRadius(4),
-                        BorderThickness = new Thickness(1),
-                        BorderBrush = new SolidColorBrush(Microsoft.UI.Colors.DarkSeaGreen),
-                        Background = new SolidColorBrush(
-                            Microsoft.UI.ColorHelper.FromArgb(255, 44, 66, 54)),
+                        BorderThickness = new Thickness(selected ? 2 : 1),
+                        BorderBrush = new SolidColorBrush(selected
+                            ? Microsoft.UI.Colors.DeepSkyBlue
+                            : Microsoft.UI.Colors.DarkSeaGreen),
+                        Background = new SolidColorBrush(selected
+                            ? Microsoft.UI.ColorHelper.FromArgb(255, 31, 91, 153)
+                            : Microsoft.UI.ColorHelper.FromArgb(255, 44, 66, 54)),
                         Opacity = track.IsVisible ? 1 : 0.45,
-                        Child = cardContent,
+                        Content = cardContent,
+                        Tag = (TrackId: track.Id, ClipId: element.ElementId),
+                        HorizontalContentAlignment = HorizontalAlignment.Stretch,
                     };
+                    button.Click += TrackClipCard_Click;
+                    card = button;
                 }
                 AutomationProperties.SetName(card, $"{track.Name}: {element.Label}");
                 Canvas.SetLeft(card, left + 1);
@@ -1145,6 +1159,132 @@ public sealed partial class TimelineEditorPage : Page
         var item = _editor.Project.TextItems.FirstOrDefault(candidate => candidate.Id == textItemId);
         if (item is not null)
             await ShowTextItemDialogAsync(item.TrackId, item);
+    }
+
+    private async void TrackClipCard_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { Tag: ValueTuple<string, string> target })
+            return;
+        try
+        {
+            _editor.SelectTrackClip(target.Item1, target.Item2);
+            RefreshClips();
+            var selected = _editor.SelectedTrackClip;
+            if (selected is not null)
+                InspectorClipLabel.Text =
+                    $"Track phụ {selected.Id[..8]}… " +
+                    $"{TimelineTime.ToSeconds(selected.TimelineStartUs):0.###}s..{TimelineTime.ToSeconds(selected.TimelineEndUs):0.###}s " +
+                    $"src {TimelineTime.ToSeconds(selected.SourceInUs):0.###}s..{TimelineTime.ToSeconds(selected.SourceOutUs):0.###}s";
+        }
+        catch (Exception error)
+        {
+            EditStatusText.Text = "Không chọn được clip track phụ: " + error.Message;
+            return;
+        }
+        await ShowTrackClipDialogAsync(target.Item1, target.Item2);
+    }
+
+    // G31c: move/trim/delete dialog for a secondary track clip. Times are
+    // seconds in the UI and microseconds in the domain; validation errors
+    // keep the dialog open, and the mutation rechecks project/revision
+    // after the await like the text dialog.
+    private async Task ShowTrackClipDialogAsync(string trackId, string clipId)
+    {
+        if (!_editor.HasOpenProject || _savingProject || _openingProject
+            || _timelineClosing || TimelinePreviewLocked)
+            return;
+        var projectId = _editor.Project.Id;
+        var revision = _editor.Revision;
+        var clip = _editor.SelectedTrackClip;
+        if (clip is null || clip.Id != clipId)
+            return;
+        var startBox = new TextBox
+        {
+            Header = "Bắt đầu trên track (giây)",
+            Text = TimelineTime.ToSeconds(clip.TimelineStartUs)
+                .ToString("0.###", System.Globalization.CultureInfo.InvariantCulture),
+        };
+        var sourceInBox = new TextBox
+        {
+            Header = "Source in (giây)",
+            Text = TimelineTime.ToSeconds(clip.SourceInUs)
+                .ToString("0.###", System.Globalization.CultureInfo.InvariantCulture),
+        };
+        var sourceOutBox = new TextBox
+        {
+            Header = "Source out (giây)",
+            Text = TimelineTime.ToSeconds(clip.SourceOutUs)
+                .ToString("0.###", System.Globalization.CultureInfo.InvariantCulture),
+        };
+        var validationText = new TextBlock
+        {
+            Foreground = new SolidColorBrush(Microsoft.UI.Colors.OrangeRed),
+            TextWrapping = TextWrapping.Wrap,
+        };
+        var fields = new StackPanel { Spacing = 8, MinWidth = 360 };
+        fields.Children.Add(startBox);
+        fields.Children.Add(sourceInBox);
+        fields.Children.Add(sourceOutBox);
+        fields.Children.Add(validationText);
+        var dialog = new ContentDialog
+        {
+            XamlRoot = XamlRoot,
+            Title = "Sửa clip track phụ",
+            Content = fields,
+            PrimaryButtonText = "Lưu",
+            SecondaryButtonText = "Xóa",
+            CloseButtonText = "Hủy",
+            DefaultButton = ContentDialogButton.Primary,
+        };
+        var save = false;
+        dialog.PrimaryButtonClick += (_, args) =>
+        {
+            try
+            {
+                var startUs = TimelineTime.FromSeconds(ParseSeconds(startBox.Text, "bắt đầu"));
+                var sourceInUs = TimelineTime.FromSeconds(ParseSeconds(sourceInBox.Text, "source in"));
+                var sourceOutUs = TimelineTime.FromSeconds(ParseSeconds(sourceOutBox.Text, "source out"));
+                save = true;
+                validationText.Text = string.Empty;
+                validationText.Tag = (StartUs: startUs, SourceInUs: sourceInUs, SourceOutUs: sourceOutUs);
+            }
+            catch (Exception error)
+            {
+                save = false;
+                validationText.Text = error.Message;
+                args.Cancel = true;
+            }
+        };
+        var result = await dialog.ShowAsync();
+        try
+        {
+            if (!_editor.HasOpenProject || _editor.Project.Id != projectId
+                || _editor.Revision != revision)
+                throw new InvalidOperationException("Project đã thay đổi; hãy mở lại hộp sửa clip.");
+            if (result == ContentDialogResult.Primary && save
+                && validationText.Tag is ValueTuple<long, long, long> proposal)
+            {
+                if (proposal.Item1 != clip.TimelineStartUs)
+                    RunEdit("Đã di chuyển clip track phụ.",
+                        () => _editor.MoveTrackClip(trackId, clipId, proposal.Item1));
+                if (proposal.Item2 != clip.SourceInUs || proposal.Item3 != clip.SourceOutUs)
+                    RunEdit("Đã trim clip track phụ.",
+                        () => _editor.TrimTrackClip(trackId, clipId, proposal.Item2, proposal.Item3));
+                if (proposal.Item1 == clip.TimelineStartUs
+                    && proposal.Item2 == clip.SourceInUs
+                    && proposal.Item3 == clip.SourceOutUs)
+                    EditStatusText.Text = "Clip track phụ không đổi.";
+            }
+            else if (result == ContentDialogResult.Secondary)
+            {
+                RunEdit("Đã xóa clip track phụ.",
+                    () => _editor.DeleteTrackClip(trackId, clipId));
+            }
+        }
+        catch (Exception error)
+        {
+            EditStatusText.Text = "Không cập nhật được clip track phụ: " + error.Message;
+        }
     }
 
     private async Task ShowTextItemDialogAsync(string trackId, TimelineTextItem? existing)

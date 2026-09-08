@@ -14,6 +14,8 @@ public sealed class TimelineEditingController
     private TimelineAudioEditState? _state;
     private TimelineAudioEditState? _savedState;
     private string? _selectedClipId;
+    private string? _selectedTrackId;
+    private string? _selectedTrackClipId;
     private bool _dirty;
     private long _revision;
 
@@ -31,6 +33,24 @@ public sealed class TimelineEditingController
         _state?.Timeline.Clips ?? throw new InvalidOperationException("Chưa mở project Timeline.");
 
     public string? SelectedClipId => _selectedClipId;
+
+    public string? SelectedTrackId => _selectedTrackId;
+
+    public string? SelectedTrackClipId => _selectedTrackClipId;
+
+    public TimelineTrackClip? SelectedTrackClip
+    {
+        get
+        {
+            var state = CurrentState();
+            if (_selectedTrackId is null || _selectedTrackClipId is null)
+                return null;
+            return state.Tracks?.SingleOrDefault(track =>
+                    string.Equals(track.Id, _selectedTrackId, StringComparison.Ordinal))
+                ?.Clips.SingleOrDefault(clip =>
+                    string.Equals(clip.Id, _selectedTrackClipId, StringComparison.Ordinal));
+        }
+    }
 
     public bool IsDirty => _dirty;
 
@@ -82,6 +102,8 @@ public sealed class TimelineEditingController
                 string.Equals(clip.Id, clipId, StringComparison.Ordinal)))
             throw new InvalidDataException("Timeline clip không tồn tại để chọn.");
         _selectedClipId = clipId;
+        _selectedTrackId = null;
+        _selectedTrackClipId = null;
     }
 
     public void TrimSelected(
@@ -172,6 +194,136 @@ public sealed class TimelineEditingController
                 .Where(candidate => !string.Equals(candidate.Id, textItemId, StringComparison.Ordinal))
                 .ToArray() };
         });
+    }
+
+    // G31c: secondary track clip selection. Selecting a track clip clears
+    // the primary selection and vice versa so exactly one edit target
+    // exists at a time.
+    public void SelectTrackClip(string? trackId, string? clipId)
+    {
+        var state = CurrentState();
+        if (trackId is null || clipId is null)
+        {
+            _selectedTrackId = null;
+            _selectedTrackClipId = null;
+            return;
+        }
+        var track = state.Tracks?.SingleOrDefault(candidate =>
+            string.Equals(candidate.Id, trackId, StringComparison.Ordinal));
+        if (track is null
+            || !track.Clips.Any(clip =>
+                string.Equals(clip.Id, clipId, StringComparison.Ordinal)))
+            throw new InvalidDataException("Timeline track clip không tồn tại để chọn.");
+        _selectedTrackId = trackId;
+        _selectedTrackClipId = clipId;
+        _selectedClipId = null;
+    }
+
+    // G31c: move a secondary clip along its track. Locked tracks reject;
+    // overlap and range rules are enforced by project validation in Apply.
+    public void MoveTrackClip(string trackId, string clipId, long newTimelineStartUs)
+    {
+        if (newTimelineStartUs < 0)
+            throw new InvalidDataException("Vị trí clip trên track phải >= 0 microsecond.");
+        var current = FindTrackClipOrThrow(trackId, clipId);
+        if (current.TimelineStartUs == newTimelineStartUs)
+            return;
+        Apply(state => ReplaceTrackClip(state, trackId, clipId,
+            clip => clip with { TimelineStartUs = newTimelineStartUs }));
+    }
+
+    // G31c: trim a secondary clip's source range. Duration follows from the
+    // source range and playback rate; timeline neighbors are untouched
+    // because secondary tracks are independent of the primary sequence.
+    public void TrimTrackClip(
+        string trackId, string clipId, long newSourceInUs, long newSourceOutUs)
+    {
+        if (newSourceInUs < 0 || newSourceOutUs <= newSourceInUs)
+            throw new InvalidDataException("Timeline track clip range không hợp lệ.");
+        var current = FindTrackClipOrThrow(trackId, clipId);
+        if (current.SourceInUs == newSourceInUs && current.SourceOutUs == newSourceOutUs)
+            return;
+        Apply(state => ReplaceTrackClip(state, trackId, clipId,
+            clip => clip with { SourceInUs = newSourceInUs, SourceOutUs = newSourceOutUs }));
+    }
+
+    public void DeleteTrackClip(string trackId, string clipId) =>
+        Apply(state =>
+        {
+            var tracks = RequireEditableTrack(state, trackId);
+            var track = tracks.Single(candidate =>
+                string.Equals(candidate.Id, trackId, StringComparison.Ordinal));
+            if (!track.Clips.Any(clip =>
+                    string.Equals(clip.Id, clipId, StringComparison.Ordinal)))
+                throw new InvalidDataException("Timeline track clip không tồn tại để xóa.");
+            return state with
+            {
+                Tracks = tracks.Select(candidate => string.Equals(
+                        candidate.Id, trackId, StringComparison.Ordinal)
+                    ? candidate with
+                    {
+                        Clips = candidate.Clips
+                            .Where(clip => !string.Equals(
+                                clip.Id, clipId, StringComparison.Ordinal))
+                            .ToArray(),
+                    }
+                    : candidate).ToArray(),
+            };
+        });
+
+    private TimelineTrackClip FindTrackClipOrThrow(string trackId, string clipId)
+    {
+        var state = CurrentState();
+        return state.Tracks?.SingleOrDefault(track =>
+                string.Equals(track.Id, trackId, StringComparison.Ordinal))
+            ?.Clips.SingleOrDefault(clip =>
+                string.Equals(clip.Id, clipId, StringComparison.Ordinal))
+            ?? throw new InvalidDataException("Timeline track clip không tồn tại để sửa.");
+    }
+
+    private static IReadOnlyList<TimelineTrackV2> RequireEditableTrack(
+        TimelineAudioEditState state, string trackId)
+    {
+        if (string.IsNullOrWhiteSpace(trackId))
+            throw new InvalidDataException("Timeline track ID không hợp lệ.");
+        var tracks = state.Tracks ?? [];
+        var track = tracks.SingleOrDefault(candidate =>
+            string.Equals(candidate.Id, trackId, StringComparison.Ordinal));
+        if (track is null)
+            throw new InvalidDataException("Timeline track không tồn tại để sửa clip.");
+        if (track.IsLocked)
+            throw new InvalidOperationException(
+                $"Track {track.Name} đang khóa; mở khóa trước khi sửa clip.");
+        return tracks;
+    }
+
+    private static TimelineAudioEditState ReplaceTrackClip(
+        TimelineAudioEditState state,
+        string trackId,
+        string clipId,
+        Func<TimelineTrackClip, TimelineTrackClip> replace)
+    {
+        ArgumentNullException.ThrowIfNull(replace);
+        var tracks = RequireEditableTrack(state, trackId);
+        var track = tracks.Single(candidate =>
+            string.Equals(candidate.Id, trackId, StringComparison.Ordinal));
+        var index = track.Clips.ToList().FindIndex(clip =>
+            string.Equals(clip.Id, clipId, StringComparison.Ordinal));
+        if (index < 0)
+            throw new InvalidDataException("Timeline track clip không tồn tại để sửa.");
+        var updated = replace(track.Clips[index]);
+        updated.ValidateShape();
+        if (updated == track.Clips[index])
+            return state;
+        var clips = track.Clips.ToArray();
+        clips[index] = updated;
+        return state with
+        {
+            Tracks = tracks.Select(candidate => string.Equals(
+                    candidate.Id, trackId, StringComparison.Ordinal)
+                ? candidate with { Clips = clips }
+                : candidate).ToArray(),
+        };
     }
 
     public void MoveSelected(int newPosition)
@@ -304,6 +456,18 @@ public sealed class TimelineEditingController
                 string.Equals(clip.Id, _selectedClipId, StringComparison.Ordinal)))
             return;
         _selectedClipId = clips.FirstOrDefault()?.Id;
+        if (_selectedTrackId is null || _selectedTrackClipId is null)
+            return;
+        var trackClipAlive = _state.Tracks?.SingleOrDefault(track =>
+                string.Equals(track.Id, _selectedTrackId, StringComparison.Ordinal))
+            ?.Clips.Any(clip =>
+                string.Equals(clip.Id, _selectedTrackClipId, StringComparison.Ordinal))
+            == true;
+        if (!trackClipAlive)
+        {
+            _selectedTrackId = null;
+            _selectedTrackClipId = null;
+        }
     }
 
     private void UpdateDirty()
