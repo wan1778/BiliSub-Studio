@@ -22,6 +22,15 @@
                 <TextBlock FontSize="16" FontWeight="SemiBold" Text="Timeline" VerticalAlignment="Center" />
                 <ComboBox x:Name="ProjectList" MinWidth="260" MaxWidth="420"
                           SelectionChanged="ProjectList_SelectionChanged" />
+                <ComboBox x:Name="TemplateList" MinWidth="150"
+                          SelectionChanged="TemplateList_SelectionChanged"
+                          VerticalAlignment="Center"
+                          AutomationProperties.Name="Mẫu project">
+                    <ComboBoxItem Content="Mặc định" IsSelected="True" />
+                    <ComboBoxItem Content="PiP overlay" />
+                    <ComboBoxItem Content="Text trên video" />
+                    <ComboBoxItem Content="Reaction" />
+                </ComboBox>
                 <Button x:Name="RefreshListButton" Click="RefreshList_Click" Content="Làm mới"
                         VerticalAlignment="Center" Margin="8,0,0,0" />
                 <Button x:Name="RelinkMediaButton" Click="RelinkMedia_Click" Content="Nối lại nguồn" IsEnabled="False"
@@ -145,10 +154,10 @@
             </StackPanel>
 
             <Border Grid.Row="2" BorderBrush="#34465E" BorderThickness="1" CornerRadius="8" Background="#151D29">
-                <ScrollViewer x:Name="TimelineScroller" Height="176"
+                <ScrollViewer x:Name="TimelineScroller" Height="300"
                               HorizontalScrollBarVisibility="Auto" HorizontalScrollMode="Enabled"
-                              VerticalScrollBarVisibility="Disabled" VerticalScrollMode="Disabled">
-                    <Canvas x:Name="TimelineSurface" Width="700" Height="156" Background="Transparent"
+                              VerticalScrollBarVisibility="Auto" VerticalScrollMode="Enabled">
+                    <Canvas x:Name="TimelineSurface" Width="700" Height="280" Background="Transparent"
                             AutomationProperties.AccessibilityView="Raw"
                             PointerPressed="TimelineSurface_PointerPressed"
                             PointerMoved="TimelineSurface_PointerMoved"

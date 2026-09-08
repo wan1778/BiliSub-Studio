@@ -52,6 +52,9 @@ public sealed partial class TimelineEditorPage : Page
     private const double TimelineTrackHeight = 110;
     private const double TimelineHandleTolerance = 10;
     private const double TimelineDragThreshold = 6;
+    private const double TimelineSecondaryTrackHeight = 34;
+    private const double TimelineSecondaryTop = TimelineTrackTop + TimelineTrackHeight + 12;
+    private const double TimelineTrackLabelWidth = 108;
 
     private sealed record TimelinePointerGesture(
         uint PointerId,
@@ -99,15 +102,37 @@ public sealed partial class TimelineEditorPage : Page
     {
         try
         {
+            var kind = TemplateList.SelectedIndex switch
+            {
+                1 => TimelineTemplateKind.PiPOverlay,
+                2 => TimelineTemplateKind.TextOverVideo,
+                3 => TimelineTemplateKind.Reaction,
+                _ => TimelineTemplateKind.Default,
+            };
             var project = await _session.CreateAsync("Timeline thử nghiệm", CancellationToken.None);
+            if (kind is not TimelineTemplateKind.Default)
+            {
+                var layout = TimelineTemplates.Create(
+                    kind, project.Name, 1920, 1080, 30);
+                project = project with
+                {
+                    Tracks = layout.Tracks,
+                };
+                project.Validate();
+                await _session.SaveAsync(project, CancellationToken.None);
+            }
             var plan = TimelineCompiler.Compile(project);
-            ShellStatusText.Text = $"Đã tạo {project.Name} ({project.Id[..8]}…). Plan: preview/export dùng chung timeline plan {plan.CreatedUtcTicks}.";
+            ShellStatusText.Text = $"Đã tạo {project.Name} ({project.Id[..8]}…) với {project.Tracks.Count} track phụ. Plan: preview/export dùng chung timeline plan {plan.CreatedUtcTicks}.";
             await RefreshAsync();
         }
         catch (Exception error)
         {
             ShellStatusText.Text = "Không tạo được project thử nghiệm: " + error.Message;
         }
+    }
+
+    private void TemplateList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
     }
 
     private async void RefreshList_Click(object sender, RoutedEventArgs e)
@@ -824,8 +849,14 @@ public sealed partial class TimelineEditorPage : Page
         }
 
         var clips = _editor.Clips;
+        var trackEndUs = _editor.Project.Tracks.SelectMany(track => track.Clips)
+            .Select(clip => clip.TimelineEndUs)
+            .DefaultIfEmpty(0).Max();
+        var textEndUs = _editor.Project.TextItems.Select(text => text.TimelineEndUs)
+            .DefaultIfEmpty(0).Max();
+        var sequenceEnd = Math.Max(Math.Max(clips[^1].TimelineEndUs, trackEndUs), textEndUs);
         TimelineSurface.Width = TimelineViewport.SurfaceWidth(
-            clips[^1].TimelineEndUs, _timelinePixelsPerSecond, 700);
+            sequenceEnd, _timelinePixelsPerSecond, 700);
         var viewportWidth = TimelineScroller.ViewportWidth > 0
             ? TimelineScroller.ViewportWidth
             : 700;
@@ -834,6 +865,7 @@ public sealed partial class TimelineEditorPage : Page
             TimelineScroller.HorizontalOffset,
             viewportWidth,
             _timelinePixelsPerSecond);
+        RenderTrackLabel("Video", TimelineTrackTop, TimelineTrackHeight);
         for (var index = visible.StartIndex; index < visible.EndExclusive; index++)
         {
             var clip = clips[index];
@@ -905,7 +937,92 @@ public sealed partial class TimelineEditorPage : Page
             }
         }
 
+        RenderSecondaryTracks();
         RenderTimelineDragProposal();
+    }
+
+    // G31: schema-5/6 multi-track rendering. Secondary tracks (overlay,
+    // music, audio, text) render read-only below the primary row; editing
+    // them arrives with the next G31 step. Hidden and muted tracks dim out.
+    private void RenderSecondaryTracks()
+    {
+        var top = TimelineSecondaryTop;
+        foreach (var track in _editor.Project.Tracks
+            .OrderBy(track => track.ZIndex)
+            .ThenBy(track => track.Id, StringComparer.Ordinal))
+        {
+            RenderTrackLabel(
+                track.Name + (track.IsMuted ? " (tắt tiếng)" : string.Empty),
+                top, TimelineSecondaryTrackHeight, dimmed: !track.IsVisible);
+            var items = track.Kind is TimelineTrackKind.Text
+                ? _editor.Project.TextItems
+                    .Where(text => string.Equals(text.TrackId, track.Id, StringComparison.Ordinal))
+                    .Select(text => (ElementId: text.Id, StartUs: text.TimelineStartUs,
+                        EndUs: text.TimelineEndUs, Label: text.Content, IsText: true))
+                    .ToList()
+                : track.Clips
+                    .Select(clip => (ElementId: clip.Id, StartUs: clip.TimelineStartUs,
+                        EndUs: clip.TimelineEndUs,
+                        Label: $"{clip.Id[..6]} x{clip.PlaybackRate:0.###}", IsText: false))
+                    .ToList();
+            foreach (var element in items
+                .Where(element => element.EndUs > TimelineScroller.HorizontalOffset
+                    && element.StartUs < TimelineScroller.HorizontalOffset
+                        + Math.Max(TimelineScroller.ViewportWidth, 0) + TimelineViewport.OverscanPixels)
+                .OrderBy(element => element.StartUs)
+                .ThenBy(element => element.ElementId, StringComparer.Ordinal))
+            {
+                var left = SequenceX(element.StartUs);
+                var width = Math.Max(2, SequenceX(element.EndUs) - left);
+                var card = new Border
+                {
+                    Width = Math.Max(1, width - 2),
+                    Height = TimelineSecondaryTrackHeight,
+                    CornerRadius = new CornerRadius(4),
+                    BorderThickness = new Thickness(1),
+                    BorderBrush = new SolidColorBrush(element.IsText
+                        ? Microsoft.UI.Colors.MediumOrchid
+                        : Microsoft.UI.Colors.DarkSeaGreen),
+                    Background = new SolidColorBrush(element.IsText
+                        ? Microsoft.UI.ColorHelper.FromArgb(255, 74, 44, 94)
+                        : Microsoft.UI.ColorHelper.FromArgb(255, 44, 66, 54)),
+                    Opacity = track.IsVisible ? 1 : 0.45,
+                    Child = new TextBlock
+                    {
+                        Margin = new Thickness(6, 2, 6, 2),
+                        Text = element.Label,
+                        FontSize = 10,
+                        Foreground = new SolidColorBrush(Microsoft.UI.Colors.White),
+                        TextTrimming = TextTrimming.CharacterEllipsis,
+                        VerticalAlignment = VerticalAlignment.Center,
+                    },
+                };
+                AutomationProperties.SetName(card, $"{track.Name}: {element.Label}");
+                Canvas.SetLeft(card, left + 1);
+                Canvas.SetTop(card, top);
+                TimelineSurface.Children.Add(card);
+            }
+            top += TimelineSecondaryTrackHeight + 6;
+        }
+        TimelineSurface.Height = Math.Max(280, top + 8);
+    }
+
+    private void RenderTrackLabel(string name, double top, double height, bool dimmed = false)
+    {
+        var label = new TextBlock
+        {
+            Text = name,
+            FontSize = 11,
+            Foreground = new SolidColorBrush(dimmed
+                ? Microsoft.UI.Colors.Gray
+                : Microsoft.UI.Colors.LightGray),
+            VerticalAlignment = VerticalAlignment.Center,
+            MaxWidth = TimelineTrackLabelWidth,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+        };
+        Canvas.SetLeft(label, 4);
+        Canvas.SetTop(label, top + (height - 14) / 2);
+        TimelineSurface.Children.Add(label);
     }
 
     private void RenderTimelineDragProposal()
@@ -968,6 +1085,21 @@ public sealed partial class TimelineEditorPage : Page
         TimelineSurface.Children.Add(handle);
     }
 
+    private long TimelineSequenceEndUs()
+    {
+        if (!_editor.HasOpenProject)
+            return 0;
+        var clips = _editor.Clips;
+        return Math.Max(
+            clips.Count == 0 ? 0 : clips[^1].TimelineEndUs,
+            Math.Max(
+                _editor.Project.Tracks.SelectMany(track => track.Clips)
+                    .Select(clip => clip.TimelineEndUs)
+                    .DefaultIfEmpty(0).Max(),
+                _editor.Project.TextItems.Select(text => text.TimelineEndUs)
+                    .DefaultIfEmpty(0).Max()));
+    }
+
     private long PointerSequenceUs(double x)
     {
         var total = _editor.Clips[^1].TimelineEndUs;
@@ -979,9 +1111,7 @@ public sealed partial class TimelineEditorPage : Page
 
     private void TimelineZoomSlider_ValueChanged(object sender, RangeBaseValueChangedEventArgs e)
     {
-        var maximumUs = _editor.HasOpenProject && _editor.Clips.Count > 0
-            ? _editor.Clips[^1].TimelineEndUs
-            : 0;
+        var maximumUs = TimelineSequenceEndUs();
         _pendingTimelineZoomCenterUs ??= TimelineViewport.SequenceUs(
             TimelineScroller.HorizontalOffset + TimelineScroller.ViewportWidth / 2,
             _timelinePixelsPerSecond,
