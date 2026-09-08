@@ -7,6 +7,10 @@ internal sealed class SubtitleTracker
     // let 0.2-second garbage cues enter the SRT. Real one-rune captions must be
     // visibly stable for a reviewable interval as well as repeat consistently.
     private const double SingleRuneMinimumEvidenceSeconds = .30;
+    // Two-frame false reads such as scene limbs interpreted as "小小" lasted
+    // only about 67 ms in field scans. A real two-rune caption must remain
+    // visible long enough to be readable before it can enter the final SRT.
+    private const double TwoRuneMinimumEvidenceSeconds = .20;
     private readonly double _frameSpan;
     private readonly double _candidateGap;
     private readonly double _lowConfidence;
@@ -283,7 +287,8 @@ internal sealed class SubtitleTracker
     private void CommitActive(double end)
     {
         if (_active is null) return;
-        if (ChineseSubtitleNormalizer.TryNormalize(_active.Text, out var text))
+        if (ChineseSubtitleNormalizer.TryNormalize(_active.Text, out var text)
+            && HasEnoughCommittedEvidence(text, _active.Start, end))
         {
             _committed.Add(_active with
             {
@@ -317,6 +322,18 @@ internal sealed class SubtitleTracker
         !_exactFrameTiming
         || text.EnumerateRunes().Count() > 1
         || at + frameDuration - start >= SingleRuneMinimumEvidenceSeconds - .000001;
+
+    private bool HasEnoughCommittedEvidence(string text, double start, double end)
+    {
+        if (!_exactFrameTiming) return true;
+        var minimum = text.EnumerateRunes().Count() switch
+        {
+            <= 1 => SingleRuneMinimumEvidenceSeconds,
+            2 => TwoRuneMinimumEvidenceSeconds,
+            _ => 0,
+        };
+        return end - start >= minimum - .000001;
+    }
 
     private static double ConfidentFloor(string text) => IsPureDash(text) ? 0.15 : 0.30;
 
