@@ -194,7 +194,8 @@ public sealed record TimelineVoiceCue(
     long SourceStartFrame,
     long FrameCount,
     double Gain,
-    string CueRevisionSha256)
+    string CueRevisionSha256,
+    TimelineVoiceFilter? Filter = null)
 {
     public static string NewId() => Guid.NewGuid().ToString("N");
 
@@ -207,10 +208,10 @@ public sealed record TimelineVoiceCue(
             throw new InvalidDataException("Timeline voice source frame range không hợp lệ.");
         if (!double.IsFinite(Gain) || Gain is < 0 or > 4)
             throw new InvalidDataException("Timeline voice gain phải nằm trong 0..4.");
+        Filter?.Validate();
         TimelineAudioValidation.ValidateSha256(CueRevisionSha256, "voice cue revision");
     }
 }
-
 public sealed record TimelineMusicTrack(
     string Id,
     string AudioAssetId,

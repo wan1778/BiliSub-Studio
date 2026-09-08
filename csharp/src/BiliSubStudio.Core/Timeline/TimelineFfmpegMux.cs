@@ -295,11 +295,12 @@ public static class TimelineFfmpegArguments
             // G27: per-span re-timing splits the trimmed source audio into
             // span atrim windows, applies each span's atempo chain, then
             // concats them back in order. Absent/single-span envelopes stay
-            // on the constant-rate chain byte-identically.
+            // on the constant-rate chain byte-identically (aresample sits
+            // between the trim and the rate filters, as in the G12 graph).
             var spanAudio = TimelineSpeedMapping.BuildAudioChain(
                 spans, audioTrim, audioInput, rate);
             audioFilter = spanAudio
-                + $",aresample=48000,volume={FormatNumber(segment.SourceAudio.Gain)}[aout]";
+                + $",volume={FormatNumber(segment.SourceAudio.Gain)}[aout]";
         }
         arguments.AddRange([
             "-filter_complex", audibleOutput ? videoFilter + ";" + audioFilter : videoFilter,

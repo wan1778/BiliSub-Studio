@@ -183,11 +183,14 @@ public static class TimelineEffectGraph
                 continue;
             var spec = TimelineEffectSpec.Parse(item.Payload, item.ItemId);
             // Resolved items already carry sequence time: convert through the
-            // owning clip into source media time (piecewise under an envelope).
+            // owning clip into source media time (piecewise under an envelope,
+            // clamped into the clip window before mapping).
             var sourceStartUs = checked(clip.SourceInUs + TimelineSpeedMapping.SequenceToSourceUs(
-                clip.SpeedSpans, clip.PlaybackRate, item.SequenceStartUs - clip.SequenceStartUs));
+                clip.SpeedSpans, clip.PlaybackRate, Math.Clamp(
+                    item.SequenceStartUs - clip.SequenceStartUs, 0, clip.SequenceDurationUs)));
             var sourceEndUs = checked(clip.SourceInUs + TimelineSpeedMapping.SequenceToSourceUs(
-                clip.SpeedSpans, clip.PlaybackRate, item.SequenceEndUs - clip.SequenceStartUs));
+                clip.SpeedSpans, clip.PlaybackRate, Math.Clamp(
+                    item.SequenceEndUs - clip.SequenceStartUs, 0, clip.SequenceDurationUs)));
             var startUs = Math.Max(sourceStartUs, Math.Max(0, segSourceInUs));
             var endUs = Math.Min(sourceEndUs, Math.Min(assetDurationUs, segSourceOutUs));
             if (endUs <= startUs)
@@ -232,9 +235,11 @@ public static class TimelineEffectGraph
                 || cue.SequenceStartUs >= clip.SequenceEndUs)
                 continue;
             var sourceStartUs = checked(clip.SourceInUs + TimelineSpeedMapping.SequenceToSourceUs(
-                clip.SpeedSpans, clip.PlaybackRate, cue.SequenceStartUs - clip.SequenceStartUs));
+                clip.SpeedSpans, clip.PlaybackRate, Math.Clamp(
+                    cue.SequenceStartUs - clip.SequenceStartUs, 0, clip.SequenceDurationUs)));
             var sourceEndUs = checked(clip.SourceInUs + TimelineSpeedMapping.SequenceToSourceUs(
-                clip.SpeedSpans, clip.PlaybackRate, cue.SequenceEndUs - clip.SequenceStartUs));
+                clip.SpeedSpans, clip.PlaybackRate, Math.Clamp(
+                    cue.SequenceEndUs - clip.SequenceStartUs, 0, clip.SequenceDurationUs)));
             if (sourceEndUs <= sourceStartUs)
                 continue;
             cues.Add(new EditorSubtitleCue(
@@ -295,12 +300,12 @@ public static class TimelineEffectGraph
             var startUs = Math.Max(
                 checked(clip.SourceInUs + TimelineSpeedMapping.SequenceToSourceUs(
                     clip.SpeedSpans, clip.PlaybackRate,
-                    item.SequenceStartUs - clip.SequenceStartUs)),
+                    Math.Max(0, item.SequenceStartUs - clip.SequenceStartUs))),
                 Math.Max(0, segSourceInUs));
             var endUs = Math.Min(
                 checked(clip.SourceInUs + TimelineSpeedMapping.SequenceToSourceUs(
                     clip.SpeedSpans, clip.PlaybackRate,
-                    item.SequenceEndUs - clip.SequenceStartUs)),
+                    Math.Min(item.SequenceEndUs - clip.SequenceStartUs, clip.SequenceDurationUs))),
                 Math.Min(asset.DurationUs, segSourceOutUs));
             if (endUs <= startUs)
                 continue;
@@ -524,8 +529,13 @@ public sealed class TimelineFfmpegFinalMixer : ITimelineFinalMixer
                     TimelineEffectGraph.ConcatTimeUs(voice.SequenceStartUs, orderedClips) / 1000d,
                     MidpointRounding.AwayFromZero);
                 var label = $"[vc{inputIndex}_{index}]";
+                // G29: per-cue voice filter composes right after the trim
+                // stage; neutral/absent filters keep the chain byte-identical.
+                var voiceFilter = TimelineVoiceFilterGraph.BuildChain(
+                    voice.Filter, voice.SampleRate);
+                var filterPrefix = voiceFilter is null ? string.Empty : voiceFilter + ",";
                 chains.Add($"{branches[index]}atrim=start={startSeconds}:duration={durationSeconds}," +
-                    $"asetpts=PTS-STARTPTS,adelay={delayMs}:all=1," +
+                    $"asetpts=PTS-STARTPTS,{filterPrefix}adelay={delayMs}:all=1," +
                     $"volume={voice.Gain.ToString("0.###", CultureInfo.InvariantCulture)}{label}");
                 mixed.Add(label);
             }

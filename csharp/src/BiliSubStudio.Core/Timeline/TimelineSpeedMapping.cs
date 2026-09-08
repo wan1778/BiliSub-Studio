@@ -156,7 +156,7 @@ public static class TimelineSpeedMapping
         {
             if (!double.IsFinite(playbackRate) || playbackRate <= 0)
                 throw new InvalidDataException("PlaybackRate phải là số dương hữu hạn.");
-            return $"{input}{audioTrim},{TimelineSpeedEnvelope.BuildAtempoChain(playbackRate)}";
+            return $"{input}{audioTrim},aresample=48000,{TimelineSpeedEnvelope.BuildAtempoChain(playbackRate)}";
         }
         var parts = new List<string>
         {
@@ -170,7 +170,8 @@ public static class TimelineSpeedMapping
             var durationSeconds = Seconds(span.SourceEndOffsetUs - span.SourceOffsetUs);
             var trim = $"atrim=start={startSeconds}:duration={durationSeconds},asetpts=PTS-STARTPTS";
             var label = index == spans.Count - 1 ? "[spjoin]" : $"[spc{audioInput}_{index}]";
-            parts.Add($"[sp{audioInput}_{index}]{trim},{TimelineSpeedEnvelope.BuildAtempoChain(span.Rate)}{label}");
+            parts.Add($"[sp{audioInput}_{index}]{trim},aresample=48000," +
+                $"{TimelineSpeedEnvelope.BuildAtempoChain(span.Rate)}{label}");
         }
         parts.Add($"[spjoin]concat=n={spans.Count}:v=0:a=1[spcat]");
         return string.Join(";", parts);

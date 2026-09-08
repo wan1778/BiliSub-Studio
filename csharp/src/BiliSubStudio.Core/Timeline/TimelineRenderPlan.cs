@@ -57,7 +57,8 @@ public sealed record TimelineResolvedVoiceCue(
     long FrameCount,
     int SampleRate,
     int Channels,
-    double Gain);
+    double Gain,
+    TimelineVoiceFilter? Filter = null);
 
 public sealed record TimelineResolvedMusic(
     string MusicId,
@@ -384,7 +385,8 @@ public static class TimelineCompiler
                 frameCount,
                 asset.SampleRate,
                 asset.Channels,
-                voice.Gain));
+                voice.Gain,
+                voice.Filter));
         }
         var resolvedVoice = resolvedVoiceItems
             .OrderBy(voice => voice.SequenceStartUs)

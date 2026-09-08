@@ -81,9 +81,9 @@ public static class TimelineSpeedKeyframeGradeContract
                 "span cursors must tile sequence and source exactly");
             Check(TimelineSpeedMapping.SequenceToSourceUs(spans, 1, 2_500_000) == 1_250_000,
                 "piecewise mapping must resolve inside the slow span");
-            Check(TimelineSpeedMapping.SequenceToSourceUs(spans, 1, 7_500_000) == 5_000_000,
+            Check(TimelineSpeedMapping.SequenceToSourceUs(spans, 1, 7_500_000) == 6_250_000,
                 "piecewise mapping must resolve inside the fast span");
-            Check(TimelineSpeedMapping.SourceToSequenceUs(spans, 1, 5_000_000) == 7_500_000,
+            Check(TimelineSpeedMapping.SourceToSequenceUs(spans, 1, 6_250_000) == 7_500_000,
                 "inverse piecewise mapping must roundtrip the fast span");
             Check(TimelineSpeedMapping.SequenceToSourceUs(null, 2.0, 3_000_000) == 6_000_000,
                 "null spans must keep the constant-rate arithmetic");
@@ -101,7 +101,7 @@ public static class TimelineSpeedKeyframeGradeContract
                 && spanAudio.Contains("concat=n=2:v=0:a=1", StringComparison.Ordinal),
                 "span audio chain must split, re-time per span and concat");
             Check(TimelineSpeedMapping.BuildAudioChain(null, "atrim=duration=10", 0, 2.0)
-                == "[0:a]atrim=duration=10,atempo=2",
+                == "[0:a]atrim=duration=10,aresample=48000,atempo=2",
                 "null spans must keep the constant audio chain byte-identical");
             TimelineRenderCapability.EnsureMuxSupported(envelopePlan);
 
@@ -166,16 +166,28 @@ public static class TimelineSpeedKeyframeGradeContract
                             new TimelineKeyframe(4_000_000, 1, TimelineKeyframeEasing.Linear),
                         ]),
                     new TimelineKeyframeTrack(
-                        TimelineKeyframeChannel.ScaleX,
-                        [new TimelineKeyframe(0, 1, TimelineKeyframeEasing.Hold)]),
+                        TimelineKeyframeChannel.RotationDegrees,
+                        [
+                            new TimelineKeyframe(0, 0, TimelineKeyframeEasing.Linear),
+                            new TimelineKeyframe(5_000_000, 90, TimelineKeyframeEasing.Linear),
+                            new TimelineKeyframe(10_000_000, 45, TimelineKeyframeEasing.EaseInOut),
+                        ]),
                 ],
                 clip.DurationUs);
             Check(keyframes.Evaluate(TimelineKeyframeChannel.Opacity, 2_000_000) == 0.5,
                 "linear opacity must hit 0.5 at the midpoint");
-            Check(keyframes.Evaluate(TimelineKeyframeChannel.ScaleX, 9_999_999) == 1,
-                "single-keyframe channel must stay constant");
+            Check(keyframes.Evaluate(TimelineKeyframeChannel.RotationDegrees, 2_500_000) == 45,
+                "linear rotation must hit the midpoint angle");
             Check(keyframes.Evaluate(TimelineKeyframeChannel.Opacity, 8_000_000) == 1,
                 "past the last keyframe the value must hold");
+            var scaleSet = TimelineKeyframes.Create(
+                clip.Id,
+                [new TimelineKeyframeTrack(
+                    TimelineKeyframeChannel.ScaleX,
+                    [new TimelineKeyframe(0, 1, TimelineKeyframeEasing.Hold)])],
+                clip.DurationUs);
+            Check(scaleSet.Evaluate(TimelineKeyframeChannel.ScaleX, 9_999_999) == 1,
+                "single-keyframe channel must stay constant");
             var easeIn = TimelineKeyframes.Create(
                 clip.Id,
                 [new TimelineKeyframeTrack(
@@ -199,7 +211,8 @@ public static class TimelineSpeedKeyframeGradeContract
                 MakeSegment(keyframePlan, asset),
                 Path.Combine(root, "keyframes.mp4")).ToList();
             var keyframeGraph = keyframeArguments[keyframeArguments.IndexOf("-filter_complex") + 1];
-            Check(keyframeGraph.Contains("rotate=angle='if(lt(T,5),", StringComparison.Ordinal),
+            Check(keyframeGraph.Contains("rotate=angle='if(lt(T,0),0,if(lt(T,5),", StringComparison.Ordinal)
+                && keyframeGraph.Contains("(T-5)/5)", StringComparison.Ordinal),
                 "segment graph must carry the piecewise rotate expression");
             Check(keyframeGraph.Contains("geq=lum='lum(X,Y)'", StringComparison.Ordinal)
                 && keyframeGraph.Contains("p(X,Y)*(", StringComparison.Ordinal),
@@ -314,6 +327,63 @@ public static class TimelineSpeedKeyframeGradeContract
                     ColorGrades = [new TimelineColorGradeSpec(TimelineProjectV2.NewId(), grade)],
                 }).Validate(),
                 "grade on a missing clip must be rejected");
+
+            // ---- G29 voice filters: chain mapping + final mix splice ----
+            var pitch = new TimelineVoiceFilter(-4, 1, 3, -2);
+            Check(TimelineVoiceFilterGraph.BuildChain(pitch, 48000)
+                == "asetrate=38097.625247,aresample=48000,atempo=1.259921,bass=g=3:f=110:w=0.6,treble=g=-2:f=3800:w=0.6",
+                "pitch filter must resample, restore duration and map EQ deterministically");
+            Check(TimelineVoiceFilterGraph.BuildChain(
+                new TimelineVoiceFilter(0, 1.5, 0, 0), 48000) == "atempo=1.5",
+                "tempo-only filter must emit a single atempo");
+            Check(TimelineVoiceFilterGraph.BuildChain(TimelineVoiceFilter.Neutral, 48000) is null
+                && TimelineVoiceFilterGraph.BuildChain(null, 48000) is null,
+                "neutral or absent filters must build no chain");
+            Throws<InvalidDataException>(
+                () => new TimelineVoiceFilter(13, 1, 0, 0).Validate(),
+                "pitch beyond 12 semitones must be rejected");
+            Throws<InvalidDataException>(
+                () => new TimelineVoiceFilter(0, 3, 0, 0).Validate(),
+                "tempo beyond 2 must be rejected");
+            Throws<InvalidDataException>(
+                () => new TimelineVoiceFilter(0, 1, 13, 0).Validate(),
+                "bass beyond 12 dB must be rejected");
+            Throws<InvalidDataException>(
+                () => TimelineVoiceFilterGraph.BuildChain(
+                    new TimelineVoiceFilter(-12, 2, 0, 0), 48000),
+                "pitch+tempo exceeding the atempo range must be rejected");
+
+            // Final mix splices the filter after trim for filtered cues only.
+            var voiceAsset = TimelineAudioContractFixture.VoiceAsset();
+            var voicePath = Path.Combine(root, "voice-master.flac");
+            await File.WriteAllBytesAsync(voicePath, [1, 2, 3, 4], CancellationToken.None);
+            voiceAsset = voiceAsset with { Path = voicePath };
+            var subtitle = TimelineItemOps.AttachSubtitleToClip(
+                clip.Id, 0, 2_000_000, "C:/subs/g29.srt");
+            var cue = TimelineSubtitleCue.Create(
+                subtitle.Id, 0, 2_000_000, "G29 voice filter");
+            var filteredVoice = new TimelineVoiceCue(
+                TimelineVoiceCue.NewId(), cue.Id, voiceAsset.Id,
+                0, TimelineAudioTime.MicrosecondsToFrames(2_000_000, voiceAsset.SampleRate),
+                1, cue.SpeechRevisionSha256, pitch);
+            var voiceProject = withSequence with
+            {
+                AudioAssets = [voiceAsset],
+                Items = [subtitle],
+                SubtitleCues = [cue],
+                VoiceCues = [filteredVoice],
+            };
+            voiceProject.Validate();
+            var voicePlan = TimelineCompiler.Compile(voiceProject);
+            Check(voicePlan.Audio.VoiceCues.Single().Filter is not null,
+                "voice filter must ride the resolved plan");
+            var mixArguments = TimelineFfmpegFinalMixer.BuildFinalMixArguments(
+                Path.Combine(root, "concat.mp4"), voicePlan, Path.Combine(root, "final.mp4"));
+            var mixGraph = mixArguments[mixArguments.ToList().IndexOf("-filter_complex") + 1];
+            Check(mixGraph.Contains("asetrate=17501.096598,", StringComparison.Ordinal)
+                && mixGraph.Contains("bass=g=3:f=110:w=0.6", StringComparison.Ordinal)
+                && mixGraph.Contains("adelay=", StringComparison.Ordinal),
+                "final mix must splice the voice filter after trim and before delay");
 
             // ---- Schema 5 payload upgrade to empty G24-G26 state ----
             var path = Path.Combine(root, withSequence.Id + ".json");
