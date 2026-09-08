@@ -1114,32 +1114,22 @@ public sealed partial class TimelineEditorPage : Page
     {
         if (sender is not FrameworkElement { Tag: string trackId })
             return;
-        try
+        RunEdit("Đã đổi trạng thái hiển thị track.", () =>
         {
             var track = _editor.Project.Tracks.Single(item => item.Id == trackId);
             _editor.SetTrackState(trackId, !track.IsVisible, null);
-            ReportEditState(track.IsVisible ? "Đã ẩn track." : "Đã hiện track.");
-        }
-        catch (Exception error)
-        {
-            EditStatusText.Text = "Không đổi được trạng thái track: " + error.Message;
-        }
+        });
     }
 
     private void TrackMute_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not FrameworkElement { Tag: string trackId })
             return;
-        try
+        RunEdit("Đã đổi trạng thái âm thanh track.", () =>
         {
             var track = _editor.Project.Tracks.Single(item => item.Id == trackId);
             _editor.SetTrackState(trackId, null, !track.IsMuted);
-            ReportEditState(track.IsMuted ? "Đã bật tiếng track." : "Đã tắt tiếng track.");
-        }
-        catch (Exception error)
-        {
-            EditStatusText.Text = "Không đổi được trạng thái track: " + error.Message;
-        }
+        });
     }
 
     private async void TextTrackAdd_Click(object sender, RoutedEventArgs e)
@@ -1159,6 +1149,11 @@ public sealed partial class TimelineEditorPage : Page
 
     private async Task ShowTextItemDialogAsync(string trackId, TimelineTextItem? existing)
     {
+        if (!_editor.HasOpenProject || _savingProject || _openingProject
+            || _timelineClosing || TimelinePreviewLocked)
+            return;
+        var projectId = _editor.Project.Id;
+        var revision = _editor.Revision;
         var contentBox = new TextBox
         {
             Header = "Nội dung",
@@ -1239,18 +1234,20 @@ public sealed partial class TimelineEditorPage : Page
                 args.Cancel = true;
             }
         };
-        var result = await dialog.ShowAsync();
         try
         {
+            var result = await dialog.ShowAsync();
+            if (!_editor.HasOpenProject || _editor.Project.Id != projectId
+                || _editor.Revision != revision)
+                throw new InvalidOperationException("Project đã thay đổi; hãy mở lại hộp sửa text.");
             if (result == ContentDialogResult.Primary && proposed is not null)
             {
-                _editor.UpsertTextItem(proposed);
-                ReportEditState(existing is null ? "Đã thêm text." : "Đã cập nhật text.");
+                RunEdit(existing is null ? "Đã thêm text." : "Đã cập nhật text.",
+                    () => _editor.UpsertTextItem(proposed));
             }
             else if (result == ContentDialogResult.Secondary && existing is not null)
             {
-                _editor.DeleteTextItem(existing.Id);
-                ReportEditState("Đã xóa text.");
+                RunEdit("Đã xóa text.", () => _editor.DeleteTextItem(existing.Id));
             }
         }
         catch (Exception error)
@@ -1373,7 +1370,7 @@ public sealed partial class TimelineEditorPage : Page
         _pendingTimelineZoomCenterUs = null;
         var targetOffset = Math.Max(
             0,
-            TimelineViewport.SequenceX(centerUs, _timelinePixelsPerSecond)
+            SequenceX(centerUs)
                 - TimelineScroller.ViewportWidth / 2);
         TimelineScroller.ChangeView(targetOffset, null, null, disableAnimation: true);
     }
