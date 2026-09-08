@@ -385,6 +385,48 @@ public static class TimelineSpeedKeyframeGradeContract
                 && mixGraph.Contains("adelay=", StringComparison.Ordinal),
                 "final mix must splice the voice filter after trim and before delay");
 
+            // ---- G30 templates: preset factories produce validated layouts ----
+            var pip = TimelineTemplates.Create(
+                TimelineTemplateKind.PiPOverlay, "G30 PiP", 1920, 1080, 30);
+            Check(TimelineProjectV2.Schema == 6 && pip.Sequence is null
+                && pip.Tracks.Count == 3,
+                "PiP template must carry an empty project with three tracks");
+            Check(pip.Tracks.Any(track => track.Kind == TimelineTrackKind.VideoOverlay
+                    && track.ZIndex == 10)
+                && pip.Tracks.Any(track => track.Kind == TimelineTrackKind.Text
+                    && track.ZIndex == 20)
+                && pip.Tracks.Any(track => track.Kind == TimelineTrackKind.Music
+                    && track.GainDb == -6),
+                "PiP template layout must pin overlay, text and music tracks");
+            var reaction = TimelineTemplates.Create(
+                TimelineTemplateKind.Reaction, "G30 Reaction", 1080, 1920, 60);
+            Check(reaction.Tracks.Count == 3
+                && reaction.Tracks[0].Kind == TimelineTrackKind.Audio
+                && reaction.Tracks[1].Name == "Reaction Cam",
+                "reaction template must pin audio, cam and text tracks in order");
+            Throws<InvalidDataException>(
+                () => TimelineTemplates.Create(
+                    TimelineTemplateKind.Default, "   ", 1920, 1080, 30),
+                "template name must be validated");
+            Throws<InvalidDataException>(
+                () => TimelineTemplates.Create(
+                    TimelineTemplateKind.Default, "G30", 0, 1080, 30),
+                "template resolution must be validated");
+            Throws<InvalidDataException>(
+                () => TimelineTemplates.Create(
+                    TimelineTemplateKind.Default, "G30", 1920, 1080, 0),
+                "template FPS must be validated");
+            // Template project accepts an imported sequence afterwards.
+            var withTemplateSequence = pip with
+            {
+                Sequence = TimelineSequence.Create([clip], [asset], outputFrameRate: 30),
+                SourceAudio = TimelineSourceAudioState.Defaults([clip]),
+            };
+            withTemplateSequence.Validate();
+            var templatePlan = TimelineCompiler.Compile(withTemplateSequence);
+            Check(templatePlan.OverlayClips.Count == 0 && templatePlan.Clips.Count == 1,
+                "template track layout must survive compilation with a primary clip");
+
             // ---- Schema 5 payload upgrade to empty G24-G26 state ----
             var path = Path.Combine(root, withSequence.Id + ".json");
             var json = System.Text.Json.Nodes.JsonNode.Parse(await File.ReadAllTextAsync(path))!.AsObject();
