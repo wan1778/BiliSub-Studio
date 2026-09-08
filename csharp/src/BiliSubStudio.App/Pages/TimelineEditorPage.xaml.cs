@@ -48,13 +48,20 @@ public sealed partial class TimelineEditorPage : Page
     private long? _pendingTimelineZoomCenterUs;
     private double _timelinePixelsPerSecond = TimelineViewport.DefaultPixelsPerSecond;
 
-    private const double TimelineTrackTop = 28;
+    // G32: ruler on top, then primary + secondary rows. The ruler replaces
+    // the old per-clip time labels; the playhead spans ruler and tracks.
+    private const double TimelineRulerHeight = 26;
+    private const double TimelineTrackTop = TimelineRulerHeight + 10;
     private const double TimelineTrackHeight = 110;
-    private const double TimelineHandleTolerance = 10;
+    private const double TimelineHandleTolerance = 14;
     private const double TimelineDragThreshold = 6;
-    private const double TimelineSecondaryTrackHeight = 34;
+    private const double TimelineSecondaryTrackHeight = 40;
     private const double TimelineSecondaryTop = TimelineTrackTop + TimelineTrackHeight + 12;
-    private const double TimelineTrackLabelWidth = 108;
+    private const double TimelineTrackLabelWidth = 140;
+    private const double TimelineZoomKeyboardStep = 20;
+
+    private Rectangle? _timelinePlayhead;
+    private long _timelinePlayheadUs = -1;
 
     private sealed record TimelinePointerGesture(
         uint PointerId,
@@ -82,6 +89,7 @@ public sealed partial class TimelineEditorPage : Page
         TimelineZoomSlider.ValueChanged += TimelineZoomSlider_ValueChanged;
         TimelineScroller.ViewChanged += TimelineScroller_ViewChanged;
         TimelineSurface.SizeChanged += TimelineSurface_SizeChanged;
+        KeyDown += TimelineEditorPage_KeyDown;
         InitializeTimelinePlayback();
         _timelineAutoScrollTimer.Tick += (_, _) =>
         {
@@ -620,6 +628,13 @@ public sealed partial class TimelineEditorPage : Page
             ? !point.Properties.IsLeftButtonPressed
             : !point.IsInContact)
             return;
+        // G32: click/tap on the ruler seeks the processed preview.
+        if (point.Position.Y < TimelineRulerHeight)
+        {
+            SeekTimelinePreview(PointerSequenceUs(point.Position.X));
+            e.Handled = true;
+            return;
+        }
         var touch = pointerType == Microsoft.UI.Input.PointerDeviceType.Touch;
         var touchGrip = touch ? HitTestTimelineTouchGrip(point.Position) : null;
         (TimelineClip? Clip, TimelineDragKind Kind) hit = touchGrip is null
@@ -917,16 +932,6 @@ public sealed partial class TimelineEditorPage : Page
                 TimelineSurface.Children.Add(grip);
             }
 
-            var time = new TextBlock
-            {
-                Text = TimelineTime.ToSeconds(clip.TimelineStartUs).ToString("0.###") + "s",
-                FontSize = 10,
-                Foreground = new SolidColorBrush(Microsoft.UI.Colors.LightGray),
-            };
-            Canvas.SetLeft(time, left + 2);
-            Canvas.SetTop(time, 4);
-            TimelineSurface.Children.Add(time);
-
             if (selected)
             {
                 AddTimelineHandle(left);
@@ -936,6 +941,162 @@ public sealed partial class TimelineEditorPage : Page
 
         RenderSecondaryTracks();
         RenderTimelineDragProposal();
+        RenderTimelineRuler(sequenceEnd);
+        UpdateTimelinePlayhead(fullRender: true);
+    }
+
+    // G32: time ruler with adaptive ticks. Steps stay >= 72px apart so
+    // labels never collide; labels are monospace m:ss per design tokens.
+    private void RenderTimelineRuler(long sequenceEndUs)
+    {
+        var stepSeconds = new[] { 1, 2, 5, 10, 15, 30, 60, 120, 300, 600 }
+            .FirstOrDefault(step => step * _timelinePixelsPerSecond >= 72);
+        if (stepSeconds == 0)
+            stepSeconds = 600;
+        var stepUs = stepSeconds * TimelineTime.MicrosecondsPerSecond;
+        var visibleLeft = Math.Max(0, TimelineScroller.HorizontalOffset - TimelineViewport.OverscanPixels);
+        var visibleRight = TimelineScroller.HorizontalOffset
+            + Math.Max(TimelineScroller.ViewportWidth, 700)
+            + TimelineViewport.OverscanPixels;
+        var firstTick = Math.Max(0, (long)(TimelineViewport.SequenceUs(
+            visibleLeft, _timelinePixelsPerSecond, sequenceEndUs) / stepUs) * stepUs);
+        for (var tickUs = firstTick; tickUs <= sequenceEndUs; tickUs += stepUs)
+        {
+            var x = SequenceX(tickUs);
+            if (x < visibleLeft || x > visibleRight)
+                continue;
+            var tick = new Rectangle
+            {
+                Width = 1,
+                Height = tickUs % (stepUs * 5) == 0 ? 10 : 6,
+                Fill = new SolidColorBrush(Microsoft.UI.Colors.SlateGray),
+                IsHitTestVisible = false,
+            };
+            Canvas.SetLeft(tick, x);
+            Canvas.SetTop(tick, TimelineRulerHeight - tick.Height);
+            TimelineSurface.Children.Add(tick);
+            var totalSeconds = (long)TimelineTime.ToSeconds(tickUs);
+            var label = new TextBlock
+            {
+                Text = $"{totalSeconds / 60}:{totalSeconds % 60:00}",
+                FontSize = 10,
+                FontFamily = new Microsoft.UI.Xaml.Media.FontFamily("Consolas"),
+                Foreground = new SolidColorBrush(Microsoft.UI.Colors.Gray),
+                IsHitTestVisible = false,
+            };
+            Canvas.SetLeft(label, x + 4);
+            Canvas.SetTop(label, 2);
+            TimelineSurface.Children.Add(label);
+        }
+    }
+
+    // G32: red playhead spanning ruler and tracks. Full renders recreate
+    // the element; preview position callbacks only move it (no re-render).
+    private void UpdateTimelinePlayhead(bool fullRender)
+    {
+        if (fullRender)
+        {
+            _timelinePlayhead = new Rectangle
+            {
+                Width = 2,
+                Fill = new SolidColorBrush(Microsoft.UI.Colors.Red),
+                IsHitTestVisible = false,
+            };
+            TimelineSurface.Children.Add(_timelinePlayhead);
+        }
+        if (_timelinePlayhead is null
+            || !TimelineSurface.Children.Contains(_timelinePlayhead))
+            return;
+        if (_timelinePlayheadUs < 0 || !_editor.HasOpenProject)
+        {
+            _timelinePlayhead.Visibility = Visibility.Collapsed;
+            return;
+        }
+        var height = TimelineSurface.Height;
+        if (double.IsNaN(height) || height <= 0)
+            height = 280;
+        _timelinePlayhead.Visibility = Visibility.Visible;
+        Canvas.SetLeft(_timelinePlayhead, SequenceX(_timelinePlayheadUs) - 1);
+        Canvas.SetTop(_timelinePlayhead, 0);
+        _timelinePlayhead.Height = height;
+    }
+
+    private void SeekTimelinePreview(long sequenceUs)
+    {
+        if (_timelinePreviewMediaPlayer is null || !_editor.HasOpenProject)
+        {
+            TimelineDragStatusText.Text = "Phát preview trước rồi click thước để nhảy.";
+            return;
+        }
+        try
+        {
+            var clamped = Math.Clamp(sequenceUs, 0, TimelineSequenceEndUs());
+            _timelinePreviewMediaPlayer.PlaybackSession.Position =
+                TimeSpan.FromTicks(clamped * 10);
+            _timelinePlayheadUs = clamped;
+            UpdateTimelinePlayhead(fullRender: false);
+            TimelineDragStatusText.Text =
+                $"Đã nhảy tới {TimelineTime.ToSeconds(clamped):0.###}s.";
+        }
+        catch (Exception error)
+        {
+            TimelineDragStatusText.Text = "Không nhảy được preview: " + error.Message;
+        }
+    }
+
+    // G32: keyboard-first timeline. Skipped inside text fields and combo
+    // boxes so typing values never triggers shortcuts.
+    private void TimelineEditorPage_KeyDown(object sender, KeyRoutedEventArgs e)
+    {
+        if (FocusManager.GetFocusedElement(XamlRoot) is TextBox or ComboBox)
+            return;
+        switch (e.Key)
+        {
+            case Windows.System.VirtualKey.Add:
+            case (Windows.System.VirtualKey)187: // '+' chính và numpad
+                ZoomTimelineBy(TimelineZoomKeyboardStep);
+                e.Handled = true;
+                break;
+            case Windows.System.VirtualKey.Subtract:
+            case (Windows.System.VirtualKey)189: // '−' chính và numpad
+                ZoomTimelineBy(-TimelineZoomKeyboardStep);
+                e.Handled = true;
+                break;
+            case Windows.System.VirtualKey.Space:
+                if (TimelinePreviewPauseButton.IsEnabled)
+                    TimelinePreviewPause_Click(this, new RoutedEventArgs());
+                else if (TimelinePreviewPlayButton.IsEnabled)
+                    TimelinePreviewPlay_Click(this, new RoutedEventArgs());
+                else
+                    return;
+                e.Handled = true;
+                break;
+            case Windows.System.VirtualKey.Home:
+                TimelineScroller.ChangeView(0, null, null, disableAnimation: true);
+                e.Handled = true;
+                break;
+            case Windows.System.VirtualKey.End:
+                TimelineScroller.ChangeView(
+                    TimelineScroller.ScrollableWidth, null, null, disableAnimation: true);
+                e.Handled = true;
+                break;
+            case Windows.System.VirtualKey.Delete:
+                if (DeleteClipButton.IsEnabled)
+                    DeleteClip_Click(this, new RoutedEventArgs());
+                else
+                    return;
+                e.Handled = true;
+                break;
+        }
+    }
+
+    private void ZoomTimelineBy(double delta)
+    {
+        TimelineZoomSlider.Value = Math.Clamp(
+            TimelineZoomSlider.Value + delta,
+            TimelineZoomSlider.Minimum,
+            TimelineZoomSlider.Maximum);
+        TimelineDragStatusText.Text = $"Thu phóng {TimelineZoomSlider.Value:0} px/s (+/− để đổi).";
     }
 
     // G31: schema-5/6 multi-track rendering. Secondary tracks (overlay,
@@ -1445,13 +1606,13 @@ public sealed partial class TimelineEditorPage : Page
     {
         var handle = new Rectangle
         {
-            Width = 8,
+            Width = 12,
             Height = TimelineTrackHeight + 8,
-            RadiusX = 4,
-            RadiusY = 4,
+            RadiusX = 6,
+            RadiusY = 6,
             Fill = new SolidColorBrush(Microsoft.UI.Colors.DeepSkyBlue),
         };
-        Canvas.SetLeft(handle, x - 4);
+        Canvas.SetLeft(handle, x - 6);
         Canvas.SetTop(handle, TimelineTrackTop - 4);
         TimelineSurface.Children.Add(handle);
     }

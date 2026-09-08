@@ -278,6 +278,8 @@ public sealed partial class TimelineEditorPage
         TimelinePreviewPlayer.Visibility = Visibility.Collapsed;
         TimelinePreviewPlaceholder.Visibility = Visibility.Visible;
         TimelinePreviewClockText.Text = "00:00 / 00:00";
+        _timelinePlayheadUs = -1;
+        UpdateTimelinePlayhead(fullRender: false);
     }
 
     private void TimelinePreviewPlayer_PositionChanged(MediaPlaybackSession sender, object args)
@@ -297,6 +299,9 @@ public sealed partial class TimelineEditorPage
                     : sender.NaturalDuration;
                 TimelinePreviewClockText.Text =
                     $"{FormatTimelineClock(sender.Position)} / {FormatTimelineClock(duration)}";
+                // G32: move the playhead without re-rendering the canvas.
+                _timelinePlayheadUs = Math.Max(0, sender.Position.Ticks / 10);
+                UpdateTimelinePlayhead(fullRender: false);
             }
             catch (ObjectDisposedException) { }
         });

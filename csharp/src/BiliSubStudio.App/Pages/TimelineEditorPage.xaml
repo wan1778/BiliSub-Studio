@@ -170,8 +170,8 @@
                 <TextBlock x:Name="TimelineZoomText" VerticalAlignment="Center" Text="80 px/s" />
                 <TextBlock x:Name="TimelineDragStatusText" VerticalAlignment="Center" FontSize="12" TextWrapping="Wrap"
                            AutomationProperties.LiveSetting="Polite"
-                           MaxWidth="420" Opacity="0.8"
-                           Text="Mở project có sequence để thao tác trực tiếp." />
+                           MaxWidth="520" Opacity="0.8"
+                           Text="Kéo clip để di chuyển • +/− thu phóng • Space phát/dừng • Delete xóa • Click thước để nhảy." />
             </StackPanel>
 
             <Border Grid.Row="2" BorderBrush="#34465E" BorderThickness="1" CornerRadius="8" Background="#151D29">
