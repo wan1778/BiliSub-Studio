@@ -30,7 +30,7 @@ internal static class TimelineParityContract
                 [
                 new TimelineResolvedClip(clipId, asset.Id,
                     0, TimelineTime.FromSeconds(10),
-                    TimelineTime.FromSeconds(100), TimelineTime.FromSeconds(110)),
+                    TimelineTime.FromSeconds(100), TimelineTime.FromSeconds(110), 1),
                 ],
                 Audio = TimelineResolvedAudioPlan.Empty with
                 {
@@ -72,7 +72,7 @@ internal static class TimelineParityContract
             Clips =
             [
                 new TimelineResolvedClip("c".PadLeft(32, 'd'), asset.Id,
-                    0, TimelineTime.FromSeconds(300), 0, TimelineTime.FromSeconds(300)),
+                    0, TimelineTime.FromSeconds(300), 0, TimelineTime.FromSeconds(300), 1),
             ],
             Audio = plan.Audio with
             {
@@ -151,8 +151,8 @@ internal static class TimelineParityContract
         {
             Clips =
             [
-                new TimelineResolvedClip("a".PadLeft(32, 'b'), asset.Id, 0, 1, 0, 1),
-                new TimelineResolvedClip("c".PadLeft(32, 'd'), asset.Id, 1, 2, 1, 2),
+                new TimelineResolvedClip("a".PadLeft(32, 'b'), asset.Id, 0, 1, 0, 1, 1),
+                new TimelineResolvedClip("c".PadLeft(32, 'd'), asset.Id, 1, 2, 1, 2, 1),
             ],
         };
         Check(!TimelineOneClipParity.IsOneClip(two), "multi-clip plan accepted by parity");

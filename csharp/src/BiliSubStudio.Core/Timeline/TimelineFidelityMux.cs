@@ -124,18 +124,18 @@ public static class TimelineRenderCapability
     // subtitle cues, voice cues and at most one typed music track render.
     // G16 adds clip and sequence-global logos with documented payloads.
     // G26 adds clip color grades (deterministic eq/colorbalance chain).
-    // Legacy unverified music items stay rejected. G24 speed envelopes and
-    // G25 keyframes are model-complete but not yet wired into the mux
-    // graph; they must fail loudly instead of silently dropping.
+    // G27 adds speed envelopes (piecewise setpts + per-span atempo audio).
+    // Legacy unverified music items stay rejected. G25 keyframes are
+    // model-complete but not yet wired into the mux graph; they must fail
+    // loudly instead of silently dropping.
     public static void EnsureMuxSupported(TimelineRenderPlan plan)
     {
         ArgumentNullException.ThrowIfNull(plan);
-        if (plan.SpeedEnvelopes.Count > 0)
-            throw new InvalidOperationException(
-                "Timeline FFmpeg mux chưa hỗ trợ speed envelope (G24).");
         if (plan.KeyframeSets.Count > 0)
             throw new InvalidOperationException(
                 "Timeline FFmpeg mux chưa hỗ trợ keyframes (G25).");
+        foreach (var envelope in plan.SpeedEnvelopes)
+            _ = TimelineSpeedMapping.BuildSpans(envelope);
         foreach (var item in plan.Items)
         {
             if (item.Kind == TimelineItemKind.Logo)
@@ -175,13 +175,11 @@ public static class TimelineEffectGraph
                 continue;
             var spec = TimelineEffectSpec.Parse(item.Payload, item.ItemId);
             // Resolved items already carry sequence time: convert through the
-            // owning clip into source media time.
-            var sourceStartUs = checked(clip.SourceInUs
-                + (long)Math.Round((item.SequenceStartUs - clip.SequenceStartUs) * clip.PlaybackRate,
-                    MidpointRounding.AwayFromZero));
-            var sourceEndUs = checked(clip.SourceInUs
-                + (long)Math.Round((item.SequenceEndUs - clip.SequenceStartUs) * clip.PlaybackRate,
-                    MidpointRounding.AwayFromZero));
+            // owning clip into source media time (piecewise under an envelope).
+            var sourceStartUs = checked(clip.SourceInUs + TimelineSpeedMapping.SequenceToSourceUs(
+                clip.SpeedSpans, clip.PlaybackRate, item.SequenceStartUs - clip.SequenceStartUs));
+            var sourceEndUs = checked(clip.SourceInUs + TimelineSpeedMapping.SequenceToSourceUs(
+                clip.SpeedSpans, clip.PlaybackRate, item.SequenceEndUs - clip.SequenceStartUs));
             var startUs = Math.Max(sourceStartUs, Math.Max(0, segSourceInUs));
             var endUs = Math.Min(sourceEndUs, Math.Min(assetDurationUs, segSourceOutUs));
             if (endUs <= startUs)
@@ -225,12 +223,10 @@ public static class TimelineEffectGraph
             if (cue.SequenceEndUs <= clip.SequenceStartUs
                 || cue.SequenceStartUs >= clip.SequenceEndUs)
                 continue;
-            var sourceStartUs = checked(clip.SourceInUs + (long)Math.Round(
-                (cue.SequenceStartUs - clip.SequenceStartUs) * clip.PlaybackRate,
-                MidpointRounding.AwayFromZero));
-            var sourceEndUs = checked(clip.SourceInUs + (long)Math.Round(
-                (cue.SequenceEndUs - clip.SequenceStartUs) * clip.PlaybackRate,
-                MidpointRounding.AwayFromZero));
+            var sourceStartUs = checked(clip.SourceInUs + TimelineSpeedMapping.SequenceToSourceUs(
+                clip.SpeedSpans, clip.PlaybackRate, cue.SequenceStartUs - clip.SequenceStartUs));
+            var sourceEndUs = checked(clip.SourceInUs + TimelineSpeedMapping.SequenceToSourceUs(
+                clip.SpeedSpans, clip.PlaybackRate, cue.SequenceEndUs - clip.SequenceStartUs));
             if (sourceEndUs <= sourceStartUs)
                 continue;
             cues.Add(new EditorSubtitleCue(
@@ -289,14 +285,14 @@ public static class TimelineEffectGraph
             if (!File.Exists(spec.Path))
                 throw new InvalidDataException($"Thiếu file logo {item.ItemId} cho final render.");
             var startUs = Math.Max(
-                checked(clip.SourceInUs + (long)Math.Round(
-                    (item.SequenceStartUs - clip.SequenceStartUs) * clip.PlaybackRate,
-                    MidpointRounding.AwayFromZero)),
+                checked(clip.SourceInUs + TimelineSpeedMapping.SequenceToSourceUs(
+                    clip.SpeedSpans, clip.PlaybackRate,
+                    item.SequenceStartUs - clip.SequenceStartUs)),
                 Math.Max(0, segSourceInUs));
             var endUs = Math.Min(
-                checked(clip.SourceInUs + (long)Math.Round(
-                    (item.SequenceEndUs - clip.SequenceStartUs) * clip.PlaybackRate,
-                    MidpointRounding.AwayFromZero)),
+                checked(clip.SourceInUs + TimelineSpeedMapping.SequenceToSourceUs(
+                    clip.SpeedSpans, clip.PlaybackRate,
+                    item.SequenceEndUs - clip.SequenceStartUs)),
                 Math.Min(asset.DurationUs, segSourceOutUs));
             if (endUs <= startUs)
                 continue;

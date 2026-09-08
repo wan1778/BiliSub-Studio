@@ -73,10 +73,50 @@ public static class TimelineSpeedKeyframeGradeContract
                 && envelopePlan.Clips[0].SourceOutUs == 12_000_000,
                 "clip source range must stay fixed under an envelope");
 
-            // Mux capability: envelope not wired yet must fail loudly.
-            Throws<InvalidOperationException>(
-                () => TimelineRenderCapability.EnsureMuxSupported(envelopePlan),
-                "mux must reject speed envelopes until their graph is wired");
+            // G27: spans freeze in the plan and the mux accepts envelopes.
+            var spans = envelopePlan.Clips[0].SpeedSpans;
+            Check(spans is { Count: 2 }, "plan clip must freeze exactly two spans");
+            Check(spans![0] is { SequenceStartUs: 0, SequenceEndUs: 5_000_000, SourceOffsetUs: 0, SourceEndOffsetUs: 2_500_000 }
+                && spans[1] is { SequenceStartUs: 5_000_000, SequenceEndUs: 10_000_000, SourceOffsetUs: 2_500_000, SourceEndOffsetUs: 10_000_000 },
+                "span cursors must tile sequence and source exactly");
+            Check(TimelineSpeedMapping.SequenceToSourceUs(spans, 1, 2_500_000) == 1_250_000,
+                "piecewise mapping must resolve inside the slow span");
+            Check(TimelineSpeedMapping.SequenceToSourceUs(spans, 1, 7_500_000) == 5_000_000,
+                "piecewise mapping must resolve inside the fast span");
+            Check(TimelineSpeedMapping.SourceToSequenceUs(spans, 1, 5_000_000) == 7_500_000,
+                "inverse piecewise mapping must roundtrip the fast span");
+            Check(TimelineSpeedMapping.SequenceToSourceUs(null, 2.0, 3_000_000) == 6_000_000,
+                "null spans must keep the constant-rate arithmetic");
+            Check(TimelineSpeedMapping.BuildSetptsExpression(spans) is { } setpts
+                && setpts.Contains("if(lt(PTS-STARTPTS,2.5),", StringComparison.Ordinal)
+                && setpts.Contains("5+(PTS-STARTPTS-2.5)/1.5", StringComparison.Ordinal),
+                "piecewise setpts must branch at span boundaries with invariant numbers");
+            Check(TimelineSpeedMapping.BuildSetptsExpression(null) is null
+                && TimelineSpeedMapping.BuildSetptsExpression([spans[0]]) is null,
+                "absent or single-span envelopes must keep the constant setpts");
+            var spanAudio = TimelineSpeedMapping.BuildAudioChain(spans, "atrim=duration=10", 0, 1.0);
+            Check(spanAudio.Contains("asplit=2", StringComparison.Ordinal)
+                && spanAudio.Contains("atempo=0.5", StringComparison.Ordinal)
+                && spanAudio.Contains("atempo=1.5", StringComparison.Ordinal)
+                && spanAudio.Contains("concat=n=2:v=0:a=1", StringComparison.Ordinal),
+                "span audio chain must split, re-time per span and concat");
+            Check(TimelineSpeedMapping.BuildAudioChain(null, "atrim=duration=10", 0, 2.0)
+                == "[0:a]atrim=duration=10,atempo=2",
+                "null spans must keep the constant audio chain byte-identical");
+            TimelineRenderCapability.EnsureMuxSupported(envelopePlan);
+
+            // G27: envelope segment graph must splice the piecewise setpts
+            // and the per-span audio chain.
+            var envelopeArguments = TimelineFfmpegArguments.BuildSegment(
+                MakeSegment(envelopePlan, asset),
+                Path.Combine(root, "envelope.mp4")).ToList();
+            var envelopeGraph = envelopeArguments[envelopeArguments.IndexOf("-filter_complex") + 1];
+            Check(envelopeGraph.Contains("setpts='if(lt(PTS-STARTPTS,2.5),(PTS-STARTPTS)/0.5,",
+                    StringComparison.Ordinal),
+                "segment graph must carry the piecewise setpts expression");
+            Check(envelopeGraph.Contains("asplit=2", StringComparison.Ordinal)
+                && envelopeGraph.Contains("concat=n=2:v=0:a=1", StringComparison.Ordinal),
+                "segment audio must re-time per span and concat");
 
             // Negative tiling cases.
             Throws<InvalidDataException>(

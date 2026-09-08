@@ -202,6 +202,15 @@ public static class TimelineFfmpegArguments
         var rate = segment.Clip.PlaybackRate;
         if (!double.IsFinite(rate) || rate <= 0)
             throw new InvalidDataException("Timeline segment PlaybackRate không hợp lệ.");
+        // G24/G27: a speed envelope re-times the segment piecewise. The clip's
+        // stored sequence window stays fixed; single-span or absent envelopes
+        // degrade to the constant-rate path byte-identically. Audio re-timing
+        // composes per-span atrim/atempo chains over the same source window.
+        var spans = segment.Clip.SpeedSpans;
+        if (spans is { Count: > 0 }
+            && (spans.Count > TimelineSpeedMapping.MaxSpans
+                || spans[^1].SequenceEndUs != segment.DurationUs))
+            throw new InvalidDataException("Timeline segment speed spans không phủ đúng segment window.");
         // G26: the clip's grade composes into the effect head (same source-
         // coordinate stage, deterministic eq/colorbalance chain); absent or
         // neutral grades keep the G12 fast path byte-identical.
@@ -251,6 +260,17 @@ public static class TimelineFfmpegArguments
             $"setpts=(PTS-STARTPTS)/{FormatNumber(rate)}[sv];" +
             $"[sv]scale={plan.OutputWidth}:{plan.OutputHeight}," +
             $"setsar=1,fps={FormatNumber(plan.OutputFrameRate)},format=yuv420p";
+        // G27: piecewise envelope re-timing replaces the constant setpts scale.
+        var envelopeSetpts = TimelineSpeedMapping.BuildSetptsExpression(spans);
+        if (envelopeSetpts is not null)
+        {
+            var replaced = normalized.Replace(
+                $"setpts=(PTS-STARTPTS)/{FormatNumber(rate)}",
+                $"setpts={envelopeSetpts}", StringComparison.Ordinal);
+            if (string.Equals(replaced, normalized, StringComparison.Ordinal))
+                throw new InvalidOperationException("Timeline speed envelope không nối được vào setpts.");
+            normalized = replaced;
+        }
         // The classic body already opens with its own [0:v] input label.
         // Without logos the chain stays byte-identical to the G12 graph.
         // The logo chain terminates at [vout] itself.
@@ -263,9 +283,14 @@ public static class TimelineFfmpegArguments
             var audioTrim = audibleClip
                 ? $"atrim=start={startSeconds}:duration={durationSeconds},asetpts=PTS-STARTPTS"
                 : $"atrim=duration={durationSeconds},asetpts=PTS-STARTPTS";
-            audioFilter =
-                $"[{audioInput}:a]{audioTrim},aresample=48000,{AtempoChain(rate)}," +
-                $"volume={FormatNumber(segment.SourceAudio.Gain)}[aout]";
+            // G27: per-span re-timing splits the trimmed source audio into
+            // span atrim windows, applies each span's atempo chain, then
+            // concats them back in order. Absent/single-span envelopes stay
+            // on the constant-rate chain byte-identically.
+            var spanAudio = TimelineSpeedMapping.BuildAudioChain(
+                spans, audioTrim, audioInput, rate);
+            audioFilter = spanAudio
+                + $",aresample=48000,volume={FormatNumber(segment.SourceAudio.Gain)}[aout]";
         }
         arguments.AddRange([
             "-filter_complex", audibleOutput ? videoFilter + ";" + audioFilter : videoFilter,

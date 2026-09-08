@@ -11,7 +11,8 @@ public sealed record TimelineResolvedClip(
     long SequenceEndUs,
     long SourceInUs,
     long SourceOutUs,
-    double PlaybackRate = 1)
+    double PlaybackRate,
+    IReadOnlyList<TimelineResolvedSpeedSpan>? SpeedSpans = null)
 {
     public long SequenceDurationUs => checked(SequenceEndUs - SequenceStartUs);
 }
@@ -184,7 +185,8 @@ public sealed record TimelineResolvedTrackClip(
     double PlaybackRate,
     TimelineClipTransform Transform,
     bool IsVisible,
-    bool IsMuted)
+    bool IsMuted,
+    IReadOnlyList<TimelineResolvedSpeedSpan>? SpeedSpans = null)
 {
     public long SequenceDurationUs => checked(SequenceEndUs - SequenceStartUs);
 }
@@ -218,11 +220,16 @@ public static class TimelineCompiler
             return TimelineRenderPlan.Empty(project.Id);
         var speedEnvelopesByClipId = project.SpeedEnvelopes.ToDictionary(
             envelope => envelope.ClipId, StringComparer.Ordinal);
+        IReadOnlyList<TimelineResolvedSpeedSpan>? ResolveSpans(string clipId) =>
+            speedEnvelopesByClipId.TryGetValue(clipId, out var envelope)
+                ? TimelineSpeedMapping.BuildSpans(envelope)
+                : null;
         var resolvedClips = project.Sequence.VideoClips
             .OrderBy(clip => clip.TimelineStartUs)
             .Select(clip => new TimelineResolvedClip(
                 clip.Id, clip.AssetId, clip.TimelineStartUs, clip.TimelineEndUs,
-                clip.SourceInUs, clip.SourceOutUs, clip.PlaybackRate))
+                clip.SourceInUs, clip.SourceOutUs, clip.PlaybackRate,
+                ResolveSpans(clip.Id)))
             .ToArray();
         var clipsById = project.Sequence.VideoClips.ToDictionary(clip => clip.Id, StringComparer.Ordinal);
         var mediaAssetsById = project.Assets.ToDictionary(asset => asset.Id, StringComparer.Ordinal);
@@ -240,7 +247,7 @@ public static class TimelineCompiler
                     clip.Id, clip.AssetId, asset.Path, track.Id, track.Kind, track.ZIndex,
                     clip.TimelineStartUs, clip.TimelineEndUs,
                     clip.SourceInUs, clip.SourceOutUs, clip.PlaybackRate,
-                    clip.Transform, clip.IsVisible, clip.IsMuted);
+                    clip.Transform, clip.IsVisible, clip.IsMuted, ResolveSpans(clip.Id));
             })
             .OrderBy(clip => clip.SequenceStartUs)
             .ThenBy(clip => clip.ZIndex)
