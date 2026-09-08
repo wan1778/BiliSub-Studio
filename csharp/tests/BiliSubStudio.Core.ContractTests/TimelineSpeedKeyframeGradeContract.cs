@@ -419,6 +419,7 @@ public static class TimelineSpeedKeyframeGradeContract
             // Template project accepts an imported sequence afterwards.
             var withTemplateSequence = pip with
             {
+                Assets = [asset],
                 Sequence = TimelineSequence.Create([clip], [asset], outputFrameRate: 30),
                 SourceAudio = TimelineSourceAudioState.Defaults([clip]),
             };
