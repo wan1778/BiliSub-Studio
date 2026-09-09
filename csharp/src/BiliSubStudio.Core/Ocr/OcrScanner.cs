@@ -13,6 +13,11 @@ namespace BiliSubStudio.Core.Ocr;
 public sealed class OcrScanner
 {
     private const double AdaptiveVisualChangeThreshold = .02;
+    // A sampled text change is independent evidence that a real boundary sits
+    // inside this window, so the visual confirmation bar drops: trace-proven
+    // one-rune H.264 boundaries score ~0.019 while grain background stays at
+    // ~0.001-0.007. Steady windows keep the strict 0.02 bar. Caps are unchanged.
+    private const double AdaptiveTransitionChangeThreshold = .015;
     private const int MaxLaneRecoveryAttempts = 2;
     private static readonly TimeSpan CheckpointInterval = TimeSpan.FromSeconds(30);
     private readonly ToolManager _tools;
@@ -96,15 +101,16 @@ public sealed class OcrScanner
         if (startMode == OcrScanStartMode.Resume && saved is null)
             throw new InvalidOperationException("Không còn checkpoint OCR phù hợp để tiếp tục. Hãy Quét từ đầu.");
 
-        // Checkpoints written before Hybrid required two real devices may contain
-        // one GPU lane. Preserve that progress as an explicitly GPU-only resume;
-        // every new Hybrid scan must prove both GPU and CPU before it can commit.
-        var legacyHybridGpuResume = saved?.SelectedParallelism == 1
+        // A Hybrid request may have explicitly fallen back to GPU. Resume the
+        // persisted device mode, not a newly selected interpretation of the request.
+        var resumedGpuFallback = saved?.WorkerMode == "gpu"
             && string.Equals(request.Device, "hybrid", StringComparison.OrdinalIgnoreCase);
-        await _ocr.ConfigureDeviceAsync(legacyHybridGpuResume ? "gpu" : request.Device, token);
+        await _ocr.ConfigureDeviceAsync(saved?.WorkerMode ?? request.Device, token);
         await _ocr.EnsureAsync(token);
-        if (legacyHybridGpuResume)
-            job.Warn("Checkpoint Hybrid cũ chỉ có 1 GPU worker; tiếp tục dưới chế độ GPU để giữ nguyên tiến độ đã quét.");
+        if (saved is not null && !string.Equals(saved.WorkerMode, _ocr.Status.ActiveMode, StringComparison.Ordinal))
+            throw new InvalidOperationException("Cannot resume OCR with a different device topology; start a fresh scan instead.");
+        if (resumedGpuFallback)
+            job.Warn("Resume retains the checkpoint's explicit GPU fallback instead of switching to Hybrid.");
         else if (string.Equals(request.Device, "hybrid", StringComparison.OrdinalIgnoreCase)
                  && !string.Equals(_ocr.Status.ActiveMode, "hybrid", StringComparison.OrdinalIgnoreCase))
             job.Warn(_ocr.Status.Error ?? "Hybrid không sẵn sàng; lượt này đã chuyển sang GPU.");
@@ -140,26 +146,35 @@ public sealed class OcrScanner
             selected = saved.SelectedParallelism;
             job.Set("resume", -1, $"OCR Resume: dựng lại đúng topology {selected} từ checkpoint...");
             EnsureResourceHeadroom(job, selected, isManual: true, lastStable: 0);
-            var restored = await _ocr.ConfigureWorkerPoolAsync(selected, token);
-            if (restored != selected || !_ocr.Status.Ready)
-                throw new InvalidOperationException($"Không khôi phục đủ topology checkpoint {selected}; chỉ có {restored} Python worker.");
-            job.Log($"Resume Commit {selected}: dựng lại đủ {selected} Python worker từ checkpoint; bỏ qua Auto benchmark và throughput probe.");
+            var restored = await _ocr.ConfigureWorkerPoolAsync(saved.Workers, token);
+            if (restored != saved.Workers || !_ocr.Status.Ready)
+                throw new InvalidOperationException($"Cannot restore checkpoint: {selected} lanes, {restored}/{saved.Workers} workers.");
+            job.Log($"Resume Commit: {selected} FFmpeg lanes + {restored} Python workers; no benchmark.");
         }
         var configuredWorkers = _ocr.Status.Workers;
         var configuredWorkerKinds = _ocr.Status.WorkerKinds;
-        if (configuredWorkers != selected)
+        if (configuredWorkers != OcrTopologyBenchmark.WorkerTarget(_ocr.Status.ActiveMode, selected))
             throw new InvalidDataException($"OCR topology chưa khóa đúng: {selected} FFmpeg lane nhưng có {configuredWorkers} Python worker.");
-        var checkpoint = saved ?? await _checkpoints.NewAsync(request, selected, token);
+        var checkpoint = saved ?? (await _checkpoints.NewAsync(request, selected, token)) with
+        {
+            Workers = configuredWorkers,
+            WorkerMode = _ocr.Status.ActiveMode,
+        };
         selected = checkpoint.SelectedParallelism;
         if (checkpoint.Lanes.Count != selected)
             throw new InvalidDataException($"OCR checkpoint topology không hợp lệ: {checkpoint.Lanes.Count}/{selected} lane.");
-        if (configuredWorkers != selected)
+        if (configuredWorkers != checkpoint.Workers)
             throw new InvalidDataException($"OCR checkpoint yêu cầu {selected} lane nhưng worker pool đang có {configuredWorkers}.");
         job.Log(saved is null
             ? $"OCR Commit: benchmark xong, khóa {selected} pipeline = {selected} FFmpeg lane + {configuredWorkers} Python worker ({configuredWorkerKinds})."
             : $"Resume checkpoint schema {checkpoint.Schema}: giữ topology {selected} = {selected} FFmpeg lane + {configuredWorkers} Python worker ({configuredWorkerKinds}).");
         var decoder = await ProbeNvdecAsync(ffmpeg, source, request.Region, mode, processes, token) ? "nvdec" : "software";
         job.Log(decoder == "nvdec" ? "Decoder: NVIDIA NVDEC." : "Decoder: software fallback.");
+        // Diagnostic baselines captured after the topology lock: the benchmark
+        // phase above also flows through the same manager/queue counters.
+        var telemetry = new OcrScanTelemetryCounters();
+        telemetry.Touch();
+        var inferenceBefore = _ocr.GetInferenceTelemetry();
 
         var started = Stopwatch.StartNew();
         var progress = checkpoint.Lanes.Select(x => x.MediaSeconds).ToArray();
@@ -305,7 +320,7 @@ public sealed class OcrScanner
                                         configuredWorkers, configuredWorkerKinds, request.Duration, liveTail.CommittedView, liveActive,
                                         started.Elapsed.TotalSeconds);
                                 }
-                            }, job, processes, laneCancellation.Token);
+                            }, job, processes, telemetry, laneCancellation.Token);
                         return outcome;
                     }
                     catch (Exception error) when (
@@ -314,6 +329,7 @@ public sealed class OcrScanner
                         && recoveryAttempts < MaxLaneRecoveryAttempts)
                     {
                         recoveryAttempts++;
+                        Interlocked.Increment(ref telemetry.LaneRestarts);
                         job.Warn(
                             $"OCR lane {lane.Segment.Index + 1} lỗi tạm thời: {Compact(error.Message)} · "
                             + $"đang khôi phục lần {recoveryAttempts}/{MaxLaneRecoveryAttempts} từ checkpoint an toàn.");
@@ -323,13 +339,13 @@ public sealed class OcrScanner
                             token.ThrowIfCancellationRequested();
                             laneCancellation.Token.ThrowIfCancellationRequested();
                             var workerStatus = _ocr.Status;
-                            if (!workerStatus.Ready || workerStatus.Workers != selected)
+                             if (!workerStatus.Ready || workerStatus.Workers != configuredWorkers)
                             {
-                                var restored = await _ocr.ConfigureWorkerPoolAsync(selected, token);
+                                 var restored = await _ocr.ConfigureWorkerPoolAsync(configuredWorkers, token);
                                 workerStatus = _ocr.Status;
-                                if (restored != selected || !workerStatus.Ready || workerStatus.Workers != selected)
+                                 if (restored != configuredWorkers || !workerStatus.Ready || workerStatus.Workers != configuredWorkers)
                                     throw new InvalidOperationException(
-                                        $"Không dựng lại đủ topology OCR {selected}; hiện có {workerStatus.Workers} worker.");
+                                         $"Cannot restore OCR: {selected} lanes, {workerStatus.Workers}/{configuredWorkers} workers.");
                             }
 
                             OcrLaneCheckpoint restart;
@@ -362,7 +378,7 @@ public sealed class OcrScanner
                             await SaveRecoverableCheckpointAsync();
                             job.Log(
                                 $"OCR lane {lane.Segment.Index + 1} khôi phục PASS tại {FormatClock(restart.MediaSeconds)} · "
-                                + $"topology {selected}/{selected} worker; chạy lại lane.");
+                                 + $"topology {selected} lanes / {configuredWorkers} workers; retry lane.");
                         }
                         catch (Exception recoveryError) when (
                             !token.IsCancellationRequested
@@ -474,6 +490,8 @@ public sealed class OcrScanner
         var frames = lanes.Sum(x => x.Frames);
         var images = lanes.Sum(x => x.OcrImages);
         var media = lanes.Sum(x => Math.Max(0, Math.Min(x.Segment.CoreEnd, x.MediaSeconds) - x.Segment.CoreStart));
+        LogScanTelemetry(job, telemetry, inferenceBefore, selected, configuredWorkers,
+            frames, images, media, started.Elapsed.TotalSeconds);
         var result = new OcrScanResult(
             merged, frames, images, media, started.Elapsed.TotalSeconds,
             started.Elapsed.TotalSeconds > 0 ? media / started.Elapsed.TotalSeconds : 0,
@@ -508,13 +526,13 @@ public sealed class OcrScanner
                 && explicitValue < 2)
                 throw new ArgumentException("OCR Hybrid cần ít nhất 2 luồng để chạy đồng thời 1 GPU + 1 CPU.");
             EnsureResourceHeadroom(job, explicitValue, isManual: true, lastStable: 0);
-            job.Set("benchmark", -1, $"OCR Manual Probe: {explicitValue} Python worker + {explicitValue} FFmpeg pipeline...");
+            job.Set("benchmark", -1, $"OCR Manual Probe: {explicitValue} FFmpeg lanes + {OcrTopologyBenchmark.WorkerTarget(_ocr.Status.ActiveMode, explicitValue)} shared workers...");
             await ProbeTopologyLevelAsync(ffmpeg, request, explicitValue, processes, actual =>
             {
                 var resources = _hardware.ResourceSnapshot();
                 job.SetResult(new OcrBenchmarkTelemetry(
                     explicitValue, 0, 16, actual, _ocr.Status.WorkerKinds,
-                    $"đang chạy đủ {actual} pipeline", OcrAutoResourcePolicy.FormatSnapshot(resources)));
+                         $"{explicitValue} lanes / {actual} workers", OcrAutoResourcePolicy.FormatSnapshot(resources)));
             }, cancellationToken);
             job.Log($"Manual Probe {explicitValue}: topology đầy đủ PASS; bắt đầu quét với đúng {explicitValue} luồng.");
             return explicitValue;
@@ -537,17 +555,17 @@ public sealed class OcrScanner
                     job, level, isManual: false, lastStable: lastStable,
                     observedVramPerGpuWorkerBytes: observedVramPerGpuWorkerBytes,
                     resources: beforeResources, requireMeasuredVram: true);
-                job.Set("benchmark", -1, $"OCR Auto Benchmark {level}/16: tài nguyên đạt ngưỡng; đang tạo đúng {level} Python worker...");
+                job.Set("benchmark", -1, $"OCR Auto Benchmark {level}/16: {level} FFmpeg lanes + {OcrTopologyBenchmark.WorkerTarget(_ocr.Status.ActiveMode, level)} shared workers...");
                 var probe = await ProbeTopologyLevelAsync(ffmpeg, request, level, processes, actual =>
                 {
                     var resources = _hardware.ResourceSnapshot();
                     job.SetResult(new OcrBenchmarkTelemetry(
                         level, lastStable, 16, actual, _ocr.Status.WorkerKinds,
-                        $"đang chạy đủ {actual} FFmpeg + OCR pipeline", OcrAutoResourcePolicy.FormatSnapshot(resources)));
+                         $"{level} FFmpeg lanes / {actual} OCR workers", OcrAutoResourcePolicy.FormatSnapshot(resources)));
                 }, token);
 
                 var afterResources = _hardware.ResourceSnapshot();
-                var addedWorkers = Math.Max(0, level - beforeWorkers);
+                 var addedWorkers = Math.Max(0, _ocr.Status.Workers - beforeWorkers);
                 if (addedWorkers > 0
                     && beforeResources.VramTelemetryAvailable
                     && afterResources.VramTelemetryAvailable)
@@ -557,7 +575,7 @@ public sealed class OcrScanner
                     {
                         var measuredPerWorker = consumedVram / addedWorkers;
                         observedVramPerGpuWorkerBytes = Math.Max(observedVramPerGpuWorkerBytes, measuredPerWorker);
-                        job.Log($"Auto VRAM learn {beforeWorkers}→{level}: delta thực tế ~{consumedVram / 1024d / 1024d:0} MiB · giữ dự toán ~{observedVramPerGpuWorkerBytes / 1024d / 1024d:0} MiB/GPU worker trước margin.");
+                        job.Log($"Auto VRAM learn {beforeWorkers}->{_ocr.Status.Workers} workers: delta ~{consumedVram / 1024d / 1024d:0} MiB; estimate ~{observedVramPerGpuWorkerBytes / 1024d / 1024d:0} MiB/GPU worker before margin.");
                     }
                 }
 
@@ -577,13 +595,14 @@ public sealed class OcrScanner
                 job.SetResult(new OcrBenchmarkTelemetry(
                     level, lastStable, 16, _ocr.Status.Workers, _ocr.Status.WorkerKinds,
                     $"PASS · {probe.Throughput:0.00} mẫu/s", OcrAutoResourcePolicy.FormatSnapshot(afterResources)));
-                job.Log($"Auto Benchmark {level}: đủ {level} Python worker + {level} FFmpeg pipeline PASS · {probe.Throughput:0.00} mẫu/s · preflight {preflight.Summary} · sau probe {OcrAutoResourcePolicy.FormatSnapshot(afterResources)}.");
+                job.Log($"Auto Benchmark {level}: {_ocr.Status.Workers} Python workers + {level} FFmpeg lanes PASS · {probe.Throughput:0.00} samples/s · {preflight.Summary} · {OcrAutoResourcePolicy.FormatSnapshot(afterResources)}.");
             },
             async (best, token) =>
             {
                 job.Set("benchmark", -1, $"OCR Auto Rollback: dựng lại topology ổn định {best}...");
-                var restored = await _ocr.ConfigureWorkerPoolAsync(best, token);
-                if (restored != best || !_ocr.Status.Ready)
+                 var workerTarget = OcrTopologyBenchmark.WorkerTarget(_ocr.Status.ActiveMode, best);
+                 var restored = await _ocr.ConfigureWorkerPoolAsync(workerTarget, token);
+                 if (restored != workerTarget || !_ocr.Status.Ready)
                     throw new InvalidOperationException($"Không phục hồi đủ {best} Python worker sau benchmark lỗi; chỉ có {restored}.");
                 var resources = _hardware.ResourceSnapshot();
                 job.SetResult(new OcrBenchmarkTelemetry(
@@ -610,8 +629,8 @@ public sealed class OcrScanner
         var hardware = _hardware.Snapshot();
         var live = resources ?? _hardware.ResourceSnapshot();
         var decision = OcrAutoResourcePolicy.Evaluate(
-            hardware, live, _ocr.Status.ActiveMode, _ocr.Status.Workers, candidate,
-            observedVramPerGpuWorkerBytes, requireMeasuredVram);
+            hardware, live, _ocr.Status.ActiveMode, _ocr.Status.Workers, OcrTopologyBenchmark.WorkerTarget(_ocr.Status.ActiveMode, candidate),
+            observedVramPerGpuWorkerBytes, requireMeasuredVram, decoderLanes: candidate);
         var stable = isManual ? 0 : lastStable;
         var phase = postProbe ? "commit check" : "preflight";
         job.SetResult(new OcrBenchmarkTelemetry(
@@ -635,9 +654,10 @@ public sealed class OcrScanner
         timeout.CancelAfter(TimeSpan.FromMinutes(3));
         try
         {
-            var actual = await _ocr.ConfigureWorkerPoolAsync(level, timeout.Token);
-            if (actual != level || !_ocr.Status.Ready)
-                throw new InvalidOperationException($"chỉ tạo được {actual}/{level} Python worker");
+            var workerTarget = OcrTopologyBenchmark.WorkerTarget(_ocr.Status.ActiveMode, level);
+            var actual = await _ocr.ConfigureWorkerPoolAsync(workerTarget, timeout.Token);
+            if (actual != workerTarget || !_ocr.Status.Ready)
+                throw new InvalidOperationException($"Created {actual}/{workerTarget} workers for {level} lanes.");
             configured?.Invoke(actual);
             async Task<OcrResult[]> RunRoundAsync(int round)
             {
@@ -658,8 +678,8 @@ public sealed class OcrScanner
             var failed = probeResults.FirstOrDefault(result => !result.Ok);
             if (failed is not null)
                 throw new InvalidOperationException(failed.Error ?? "OCR worker trả kết quả lỗi trong benchmark.");
-            if (_ocr.Status.Workers != level || !_ocr.Status.Ready)
-                throw new InvalidOperationException($"topology {level} mất worker trong lúc probe; còn {_ocr.Status.Workers}/{level}");
+            if (_ocr.Status.Workers != workerTarget || !_ocr.Status.Ready)
+                throw new InvalidOperationException($"Topology {level} lost workers during probe: {_ocr.Status.Workers}/{workerTarget}.");
             watch.Stop();
             return new OcrTopologyProbe(level * 2 / Math.Max(0.001, watch.Elapsed.TotalSeconds));
         }
@@ -724,18 +744,19 @@ public sealed class OcrScanner
         Action<OcrLaneCheckpoint, IReadOnlyList<OcrCue>, bool> onProgress,
         AppJob job,
         OwnedProcessGroup processes,
+        OcrScanTelemetryCounters telemetry,
         CancellationToken cancellationToken)
     {
         if (lane.Completed) return lane;
         try
         {
-            return await RunLaneAsync(ffmpeg, source, request, mode, lane, decoder == "nvdec", onProgress, job, processes, cancellationToken);
+            return await RunLaneAsync(ffmpeg, source, request, mode, lane, decoder == "nvdec", onProgress, job, processes, telemetry, cancellationToken);
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception error) when (decoder == "nvdec" && error is not OcrRecognitionException)
         {
             job.Log($"Lane {lane.Segment.Index + 1}: NVDEC lỗi, fallback software: {error.Message}");
-            return await RunLaneAsync(ffmpeg, source, request, mode, lane, false, onProgress, job, processes, cancellationToken);
+            return await RunLaneAsync(ffmpeg, source, request, mode, lane, false, onProgress, job, processes, telemetry, cancellationToken);
         }
     }
 
@@ -749,6 +770,7 @@ public sealed class OcrScanner
         Action<OcrLaneCheckpoint, IReadOnlyList<OcrCue>, bool> onProgress,
         AppJob job,
         OwnedProcessGroup processes,
+        OcrScanTelemetryCounters telemetry,
         CancellationToken cancellationToken)
     {
         var segment = saved.Segment;
@@ -792,7 +814,11 @@ public sealed class OcrScanner
         var frames = saved.Frames;
         var images = saved.OcrImages;
         var mediaSeconds = startAtMedia;
-        var lastFrameDuration = mode.AdaptiveTiming ? 0 : 1 / mode.Fps;
+        // Native frame duration from ffprobe, never the sampling FPS: balanced
+        // samples at 2.5 fps but each decoded frame still lasts 1/native fps.
+        var probedFrameDuration = videoProbe is null ? 0 : videoProbe.FrameDurationSeconds;
+        var nativeFrameDuration = probedFrameDuration > 0 ? probedFrameDuration : 1 / mode.Fps;
+        var lastFrameDuration = mode.AdaptiveTiming ? 0 : nativeFrameDuration;
         var paused = false;
         var stoppedAtBoundary = false;
         var adaptiveWindow = new List<OcrBufferedFrame>();
@@ -808,7 +834,8 @@ public sealed class OcrScanner
         async Task<OcrResult> RecognizeSingleAsync(
             OcrBufferedFrame frame,
             bool recoverShortBlank,
-            bool allowEnhanced = false)
+            bool allowEnhanced = false,
+            string purpose = "sample")
         {
             OcrResult result;
             var activeShortText = tracker.Active?.Text is { } activeText && activeText.EnumerateRunes().Count() == 1
@@ -830,6 +857,8 @@ public sealed class OcrScanner
             }
             if (!result.Ok)
                 throw new OcrRecognitionException(result.Error ?? "OCR worker trả kết quả lỗi.");
+            Interlocked.Increment(ref telemetry.SingleCalls);
+            RecordOcrObservation(telemetry, frame.Timing.SourcePts, result, purpose);
             var tinyGlyphRecovery = pendingTinyGlyphRecovery > 0;
             if (!tinyGlyphRecovery && (!allowEnhanced || !NeedsEnhancedRecognition(result, Math.Max(.78, mode.LowConfidence + .10))))
                 return result;
@@ -861,7 +890,8 @@ public sealed class OcrScanner
 
         async Task<IReadOnlyList<OcrResult>> RecognizeBatchAsync(
             IReadOnlyList<OcrBufferedFrame> batch,
-            bool recoverShortBlank)
+            bool recoverShortBlank,
+            string purpose)
         {
             if (batch.Count == 0) return [];
             var activeShortText = tracker.Active?.Text is { } activeText && activeText.EnumerateRunes().Count() == 1
@@ -879,12 +909,17 @@ public sealed class OcrScanner
             {
                 throw new OcrRecognitionException("OCR worker batch lỗi: " + error.Message, error);
             }
+            Interlocked.Increment(ref telemetry.BatchCalls);
             return results.Select(raw =>
             {
                 if (HasTinyNonChineseCompanion(raw))
                     pendingTinyGlyphRecovery = Math.Max(pendingTinyGlyphRecovery, 4);
                 var result = FilterOffBaselineOverlayLines(raw, request.Region);
                 if (!result.Ok) throw new OcrRecognitionException(result.Error ?? "OCR worker trả kết quả batch lỗi.");
+                return result;
+            }).Select((result, index) =>
+            {
+                RecordOcrObservation(telemetry, batch[index].Timing.SourcePts, result, purpose);
                 return result;
             }).ToArray();
         }
@@ -893,9 +928,17 @@ public sealed class OcrScanner
         {
             try
             {
-                return await _ocr.ProbeVisualChangesAsync(
+                var scores = await _ocr.ProbeVisualChangesAsync(
                     probeFrames.Select(frame => Convert.ToBase64String(frame.Jpeg)).ToArray(),
                     cancellationToken);
+                Interlocked.Increment(ref telemetry.ProbeCalls);
+                Interlocked.Add(ref telemetry.ProbeImages, probeFrames.Count);
+                foreach (var score in scores)
+                {
+                    if (IsAdaptiveVisualChange(score)) Interlocked.Increment(ref telemetry.ProbeChangeFrames);
+                    else Interlocked.Increment(ref telemetry.ProbeSameFrames);
+                }
+                return scores;
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception error)
@@ -932,10 +975,10 @@ public sealed class OcrScanner
                 // Quality-first mode: every native frame reaches PaddleOCR.
                 // Batching only changes transport/inference overhead; tracker
                 // observations remain in exact source-PTS order.
-                for (var offset = 0; offset < adaptiveWindow.Count; offset += 4)
+                for (var offset = 0; offset < adaptiveWindow.Count; offset += 8)
                 {
-                    var batch = adaptiveWindow.Skip(offset).Take(4).ToArray();
-                    var results = await RecognizeBatchAsync(batch, recoverShortBlank: tracker.Active is not null);
+                    var batch = adaptiveWindow.Skip(offset).Take(8).ToArray();
+                    var results = await RecognizeBatchAsync(batch, recoverShortBlank: tracker.Active is not null, purpose: "window");
                     images += batch.Length;
                     for (var index = 0; index < batch.Length; index++)
                         tracker.Observe(batch[index].Timing.SourcePts, batch[index].Timing.PresentationTime, batch[index].Timing.Duration, results[index]);
@@ -968,42 +1011,71 @@ public sealed class OcrScanner
             IReadOnlyList<OcrBufferedFrame> refinementFrames = [];
             if (transition)
             {
-                refinementFrames = adaptiveWindow.Take(adaptiveWindow.Count - 1).ToArray();
+                // A sampled text difference alone is weak evidence: Paddle
+                // misreads flicker constantly on textured scenes, and refining
+                // the whole window on every flicker approaches every-frame
+                // inference. Gate on the cheap visual probe instead: refine
+                // around real visual boundaries, or confirm with a bounded
+                // subset when the probe is quiet.
+                // A new transition supersedes confirmations carried for the old
+                // sample context; the boundary evidence below replaces them.
                 pendingVisualFollowups = 0;
+                IReadOnlyList<int> candidateIndexes = [];
+                if (previousVisualAnchor is not null)
+                {
+                    var probeFrames = new[] { previousVisualAnchor }.Concat(adaptiveWindow).ToArray();
+                    var scores = await ProbeVisualChangesAsync(probeFrames);
+                    candidateIndexes = SelectTransitionRefinementFrames(scores, ref pendingVisualFollowups);
+                    pendingVisualFollowups = 0;
+                }
+                var windowLength = adaptiveWindow.Count - 1;
+                refinementFrames = (candidateIndexes.Count > 0
+                    ? CapRefinementIndexes(candidateIndexes, windowLength, maximum: mode.Fps >= 4 ? 4 : 8)
+                    : BoundedTransitionConfirmationFrames(windowLength, maximum: mode.Fps >= 4 ? 2 : 5))
+                    .Select(index => adaptiveWindow[index]).ToArray();
             }
             else if (previousVisualAnchor is not null)
             {
-                // Every native frame is either already being refined by Paddle
-                // or compared here with its immediate predecessor. A subtitle
-                // that appears and disappears between stable 4-fps samples can
-                // therefore nominate its own frame plus two following frames.
+                // Probe every native frame, but recognize only the two sides of
+                // a visual boundary and its confirmation frames. Animated
+                // backgrounds can nominate nearly the whole window even while
+                // the sampled subtitle is stable; retain four evenly spread
+                // representatives so that noise cannot restore exhaustive OCR.
                 var probeFrames = new[] { previousVisualAnchor }.Concat(adaptiveWindow).ToArray();
                 var scores = await ProbeVisualChangesAsync(probeFrames);
-                var candidateIndexes = new SortedSet<int>();
-                var availableFollowups = Math.Min(pendingVisualFollowups, adaptiveWindow.Count - 1);
-                for (var index = 0; index < availableFollowups; index++) candidateIndexes.Add(index);
-                pendingVisualFollowups -= availableFollowups;
-                for (var index = 0; index < scores.Count; index++)
-                {
-                    if (!IsAdaptiveVisualChange(scores[index])) continue;
-                    for (var nearby = index; nearby <= index + 2 && nearby < adaptiveWindow.Count - 1; nearby++)
-                        candidateIndexes.Add(nearby);
-                    pendingVisualFollowups = Math.Max(
-                        pendingVisualFollowups,
-                        Math.Max(0, index + 2 - (adaptiveWindow.Count - 1)));
-                }
-                refinementFrames = candidateIndexes.Select(index => adaptiveWindow[index]).ToArray();
+                var candidateIndexes = SelectAdaptiveRefinementFrames(scores, ref pendingVisualFollowups);
+                // When the same subtitle is already present at both sampled
+                // ends, changes on most native frames are animated background,
+                // particles or camera motion rather than a hidden cue boundary.
+                // Do not spend Paddle inference on that dense noise. Sparse
+                // paired boundaries and blank-to-blank windows are retained so
+                // a complete short caption between baseline samples still has
+                // two native-frame confirmations.
+                var denseStableTextNoise = mode.Fps >= 4
+                    && sampleResult.Detected
+                    && IsDenseAdaptiveVisualNoise(scores);
+                var selectedIndexes = denseStableTextNoise
+                    ? Array.Empty<int>()
+                    : mode.Fps >= 4
+                    ? CapRefinementIndexes(candidateIndexes, adaptiveWindow.Count - 1, maximum: 4)
+                    : candidateIndexes;
+                refinementFrames = selectedIndexes
+                    .Select(index => adaptiveWindow[index]).ToArray();
             }
 
-            for (var offset = 0; offset < refinementFrames.Count; offset += 4)
+            for (var offset = 0; offset < refinementFrames.Count; offset += 8)
             {
-                var batch = refinementFrames.Skip(offset).Take(4).ToArray();
-                var results = await RecognizeBatchAsync(batch, recoverShortBlank: tracker.Active is not null);
+                var batch = refinementFrames.Skip(offset).Take(8).ToArray();
+                var results = await RecognizeBatchAsync(batch, recoverShortBlank: tracker.Active is not null, purpose: "refinement");
                 images += batch.Length;
                 for (var index = 0; index < batch.Length; index++)
                     tracker.Observe(batch[index].Timing.SourcePts, batch[index].Timing.PresentationTime, batch[index].Timing.Duration, results[index]);
             }
             tracker.Observe(sample.Timing.SourcePts, sample.Timing.PresentationTime, sample.Timing.Duration, sampleResult);
+            // Confirm a new reading/blank with nearby source frames rather than
+            // only the next baseline sample, even if the visual probe is quiet.
+            if (!tracker.CanCheckpoint)
+                pendingVisualFollowups = Math.Max(pendingVisualFollowups, 2);
             previousAdaptiveSample = sampleResult;
             previousVisualAnchor = sample;
             adaptiveWindow.Clear();
@@ -1025,7 +1097,8 @@ public sealed class OcrScanner
                 }
                 frames++;
                 var dur = timing.Duration ?? lastFrameDuration;
-                if (!(dur > 0)) dur = 1 / mode.Fps;
+                if (dur > 0) lastFrameDuration = dur;
+                if (!(dur > 0)) dur = nativeFrameDuration;
                 mediaSeconds = Math.Min(segment.ScanEnd, atMedia + dur);
                 lastFrameDuration = dur;
                 var frame = new OcrBufferedFrame(timing, jpeg);
@@ -1041,18 +1114,57 @@ public sealed class OcrScanner
                     do nextAdaptiveSampleMedia += 1 / mode.Fps;
                     while (nextAdaptiveSampleMedia <= atMedia + .000001);
                 }
-                else
-                {
-                    var result = await RecognizeSingleAsync(frame, recoverShortBlank: false, allowEnhanced: true);
-                    images++;
-                    tracker.Observe(timing.SourcePts, atAbsolute, timing.Duration, result);
-                    PublishProgress();
-                }
-                if (job.IsPauseRequested && tracker.CanCheckpoint)
-                {
-                    paused = true;
-                    break;
-                }
+                                    else
+                                    {
+                                        // Exhaustive mode: Use buffering to batch frames instead of single requests
+                                        var exhaustiveBatch = new List<OcrBufferedFrame>();
+                                        while (await reader.ReadAsync(cancellationToken) is { } jpeg)
+                                        {
+                                            var timing = await timestamps.ReadAsync(cancellationToken);
+                                            var atAbsolute = timing.PresentationTime;
+                                            var atMedia = atAbsolute - streamStart;
+                                            if (atMedia > segment.ScanEnd + 0.001)
+                                            {
+                                                stoppedAtBoundary = true;
+                                                break;
+                                            }
+                                            frames++;
+                                            var dur = timing.Duration ?? lastFrameDuration;
+                                            if (dur > 0) lastFrameDuration = dur;
+                                            if (!(dur > 0)) dur = nativeFrameDuration;
+                                            mediaSeconds = Math.Min(segment.ScanEnd, atMedia + dur);
+                                            lastFrameDuration = dur;
+                                            
+                                            exhaustiveBatch.Add(new OcrBufferedFrame(timing, jpeg));
+                                            
+                                            if (exhaustiveBatch.Count >= 8 || job.IsPauseRequested)
+                                            {
+                                                var results = await RecognizeBatchAsync(exhaustiveBatch, recoverShortBlank: false, purpose: "exhaustive");
+                                                images += exhaustiveBatch.Count;
+                                                for (var i = 0; i < exhaustiveBatch.Count; i++)
+                                                {
+                                                    tracker.Observe(exhaustiveBatch[i].Timing.SourcePts, exhaustiveBatch[i].Timing.PresentationTime, exhaustiveBatch[i].Timing.Duration, results[i]);
+                                                }
+                                                exhaustiveBatch.Clear();
+                                                PublishProgress();
+                                                if (job.IsPauseRequested && tracker.CanCheckpoint)
+                                                {
+                                                    paused = true;
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                        if (exhaustiveBatch.Count > 0)
+                                        {
+                                            var finalResults = await RecognizeBatchAsync(exhaustiveBatch, recoverShortBlank: false, purpose: "exhaustive");
+                                            images += exhaustiveBatch.Count;
+                                            for (var i = 0; i < exhaustiveBatch.Count; i++)
+                                            {
+                                                tracker.Observe(exhaustiveBatch[i].Timing.SourcePts, exhaustiveBatch[i].Timing.PresentationTime, exhaustiveBatch[i].Timing.Duration, finalResults[i]);
+                                            }
+                                            PublishProgress();
+                                        }
+                                    }
             }
             if (mode.AdaptiveTiming && !paused && !stoppedAtBoundary)
                 await ProcessAdaptiveWindowAsync();
@@ -1368,14 +1480,14 @@ public sealed class OcrScanner
         {
             var tb = $"{probe.TimeBaseNum}/{probe.TimeBaseDen}";
             filter = nvdec
-                ? $"hwdownload,format=nv12|p010le|p016le,settb=expr={tb},{crop},showinfo"
-                : $"settb=expr={tb},{crop},showinfo";
+                ? $"hwdownload,format=nv12|p010le|p016le,settb=expr={tb},{crop},showinfo=checksum=0"
+                : $"settb=expr={tb},{crop},showinfo=checksum=0";
         }
         else
         {
             filter = nvdec
-                ? $"hwdownload,format=nv12|p010le|p016le,{crop},showinfo"
-                : $"{crop},showinfo";
+                ? $"hwdownload,format=nv12|p010le|p016le,{crop},showinfo=checksum=0"
+                : $"{crop},showinfo=checksum=0";
         }
         args.AddRange(["-map", "0:v:0", "-an", "-sn", "-dn", "-vf", filter, "-fps_mode", "passthrough", "-q:v", "4", "-c:v", "mjpeg", "-f", "image2pipe", "pipe:1"]);
         return args;
@@ -1428,11 +1540,139 @@ public sealed class OcrScanner
             && ChineseSubtitleNormalizer.TryNormalize(current.Text, out currentText);
         if (previousDetected != currentDetected) return true;
         if (!previousDetected) return false;
-        return Similarity(previousText, currentText) < .82;
+        // Similar strings can be different captions (including one substituted
+        // glyph). Refinement gathers evidence; only the tracker decides continuity.
+        return !string.Equals(previousText, currentText, StringComparison.Ordinal);
+    }
+
+    internal static IReadOnlyList<int> SelectAdaptiveRefinementFrames(
+        IReadOnlyList<double> scores, ref int pendingFollowups) =>
+        SelectRefinementFramesCore(scores, ref pendingFollowups, AdaptiveVisualChangeThreshold);
+
+    // Transition tier: a sampled text change is independent evidence that a
+    // real boundary sits inside this window, so the visual confirmation bar
+    // drops (trace-proven one-rune H.264 boundaries score ~0.019 while grain
+    // background stays at ~0.001-0.007). Steady windows keep the strict bar.
+    internal static IReadOnlyList<int> SelectTransitionRefinementFrames(
+        IReadOnlyList<double> scores, ref int pendingFollowups) =>
+        SelectRefinementFramesCore(scores, ref pendingFollowups, AdaptiveTransitionChangeThreshold);
+
+    private static IReadOnlyList<int> SelectRefinementFramesCore(
+        IReadOnlyList<double> scores, ref int pendingFollowups, double changeThreshold)
+    {
+        var candidates = new SortedSet<int>();
+        var sampleIndex = scores.Count - 1;
+        for (var index = 0; index < Math.Min(pendingFollowups, sampleIndex); index++)
+            candidates.Add(index);
+        // The last frame is already recognized as the baseline sample and also
+        // counts as a followup. Never submit or observe that frame twice.
+        pendingFollowups = Math.Max(0, pendingFollowups - scores.Count);
+        for (var index = 0; index < scores.Count; index++)
+        {
+            if (!double.IsFinite(scores[index]) || scores[index] < changeThreshold) continue;
+            // Late evidence before disappearance is essential for a short rune:
+            // three onset frames alone cannot establish its temporal footprint.
+            for (var nearby = Math.Max(0, index - 1); nearby <= index + 2 && nearby < sampleIndex; nearby++)
+                candidates.Add(nearby);
+            pendingFollowups = Math.Max(pendingFollowups, Math.Max(0, index + 2 - sampleIndex));
+        }
+        return candidates.ToArray();
     }
 
     private static bool IsAdaptiveVisualChange(double score) =>
         double.IsFinite(score) && score >= AdaptiveVisualChangeThreshold;
+
+    internal static bool IsDenseAdaptiveVisualNoise(IReadOnlyList<double> scores)
+    {
+        if (scores.Count < 4) return false;
+        var changed = scores.Count(IsAdaptiveVisualChange);
+        return changed >= Math.Max(3, (scores.Count + 1) / 2);
+    }
+
+    // A sampled text change with no visual boundary is usually recognizer
+    // flicker, not a new caption. Confirm it with both ends of the interval
+    // instead of the whole
+    // window; the tracker still receives ordered evidence plus the sample,
+    // and any keepable (>=200ms) caption inside a normal sampling window is
+    // still observed. Never returns the baseline sample index itself.
+    internal static IReadOnlyList<int> BoundedTransitionConfirmationFrames(int windowLength, int maximum = 5)
+    {
+        if (windowLength <= 0 || maximum <= 0) return [];
+        if (maximum == 1) return [0];
+        var indexes = new SortedSet<int>();
+        for (var slot = 0; slot < maximum; slot++)
+            indexes.Add((slot * (windowLength - 1)) / (maximum - 1));
+        return indexes.Where(index => index >= 0 && index < windowLength).ToArray();
+    }
+
+    // Dense animation can nominate dozens of visual boundaries in one window.
+    // Keep the earliest, the latest and an even subsample so one noisy window
+    // cannot become every-frame inference on its own.
+    internal static IReadOnlyList<int> CapRefinementIndexes(
+        IReadOnlyList<int> candidates, int windowLength, int maximum = 8)
+    {
+        var ordered = candidates
+            .Where(index => index >= 0 && index < windowLength)
+            .Distinct().OrderBy(index => index).ToArray();
+        if (ordered.Length <= maximum) return ordered;
+        var capped = new SortedSet<int> { ordered[0], ordered[^1] };
+        for (var slot = 1; slot < maximum - 1; slot++)
+            capped.Add(ordered[(slot * (ordered.Length - 1)) / (maximum - 1)]);
+        return capped.ToArray();
+    }
+
+    private void LogScanTelemetry(
+        AppJob job,
+        OcrScanTelemetryCounters telemetry,
+        OcrInferenceTelemetry inferenceBefore,
+        int lanes,
+        int workers,
+        int nativeFrames,
+        int ocrImages,
+        double mediaSeconds,
+        double elapsedSeconds)
+    {
+        var inference = _ocr.GetInferenceTelemetry();
+        // The pause path stops the pool (fresh queue instance) before this
+        // summary runs, so clamp post-rebuild deltas instead of going negative.
+        long Delta(long after, long before) => Math.Max(0, after - before);
+        var ocrCalls = Delta(inference.OcrBatchCalls, inferenceBefore.OcrBatchCalls);
+        var ocrRequested = Delta(inference.OcrBatchImages, inferenceBefore.OcrBatchImages);
+        var probeCalls = Delta(inference.ProbeCalls, inferenceBefore.ProbeCalls);
+        var probeImages = Delta(inference.ProbeImages, inferenceBefore.ProbeImages);
+        var replacements = Delta(inference.WorkerReplacements, inferenceBefore.WorkerReplacements);
+        var queueExecuted = Delta(inference.QueueExecuted, inferenceBefore.QueueExecuted);
+        int unique;
+        lock (telemetry.Gate) unique = telemetry.UniqueOcrPts.Count;
+        var process = Process.GetCurrentProcess();
+        job.Log(
+            "OCR telemetry "
+            + $"lanes={lanes} workers={workers} "
+            + $"native_frames={nativeFrames} ocr_requested={ocrRequested} ocr_completed={telemetry.OcrCompletedImages} unique_pts={unique} ocr_blank={telemetry.OcrBlankReadings} "
+            + $"ocr_ratio={(nativeFrames > 0 ? ocrRequested / (double)nativeFrames : 0):0.000} "
+            + $"window={telemetry.WindowBatchImages} refinement={telemetry.RefinementImages} sample={telemetry.SampleImages} exhaustive={telemetry.ExhaustiveImages} "
+            + $"batch_calls={ocrCalls} avg_batch={(ocrCalls > 0 ? ocrRequested / (double)ocrCalls : 0):0.00} "
+            + $"probe_calls={probeCalls} probe_images={probeImages} probe_change={telemetry.ProbeChangeFrames} probe_same={telemetry.ProbeSameFrames} "
+            + $"lane_restarts={telemetry.LaneRestarts} worker_replacements={replacements} "
+            + $"queue_executed={queueExecuted} queue_peak={inference.QueuePeakDepth} queue_avgdepth={inference.QueueAvgDepth:0.00} queue_wait_ms={Delta(inference.QueueTotalWaitMs, inferenceBefore.QueueTotalWaitMs)} "
+            + $"elapsed_s={elapsedSeconds:0.0} realtime={(elapsedSeconds > 0 ? mediaSeconds / elapsedSeconds : 0):0.000} "
+            + $"app_ram_mb={process.WorkingSet64 / 1048576:0} gc_mb={GC.GetTotalMemory(false) / 1048576:0}");
+    }
+
+    private static void RecordOcrObservation(
+        OcrScanTelemetryCounters telemetry, long sourcePts, OcrResult result, string purpose)
+    {
+        switch (purpose)
+        {
+            case "window": Interlocked.Increment(ref telemetry.WindowBatchImages); break;
+            case "refinement": Interlocked.Increment(ref telemetry.RefinementImages); break;
+            case "exhaustive": Interlocked.Increment(ref telemetry.ExhaustiveImages); break;
+            default: Interlocked.Increment(ref telemetry.SampleImages); break;
+        }
+        Interlocked.Increment(ref telemetry.OcrCompletedImages);
+        if (!result.Detected) Interlocked.Increment(ref telemetry.OcrBlankReadings);
+        lock (telemetry.Gate) telemetry.UniqueOcrPts.Add(sourcePts);
+    }
 
     private static OcrResult FilterOffBaselineOverlayLines(OcrResult result, OcrRegion region)
     {
@@ -1605,6 +1845,38 @@ public sealed class OcrScanner
     private sealed class OcrRecognitionException(string message, Exception? inner = null) : Exception(message, inner);
     private sealed record OcrBufferedFrame(FrameTiming Timing, byte[] Jpeg);
     private readonly record struct FrameTiming(long SourcePts, double PresentationTime, double? Duration);
+
+    // Diagnostic-only per-scan counters shared by lane closures. No
+    // scheduling, filtering or reconciliation behavior depends on these.
+    private sealed class OcrScanTelemetryCounters
+    {
+        public readonly object Gate = new();
+        public readonly HashSet<long> UniqueOcrPts = [];
+        public long BatchCalls;
+        public long SingleCalls;
+        public long WindowBatchImages;
+        public long RefinementImages;
+        public long SampleImages;
+        public long ExhaustiveImages;
+        public long OcrCompletedImages;
+        public long OcrBlankReadings;
+        public long ProbeCalls;
+        public long ProbeImages;
+        public long ProbeChangeFrames;
+        public long ProbeSameFrames;
+        public long LaneRestarts;
+
+        // Interlocked(ref field) is not recognized as an assignment by the
+        // compiler; touch every counter once so warnings-as-errors stays green.
+        public void Touch()
+        {
+            BatchCalls += 0; SingleCalls += 0; WindowBatchImages += 0;
+            RefinementImages += 0; SampleImages += 0; ExhaustiveImages += 0;
+            OcrCompletedImages += 0; OcrBlankReadings += 0; ProbeCalls += 0;
+            ProbeImages += 0; ProbeChangeFrames += 0; ProbeSameFrames += 0;
+            LaneRestarts += 0;
+        }
+    }
 
     // FFmpeg writes showinfo before it emits the matching JPEG. Keep only a small
     // ordered queue so an every-frame scan remains streaming and cannot buffer a video.
