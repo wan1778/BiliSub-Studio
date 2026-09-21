@@ -53,8 +53,7 @@ public static class FileNamePolicy
         throw new IOException("Không thể tạo tên file đầu ra duy nhất.");
     }
 
-    private static bool IsReservedWindowsName(string text)
-    {
+    private static bool IsReservedWindowsName(string text)    {
         var dot = text.IndexOf('.');
         var deviceName = dot < 0 ? text : text[..dot];
         return ReservedNames.Contains(deviceName);
@@ -63,4 +62,25 @@ public static class FileNamePolicy
     private static readonly HashSet<string> ReservedNames = new(
         ["CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"],
         StringComparer.OrdinalIgnoreCase);
+
+    // Thu muc bat dau cho hop chon thu muc: ton tai thi dung; khong thi leo len
+    // to tien gan nhat ton tai; khong co gi dung duoc thi null (dialog tu mo mac dinh).
+    // Thuan, test truc tiep.
+    public static string? ResolveInitialDirectory(string? initialPath)
+    {
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(initialPath))
+            {
+                var current = Path.GetFullPath(initialPath.Trim());
+                for (var depth = 0; depth < 32 && !string.IsNullOrWhiteSpace(current); depth++)
+                {
+                    if (Directory.Exists(current)) return current;
+                    current = Path.GetDirectoryName(current)!;
+                }
+            }
+        }
+        catch { }
+        return null;
+    }
 }

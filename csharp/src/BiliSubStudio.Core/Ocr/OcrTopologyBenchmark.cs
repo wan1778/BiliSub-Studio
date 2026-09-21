@@ -2,6 +2,9 @@ namespace BiliSubStudio.Core.Ocr;
 
 internal static class OcrTopologyBenchmark
 {
+    internal static int WorkerTarget(string activeMode, int lanes) =>
+        string.Equals(activeMode, "cpu", StringComparison.OrdinalIgnoreCase) ? lanes : Math.Min(2, lanes);
+
     internal static IReadOnlyList<int> Levels { get; } = [1, 2, 4, 8, 16];
     internal static IReadOnlyList<int> HybridLevels { get; } = [2, 4, 8, 16];
 

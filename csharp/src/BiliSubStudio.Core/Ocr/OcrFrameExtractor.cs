@@ -49,7 +49,7 @@ public static partial class OcrFrameExtractor
                 cancellationToken);
             if (result.ExitCode != 0) return null;
             int w = 0, h = 0;
-            double fps = 0, timeBase = 0, startTime = 0;
+            double fps = 0, timeBase = 0, startTime = 0, streamDuration = 0;
             bool hasStart = false;
             foreach (var line in result.StandardOutput.Split(['\n', '\r'], StringSplitOptions.RemoveEmptyEntries))
             {
@@ -62,6 +62,8 @@ public static partial class OcrFrameExtractor
                 else if (key == "avg_frame_rate") fps = ParseFps(value, fps);
                 else if (key == "r_frame_rate" && fps <= 0) fps = ParseFps(value, 0);
                 else if (key == "time_base") timeBase = ParseTimeBase(value);
+                else if (key == "duration" && double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var sd) && double.IsFinite(sd) && sd > 0)
+                    streamDuration = sd;
                 else if (key == "start_time" && double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var st) && double.IsFinite(st))
                 {
                     // stream start_time ưu tiên, format start_time fallback. Domain absolute = media + start.
@@ -81,7 +83,7 @@ public static partial class OcrFrameExtractor
                 { tbNum = nn; tbDen = dd; break; }
             }
             if (tbNum <= 0 || tbDen <= 0) return null;
-            return new VideoProbe(w, h, timeBase, frameDuration, fps, startTime, tbNum, tbDen);
+            return new VideoProbe(w, h, timeBase, frameDuration, fps, startTime, tbNum, tbDen, streamDuration);
         }
         catch { return null; }
     }
@@ -144,7 +146,7 @@ public static partial class OcrFrameExtractor
             "-i", Path.GetFullPath(videoPath.Trim()),
             "-map", "0:v:0", "-an", "-sn", "-dn",
             "-frames:v", "1",
-            "-vf", $"settb=expr={timeBaseExpr},select='eq(pts\\,{expectedSourcePts.Value})',{cropFilter},showinfo,format=gray",
+            "-vf", $"settb=expr={timeBaseExpr},select='eq(pts\\,{expectedSourcePts.Value})',{cropFilter},showinfo=checksum=0,format=gray",
             "-fps_mode", "passthrough",
             "-pix_fmt", "gray", "-f", "rawvideo", "pipe:1",
         };

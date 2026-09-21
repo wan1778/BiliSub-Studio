@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import pathlib
+import xml.etree.ElementTree as ET
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 SCANNER = ROOT / "csharp" / "src" / "BiliSubStudio.Core" / "Ocr" / "OcrScanner.cs"
+FRAME_EXTRACTOR = ROOT / "csharp" / "src" / "BiliSubStudio.Core" / "Ocr" / "OcrFrameExtractor.cs"
 CHECKPOINT = ROOT / "csharp" / "src" / "BiliSubStudio.Core" / "Ocr" / "OcrCheckpointStore.cs"
 MODELS = ROOT / "csharp" / "src" / "BiliSubStudio.Core" / "Ocr" / "OcrModels.cs"
 OCR_PAGE = ROOT / "csharp" / "src" / "BiliSubStudio.App" / "Pages" / "OcrPage.xaml.cs"
@@ -26,6 +28,7 @@ def require(condition: bool, message: str) -> None:
 
 def main() -> int:
     scanner = SCANNER.read_text(encoding="utf-8")
+    frame_extractor = FRAME_EXTRACTOR.read_text(encoding="utf-8")
     checkpoint = CHECKPOINT.read_text(encoding="utf-8")
     models = MODELS.read_text(encoding="utf-8")
     page = OCR_PAGE.read_text(encoding="utf-8")
@@ -54,10 +57,16 @@ def main() -> int:
     # corrupts provenance. Adaptive sampling happens in C# on absolute PTS via
     # settb + -fps_mode passthrough; the exact timebase contract is tested by
     # OcrTimeBaseContract in the Core contract suite.
-    require('$"hwdownload,format=nv12|p010le|p016le,settb=expr={tb},{crop},showinfo"' in scanner,
+    require('$"hwdownload,format=nv12|p010le|p016le,settb=expr={tb},{crop},showinfo=checksum=0"' in scanner,
             "NVDEC lane must pin the source timebase before showinfo so sampled PTS stay absolute")
+    require(scanner.count("showinfo=checksum=0") >= 4 and "showinfo=checksum=0" in frame_extractor,
+            "all OCR showinfo paths must disable unused frame checksums")
     require('"-fps_mode", "passthrough"' in scanner,
             "OCR lane output must pass frames through without PTS rewriting")
+    require("var probedFrameDuration = videoProbe is null ? 0 : videoProbe.FrameDurationSeconds;" in scanner
+            and "if (!(dur > 0)) dur = nativeFrameDuration;" in scanner
+            and "1 / mode.Fps;" in scanner,
+            "missing-duration fallback must use the native ffprobe frame duration, never the sampling FPS")
     lane_filter = scanner.split("private static IReadOnlyList<string> BuildLaneArguments", 1)[1].split(
             "private static double Similarity", 1)[0]
     require("fps=" not in lane_filter,
@@ -103,15 +112,22 @@ def main() -> int:
             "manual OCR topology is still silently downgraded instead of probing the exact request")
     require('<ComboBox Grid.Column="2" x:Name="LanesBox" Header="Luồng OCR" SelectedIndex="0"><x:String>auto</x:String><x:String>1</x:String><x:String>2</x:String><x:String>3</x:String><x:String>4</x:String><x:String>5</x:String><x:String>6</x:String><x:String>7</x:String><x:String>8</x:String><x:String>16</x:String></ComboBox>' in page_xaml,
             "manual OCR topology selector does not expose auto, every level 1..8, and 16")
-    require("ConfigureWorkerPoolAsync(level" in probe and "actual != level" in probe and
+    require("ConfigureWorkerPoolAsync(workerTarget" in probe and "actual != workerTarget" in probe and
             "Enumerable.Range(0, level)" in probe and "CaptureFrameWithFfmpegAsync" in probe and
             "_ocr.RunAsync" in probe and "RunRoundAsync(0)" in probe and "RunRoundAsync(2)" in probe and
-            "_ocr.Status.Workers != level" in probe,
-            "each OCR Auto level is not a real N-worker plus N-FFmpeg/OCR concurrent probe")
-    require("ConfigureWorkerPoolAsync(best" in selector and "restored != best" in selector,
+            "_ocr.Status.Workers != workerTarget" in probe,
+            "each OCR Auto level must probe N FFmpeg lanes through the independent worker target")
+    require("ConfigureWorkerPoolAsync(workerTarget" in selector and "restored != workerTarget" in selector,
             "scanner does not verify rollback to the last PASS worker topology")
-    require("configuredWorkers != selected" in scanner,
-            "scan can start before worker count equals the benchmark-selected lane count")
+    require("configuredWorkers != checkpoint.Workers" in scanner and
+            "WorkerTarget(_ocr.Status.ActiveMode, selected)" in scanner and
+            "Math.Min(2, lanes)" in topology,
+            "scan must validate independent checkpoint worker and decoder topology")
+    queue = (MANAGER.parent / "OcrInferenceQueue.cs").read_text(encoding="utf-8")
+    require("BoundedChannelFullMode.Wait" in queue and "Capacity = 4" in queue and
+            "TaskCompletionSource<T>" in queue and "WriteAsync" in queue and
+            "inference.RunAsync" in manager and "RetireInferenceLocked" in manager,
+            "all OCR requests must use bounded zero-drop backpressure and per-request completion")
     require("ResizePoolLockedAsync" in manager and "var retained = _workers.Count;" in manager and
             "index >= retained" in manager and "RebuildAvailabilityLocked();" in manager,
             "worker scale-up failure does not transactionally preserve the prior PASS pool")
@@ -123,8 +139,8 @@ def main() -> int:
     require("private const int MaxLaneRecoveryAttempts = 2;" in scanner and
             "recoveryAttempts < MaxLaneRecoveryAttempts" in scanner and
             "laneRecoveryGate.WaitAsync(token)" in scanner and
-            "ConfigureWorkerPoolAsync(selected, token)" in scanner and
-            "restored != selected" in scanner and "SaveRecoverableCheckpointAsync();" in scanner and
+            "ConfigureWorkerPoolAsync(configuredWorkers, token)" in scanner and
+            "restored != configuredWorkers" in scanner and "SaveRecoverableCheckpointAsync();" in scanner and
             "khôi phục PASS" in scanner,
             "long OCR lanes do not retry from a safe checkpoint after restoring the exact worker topology")
     require("checkpointSaveGate.WaitAsync(CancellationToken.None)" in scanner and
@@ -135,8 +151,8 @@ def main() -> int:
             '"hybrid" => throw new ArgumentOutOfRangeException' in manager and
             'MinimumWorkerTarget(string mode) => mode == "hybrid" ? 2 : 1' in manager,
             "Hybrid manager can still accept a GPU-only one-worker pool")
-    require("legacyHybridGpuResume" in scanner and
-            'ConfigureDeviceAsync(legacyHybridGpuResume ? "gpu" : request.Device' in scanner and
+    require("resumedGpuFallback" in scanner and
+            'ConfigureDeviceAsync(saved?.WorkerMode ?? request.Device' in scanner and
             "SelectForModeAsync" in scanner and "không giữ nhãn Hybrid giả" in scanner,
             "legacy checkpoint or failed Hybrid probe can still be mislabeled as Hybrid")
     require("checkpoint.Lanes.Count != selected" in scanner,
@@ -199,19 +215,63 @@ def main() -> int:
             "active short-caption recovery no longer requests a bounded tighter-box retry")
     require("adaptiveWindow" in live_lane and "NeedsAdaptiveRefinement" in live_lane and
             "ProcessAdaptiveWindowAsync" in live_lane and "RunBatchAsync" in live_lane and
-            "offset += 4" in live_lane and "images += batch.Length" in live_lane and
+            "offset += 8" in live_lane and "images += batch.Length" in live_lane and
             "TimeSpan.FromMilliseconds(500)" in live_lane,
-            "Accurate OCR does not sample steadily, batch only transition frames and throttle telemetry")
+            "OCR adaptive/exhaustive paths must preserve batching and throttled telemetry")
     require("previousVisualAnchor" in live_lane and "ProbeVisualChangesAsync" in live_lane and
-            "IsAdaptiveVisualChange(scores[index])" in live_lane and "pendingVisualFollowups" in live_lane and
-            "nearby <= index + 2" in live_lane and 'request.get("probe_images_base64")' in worker and
+            "SelectAdaptiveRefinementFrames(scores, ref pendingVisualFollowups)" in live_lane and
+            'request.get("probe_images_base64")' in worker and
             "visual_change_scores" in worker and "cv2.Canny" in worker,
             "stable adaptive intervals do not cheaply inspect every frame and nominate visual transitions")
+    require("Math.Max(0, index - 1)" in scanner and "nearby <= index + 2" in scanner and
+            "pendingFollowups - scores.Count" in scanner and
+            "if (!tracker.CanCheckpoint)" in live_lane and
+            "pendingVisualFollowups = Math.Max(pendingVisualFollowups, 2);" in live_lane,
+            "adaptive confirmation must include pre-boundary evidence and carry unresolved samples without duplicating the baseline")
+    require("mode.Fps >= 4" in live_lane and
+            "IsDenseAdaptiveVisualNoise(scores)" in live_lane and
+            "candidateIndexes, adaptiveWindow.Count - 1, maximum: 4" in live_lane and
+            "maximum: mode.Fps >= 4 ? 4 : 8" in live_lane and
+            "maximum: mode.Fps >= 4 ? 2 : 5" in live_lane,
+            "Accurate must skip dense stable-text animation and cap sparse refinement without changing lower modes")
+    require("!string.Equals(previousText, currentText, StringComparison.Ordinal)" in scanner,
+            "similar but changed captions must trigger recognition refinement, not be declared continuous")
+    require('x:Name="ScanModeBox"' in page_xaml and 'Tag="accurate"' in page_xaml and
+            'Tag="balanced"' in page_xaml and 'Tag="fast"' in page_xaml and
+            page_xaml.index('Tag="accurate"') < page_xaml.index('Tag="balanced"'),
+            "OCR UI must expose a mode selector with accurate as the first (default) option")
+    require("ExhaustiveRecognition: true" not in checkpoint and
+            '"accurate" or "precise" or "chinh-xac" => new OcrScanMode(' in checkpoint and
+            "4, 3, 12, 0.10, 0.68, AdaptiveTiming: true)" in checkpoint and
+            "kiểm tra mọi khung hình" in page_xaml,
+            "Accurate OCR must probe every native frame without exhaustive Medium-model inference")
+    ns = {"ui": "http://schemas.microsoft.com/winfx/2006/xaml/presentation"}
+    name = "{http://schemas.microsoft.com/winfx/2006/xaml}Name"
+    root = ET.fromstring(page_xaml)
+    settings = next(grid for grid in root.iterfind(".//ui:Grid", ns)
+                    if any(child.get(name) == "DeviceBox" for child in grid))
+    columns = settings.find("ui:Grid.ColumnDefinitions", ns)
+    boxes = settings.findall("ui:ComboBox", ns)
+    mode_box = next(box for box in boxes if box.get(name) == "ScanModeBox")
+    require(columns is not None and len(columns) == 3 and
+            all(column.get("Width", "*") == "*" for column in columns) and
+            [(box.get(name), box.get("Grid.Column", "0")) for box in boxes] ==
+            [("DeviceBox", "0"), ("ScanModeBox", "1"), ("LanesBox", "2")] and
+            mode_box.get("SelectedIndex") == "0",
+            "OCR settings must expose device/mode/lanes columns with the mode selector defaulting to index 0")
+    build_request = page.split("private OcrScanRequest BuildRequest() => new(", 1)[1].split(");", 1)[0]
+    require("Selected(ScanModeBox)," in build_request and '"balanced"' not in build_request and
+            "_checkpointRequest ?? BuildRequest()" in page,
+            "new UI requests must read the selected scan mode instead of hard-coding balanced")
+    require("region, request.Mode.Trim().ToLowerInvariant(), mode.Fps" in checkpoint and
+            '"accurate" or "precise" or "chinh-xac"' in checkpoint and
+            '"fast" or "nhanh"' in checkpoint,
+            "legacy checkpoint mode identities must remain distinct from balanced")
     require('["images_base64"] = imageBase64' in worker_client and
             "resultsNode.EnumerateArray().Select(ParseResult)" in worker_client and
             "results.Length != imageBase64.Count" in worker_client and
             "RunBatchAsync(imageBase64" in manager,
-            "C# OCR worker path does not validate and expose the existing four-image Paddle batch protocol")
+            "C# OCR worker path does not validate and expose the eight-image Paddle batch protocol")
     require('["probe_images_base64"] = imageBase64' in worker_client and
             "change_scores" in worker_client and "ProbeVisualChangesAsync(imageBase64" in manager,
             "C# OCR worker path does not validate and expose the every-frame visual probe protocol")
@@ -283,9 +343,9 @@ def main() -> int:
 
     require("File.Delete(path);" in checkpoint and "if (File.Exists(path)" in checkpoint,
             "checkpoint removal still swallows delete errors or skips absence verification")
-    require("private const int Schema = 18;" in checkpoint and "schema >= 9" in checkpoint and
+    require("private const int Schema = 19;" in checkpoint and "schema >= 9" in checkpoint and
             "LegacyCheckpointIdentity" in checkpoint and
-            "new[] { 18, 17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3 }" in checkpoint and
+            "new[] { 19, 18, 17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3 }" in checkpoint and
             "OcrInstaller.DetectionModel, OcrInstaller.RecognitionModel" in checkpoint,
             "adaptive OCR checkpoint identity cannot safely reject and explicitly remove legacy checkpoint files")
     require("Where(x => x.Start <= media + 0.001)" in checkpoint,

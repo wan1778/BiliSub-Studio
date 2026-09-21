@@ -194,7 +194,10 @@ internal sealed partial class LocalAsrService : IDisposable
             job.Warn("VRAM trống dưới 1.500 MB; không tải/khởi động GPU Whisper, chuyển CPU/int8.");
         else
         {
-            var compute = hardware.VramTelemetryAvailable && hardware.AvailableVramBytes < 2_500L * 1024 * 1024 ? "int8_float16" : "float16";
+            // large-v3 needs ~3 GB in float16: cards under 8 GB VRAM must use
+            // int8_float16 (fits 4 GB, still fast on Ampere+), otherwise OOM.
+            var vramGb = hardware.VramTelemetryAvailable ? hardware.AvailableVramBytes / 1024d / 1024 / 1024 : 0;
+            var compute = vramGb <= 0 || vramGb >= 8 ? "float16" : "int8_float16";
             try
             {
                 var cudaDirectories = await _installer.PrepareGpuAsync(job);

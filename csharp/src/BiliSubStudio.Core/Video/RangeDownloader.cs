@@ -94,6 +94,13 @@ public sealed class RangeDownloader
             throw new RangeNotSupportedException("CDN không hỗ trợ HTTP Range hợp lệ.");
         }
 
+        // Startup CDN race (P1): backup endpoints were previously discovered one
+        // failure at a time, so a sick primary cost a full error cycle before the
+        // downloader even tried the next route. Sample every known endpoint in
+        // parallel and start on the fastest. Fail-open: any probe failure keeps
+        // the pre-race order and the existing probe/resume machinery below.
+        current = await RaceEndpointsAsync(original, current, cancellationToken);
+
         var output = Path.Combine(workDirectory, baseName + ".stream");
         if (File.Exists(output))
         {
@@ -116,6 +123,7 @@ public sealed class RangeDownloader
         await SaveManifestAsync(manifestPath, total, chunkSize, completed.Keys, cancellationToken);
         var committedBytes = completed.Keys.Sum(index => segments[index].Length);
         long networkBytes = 0;
+        var consecutiveShortBody = 0;
         var stopwatch = Stopwatch.StartNew();
         var active = 0;
         var inFlight = new ConcurrentDictionary<int, long>();
@@ -171,6 +179,7 @@ public sealed class RangeDownloader
                                 completed[segment.Index] = true;
                                 inFlight.TryRemove(segment.Index, out _);
                                 Interlocked.Exchange(ref committedBytes, completed.Keys.Sum(index => segments[index].Length));
+                                Interlocked.Exchange(ref consecutiveShortBody, 0);
                                 await SaveManifestAsync(manifestPath, total, chunkSize, completed.Keys, workerToken);
                             }
                             finally { manifestGate.Release(); }
@@ -210,7 +219,16 @@ public sealed class RangeDownloader
                             }
 
                             var immediateRefresh = error is HttpRequestException;
-                            if (refresh is not null && (immediateRefresh || (weakProgressFailures > 0 && weakProgressFailures % 2 == 0)))
+                            var shortBody = error is EndOfStreamException;
+                            if (shortBody) Interlocked.Increment(ref consecutiveShortBody);
+                            // A sick endpoint can dribble meaningful partial progress on
+                            // every attempt (so the weak-progress path below never fires
+                            // — it only counts zero-gain failures) while a healthy route
+                            // idles. After several consecutive short bodies, force the
+                            // same generation-guarded rotation instead of waiting it out.
+                            var forceRotation = shortBody
+                                && Volatile.Read(ref consecutiveShortBody) >= ConsecutiveShortBodyRotationThreshold;
+                            if (refresh is not null && (immediateRefresh || forceRotation || (weakProgressFailures > 0 && weakProgressFailures % 2 == 0)))
                             {
                                 await currentGate.WaitAsync(workerToken);
                                 try
@@ -219,6 +237,7 @@ public sealed class RangeDownloader
                                     {
                                         current = await refresh(stream.Generation, workerToken);
                                     }
+                                    Interlocked.Exchange(ref consecutiveShortBody, 0);
                                 }
                                 finally { currentGate.Release(); }
                             }
@@ -402,6 +421,54 @@ public sealed class RangeDownloader
             TryDelete(temporary);
             throw;
         }
+    }
+
+    private const long RaceSampleBytes = 64L * 1024;
+    private const int RaceTimeoutSeconds = 8;
+    // Consecutive short bodies (EndOfStreamException) at which the endpoint is
+    // declared sick and rotated immediately. Normal transient blips (1-3) keep
+    // the old same-URL resume path untouched; only a sustained dribble forces
+    // an early route change instead of burning all 32 segment attempts on it.
+    // The counter is shared across workers and reset by any full segment
+    // success or any route change. This covers dribbles that still make big
+    // partial progress (each attempt gains bytes, so the weak-progress path
+    // below never fires); zero-gain failures keep rotating via that path.
+    private const int ConsecutiveShortBodyRotationThreshold = 4;
+
+    private async Task<ResolvedStream> RaceEndpointsAsync(
+        ResolvedStream original, ResolvedStream current, CancellationToken cancellationToken)
+    {
+        var endpoints = (original.EndpointUrls ?? Array.Empty<string>())
+            .Where(url => !string.IsNullOrWhiteSpace(url))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        if (endpoints.Length < 2) return current;
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(RaceTimeoutSeconds));
+        var samples = await Task.WhenAll(
+            endpoints.Select(url => SampleEndpointAsync(original, url, timeout.Token, cancellationToken)));
+        var winner = samples.Where(sample => sample.BytesPerSecond > 0)
+            .OrderByDescending(sample => sample.BytesPerSecond)
+            .FirstOrDefault();
+        if (winner.Url is null || string.Equals(winner.Url, current.Url, StringComparison.Ordinal)) return current;
+        return current with { Url = winner.Url, EndpointIndex = Array.IndexOf(endpoints, winner.Url) };
+    }
+
+    private async Task<(string? Url, double BytesPerSecond)> SampleEndpointAsync(
+        ResolvedStream template, string url, CancellationToken attemptToken, CancellationToken parentToken)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        try
+        {
+            using var request = CreateRequest(template with { Url = url }, new RangeHeaderValue(0, RaceSampleBytes - 1));
+            using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, attemptToken);
+            if (response.StatusCode != HttpStatusCode.PartialContent) return (null, 0);
+            var bytes = await response.Content.ReadAsByteArrayAsync(attemptToken);
+            if (bytes.Length == 0) return (null, 0);
+            return (url, bytes.Length / Math.Max(0.001, stopwatch.Elapsed.TotalSeconds));
+        }
+        catch (OperationCanceledException) when (parentToken.IsCancellationRequested) { throw; }
+        catch (Exception) { return (null, 0); }
     }
 
     private static HttpRequestMessage CreateRequest(ResolvedStream stream, RangeHeaderValue range)

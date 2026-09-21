@@ -105,6 +105,7 @@ internal static class OcrReplayContract
             // 1+2+3: full-checkpoint replay trên media rác, scripted comparer:
             // Same đúng boundary A-B (Pts 11↔11), Different mọi boundary khác.
             // Gate generic: mọi boundary trong continuation window đều tới comparer (A-B và C-D).
+            // Policy 21/09: A-B byte-identical touching gộp pixel-free → comparer KHÔNG được gọi cho A-B.
             await SeedAsync(SeedCues());
             var bytesBefore = await File.ReadAllBytesAsync(CheckpointFile());
             var scripted = new ScriptedPixelComparer((l, r) =>
@@ -115,7 +116,7 @@ internal static class OcrReplayContract
                 "replay must merge A+B into 10-12 龙无期");
             Check(replayed[1].NeedsReview && replayed[2].NeedsReview,
                 "Different pixel must flag C+D with NeedsReview");
-            Check(scripted.Calls == 2, $"generic gate must verify A-B and C-D (calls={scripted.Calls})");
+            Check(scripted.Calls == 1, $"generic gate only verifies C-D now (A+B merges pixel-free, calls={scripted.Calls})");
 
             // 3: replay == production full-scan reconcile trên cùng cues (cùng OcrScanner.ReconcileAsync).
             var directScripted = new ScriptedPixelComparer((l, r) =>
@@ -129,14 +130,15 @@ internal static class OcrReplayContract
 
             // 4: targeted range replay giữ đúng 1 cue context mỗi phía + trace chẩn đoán.
             // B-C ngoài window => không candidate; C-D trong window => candidate + Different.
+            // Policy 21/09: A-B byte-identical merging pixel-free, trace không còn pixel call.
             var countingRange = new ScriptedPixelComparer((l, r) =>
                 Math.Abs(l - 11.0) < 1e-9 && Math.Abs(r - 11.0) < 1e-9 ? PixelCheckResult.Same : PixelCheckResult.Different);
             var (ranged, trace) = await app.ReconcileRangeAsync(request, countingRange, 11.5, 20.5, ct, Window);
             Check(trace.Count == 3, $"range 11.5-20.5 with 1-cue context each side must trace 3 boundaries (got {trace.Count})");
             Check(trace[0].LeftStart == 10.0 && trace[2].RightEnd == 22.0,
                 "range trace must span left context A start to right context D end");
-            Check(trace[0].IsCandidate && trace[0].Pixel == PixelCheckResult.Same && trace[0].Merged,
-                "A-B boundary must be candidate + Same + merged");
+            Check(trace[0].IsCandidate && trace[0].Merged && trace[0].Pixel == PixelCheckResult.Same,
+                "A-B boundary merged (trace shows Same from scripted comparer; merge is pixel-free 21/09)");
             Check(!trace[1].IsCandidate && !trace[1].Merged,
                 "out-of-window boundary B-C must be non-candidate and unmerged");
             Check(trace[2].IsCandidate && trace[2].Pixel == PixelCheckResult.Different && !trace[2].Merged,
@@ -159,9 +161,10 @@ internal static class OcrReplayContract
             await SeedAsync(SeedCues());
             var diff = new FakePixelComparer(PixelCheckResult.Different);
             var held = await app.ReconcileCheckpointAsync(request, diff, ct, Window);
-            Check(held.Count == 4 && held.All(c => c.NeedsReview),
-                "Different pixel must keep all cues separate with NeedsReview");
-            Check(diff.Calls == 2, $"single pass must verify A-B and C-D once each (calls={diff.Calls})");
+            Check(held.Count == 3, "A+B merged pixel-free, C+D split with NeedsReview");
+            Check(held[0].NeedsReview == false, "A+B merged no review");
+            Check(held[1].NeedsReview && held[2].NeedsReview, "C+D split + review");
+            Check(diff.Calls == 1, $"only C-D reaches pixel (calls={diff.Calls})");
         }
         finally
         {

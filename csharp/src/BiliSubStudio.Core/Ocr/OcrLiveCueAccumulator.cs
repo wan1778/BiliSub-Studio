@@ -10,27 +10,60 @@ public sealed class OcrLiveCueAccumulator
 
     public void Clear() => _byStart.Clear();
 
+    // Resume path: re-install the paused authoritative list without deleting
+    // anything, so rolling snapshots reconcile forward from it instead of the
+    // UI going blank until telemetry refills.
+    public void Seed(IReadOnlyList<OcrCue> cues)
+    {
+        foreach (var cue in Normalize(cues))
+        {
+            var key = StartKey(cue.Start);
+            _byStart[key] = _byStart.TryGetValue(key, out var existing)
+                ? MergeSameStart(existing, cue)
+                : cue;
+        }
+    }
+
     public bool Merge(IReadOnlyList<OcrCue> incoming)
     {
         var before = _byStart.Values.ToArray();
-        foreach (var rawCue in incoming)
+        var snapshot = Normalize(incoming)
+            .OrderBy(cue => cue.Start)
+            .ThenBy(cue => cue.End)
+            .ToArray();
+
+        // An empty telemetry snapshot carries no information (resume warm-up,
+        // pre-first-callback). It must never wipe the retained history.
+        if (snapshot.Length == 0) return false;
+
+        // Scanner telemetry is the current rolling suffix, not an append-only
+        // delta. Replace its overlapping tail so cues removed by reconciliation
+        // or provisional-state changes cannot survive as duplicate ghost rows.
+        var replaceFrom = StartKey(snapshot[0].Start);
+        var currentKeys = snapshot.Select(cue => StartKey(cue.Start)).ToHashSet();
+        foreach (var key in _byStart.Keys.Where(key => key >= replaceFrom && !currentKeys.Contains(key)).ToArray())
+            _byStart.Remove(key);
+
+        foreach (var cue in snapshot)
         {
-            if (!ChineseSubtitleNormalizer.TryNormalize(rawCue.Text, out var text)) continue;
-            var cue = rawCue with { Text = text };
             var key = StartKey(cue.Start);
             _byStart[key] = _byStart.TryGetValue(key, out var existing)
                 ? MergeSameStart(existing, cue)
                 : cue;
         }
 
-        // A later job snapshot can replace several provisional active cues with
-        // one reconciled committed cue. Rebuild the keyed state itself so those
-        // superseded starts cannot remain as ghost rows in the next UI refresh.
-        var reconciled = OcrCueReconciler.MergeTouchingIdentical(_byStart.Values);
-        _byStart.Clear();
-        foreach (var cue in reconciled) _byStart[StartKey(cue.Start)] = cue;
-
         return !before.SequenceEqual(_byStart.Values);
+    }
+
+    private static IReadOnlyList<OcrCue> Normalize(IEnumerable<OcrCue> cues)
+    {
+        var output = new List<OcrCue>();
+        foreach (var rawCue in cues)
+        {
+            if (ChineseSubtitleNormalizer.TryNormalize(rawCue.Text, out var text))
+                output.Add(rawCue with { Text = text });
+        }
+        return output;
     }
 
     private static OcrCue MergeSameStart(OcrCue current, OcrCue candidate)

@@ -37,15 +37,16 @@ internal sealed partial class LocalAsrInstaller : IDisposable
     internal const string CTranslate2Version = "4.8.1";
     internal const string FasterWhisperWheel = "https://files.pythonhosted.org/packages/05/99/49ee85903dee060d9f08297b4a342e5e0bcfca2f027a07b4ee0a38ab13f9/faster_whisper-1.2.1-py3-none-any.whl#sha256=79a66ad50688c0b794dd501dc340a736992a6342f7f95e5811be60b5224a26a7";
     internal const string CTranslate2Wheel = "https://files.pythonhosted.org/packages/c0/82/0a5f7f2b03b4e10aacb3146715724e1b96bb993cc7d199be28c9825aa120/ctranslate2-4.8.1-cp312-cp312-win_amd64.whl#sha256=49f96e861b57301f0b76a082109bde2cac8204a6b4fedc870883008271e82251";
-    internal const string ModelName = "faster-whisper small (đa ngôn ngữ)";
-    internal const string ModelRepository = "Systran/faster-whisper-small";
-    internal const string ModelRevision = "536b0662742c02347bc0e980a01041f333bce120";
+    internal const string ModelName = "faster-whisper large-v3 (đa ngôn ngữ)";
+    internal const string ModelRepository = "Systran/faster-whisper-large-v3";
+    internal const string ModelRevision = "edaa852ec7e145841d8ffdb056a99866b5f0a478";
     internal static readonly AsrModelFile[] ModelFiles =
     [
-        new("config.json", 2_370, "b55496ac7940a7ae47d2c01eab40edfd8701feec1229d9cce3b40014383fb828"),
-        new("model.bin", 483_546_902, "3e305921506d8872816023e4c273e75d2419fb89b24da97b4fe7bce14170d671"),
-        new("tokenizer.json", 2_203_239, "fb7b63191e9bb045082c79fd742a3106a12c99513ab30df4a0d47fa6cb6fd0ab"),
-        new("vocabulary.txt", 459_861, "34ce3fe1c5041027b3f8d42912270993f986dbc4bb34cf27f951e34a1e453913"),
+        new("config.json", 2_394, "a9306624f5ec14270a014b647e5c316b6e03a662c369758d1b90697a7b0655b9"),
+        new("model.bin", 3_087_284_237, "69f74147e3334731bc3a76048724833325d2ec74642fb52620eda87352e3d4f1"),
+        new("preprocessor_config.json", 340, "7ccc62c6f2765af1f3b46c00c9b5894426835a05021c8b9c01eecb6dfb542711"),
+        new("tokenizer.json", 2_480_617, "6d8cbd7cd0d8d5815e478dac67b85a26bbe77c1f5e0c6d76d1ce2abc0e5f21ca"),
+        new("vocabulary.json", 1_068_114, "c69260f2ab26d659b7c398f9a2b2b48ed0df16c3b47d7326782fd9cba71690c1"),
     ];
 
     private readonly AppPaths _paths;
@@ -76,7 +77,7 @@ internal sealed partial class LocalAsrInstaller : IDisposable
     private string Python => Path.Combine(VenvRoot, "Scripts", "python.exe");
     private string RuntimeManifest => Path.Combine(RuntimeRoot, "install.json");
     private string Worker => Path.Combine(Root, "worker.py");
-    private string ModelDirectory => Path.Combine(Root, "Models", "faster-whisper-small-" + ModelRevision[..12]);
+    private string ModelDirectory => Path.Combine(Root, "Models", "faster-whisper-large-v3-" + ModelRevision[..12]);
 
     public LocalAsrStatus Status
     {

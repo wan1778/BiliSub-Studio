@@ -70,6 +70,18 @@ internal static class OcrAdversarialRegression
         Check(longMerged.Count == 1 && longMerged[0].Start == 55.133 && longMerged[0].End == 57.400,
             "long-A A/B/A must collapse with pixel Same on both boundaries");
 
+        // p06 field: 1-rune variant (镇/涼) khe 0.1s (> flicker window cu 0.067):
+        // candidate qua pixel (window moi 0.25), merge khi Same. Pixel Different
+        // van tach + review nhu cu (test khac khoa). Window 0.1 = liveWindow cua
+        // video 30fps production (3/nativeFps), khong phai Epsilon mac dinh.
+        var variantFlicker = new[] {
+            Prov(961.700, 962.400, "入镇休整", 0.973),
+            Prov(962.500, 962.833, "入鎮休整", 0.921),
+        };
+        var variantMerged = await OcrCueReconciler.MergeTouchingIdenticalAsync(variantFlicker, "v.mp4", same, CancellationToken.None, 0.1);
+        Check(variantMerged.Count == 1 && variantMerged[0].Start == 961.700 && variantMerged[0].End == 962.833,
+            "single-rune variant across 0.1s gap must merge with pixel Same");
+
         var legit = new[] {
             new OcrCue(200, 200.5, "你要走吗", 0.99),
             new OcrCue(200.5, 201.1, "你要来吗", 0.99),

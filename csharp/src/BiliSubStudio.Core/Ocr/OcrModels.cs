@@ -10,10 +10,35 @@ public sealed record OcrRegion(
 public sealed record OcrLine(string Text, double Confidence, int[] Box);
 public sealed record OcrBox([property: JsonPropertyName("l")] int Left, [property: JsonPropertyName("t")] int Top, [property: JsonPropertyName("r")] int Right, [property: JsonPropertyName("b")] int Bottom);
 public sealed record OcrResult(bool Ok, bool Detected, string Text, double Confidence, IReadOnlyList<OcrLine> Lines, string? Error = null);
+// D.1 det/rec split: timing that worker do that (khong co cls stage rieng trong
+// pipeline PP-OCRv6 nay). C# tich luy de quyet Phase 2 (det-1-lan + rec-only).
+public sealed record OcrPerfSample(double DetMs, double RecMs, int DetBoxes, int RecCrops, int CacheHits, int Images);
+// E.3 shadow: ket qua probe mo rong. BandChangeScores/EdgeDensity co the null
+// khi worker cu chua co 2 field (tuong thich nguoc: shadow vang mat, khong fail).
+public sealed record VisualProbeResult(
+    IReadOnlyList<double> ChangeScores,
+    IReadOnlyList<double>? BandChangeScores,
+    IReadOnlyList<double>? EdgeDensity);
 // Provenance giữ exact integer SourcePts + time base. Thiếu/invalid => Unavailable, không đoán.
 public sealed record RationalTimeBase([property: JsonPropertyName("num")] int Num, [property: JsonPropertyName("den")] int Den);
 public sealed record PixelObservation([property: JsonPropertyName("pts")] double Pts, [property: JsonPropertyName("box")] OcrBox BoxInOcrCrop, [property: JsonPropertyName("roi")] OcrRegion SourceRoi, OcrFrameGeometry? Geometry = null, [property: JsonPropertyName("spts")] long? SourcePts = null, RationalTimeBase? SourceTimeBase = null);
 public sealed record OcrCue(double Start, double End, string Text, [property: JsonPropertyName("conf")] double Confidence, [property: JsonPropertyName("support")] int RawSupportCount = 0, [property: JsonPropertyName("csupport")] int ConfidentSupportCount = 0, [property: JsonPropertyName("review")] bool NeedsReview = false, PixelObservation? FirstObservation = null, PixelObservation? LastObservation = null);
+// Danh sách loại trừ lúc xuất SRT (file <checkpointkey>.exclude.json cạnh checkpoint):
+// câu nào khớp Start (±1ms) + Text từng chữ thì bỏ khỏi file SRT. Không thuộc
+// checkpoint (không ảnh hưởng key/resume); xóa file là hoàn tác.
+public sealed record OcrCueExclusion(
+    [property: JsonPropertyName("start")] double Start,
+    [property: JsonPropertyName("text")] string Text);
+// Danh sách sửa chữ (file <checkpointkey>.fix.json cạnh checkpoint): câu nào
+// khớp Start (±1ms) + chữ cũ từng chữ thì thay bằng chữ đúng lúc xuất SRT.
+// Không thuộc checkpoint (không ảnh hưởng key/resume); xóa file là hoàn tác.
+public sealed record OcrCueFix(
+    [property: JsonPropertyName("start")] double Start,
+    [property: JsonPropertyName("old")] string OldText,
+    [property: JsonPropertyName("new")] string NewText,
+    // Fix do tai-nghe sửa chữ (correction) thì gắn cờ review lúc xuất để
+    // người duyệt kiểm tra — trim/sửa tay cũ giữ false như trước.
+    [property: JsonPropertyName("review")] bool FlagReview = false);
 
 public sealed record OcrScanRequest(
     string Path,
@@ -103,7 +128,20 @@ public sealed record OcrStatus(
     string WorkerKinds,
     string Engine,
     string Model,
-    string? Error = null);
+    string? Error = null,
+    int LiveWorkers = 0);
+
+public sealed record OcrInferenceTelemetry(
+    long OcrBatchCalls,
+    long OcrBatchImages,
+    long ProbeCalls,
+    long ProbeImages,
+    long WorkerReplacements,
+    long QueueExecuted,
+    int QueuePeakDepth,
+    double QueueAvgDepth,
+    long QueueTotalWaitMs,
+    long PlannedRecycles = 0);
 
 public sealed record OcrCheckpointInfo(
     bool Exists,

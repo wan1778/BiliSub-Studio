@@ -1,0 +1,330 @@
+{
+  "schemaVersion": 1,
+  "corpusId": "ocr-gold-generated-v4",
+  "description": "Deterministic Chinese OCR fixtures: hard cues, native VFR, fractional 30000/1001, and offset boundary scans with two and four lanes.",
+  "thresholds": {
+    "cueMatchToleranceSeconds": 0.25,
+    "ptsEpsilonSeconds": 1e-06,
+    "minimumCueRecall": 1.0,
+    "minimumCuePrecision": 1.0,
+    "maximumCer": 0.0,
+    "maximumMeanOnsetErrorSeconds": 0.0,
+    "maximumMeanOffsetErrorSeconds": 0.0,
+    "maximumOnsetErrorFrames": 0,
+    "maximumOffsetErrorFrames": 0
+  },
+  "cases": [
+    {
+      "id": "generated-accurate-hard-cues",
+      "video": "generated-ocr-gold.mkv",
+      "videoSha256": "6c37dd20b6a6fde9116b4d99b6539fe8940d83129a59c563a80496aeec03da45",
+      "provenance": {
+        "kind": "generated",
+        "source": "generator:csharp/scripts/generate_ocr_gold_fixture.py",
+        "license": "OFL-1.1",
+        "attribution": "Synthetic captions rendered with NotoSansSC-wght.ttf; font sha256=a3041811a78c361b1de50f953c805e0244951c21c5bd412f7232ef0d899af0da; ffmpeg=ffmpeg version N-126479-g08cd8df29d-20260908 Copyright (c) 2000-2026 the FFmpeg developers; time_base=1/1000",
+        "sourceUrl": "https://github.com/notofonts/noto-cjk"
+      },
+      "scan": {
+        "startSeconds": 0.0,
+        "durationSeconds": 13.0,
+        "region": {
+          "x": 0.05,
+          "y": 0.65,
+          "width": 0.9,
+          "height": 0.3
+        },
+        "mode": "accurate",
+        "device": "gpu",
+        "parallelism": "1",
+        "sensitivity": 1.0
+      },
+      "expectedCues": [
+        {
+          "id": "adjacent-a",
+          "onsetPts": 500,
+          "offsetPts": 2000,
+          "text": "哇，没毛狗"
+        },
+        {
+          "id": "adjacent-b",
+          "onsetPts": 2000,
+          "offsetPts": 3500,
+          "text": "哦，没毛狗"
+        },
+        {
+          "id": "repeat-a",
+          "onsetPts": 4000,
+          "offsetPts": 5500,
+          "text": "多谢师叔"
+        },
+        {
+          "id": "repeat-b",
+          "onsetPts": 6500,
+          "offsetPts": 8000,
+          "text": "多谢师叔"
+        },
+        {
+          "id": "single-rune-long",
+          "onsetPts": 8500,
+          "offsetPts": 9300,
+          "text": "走"
+        },
+        {
+          "id": "two-line",
+          "onsetPts": 9800,
+          "offsetPts": 11300,
+          "text": "第一行字幕\n第二行字幕"
+        },
+        {
+          "id": "short-multi",
+          "onsetPts": 11600,
+          "offsetPts": 11900,
+          "text": "快走"
+        },
+        {
+          "id": "single-rune-short",
+          "onsetPts": 12300,
+          "offsetPts": 12700,
+          "text": "来"
+        }
+      ]
+    },
+    {
+      "id": "generated-balanced-hard-cues",
+      "video": "generated-ocr-gold.mkv",
+      "videoSha256": "6c37dd20b6a6fde9116b4d99b6539fe8940d83129a59c563a80496aeec03da45",
+      "provenance": {
+        "kind": "generated",
+        "source": "generator:csharp/scripts/generate_ocr_gold_fixture.py",
+        "license": "OFL-1.1",
+        "attribution": "Synthetic captions rendered with NotoSansSC-wght.ttf; font sha256=a3041811a78c361b1de50f953c805e0244951c21c5bd412f7232ef0d899af0da; ffmpeg=ffmpeg version N-126479-g08cd8df29d-20260908 Copyright (c) 2000-2026 the FFmpeg developers; time_base=1/1000",
+        "sourceUrl": "https://github.com/notofonts/noto-cjk"
+      },
+      "scan": {
+        "startSeconds": 0.0,
+        "durationSeconds": 13.0,
+        "region": {
+          "x": 0.05,
+          "y": 0.65,
+          "width": 0.9,
+          "height": 0.3
+        },
+        "mode": "balanced",
+        "device": "gpu",
+        "parallelism": "1",
+        "sensitivity": 1.0
+      },
+      "expectedCues": [
+        {
+          "id": "adjacent-a",
+          "onsetPts": 500,
+          "offsetPts": 2000,
+          "text": "哇，没毛狗"
+        },
+        {
+          "id": "adjacent-b",
+          "onsetPts": 2000,
+          "offsetPts": 3500,
+          "text": "哦，没毛狗"
+        },
+        {
+          "id": "repeat-a",
+          "onsetPts": 4000,
+          "offsetPts": 5500,
+          "text": "多谢师叔"
+        },
+        {
+          "id": "repeat-b",
+          "onsetPts": 6500,
+          "offsetPts": 8000,
+          "text": "多谢师叔"
+        },
+        {
+          "id": "single-rune-long",
+          "onsetPts": 8500,
+          "offsetPts": 9300,
+          "text": "走"
+        },
+        {
+          "id": "two-line",
+          "onsetPts": 9800,
+          "offsetPts": 11300,
+          "text": "第一行字幕\n第二行字幕"
+        },
+        {
+          "id": "short-multi",
+          "onsetPts": 11600,
+          "offsetPts": 11900,
+          "text": "快走"
+        },
+        {
+          "id": "single-rune-short",
+          "onsetPts": 12300,
+          "offsetPts": 12700,
+          "text": "来"
+        }
+      ]
+    },
+    {
+      "id": "generated-vfr-offset",
+      "scan": {
+        "startSeconds": 1,
+        "durationSeconds": 8,
+        "region": {
+          "x": 0.05,
+          "y": 0.65,
+          "width": 0.9,
+          "height": 0.3
+        },
+        "mode": "balanced",
+        "device": "gpu",
+        "parallelism": "1",
+        "sensitivity": 1
+      },
+      "expectedCues": [
+        {
+          "id": "irregular-boundaries",
+          "text": "多谢师叔",
+          "onsetPts": 2060,
+          "offsetPts": 4060
+        }
+      ],
+      "video": "generated-ocr-vfr.mkv",
+      "videoSha256": "1550a40116f6c4c8606e929f4e93b795c094c678fceef00dc6c7fdcbd2a1f454",
+      "provenance": {
+        "kind": "generated",
+        "source": "generator:csharp/scripts/generate_ocr_gold_fixture.py",
+        "license": "OFL-1.1",
+        "attribution": "Synthetic captions rendered with NotoSansSC-wght.ttf; font sha256=a3041811a78c361b1de50f953c805e0244951c21c5bd412f7232ef0d899af0da; ffmpeg=ffmpeg version N-126479-g08cd8df29d-20260908 Copyright (c) 2000-2026 the FFmpeg developers; time_base=1/1000",
+        "sourceUrl": "https://github.com/notofonts/noto-cjk"
+      }
+    },
+    {
+      "id": "generated-fractional-2997",
+      "scan": {
+        "startSeconds": 0,
+        "durationSeconds": 8.008,
+        "region": {
+          "x": 0.05,
+          "y": 0.65,
+          "width": 0.9,
+          "height": 0.3
+        },
+        "mode": "balanced",
+        "device": "gpu",
+        "parallelism": "1",
+        "sensitivity": 1
+      },
+      "expectedCues": [
+        {
+          "id": "fractional-boundaries",
+          "text": "多谢师叔",
+          "onsetPts": 2035,
+          "offsetPts": 4037
+        }
+      ],
+      "video": "generated-ocr-2997.mkv",
+      "videoSha256": "689a1802807cf734c99d8ec91bc7feec9be9969a215a4e26439cf29681a7b1fc",
+      "provenance": {
+        "kind": "generated",
+        "source": "generator:csharp/scripts/generate_ocr_gold_fixture.py",
+        "license": "OFL-1.1",
+        "attribution": "Synthetic captions rendered with NotoSansSC-wght.ttf; font sha256=a3041811a78c361b1de50f953c805e0244951c21c5bd412f7232ef0d899af0da; ffmpeg=ffmpeg version N-126479-g08cd8df29d-20260908 Copyright (c) 2000-2026 the FFmpeg developers; time_base=1/1000",
+        "sourceUrl": "https://github.com/notofonts/noto-cjk"
+      }
+    },
+    {
+      "id": "generated-two-lane-offset-boundary",
+      "scan": {
+        "startSeconds": 5,
+        "durationSeconds": 60,
+        "region": {
+          "x": 0.05,
+          "y": 0.65,
+          "width": 0.9,
+          "height": 0.3
+        },
+        "mode": "balanced",
+        "device": "gpu",
+        "parallelism": "2",
+        "sensitivity": 1
+      },
+      "expectedCues": [
+        {
+          "id": "left-core",
+          "text": "多谢师叔",
+          "onsetPts": 10000,
+          "offsetPts": 12000
+        },
+        {
+          "id": "crosses-core-35s",
+          "text": "第一行字幕\n第二行字幕",
+          "onsetPts": 34000,
+          "offsetPts": 36000
+        },
+        {
+          "id": "right-core",
+          "text": "多谢师叔",
+          "onsetPts": 58000,
+          "offsetPts": 60000
+        }
+      ],
+      "video": "generated-ocr-boundary.mkv",
+      "videoSha256": "50be16ff2466bf8a4f0997e94f2a3e3ee8505af4ec1506ab9d4c586e572912fa",
+      "provenance": {
+        "kind": "generated",
+        "source": "generator:csharp/scripts/generate_ocr_gold_fixture.py",
+        "license": "OFL-1.1",
+        "attribution": "Synthetic captions rendered with NotoSansSC-wght.ttf; font sha256=a3041811a78c361b1de50f953c805e0244951c21c5bd412f7232ef0d899af0da; ffmpeg=ffmpeg version N-126479-g08cd8df29d-20260908 Copyright (c) 2000-2026 the FFmpeg developers; time_base=1/1000",
+        "sourceUrl": "https://github.com/notofonts/noto-cjk"
+      }
+    },
+    {
+      "id": "generated-four-lane-offset-boundary",
+      "scan": {
+        "startSeconds": 5,
+        "durationSeconds": 60,
+        "region": {
+          "x": 0.05,
+          "y": 0.65,
+          "width": 0.9,
+          "height": 0.3
+        },
+        "mode": "balanced",
+        "device": "gpu",
+        "parallelism": "4",
+        "sensitivity": 1
+      },
+      "expectedCues": [
+        {
+          "id": "left-core",
+          "text": "多谢师叔",
+          "onsetPts": 10000,
+          "offsetPts": 12000
+        },
+        {
+          "id": "crosses-core-35s",
+          "text": "第一行字幕\n第二行字幕",
+          "onsetPts": 34000,
+          "offsetPts": 36000
+        },
+        {
+          "id": "right-core",
+          "text": "多谢师叔",
+          "onsetPts": 58000,
+          "offsetPts": 60000
+        }
+      ],
+      "video": "generated-ocr-boundary.mkv",
+      "videoSha256": "50be16ff2466bf8a4f0997e94f2a3e3ee8505af4ec1506ab9d4c586e572912fa",
+      "provenance": {
+        "kind": "generated",
+        "source": "generator:csharp/scripts/generate_ocr_gold_fixture.py",
+        "license": "OFL-1.1",
+        "attribution": "Synthetic captions rendered with NotoSansSC-wght.ttf; font sha256=a3041811a78c361b1de50f953c805e0244951c21c5bd412f7232ef0d899af0da; ffmpeg=ffmpeg version N-126479-g08cd8df29d-20260908 Copyright (c) 2000-2026 the FFmpeg developers; time_base=1/1000",
+        "sourceUrl": "https://github.com/notofonts/noto-cjk"
+      }
+    }
+  ]
+}

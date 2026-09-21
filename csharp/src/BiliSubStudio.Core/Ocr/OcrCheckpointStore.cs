@@ -15,7 +15,11 @@ internal sealed record OcrScanMode(
     bool ExhaustiveRecognition = false);
 internal sealed record OcrScanSegment(int Index, double CoreStart, double CoreEnd, double ScanStart, double ScanEnd);
 internal sealed record OcrLaneCheckpoint(OcrScanSegment Segment, double MediaSeconds, List<OcrCue> Cues, OcrCue? Active, int Frames, int OcrImages, bool Completed);
-internal sealed record OcrParallelCheckpoint(int Schema, string Key, int SelectedParallelism, List<OcrLaneCheckpoint> Lanes, int BoundaryMerges = 0);
+internal sealed record OcrParallelCheckpoint(int Schema, string Key, int SelectedParallelism, List<OcrLaneCheckpoint> Lanes, int BoundaryMerges = 0)
+{
+    public int Workers { get; init; } = 1;
+    public string WorkerMode { get; init; } = "gpu";
+}
 
 internal sealed class OcrCheckpointStore
 {
@@ -33,16 +37,20 @@ internal sealed class OcrCheckpointStore
     // substitution as three final cues. Schema 13 sampled Balanced/Fast modes
     // on a fixed FPS grid, which quantized cue boundaries and dropped captions
     // shorter than the tracker's two-hit window. Schema 14 still used the Small
-    // detector/recognizer and allowed Accurate mode's visual-change probe to
-    // skip a complete short caption. Schema 15 binds the Medium model identity
-    // and exhaustive Accurate policy into the key, so old partial evidence can
-    // never be presented as a completed high-quality scan. Schema 15 can retain
+    // detector/recognizer and allowed Accurate mode's old visual-change probe
+    // to skip a complete short caption. Schema 15 bound the Medium model identity
+    // and exhaustive Accurate policy into the key. The current selector probes
+    // every native frame, confirms both sides of every visual boundary and keeps
+    // exact source PTS, so Accurate no longer needs full Paddle inference. The
+    // ExhaustiveRecognition identity bit changes its key and prevents old partial
+    // evidence from being presented as a completed scan. Schema 15 can retain
     // changing lower-right branding as part of a subtitle and split one visual
     // caption into several cues. Schema 16 still let the same branding become
     // standalone cues whenever no dialogue shared the frame.
     // Schema 18 separates off-baseline scene glyphs before inline stitching and
     // admits inflated subtitle boxes to pixel verification. Rescan old evidence.
-    private const int Schema = 18;
+    // Schema 19 persists inference topology independently of decoder lanes.
+    private const int Schema = 19;
     private readonly AppPaths _paths;
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -57,11 +65,20 @@ internal sealed class OcrCheckpointStore
     {
         var key = await KeyAsync(request, Schema, cancellationToken);
         var path = Path.Combine(DirectoryPath, key + ".json");
+        // Crash safety: the main file may be missing or torn if the app was
+        // killed mid-save. Fall back to the previous rotated backup so a
+        // sudden close/crash still resumes instead of forcing a fresh scan.
+        return await TryLoadAsync(path, key, request.Duration, request.ScanStartOffset, cancellationToken)
+            ?? await TryLoadAsync(path + ".bak", key, request.Duration, request.ScanStartOffset, cancellationToken);
+    }
+
+    private static async Task<OcrParallelCheckpoint?> TryLoadAsync(string path, string key, double duration, double offset, CancellationToken cancellationToken)
+    {
         if (!File.Exists(path)) return null;
         try
         {
             var checkpoint = JsonSerializer.Deserialize<OcrParallelCheckpoint>(await File.ReadAllTextAsync(path, cancellationToken), JsonOptions);
-            if (checkpoint is null || checkpoint.Schema != Schema || checkpoint.Key != key || !IsValidCheckpoint(checkpoint, request.Duration, request.ScanStartOffset))
+            if (checkpoint is null || checkpoint.Schema != Schema || checkpoint.Key != key || !IsValidCheckpoint(checkpoint, duration, offset))
                 return null;
             return checkpoint;
         }
@@ -84,6 +101,16 @@ internal sealed class OcrCheckpointStore
                 await file.FlushAsync(cancellationToken);
                 file.Flush(flushToDisk: true);
             }
+            // Rotate the previous durable checkpoint aside before installing the
+            // new one, so a kill/crash between saves can never lose more than
+            // one 30-second window. Backup is best-effort: the main save must
+            // proceed even if rotation fails (disk full, ACL).
+            try
+            {
+                if (File.Exists(path))
+                    File.Copy(path, path + ".bak", overwrite: true);
+            }
+            catch { }
             File.Move(temporary, path, overwrite: true);
         }
         finally { TryDelete(temporary); }
@@ -109,15 +136,211 @@ internal sealed class OcrCheckpointStore
             cues.TakeLast(120).ToArray(), cues);
     }
 
+    // Danh sách loại trừ lúc xuất SRT (xem OcrExportExclusions): file
+    // <checkpointkey>.exclude.json cạnh checkpoint. Không thuộc checkpoint nên
+    // không ảnh hưởng key/resume/schema; thiếu/hỏng = không loại trừ, KHÔNG BAO
+    // GIỜ fail export. Xóa file là hoàn tác. RemoveAsync không xóa (quyết định
+    // của user giữ lại qua Fresh).
+    internal async Task<IReadOnlyList<OcrCueExclusion>> LoadExclusionsAsync(OcrScanRequest request, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var key = await KeyAsync(request, Schema, cancellationToken);
+            var path = Path.Combine(DirectoryPath, key + ".exclude.json");
+            if (!File.Exists(path)) return [];
+            var entries = JsonSerializer.Deserialize<List<OcrCueExclusion>>(
+                await File.ReadAllTextAsync(path, cancellationToken), JsonOptions);
+            if (entries is null) return [];
+            return entries
+                .Where(entry => entry is not null && entry.Text is not null
+                    && double.IsFinite(entry.Start) && entry.Start >= 0)
+                .ToArray();
+        }
+        catch (Exception error) when (error is JsonException or IOException or UnauthorizedAccessException)
+        {
+            return [];
+        }
+    }
+
+    // Thêm câu vào danh sách loại trừ (người duyệt verdict trong app).
+    // Gộp với file hiện có, bỏ trùng (Start ±1ms + Text). Ghi atomic tmp+move.
+    // Trả về số câu mới thêm. Không đụng checkpoint.
+    internal async Task<int> SaveExclusionsAsync(
+        OcrScanRequest request,
+        IReadOnlyList<OcrCueExclusion> additions,
+        CancellationToken cancellationToken)
+    {
+        var key = await KeyAsync(request, Schema, cancellationToken);
+        var path = Path.Combine(DirectoryPath, key + ".exclude.json");
+        Directory.CreateDirectory(DirectoryPath);
+        var merged = new List<OcrCueExclusion>(await LoadExclusionsAsync(request, cancellationToken));
+        var added = 0;
+        foreach (var addition in additions)
+        {
+            if (addition is null || addition.Text is null
+                || !double.IsFinite(addition.Start) || addition.Start < 0)
+                continue;
+            var duplicate = false;
+            foreach (var existing in merged)
+            {
+                if (Math.Abs(existing.Start - addition.Start) <= 0.001
+                    && string.Equals(existing.Text, addition.Text, StringComparison.Ordinal))
+                {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if (duplicate) continue;
+            merged.Add(addition);
+            added++;
+        }
+        var temporary = path + ".tmp";
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(merged, JsonOptions);
+        try
+        {
+            await using (var file = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None, 64 * 1024, FileOptions.Asynchronous | FileOptions.WriteThrough))
+            {
+                await file.WriteAsync(bytes, cancellationToken);
+                await file.FlushAsync(cancellationToken);
+                file.Flush(flushToDisk: true);
+            }
+            File.Move(temporary, path, overwrite: true);
+        }
+        finally { TryDelete(temporary); }
+        return added;
+    }
+
+    // Gỡ entry loại trừ (hoàn tác xoá tay trong app, 21/09). Cùng quy tắc khớp
+    // với SaveExclusionsAsync (Start ±1ms + Text tuyệt đối) nên hoàn tác luôn
+    // trúng đúng entry mình đã ghi. Thiếu file/không khớp = 0, KHÔNG lỗi.
+    // Ghi atomic tmp+move giống append. Không đụng checkpoint.
+    internal async Task<int> RemoveExclusionsAsync(
+        OcrScanRequest request,
+        IReadOnlyList<OcrCueExclusion> removals,
+        CancellationToken cancellationToken)
+    {
+        var key = await KeyAsync(request, Schema, cancellationToken);
+        var path = Path.Combine(DirectoryPath, key + ".exclude.json");
+        var merged = new List<OcrCueExclusion>(await LoadExclusionsAsync(request, cancellationToken));
+        var removed = 0;
+        foreach (var removal in removals)
+        {
+            if (removal is null || removal.Text is null
+                || !double.IsFinite(removal.Start) || removal.Start < 0)
+                continue;
+            for (var index = merged.Count - 1; index >= 0; index--)
+            {
+                if (Math.Abs(merged[index].Start - removal.Start) <= 0.001
+                    && string.Equals(merged[index].Text, removal.Text, StringComparison.Ordinal))
+                {
+                    merged.RemoveAt(index);
+                    removed++;
+                    break;
+                }
+            }
+        }
+        if (removed == 0) return 0;
+        var temporary = path + ".tmp";
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(merged, JsonOptions);
+        try
+        {
+            await using (var file = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None, 64 * 1024, FileOptions.Asynchronous | FileOptions.WriteThrough))
+            {
+                await file.WriteAsync(bytes, cancellationToken);
+                await file.FlushAsync(cancellationToken);
+                file.Flush(flushToDisk: true);
+            }
+            File.Move(temporary, path, overwrite: true);
+        }
+        finally { TryDelete(temporary); }
+        return removed;
+    }
+
+    // Danh sách sửa chữ AI (xem OcrExportFixes): file <checkpointkey>.fix.json
+    // cạnh checkpoint. Luật y hệt exclusion: không thuộc checkpoint, thiếu/hỏng
+    // = không sửa, KHÔNG BAO GIỜ fail export. fix trùng (Start ±1ms + chữ cũ)
+    // thì bản sau thắng (ghi đè chữ mới). Xóa file là hoàn tác.
+    internal async Task<IReadOnlyList<OcrCueFix>> LoadFixesAsync(OcrScanRequest request, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var key = await KeyAsync(request, Schema, cancellationToken);
+            var path = Path.Combine(DirectoryPath, key + ".fix.json");
+            if (!File.Exists(path)) return [];
+            var entries = JsonSerializer.Deserialize<List<OcrCueFix>>(
+                await File.ReadAllTextAsync(path, cancellationToken), JsonOptions);
+            if (entries is null) return [];
+            return entries
+                .Where(entry => entry is not null && entry.OldText is not null
+                    && entry.NewText is not null && entry.NewText.Length > 0
+                    && double.IsFinite(entry.Start) && entry.Start >= 0)
+                .ToArray();
+        }
+        catch (Exception error) when (error is JsonException or IOException or UnauthorizedAccessException)
+        {
+            return [];
+        }
+    }
+
+    // Thêm/ghi đè chữ sửa (file fix lúc quét/xuất). Gộp với file hiện có.
+    // Trả về số câu mới thêm (ghi đè không đếm). Không đụng checkpoint.
+    internal async Task<int> SaveFixesAsync(
+        OcrScanRequest request,
+        IReadOnlyList<OcrCueFix> additions,
+        CancellationToken cancellationToken)
+    {
+        var key = await KeyAsync(request, Schema, cancellationToken);
+        var path = Path.Combine(DirectoryPath, key + ".fix.json");
+        Directory.CreateDirectory(DirectoryPath);
+        var merged = new List<OcrCueFix>(await LoadFixesAsync(request, cancellationToken));
+        var added = 0;
+        foreach (var addition in additions)
+        {
+            if (addition is null || addition.OldText is null || addition.NewText is null
+                || addition.NewText.Length == 0
+                || !double.IsFinite(addition.Start) || addition.Start < 0)
+                continue;
+            var overwritten = false;
+            for (var index = 0; index < merged.Count; index++)
+            {
+                if (Math.Abs(merged[index].Start - addition.Start) <= 0.001
+                    && string.Equals(merged[index].OldText, addition.OldText, StringComparison.Ordinal))
+                {
+                    merged[index] = addition;
+                    overwritten = true;
+                    break;
+                }
+            }
+            if (overwritten) continue;
+            merged.Add(addition);
+            added++;
+        }
+        var temporary = path + ".tmp";
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(merged, JsonOptions);
+        try
+        {
+            await using (var file = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None, 64 * 1024, FileOptions.Asynchronous | FileOptions.WriteThrough))
+            {
+                await file.WriteAsync(bytes, cancellationToken);
+                await file.FlushAsync(cancellationToken);
+                file.Flush(flushToDisk: true);
+            }
+            File.Move(temporary, path, overwrite: true);
+        }
+        finally { TryDelete(temporary); }
+        return added;
+    }
+
     public async Task RemoveAsync(OcrScanRequest request, CancellationToken cancellationToken)
     {
-        foreach (var schema in new[] { 18, 17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3 })
+        foreach (var schema in new[] { 19, 18, 17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3 })
         {
             var key = await KeyAsync(request, schema, cancellationToken);
             var path = Path.Combine(DirectoryPath, key + ".json");
             TryDelete(path);
+            TryDelete(path + ".bak");
             TryDelete(path + ".tmp");
-            if (File.Exists(path) || File.Exists(path + ".tmp"))
+            if (File.Exists(path) || File.Exists(path + ".bak") || File.Exists(path + ".tmp"))
                 throw new IOException($"Không thể xóa checkpoint OCR schema {schema}: {path}");
         }
     }
@@ -128,8 +351,13 @@ internal sealed class OcrCheckpointStore
         var overlap = Math.Max(scanMode.Guard, scanMode.ActiveGuard);
         var segments = BuildSegments(request.Duration, parallelism, overlap, request.ScanStartOffset);
         var key = await KeyAsync(request, Schema, cancellationToken);
+        var workerMode = request.Device.Trim().ToLowerInvariant() is "cpu" or "hybrid" ? request.Device.Trim().ToLowerInvariant() : "gpu";
         return new OcrParallelCheckpoint(Schema, key, segments.Count,
-            segments.Select(x => new OcrLaneCheckpoint(x, x.ScanStart, [], null, 0, 0, false)).ToList());
+            segments.Select(x => new OcrLaneCheckpoint(x, x.ScanStart, [], null, 0, 0, false)).ToList())
+        {
+            WorkerMode = workerMode,
+            Workers = OcrTopologyBenchmark.WorkerTarget(workerMode, segments.Count),
+        };
     }
 
     public static IReadOnlyList<OcrScanSegment> BuildSegments(double duration, int parallelism, double overlap, double offset = 0)
@@ -151,11 +379,12 @@ internal sealed class OcrCheckpointStore
     {
         var result = mode.Trim().ToLowerInvariant() switch
         {
-            // Accurate sends every decoded source frame to PaddleOCR in batches.
-            // This is deliberately slower than the adaptive modes: a complete
-            // short caption must not depend on a visual-change heuristic firing.
+            // Accurate checks every decoded source frame with the cheap visual
+            // probe, samples PaddleOCR at 4 Hz, and confirms native frames around
+            // every boundary or unstable reading. It preserves exact source PTS
+            // without paying Medium-model inference cost for unchanged frames.
             "accurate" or "precise" or "chinh-xac" => new OcrScanMode(
-                4, 3, 12, 0.10, 0.68, AdaptiveTiming: true, ExhaustiveRecognition: true),
+                4, 3, 12, 0.10, 0.68, AdaptiveTiming: true),
             // Balanced/Fast still reduce the steady Paddle sampling rate, but
             // must retain every native-frame PTS and cheaply probe visual
             // changes. Transition frames are then OCR'd in a small batch, so a
@@ -232,7 +461,11 @@ internal sealed class OcrCheckpointStore
 
     private static bool IsValidCheckpoint(OcrParallelCheckpoint checkpoint, double duration, double offset = 0)
     {
-        if (checkpoint.SelectedParallelism is < 1 or > 16 || checkpoint.Lanes is null ||
+        if (checkpoint.Workers is < 1 or > 16 ||
+            checkpoint.WorkerMode is not ("gpu" or "cpu" or "hybrid") ||
+            checkpoint.Workers != OcrTopologyBenchmark.WorkerTarget(checkpoint.WorkerMode, checkpoint.SelectedParallelism) ||
+            (checkpoint.WorkerMode == "hybrid" && checkpoint.Workers < 2) ||
+            checkpoint.SelectedParallelism is < 1 or > 16 || checkpoint.Lanes is null ||
             checkpoint.Lanes.Count != checkpoint.SelectedParallelism ||
             checkpoint.Lanes.Any(lane => lane is null || lane.Segment is null || lane.Cues is null) ||
             !double.IsFinite(duration) || duration <= 0 || !double.IsFinite(offset) || offset < 0)

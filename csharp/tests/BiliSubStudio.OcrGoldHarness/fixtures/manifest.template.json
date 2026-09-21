@@ -1,0 +1,155 @@
+{
+  "schemaVersion": 1,
+  "corpusId": "ocr-gold-generated-v4",
+  "description": "Deterministic Chinese OCR fixtures: hard cues, native VFR, fractional 30000/1001, and offset boundary scans with two and four lanes.",
+  "render": {
+  "hard": {
+  "file": "generated-ocr-gold.mkv",
+  "fps": 10,
+  "frames": 130,
+  "durationSeconds": 13,
+  "captions": [
+    { "text": "哇，没毛狗", "start": 0.5, "end": 2.0 },
+    { "text": "哦，没毛狗", "start": 2.0, "end": 3.5 },
+    { "text": "多谢师叔", "start": 4.0, "end": 5.5 },
+    { "text": "多谢师叔", "start": 6.5, "end": 8.0 },
+    { "text": "走", "start": 8.5, "end": 9.3 },
+    { "text": "第一行字幕\n第二行字幕", "start": 9.8, "end": 11.3 },
+    { "text": "快走", "start": 11.6, "end": 11.9 },
+    { "text": "来", "start": 12.3, "end": 12.65 }
+  ]
+  },
+  "vfr": {
+    "file": "generated-ocr-vfr.mkv", "kind": "vfr", "baseFps": 10,
+    "frames": 100, "durations": [0.06, 0.14],
+    "captions": [{ "text": "多谢师叔", "start": 2.03, "end": 4.03 }]
+  },
+  "fractional": {
+    "file": "generated-ocr-2997.mkv", "fps": "30000/1001", "frames": 240, "durationSeconds": 8.008,
+    "captions": [{ "text": "多谢师叔", "start": 2.01, "end": 4.01 }]
+  },
+  "boundary": {
+    "file": "generated-ocr-boundary.mkv", "fps": 10, "frames": 700, "durationSeconds": 70,
+    "captions": [
+      { "text": "多谢师叔", "start": 10, "end": 12 },
+      { "text": "第一行字幕\n第二行字幕", "start": 34, "end": 36 },
+      { "text": "多谢师叔", "start": 58, "end": 60 }
+    ]
+  }
+  },
+  "thresholds": {
+    "cueMatchToleranceSeconds": 0.25,
+    "ptsEpsilonSeconds": 0.000001,
+    "minimumCueRecall": 1.0,
+    "minimumCuePrecision": 1.0,
+    "maximumCer": 0.0,
+    "maximumMeanOnsetErrorSeconds": 0.0,
+    "maximumMeanOffsetErrorSeconds": 0.0,
+    "maximumOnsetErrorFrames": 0,
+    "maximumOffsetErrorFrames": 0
+  },
+  "cases": [
+    {
+      "id": "generated-accurate-hard-cues",
+      "render": "hard",
+      "video": "generated-ocr-gold.mkv",
+      "videoSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "provenance": {
+        "kind": "generated",
+        "source": "generator:csharp/scripts/generate_ocr_gold_fixture.py",
+        "license": "NOASSERTION",
+        "attribution": "Template only; generator records the explicit font and tool hashes.",
+        "sourceUrl": null
+      },
+      "scan": {
+        "startSeconds": 0.0,
+        "durationSeconds": 13.0,
+        "region": {
+          "x": 0.05,
+          "y": 0.65,
+          "width": 0.9,
+          "height": 0.3
+        },
+        "mode": "accurate",
+        "device": "gpu",
+        "parallelism": "1",
+        "sensitivity": 1.0
+      },
+      "expectedCues": [
+        { "id": "adjacent-a", "onsetPts": 0, "offsetPts": 0, "text": "哇，没毛狗" },
+        { "id": "adjacent-b", "onsetPts": 0, "offsetPts": 0, "text": "哦，没毛狗" },
+        { "id": "repeat-a", "onsetPts": 0, "offsetPts": 0, "text": "多谢师叔" },
+        { "id": "repeat-b", "onsetPts": 0, "offsetPts": 0, "text": "多谢师叔" },
+        { "id": "single-rune-long", "onsetPts": 0, "offsetPts": 0, "text": "走" },
+        { "id": "two-line", "onsetPts": 0, "offsetPts": 0, "text": "第一行字幕\n第二行字幕" },
+        { "id": "short-multi", "onsetPts": 0, "offsetPts": 0, "text": "快走" },
+        { "id": "single-rune-short", "onsetPts": 0, "offsetPts": 0, "text": "来" }
+      ]
+    },
+    {
+      "id": "generated-balanced-hard-cues",
+      "render": "hard",
+      "video": "generated-ocr-gold.mkv",
+      "videoSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "provenance": {
+        "kind": "generated",
+        "source": "generator:csharp/scripts/generate_ocr_gold_fixture.py",
+        "license": "NOASSERTION",
+        "attribution": "Template only; generator records the explicit font and tool hashes.",
+        "sourceUrl": null
+      },
+      "scan": {
+        "startSeconds": 0.0,
+        "durationSeconds": 13.0,
+        "region": {
+          "x": 0.05,
+          "y": 0.65,
+          "width": 0.9,
+          "height": 0.3
+        },
+        "mode": "balanced",
+        "device": "gpu",
+        "parallelism": "1",
+        "sensitivity": 1.0
+      },
+      "expectedCues": [
+        { "id": "adjacent-a", "onsetPts": 0, "offsetPts": 0, "text": "哇，没毛狗" },
+        { "id": "adjacent-b", "onsetPts": 0, "offsetPts": 0, "text": "哦，没毛狗" },
+        { "id": "repeat-a", "onsetPts": 0, "offsetPts": 0, "text": "多谢师叔" },
+        { "id": "repeat-b", "onsetPts": 0, "offsetPts": 0, "text": "多谢师叔" },
+        { "id": "single-rune-long", "onsetPts": 0, "offsetPts": 0, "text": "走" },
+        { "id": "two-line", "onsetPts": 0, "offsetPts": 0, "text": "第一行字幕\n第二行字幕" },
+        { "id": "short-multi", "onsetPts": 0, "offsetPts": 0, "text": "快走" },
+        { "id": "single-rune-short", "onsetPts": 0, "offsetPts": 0, "text": "来" }
+      ]
+    },
+    {
+      "id": "generated-vfr-offset", "render": "vfr",
+      "scan": { "startSeconds": 1, "durationSeconds": 8, "region": { "x": 0.05, "y": 0.65, "width": 0.9, "height": 0.3 }, "mode": "balanced", "device": "gpu", "parallelism": "1", "sensitivity": 1 },
+      "expectedCues": [{ "id": "irregular-boundaries", "text": "多谢师叔" }]
+    },
+    {
+      "id": "generated-fractional-2997", "render": "fractional",
+      "scan": { "startSeconds": 0, "durationSeconds": 8.008, "region": { "x": 0.05, "y": 0.65, "width": 0.9, "height": 0.3 }, "mode": "balanced", "device": "gpu", "parallelism": "1", "sensitivity": 1 },
+      "expectedCues": [{ "id": "fractional-boundaries", "text": "多谢师叔" }]
+    },
+    {
+      "id": "generated-two-lane-offset-boundary", "render": "boundary",
+      "scan": { "startSeconds": 5, "durationSeconds": 60, "region": { "x": 0.05, "y": 0.65, "width": 0.9, "height": 0.3 }, "mode": "balanced", "device": "gpu", "parallelism": "2", "sensitivity": 1 },
+      "expectedCues": [
+        { "id": "left-core", "text": "多谢师叔" },
+        { "id": "crosses-core-35s", "text": "第一行字幕\n第二行字幕" },
+        { "id": "right-core", "text": "多谢师叔" }
+      ]
+    },
+    {
+      "id": "generated-four-lane-offset-boundary", "render": "boundary",
+      "scan": { "startSeconds": 5, "durationSeconds": 60, "region": { "x": 0.05, "y": 0.65, "width": 0.9, "height": 0.3 }, "mode": "balanced", "device": "gpu", "parallelism": "4", "sensitivity": 1 },
+      "expectedCues": [
+        { "id": "left-core", "text": "多谢师叔" },
+        { "id": "crosses-core-35s", "text": "第一行字幕\n第二行字幕" },
+        { "id": "right-core", "text": "多谢师叔" }
+      ]
+    }
+  ]
+}

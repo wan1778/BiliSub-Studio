@@ -3,5 +3,14 @@
     <TargetFramework>net10.0</TargetFramework>
     <RootNamespace>BiliSubStudio.Core</RootNamespace>
     <AssemblyName>BiliSubStudio.Core</AssemblyName>
+    <!-- Sản phẩm Windows-only (publish win-x64): tắt cảnh báo platform cho
+         System.Drawing (đo luminance/hash). Mọi đường GDI+ đều có
+         OperatingSystem.IsWindows() + fail-open, không bao giờ throw ra lane. -->
+    <NoWarn>$(NoWarn);CA1416</NoWarn>
   </PropertyGroup>
+  <ItemGroup>
+    <!-- Giải mã JPEG trong-process cho đo luminance/hash (Windows-only, app win-x64).
+         Không dùng Bitmap vẽ vời — chỉ LockBits đọc pixel, using nghiêm + test rò handle. -->
+    <PackageReference Include="System.Drawing.Common" />
+  </ItemGroup>
 </Project>

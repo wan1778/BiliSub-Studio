@@ -125,6 +125,7 @@
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto" />
                                 <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
                             </Grid.RowDefinitions>
 
                             <ComboBox x:Name="QualityBox" Header="Chất lượng video" />
@@ -143,6 +144,7 @@
                                 <x:String>fast</x:String>
                                 <x:String>turbo</x:String>
                             </ComboBox>
+                            <TextBlock Grid.Row="2" Grid.ColumnSpan="3" Style="{StaticResource MutedTextStyle}" Text="Số kết nối thực tế mỗi stream: stable 1 · fast 4 tổng · turbo 8 tổng (video 7 + audio 1). App tự đua tuyến CDN lúc bắt đầu và xoay tuyến khi gặp lỗi body cụt liên tiếp." TextWrapping="Wrap" />
                             <ComboBox x:Name="TrackBox" Grid.Row="1" Grid.Column="1" Header="Track phụ đề" DisplayMemberPath="DisplayName" />
                             <ComboBox x:Name="FormatBox" Grid.Row="1" Grid.Column="2" Header="Định dạng phụ đề" SelectedIndex="0">
                                 <x:String>srt</x:String>

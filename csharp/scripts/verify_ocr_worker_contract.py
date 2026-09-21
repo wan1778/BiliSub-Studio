@@ -134,12 +134,23 @@ def verify_inline_row_compatibility(worker) -> None:
 
 
 def main() -> int:
+    from verify_ocr_pixel_cache_contract import verify
+    verify()
+    from verify_ocr_split_cache_contract import verify as verify_split
+    verify_split()
     worker = load_worker()
     source = WORKER.read_text(encoding="utf-8")
     assert "def visual_change_scores(images):" in source
+    assert "batch_size=len(detection_images)" in source
+    assert "mixing" in source and "frames measurably changes confidence" in source
+    assert "len(encoded_batch) > 8" in source
     assert 'request.get("probe_images_base64")' in source
     assert "len(encoded_probe) > 65" in source
     assert '"change_scores": visual_change_scores(probe_images)' in source
+    assert '"band_change_scores": visual_band_change_scores(probe_images)' in source
+    assert '"edge_density": visual_edge_density(probe_images)' in source
+    assert '"perf_ms": perf_snapshot' in source
+    assert 'perf_snapshot = dict(engine.last_perf)' in source
 
     flat = {
         "rec_texts": ["你好"],

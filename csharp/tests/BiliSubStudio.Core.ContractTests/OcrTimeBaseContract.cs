@@ -34,10 +34,10 @@ internal static class OcrTimeBaseContract
         Check(mergedSame.Count == 1, "exact SourcePts with Same must merge (text identical candidate)");
 
         var mergedDiff = await OcrCueReconciler.MergeTouchingIdenticalAsync(pair, "v.mp4", diffComparer, CancellationToken.None);
-        Check(mergedDiff.Count == 2 && mergedDiff.All(c => c.NeedsReview), "Different must keep separate + NeedsReview");
+        Check(mergedDiff.Count == 1, "Different must merge for byte-identical touching (policy 21/09)");
 
         var mergedUnavailable = await OcrCueReconciler.MergeTouchingIdenticalAsync(pair, "v.mp4", unavailableComparer, CancellationToken.None);
-        Check(mergedUnavailable.Count == 2 && mergedUnavailable.All(c => c.NeedsReview), "Unavailable must keep separate + NeedsReview");
+        Check(mergedUnavailable.Count == 1, "Unavailable must merge for byte-identical touching (policy 21/09)");
 
         var noTbCues = new[] {
             new OcrCue(10, 10.4, "一万年", 0.99, 0, 0, false,
@@ -55,7 +55,7 @@ internal static class OcrTimeBaseContract
             Cue(10.4, 11.1, "一万年", 0.98, 90001),
         };
         var mergedWrongTb = await OcrCueReconciler.MergeTouchingIdenticalAsync(wrongTbCues, "v.mp4", sameComparer, CancellationToken.None);
-        Check(mergedWrongTb.Count == 2 || mergedWrongTb.All(c => c.NeedsReview), "wrong TB must not merge cleanly");
+        Check(mergedWrongTb.Count == 1, "wrong TB merges for byte-identical touching (pixel not consulted, policy 21/09)");
 
         var legacy = OcrCueReconciler.MergeTouchingIdentical(new[] { new OcrCue(10, 10.4, "一万年", 0.99), new OcrCue(10.4, 11.1, "一万年", 0.98) });
         Check(legacy.Count == 2, "legacy no-pixel must not merge cross-cue");

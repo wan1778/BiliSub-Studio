@@ -31,9 +31,11 @@ internal static class OcrAutoResourcePolicy
         int currentWorkers,
         int candidate,
         long observedVramPerGpuWorkerBytes,
-        bool requireMeasuredVram)
+        bool requireMeasuredVram,
+        int decoderLanes = 0)
     {
         if (candidate is < 1 or > 16) throw new ArgumentOutOfRangeException(nameof(candidate));
+        decoderLanes = decoderLanes == 0 ? candidate : decoderLanes;
         currentWorkers = Math.Clamp(currentWorkers, 0, candidate);
         observedVramPerGpuWorkerBytes = Math.Max(0, observedVramPerGpuWorkerBytes);
         var mode = NormalizeMode(activeMode, hardware.NvidiaDetected);
@@ -45,7 +47,7 @@ internal static class OcrAutoResourcePolicy
         var cpuLimit = mode == "cpu"
             ? Math.Max(1, hardware.LogicalProcessors / 2)
             : Math.Max(1, hardware.LogicalProcessors);
-        if (candidate > cpuLimit)
+        if (decoderLanes > cpuLimit)
         {
             return Reject(
                 $"CPU chỉ có {hardware.LogicalProcessors} logical processor; mức {candidate} không còn đủ headroom cho FFmpeg + OCR.",
@@ -54,14 +56,17 @@ internal static class OcrAutoResourcePolicy
 
         var totalRam = Math.Max(live.TotalMemoryBytes, hardware.MemoryBytes);
         var ramReserve = Math.Max(2L * Gib, checked((long)(totalRam * 0.15)));
-        var targetRam = checked(target.Gpu * GpuWorkerRamBytes + target.Cpu * CpuWorkerRamBytes);
+        // Decoder windows remain lane-local (up to 64 JPEGs); the inference
+        // queue is shared. Reserve decoder memory independently of GPU count.
+        var decoderRam = decoderLanes * 64L * Mib;
+        var targetRam = checked(target.Gpu * GpuWorkerRamBytes + target.Cpu * CpuWorkerRamBytes + decoderRam);
         if (totalRam > 0 && totalRam < ramReserve + targetRam)
         {
             return Reject(
                 $"RAM tổng không đủ ngưỡng an toàn cho {candidate} pipeline; cần giữ lại {FormatBytes(ramReserve)} cho Windows/app.",
                 live);
         }
-        var addedRam = checked(addedGpu * GpuWorkerRamBytes + addedCpu * CpuWorkerRamBytes);
+        var addedRam = checked(addedGpu * GpuWorkerRamBytes + addedCpu * CpuWorkerRamBytes + decoderRam);
         if (live.AvailableMemoryBytes > 0 && live.AvailableMemoryBytes < ramReserve + addedRam)
         {
             return Reject(

@@ -25,6 +25,13 @@ internal static class OcrFragmentContract
         OcrCue[] fragments = [Prov(7.8, 8.6, "一万年", .99), Prov(8.6, 9, "一万年", .98), Prov(9, 9.166667, "一万年", 1)];
         var merged = await OcrCueReconciler.MergeTouchingIdenticalAsync(fragments, "v.mp4", same, CancellationToken.None);
         Check(merged.Count == 1 && merged[0].Start == 7.8 && merged[0].End == 9.166667 && merged[0].Text == "一万年", "touching duplicate fragments not merged exactly");
+        var reconcileCurrent = -1;
+        var reconcileTotal = -1;
+        await OcrCueReconciler.MergeTouchingIdenticalAsync(
+            fragments, "v.mp4", same, CancellationToken.None,
+            onProgress: (current, total) => (reconcileCurrent, reconcileTotal) = (current, total));
+        Check(reconcileCurrent == 2 && reconcileTotal == 2,
+            "final SRT reconciliation did not report completed boundary progress");
         var remerged = await OcrCueReconciler.MergeTouchingIdenticalAsync(merged.Concat(fragments), "v.mp4", same, CancellationToken.None);
         Check(remerged.Count == 1 && remerged[0].Start == 7.8 && remerged[0].End == 9.166667, "repeated live snapshots reintroduced fragments");
         Check(OcrCueReconciler.MergeTouchingIdentical([new(0, 1, "走", .99), new(1.066, 2, "走", .99)]).Count == 2,
@@ -90,6 +97,27 @@ internal static class OcrFragmentContract
         evolving.Merge([new(10, 10.8, "一万年", .99)]);
         Check(evolving.Cues.Count == 1 && evolving.Cues[0].Text == "整整一万年" && evolving.Cues[0].End == 10.8,
             "latest live timing did not replace the stale active end while preserving fuller text");
+        var rolling = new OcrLiveCueAccumulator();
+        rolling.Merge([new(1, 2, "甲", .9), new(3, 4, "乙", .9), new(5, 6, "乙", .9)]);
+        rolling.Merge([new(3, 6, "乙", .99)]);
+        Check(rolling.Cues.Count == 2 && rolling.Cues[0].Text == "甲"
+            && rolling.Cues[1].Start == 3 && rolling.Cues[1].End == 6,
+            "rolling live snapshot retained a superseded duplicate tail cue");
+        rolling.Merge([]);
+        Check(rolling.Cues.Count == 2 && rolling.Cues[0].Text == "甲"
+            && rolling.Cues[1].Start == 3 && rolling.Cues[1].End == 6,
+            "empty live snapshot wiped retained history instead of being a no-op");
+        // Resume: paused authoritative list is seeded, rolling snapshots then
+        // reconcile forward without ever blanking the screen.
+        var resumed = new OcrLiveCueAccumulator();
+        resumed.Seed([new(1, 2, "甲", .9), new(3, 4, "乙", .9)]);
+        Check(resumed.Cues.Count == 2, "resume seed did not install paused cues");
+        resumed.Merge([new(3, 4.5, "乙", .95), new(5, 6, "丙", .9)]);
+        Check(resumed.Cues.Count == 3 && resumed.Cues[0].Text == "甲"
+            && resumed.Cues[1].Start == 3 && resumed.Cues[1].End == 4.5 && resumed.Cues[2].Text == "丙",
+            "rolling snapshot after resume seed lost history or new cues");
+        resumed.Merge([]);
+        Check(resumed.Cues.Count == 3, "empty snapshot after resume wiped the list");
         var assembly = typeof(OcrResult).Assembly;
         var segmentType = assembly.GetType("BiliSubStudio.Core.Ocr.OcrScanSegment")!;
         var laneType = assembly.GetType("BiliSubStudio.Core.Ocr.OcrLaneCheckpoint")!;
@@ -111,7 +139,7 @@ internal static class OcrFragmentContract
         originalCues.Add(new OcrCue(10, 11, "隔离", .9));
         Check(clonedCues.Count + 1 == originalCues.Count, "checkpoint snapshot shares a mutable cue list with live OCR state");
         var store = assembly.GetType("BiliSubStudio.Core.Ocr.OcrCheckpointStore")!;
-        Check((int)store.GetField("Schema", BindingFlags.Static | BindingFlags.NonPublic)!.GetRawConstantValue()! == 18,
+        Check((int)store.GetField("Schema", BindingFlags.Static | BindingFlags.NonPublic)!.GetRawConstantValue()! == 19,
             "standalone-branding checkpoint is still resume-compatible");
     }
 

@@ -66,8 +66,9 @@ public sealed class BiliSubApplication : IAsyncDisposable
             Path.Combine(AppContext.BaseDirectory, "Assets", "Translation", "dich-trung-tu-tien.zip"));
         var pythonBootstrap = new OcrInstaller(paths, _http, Processes);
         _ocr = new OcrManager(paths, Hardware, pythonBootstrap);
-        _ocrScanner = new OcrScanner(Tools, Processes, _ocr, Hardware, new OcrCheckpointStore(paths));
         _asr = new LocalAsrService(paths, new LocalAsrInstaller(paths, pythonBootstrap, Processes), Tools, Processes, Hardware);
+        // Phase 0 tai nghe (Whisper) nằm trong OcrScanner: dựng _asr TRƯỚC để truyền vào.
+        _ocrScanner = new OcrScanner(Tools, Processes, _ocr, Hardware, new OcrCheckpointStore(paths), paths, _asr);
         _tts = new LocalTtsService(paths, new LocalTtsInstaller(paths, pythonBootstrap, Processes), Tools, Processes);
     }
 
@@ -635,13 +636,16 @@ public sealed class BiliSubApplication : IAsyncDisposable
         return _ocr.Status;
     }
 
-    public string StartOcrScan(OcrScanRequest request, OcrScanStartMode startMode)
+    public string StartOcrScan(OcrScanRequest request, OcrScanStartMode startMode, OcrRegion? resumeRegionOverride = null)
     {
         var job = Jobs.Create("ocrscan", pausable: true);
         _ = RunJobAsync(job, async () =>
         {
+            // Lọc thời gian (17/09) nằm TRONG pipeline OCR: luôn chạy, không
+            // toggle, không key, không AI. Scanner tự chấm ca nghi bằng logic
+            // thời gian (chữ đứng yên = keep, di chuyển = drop).
             await _configStore.UpdateAsync(config => config with { OcrDevice = request.Device }, job.CancellationToken);
-            var result = await _ocrScanner.RunAsync(job, request, startMode);
+            var result = await _ocrScanner.RunAsync(job, request, startMode, resumeRegionOverride);
             if (!result.Paused) job.Finish(null, $"Đã quét xong: {result.Cues.Count} câu · {result.RealtimeSpeed:0.0}× realtime", result);
         });
         return job.Id;
@@ -761,8 +765,22 @@ public sealed class BiliSubApplication : IAsyncDisposable
 
     public Task<OcrCheckpointInfo> InspectOcrCheckpointAsync(OcrScanRequest request, CancellationToken cancellationToken) => _ocrScanner.InspectCheckpointAsync(request, cancellationToken);
     public Task RemoveOcrCheckpointAsync(OcrScanRequest request, CancellationToken cancellationToken) => _ocrScanner.RemoveCheckpointAsync(request, cancellationToken);
+    public Task<IReadOnlyList<OcrCueExclusion>> LoadOcrExclusionsAsync(OcrScanRequest request, CancellationToken cancellationToken) => _ocrScanner.LoadExclusionsAsync(request, cancellationToken);
+    public Task<int> AppendOcrExclusionsAsync(OcrScanRequest request, IReadOnlyList<OcrCueExclusion> additions, CancellationToken cancellationToken) => _ocrScanner.SaveExclusionsAsync(request, additions, cancellationToken);
+    public Task<int> RemoveOcrExclusionsAsync(OcrScanRequest request, IReadOnlyList<OcrCueExclusion> removals, CancellationToken cancellationToken) => _ocrScanner.RemoveExclusionsAsync(request, removals, cancellationToken);
+    public Task<IReadOnlyList<OcrCueFix>> LoadOcrFixesAsync(OcrScanRequest request, CancellationToken cancellationToken) => _ocrScanner.LoadFixesAsync(request, cancellationToken);
+    public Task<int> AppendOcrFixesAsync(OcrScanRequest request, IReadOnlyList<OcrCueFix> additions, CancellationToken cancellationToken) => _ocrScanner.SaveFixesAsync(request, additions, cancellationToken);
 
-    public async Task<string> ExportOcrAsync(IEnumerable<OcrCue> cues, string? outputDirectory, string? fileName, CancellationToken cancellationToken)
+    /// <summary>
+    /// Dọn process OCR/FFmpeg mồ côi từ phiên app trước bị tắt đột ngột hoặc
+    /// crash. Chỉ gọi một lần khi khởi động app, lúc instance này chưa sở hữu
+    /// worker nào. Không bao giờ ném; trả về số process đã dọn.
+    /// </summary>
+    public int ReapOrphanOcrProcesses() => OcrOrphanReaper.Reap(Paths);
+
+    public sealed record OcrExportResult(string Path, IReadOnlyList<string> Warnings);
+
+    public async Task<OcrExportResult> ExportOcrAsync(IEnumerable<OcrCue> cues, string? outputDirectory, string? fileName, CancellationToken cancellationToken, IReadOnlyList<OcrCueExclusion>? exclusions = null, IReadOnlyList<OcrCueFix>? fixes = null)
     {
         var directory = string.IsNullOrWhiteSpace(outputDirectory) ? Config.OutputDirectory : Path.GetFullPath(outputDirectory.Trim());
         Directory.CreateDirectory(directory);
@@ -770,18 +788,30 @@ public sealed class BiliSubApplication : IAsyncDisposable
         if (!name.EndsWith(".srt", StringComparison.OrdinalIgnoreCase)) name += ".srt";
         var path = FileNamePolicy.UniquePath(Path.Combine(directory, name));
         var temporary = path + ".tmp-" + Guid.NewGuid().ToString("N");
+        // Loại trừ câu rác đã duyệt (danh sách ngoài checkpoint): bỏ TRƯỚC khi
+        // normalize/sửa — câu còn lại đi đường cũ y hệt (đánh số lại tự động,
+        // giờ các câu khác giữ nguyên). Không danh sách = đường cũ y hệt.
+        var built = OcrExportPipeline.Build(cues, exclusions, fixes);
+        var warnings = built.Warnings.ToList();
+        if (built.Excluded > 0)
+            warnings.Insert(0, $"đã bỏ {built.Excluded} câu lọc xóa (chữ di chuyển/tít): " + string.Join(" · ", built.ExcludedSamples));
+        if (built.Fixed > 0)
+            warnings.Insert(0, $"đã sửa {built.Fixed} câu theo file fix: " + string.Join(" · ", built.FixedSamples));
+        if (built.NormalizeDropped > 0)
+            warnings.Insert(0, $"đã bỏ {built.NormalizeDropped} câu rớt chuẩn hóa chữ: " + string.Join(" · ", built.NormalizeDroppedSamples));
+        if (!built.Passed)
+            throw new InvalidDataException("SRT toan rac, khong con gi de ghi: " + string.Join(" · ", built.Failures));
         var output = new StringBuilder();
         var index = 0;
-        foreach (var cue in cues)
+        foreach (var row in built.Rows)
         {
-            if (!ChineseSubtitleNormalizer.TryNormalize(cue.Text, out var text)) continue;
-            output.Append(++index).Append('\n').Append(SrtTime(cue.Start)).Append(" --> ").Append(SrtTime(cue.End)).Append('\n').Append(text).Append("\n\n");
+            output.Append(++index).Append('\n').Append(SrtTime(row.Start)).Append(" --> ").Append(SrtTime(row.End)).Append('\n').Append(row.Text).Append("\n\n");
         }
         try
         {
             await File.WriteAllTextAsync(temporary, output.ToString(), new UTF8Encoding(false), cancellationToken);
             File.Move(temporary, path);
-            return path;
+            return new OcrExportResult(path, warnings);
         }
         finally
         {
@@ -890,11 +920,9 @@ public sealed class BiliSubApplication : IAsyncDisposable
         catch (Exception error) { job.Finish(error, error.Message); }
     }
 
-    private static string SrtTime(double seconds)
-    {
-        var value = TimeSpan.FromMilliseconds(Math.Round(Math.Max(0, seconds) * 1000));
-        return $"{(int)value.TotalHours:00}:{value.Minutes:00}:{value.Seconds:00},{value.Milliseconds:000}";
-    }
+    // Giờ SRT duy nhất (18/09): ủy quyền cho pipeline chung để live hiện đúng
+    // milligiây như file (trước đây ToString fff cắt ngọn, lệch 1ms ở biên).
+    private static string SrtTime(double seconds) => OcrExportPipeline.FormatSrtTime(seconds);
 
     public async ValueTask DisposeAsync()
     {

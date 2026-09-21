@@ -250,10 +250,13 @@ internal static class OcrTrackerModeRegression
                 throw new InvalidOperationException($"{name} OCR can quantize cue timing or drop short captions");
         }
         var accurateMode = modes["accurate"];
-        if (accurateMode.GetType().GetProperty("ExhaustiveRecognition")?.GetValue(accurateMode) is not true
+        if (accurateMode.GetType().GetProperty("ExhaustiveRecognition")?.GetValue(accurateMode) is true
             || modes["balanced"].GetType().GetProperty("ExhaustiveRecognition")?.GetValue(modes["balanced"]) is true
             || modes["fast"].GetType().GetProperty("ExhaustiveRecognition")?.GetValue(modes["fast"]) is true)
-            throw new InvalidOperationException("Accurate OCR no longer owns the every-frame Medium quality policy");
+            throw new InvalidOperationException("OCR modes regressed to exhaustive Medium-model inference");
+        if ((double)(accurateMode.GetType().GetProperty("Fps")?.GetValue(accurateMode)
+                ?? throw new InvalidOperationException("Accurate OCR sampling rate unavailable")) != 4d)
+            throw new InvalidOperationException("Accurate OCR must retain the highest 4 Hz confirmation baseline");
         var installerType = assembly.GetType("BiliSubStudio.Core.Ocr.OcrInstaller")
             ?? throw new InvalidOperationException("missing OCR installer");
         if ((string?)installerType.GetField("DetectionModel")?.GetRawConstantValue() != "PP-OCRv6_medium_det"

@@ -5,12 +5,30 @@ namespace BiliSubStudio.Core.Editor;
 internal sealed partial class LocalTtsService
 {
     private const int MaxSentenceGroupCues = 512;
-    private const long MaxSentenceGroupGapFrames = 0;
+    // Group admission tolerates small positive gaps (rapid dialogue separated by
+    // a breath beat) so a passage shares time. Must mirror the TTS worker's
+    // MAX_GROUP_GAP_FRAMES exactly (frames @22050 Hz); 5512 == 0.25s, the same
+    // magnitude as the overlap bound below.
+    private const long MaxSentenceGroupGapFrames = 5512;
     private const long MaxSentenceGroupOverlapFrames = 5512;
     private const long MaxSentenceGroupDurationFrames = 6615000;
 
     private static bool ValidateNativeSynthesis(TtsWorkerCue cue, long targetFrames, bool naturalSample, int sampleRate)
     {
+        // Silence quarantine: no speech could be synthesized for this cue (garbage text or an
+        // unfillable window). The timeline stays intact because every sample is real silence of
+        // exactly the window length; the cue always needs review.
+        if (cue.FitMethod == "silence-fallback")
+        {
+            if (cue.SourceFrames != 0 || cue.GeneratedFrames != 0 || cue.TrimmedSilenceFrames != 0
+                || cue.PaddingFrames != targetFrames || cue.Frames != targetFrames
+                || cue.TempoFactor != 0 || cue.TempoInputFrames != 0 || cue.TempoAttempts != 0
+                || cue.SynthesisAttempts < 1 || cue.SynthesisAttempts > 12
+                || cue.NativeReferenceFrames != 0 || cue.GroupNativeFrames != 0 || cue.ActualSpeedFactor != 0
+                || naturalSample || cue.Status != "review" || !cue.VoiceReview)
+                throw new InvalidDataException("Voice silence-fallback không hợp lệ; không nhận master này.");
+            return true;
+        }
         var precisionPaddingBudget = Math.Max(1L, Math.Min((long)Math.Round(.04 * sampleRate), targetFrames / 50));
         var relativeScale = cue.LengthScale / cue.BaseLengthScale;
         var sentenceGroup = cue.TimingSource == "sentence-group";

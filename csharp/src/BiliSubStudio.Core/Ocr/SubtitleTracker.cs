@@ -11,6 +11,10 @@ internal sealed class SubtitleTracker
     // lasted only about 67 ms but previously passed whenever Paddle returned
     // two or more glyphs consistently.
     private const double MinimumEvidenceSeconds = .20;
+    // Cầu flicker (video Cả Lớp 19/09: 1 câu chẻ 3-5 cue): blank thật cần
+    // ≥0.55s (field evidence) nên chữ quay lại trong 0.5s sau chốt thì là cùng
+    // caption flicker — NỐI cue cũ thay vì mở cue mới.
+    private const double BridgeGapSeconds = 0.5;
     private readonly double _frameSpan;
     private readonly double _candidateGap;
     private readonly double _lowConfidence;
@@ -27,6 +31,8 @@ internal sealed class SubtitleTracker
     private int _emptyHits;
     private double _emptyStart;
     private double _lastFrameDuration;
+    private string? _lastCommittedText;
+    private double _lastCommittedEnd;
 
     public SubtitleTracker(double framesPerSecond, double lowConfidence = 0.68)
         : this(framesPerSecond, lowConfidence, exactFrameTiming: false)
@@ -75,6 +81,14 @@ internal sealed class SubtitleTracker
         _longerVariantHits = 0;
         _longerVariantLast = 0;
         _emptyHits = 0;
+        _lastCommittedText = null;
+        _lastCommittedEnd = 0;
+        // Giữ khả năng bridge qua resume: nhớ cue chốt cuối đã nạp.
+        if (_committed.Count > 0)
+        {
+            _lastCommittedText = _committed[^1].Text;
+            _lastCommittedEnd = _committed[^1].End;
+        }
     }
 
     public void Observe(double at, OcrResult result) => Observe(null, at, _frameSpan, result);
@@ -215,6 +229,8 @@ internal sealed class SubtitleTracker
         _longerVariantText = null;
         _longerVariantHits = 0;
         _longerVariantLast = 0;
+        _lastCommittedText = null;
+        _lastCommittedEnd = 0;
     }
 
     private void ObserveEmpty(double at, double frameDuration)
@@ -277,6 +293,32 @@ internal sealed class SubtitleTracker
     private void PromoteCandidate(double frameDuration)
     {
         if (_candidate is null) return;
+        // Bridge: active đã chốt vì blank mà chữ tương đương quay lại trong
+        // BridgeGapSeconds thì NỐI cue vừa chốt (giữ Start, nối End, cộng
+        // support) thay vì mở cue mới. Chỉ nối khi candidate DÀI HƠN HOẶC BẰNG
+        // (fade-in/flicker-return): caption ngắn thật sau câu dài ("你走吧" rồi
+        // "走") KHÔNG nối — giữ tách như cũ.
+        if (_active is null && _lastCommittedText is not null && _committed.Count > 0
+            && _candidate.Start - _lastCommittedEnd <= BridgeGapSeconds
+            && _candidate.Text.EnumerateRunes().Count() >= _lastCommittedText.EnumerateRunes().Count()
+            && IsContinuousVariant(_lastCommittedText, _candidate.Text))
+        {
+            var last = _committed[^1];
+            _committed.RemoveAt(_committed.Count - 1);
+            _activeRawSupport = last.RawSupportCount + _candidate.RawSupportCount;
+            _activeConfidentSupport = last.ConfidentSupportCount + _candidate.ConfidentSupportCount;
+            _active = last with
+            {
+                End = Math.Max(last.End, _candidate.Last + ActiveFrameEnd(frameDuration)),
+                Confidence = Math.Max(last.Confidence, _candidate.Confidence),
+                RawSupportCount = _activeRawSupport,
+                ConfidentSupportCount = _activeConfidentSupport,
+                LastObservation = _candidate.LastObservation ?? last.LastObservation,
+            };
+            _lastCommittedText = null;
+            _candidate = null;
+            return;
+        }
         if (_active is not null) CommitActive(_candidate.Start);
         _activeRawSupport = _candidate.RawSupportCount;
         _activeConfidentSupport = _candidate.ConfidentSupportCount;
@@ -290,11 +332,14 @@ internal sealed class SubtitleTracker
         if (ChineseSubtitleNormalizer.TryNormalize(_active.Text, out var text)
             && HasEnoughCommittedEvidence(text, _active.Start, end))
         {
-            _committed.Add(_active with
+            var committed = _active with
             {
                 Text = text,
                 End = Math.Clamp(end, _active.Start + MinimumCueDuration(_lastFrameDuration), _active.Start + 30),
-            });
+            };
+            _committed.Add(committed);
+            _lastCommittedText = text;
+            _lastCommittedEnd = committed.End;
         }
         _active = null;
         _activeRawSupport = 0;
@@ -458,7 +503,12 @@ internal sealed class SubtitleTracker
     private static bool SameTrackingRune(int left, int right) =>
         left == right || CanonicalTrackingRune(left) == CanonicalTrackingRune(right);
 
-    private static int CanonicalTrackingRune(int value) => value switch
+    // Shared single source of truth with OcrCueReconciler.IsCanonicalIdentical:
+    // the SAME table backs tracking equivalence AND merge identity, so a
+    // simplified/traditional flicker (field 强/強) can never be "same" for the
+    // tracker but "different" for the merger. SRT text is still never rewritten
+    // by this map (merge keeps SelectCanonical evidence spelling).
+    internal static int CanonicalTrackingRune(int value) => value switch
     {
         // Paddle can alternate between ASCII and Chinese punctuation across
         // adjacent frames of the same caption. This is visual/OCR variance,
@@ -483,6 +533,11 @@ internal sealed class SubtitleTracker
         '隻' => '只', '隱' => '隐', '顯' => '显', '驚' => '惊', '難' => '难',
         '億' => '亿', '歲' => '岁', '壽' => '寿', '屆' => '届', '裝' => '装',
         '丟' => '丢',
+        // Field-evidence additions (each caused a real cue split in production):
+        // - 强/強: 15/9 lane 0 flicker 672-674 (1431-1433s), Paddle alternated per frame.
+        // - 镇/鎮: p06 flicker khe 0.1s (IsShortSingleSubstitutionFlicker comment).
+        // - 凉/涼: p02 chém 1 cue thành 3 (TOMTAT v1.3).
+        '強' => '强', '鎮' => '镇', '涼' => '凉',
         _ => value,
     };
 

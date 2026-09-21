@@ -46,6 +46,13 @@ internal static class OcrLiveViewPolicyContract
         sw.Stop();
         Check(prefix == 10000, "10k append-only prefix must be 10000");
         Check(sw.Elapsed < TimeSpan.FromSeconds(1), $"10k prefix scan must be trivial (took {sw.Elapsed.TotalMilliseconds:0}ms)");
+
+        // Overload cho dòng pipeline (live-quét-xong = SRT): cùng semantics.
+        var ra = new OcrExportRow(1, 2, "你好", false);
+        var rb = new OcrExportRow(2, 3, "再见", true);
+        Check(OcrLiveViewPolicy.CommonRowPrefixLength([ra, rb], [ra, rb]) == 2, "rows identical => full");
+        Check(OcrLiveViewPolicy.CommonRowPrefixLength([ra, rb], [ra]) == 1, "rows shrunk => new count");
+        Check(OcrLiveViewPolicy.CommonRowPrefixLength([ra], [rb]) == 0, "rows differ => 0");
         return Task.CompletedTask;
     }
 

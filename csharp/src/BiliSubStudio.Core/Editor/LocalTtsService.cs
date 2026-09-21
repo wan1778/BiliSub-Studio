@@ -209,6 +209,13 @@ internal sealed partial class LocalTtsService : IDisposable
                                 job.Set("tts-mix", 91 + root.GetProperty("index").GetDouble() / total * 6,
                                     "Đang ghép nguyên câu voice theo timecode SRT, không cắt đuôi...");
                             }
+                            else if (kind == "notice")
+                            {
+                                // Worker-side watch lists (mistimed cues, boundary drift,
+                                // per-run rate summary). Informational only: unknown future
+                                // notice codes must keep flowing to the log, never fail.
+                                job.Log($"Voice chú ý: {GetString(root, "message")}");
+                            }
                             else if (kind == "complete")
                             {
                                 completed = true;

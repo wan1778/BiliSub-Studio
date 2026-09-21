@@ -1,6 +1,7 @@
 # BiliSub Studio — Architecture (graph-derived)
 
-> Source: GitNexus knowledge graph, index of commit `e3fd178`
+> Source: CodeGraph semantic graph (GitNexus retired 2026-09-15).
+> Baseline numbers below were pinned from the old index of commit `e3fd178`
 > (`main`, 2026-09-08): **8.263 nodes · 21.130 edges ·
 > 497 communities · 710 processes · 458 files.**
 > Generated 2026-09-08 from live `cypher`/`context` queries, not from
@@ -151,6 +152,66 @@ OcrScanner.RecognizeSingleAsync                   (Ocr/OcrScanner.cs)
 Checksum-verified worker (`internal/ocr/worker.py`) before any
 recognition — the `$verify_ocr_worker_contract` gate pins this.
 
+#### Selective scan confirmation (current source)
+
+`OcrScanner.RunLaneAsync` keeps native PTS and the existing bounded
+adaptive windows. Balanced/Fast recognize periodic samples and otherwise use
+cheap visual probes. A sampled text difference alone no longer refines the
+whole window: the transition is gated on the visual probe, refinement covers
+visual-boundary neighborhoods capped at eight frames, and a quiet probe falls
+back to five evenly spaced confirmation frames. Stale carried followups are
+discarded when a new transition supersedes them. A visual boundary nominates
+its preceding frame, changed frame and two following frames; the preceding
+frame supplies late evidence for short captions. Unresolved tracker state
+requests two nearby confirmation frames in the next window. Selected frames
+are unique, ordered and exclude the baseline sample.
+
+The UI exposes only adaptive selective confirmation; new page requests use
+the internal `balanced` identity. Device and lane selectors remain, with no
+scan-mode selector. Core retains the distinct `fast` and exhaustive `accurate`
+identities: their persisted checkpoints are not relabeled, migrated or deleted
+by this UI change, but cannot be discovered/resumed from the single-mode page.
+Recover those legacy scans with a compatible build using their original mode;
+do not rename checkpoint files or substitute `balanced` in their identities.
+Schema/key policy and tracker duration thresholds are unchanged; resuming
+does not reprocess already-committed evidence. Synthetic scheduling contracts
+are not video-quality evidence: subthreshold visual changes can still be missed,
+and noisy windows can still require dense recognition.
+
+`OcrWorkerClient` uses a pipe-local relaxed JSON encoder for single-image,
+batch and visual-probe requests: base64 `+` stays literal instead of expanding
+to `\u002B` (five fewer UTF-8 bytes per occurrence). This is private stdin JSON,
+not HTML; quotes, backslashes and control characters remain JSON-escaped.
+Decoded images, request fields and OCR decisions are unchanged. No ROI narrowing,
+sampling reduction or visual-threshold adjustment is part of this optimization.
+Transport byte savings are fixture-tested, not a measured field scan speedup.
+
+The Python worker keeps an engine-local base-prediction LRU (8 entries, at most
+8 MiB of retained pixel/key/result bytes plus bounded Python object overhead).
+Identity is SHA-256 over shape, dtype and C-order decoded pixels, with retained
+bytes also compared to rule out hash-collision reuse. Only validated base results
+are cached; a failed miss batch publishes nothing. Exact duplicate batch misses
+share inference, but output order and multiplicity remain unchanged. Each output
+gets fresh nested result objects and runs `refine_short_text` independently with
+the current request's hints. Refined results and request IDs never enter the cache.
+Oversized entries bypass retention; worker/model restart discards the cache.
+This is not perceptual matching: a one-pixel change still requires inference.
+It cannot be expected to help moving backgrounds, and fixture model-call savings
+are not real-video performance or OCR-quality measurements.
+
+The production worker now splits PaddleOCR 3.7 into separate detection and
+recognition stages with the same `PP-OCRv6_medium_det` and
+`PP-OCRv6_medium_rec` models. Detection still runs for every submitted frame,
+so new, moved and multi-line text is discovered; only pixel-identical
+recognition crops reuse prior recognition results. Recognition batches keep the
+shipped six-crop aspect-ratio ordering and padding context. A synthetic GPU
+fixture with 36 rendered Chinese-caption frames, one changed background pixel
+per frame and exact parsed-output comparison measured baseline `1940.3 ms`,
+split `1394.4 ms`, speedup `1.39x`; the split run used 39 detections and only 7
+recognition calls covering 10 crops. This is a synthetic benchmark, not a
+10-hour video measurement, and it does not change duplicate reconciliation or
+duration thresholds.
+
 ### 3.5 TTS click → job + redacted log — `GenerateTts_Click → QuerySecret` (8 steps)
 
 ```
@@ -261,11 +322,11 @@ traces; solid edges are direct calls from §3 traces.
 
 ## 6. Where to look next (graph entry points)
 
-- `context(BiliSubApplication)` — 6 callers, 12 importing
-  files, ~30 methods; start here for any feature.
-- `impact(<symbol>, upstream)` before editing — required by
-  `AGENTS.md`; HIGH/CRITICAL blocks, UNKNOWN means unverified.
-- `trace(A → B)` for "how does A reach B".
-- `detect_changes(all)` before commit.
-- Re-run `node .gitnexus/run.cjs analyze --index-only`
-  after each commit; this doc's numbers are pinned to `e3fd178`.
+- `codegraph brief` (or `.codegraph/REPORT.md`) for orientation;
+  `codegraph list types --top 20` for hub types.
+- `codegraph impact <symbol>` before editing — required by
+  `AGENTS.md`.
+- `codegraph path <A> <B>` for "how does A reach B".
+- `codegraph diff` after changes, before commit.
+- Re-run `codegraph index --solution csharp/BiliSubStudio.sln`
+  after structural changes; this doc's numbers are pinned to `e3fd178`.

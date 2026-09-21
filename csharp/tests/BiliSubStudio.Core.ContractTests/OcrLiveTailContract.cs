@@ -5,7 +5,7 @@ namespace BiliSubStudio.Core.ContractTests;
 
 // LIVE INCREMENTAL RECONCILE regression (field 109-113):
 // committed boundary mới -> tail reconcile pixel-gated ngay, preview sạch không đợi Pause.
-// Fixture: A/B exact touching, C dash-dropout (—), D exact, E câu khác hẳn.
+// Fixture: A/B dash variant touching, C dash-dropout (—), D exact, E câu khác hẳn.
 internal static class OcrLiveTailContract
 {
     private static readonly OcrRegion TestRoi = new(0.05, 0.65, 0.90, 0.29);
@@ -25,7 +25,9 @@ internal static class OcrLiveTailContract
     }
 
     private static OcrCue CueA() => Prov(46.633, 47.733, ChainText, 0.99);
-    private static OcrCue CueB() => Prov(47.733, 48.333, ChainText, 0.98);
+    // Policy 21/09: A-B không byte-identical (dash variant) để blocking comparer được gọi
+    // Vẫn merge được vì pixel Same cho dash variant.
+    private static OcrCue CueB() => Prov(47.733, 48.333, "殿主，有那些那些那些那些可能—", 0.98);
     private static OcrCue CueC() => Prov(48.333, 48.800, "殿主，有没有一种可能—", 0.97);
     private static OcrCue CueD() => Prov(48.800, 49.400, ChainText, 0.99);
     // E là instance thật mới: frame đầu tiên của nó KHÔNG được trùng Pts với frame cuối của D
@@ -41,7 +43,7 @@ internal static class OcrLiveTailContract
 
     public static async Task RunAsync()
     {
-        // 1: live exact duplicate merge ngay sau committed boundary.
+        // 1: live dash-variant pair merge ngay sau committed boundary (đúng 1 pixel check).
         using (var live = new OcrLiveTailReconciler())
         {
             var same = new ScriptedPixelComparer(Verdict);
@@ -51,7 +53,8 @@ internal static class OcrLiveTailContract
             Check(view.Count == 1, $"live exact pair must merge right after boundary (got {view.Count})");
             Check(view[0].Start == 46.633 && view[0].End == 48.333 && view[0].Text == ChainText && !view[0].NeedsReview,
                 "live merged cue must span 46.633-48.333 without review flag");
-            Check(same.Calls == 1, $"exact pair must cost one pixel check (calls={same.Calls})");
+            // A-B là dash variant (không byte-identical) nên tốn đúng 1 pixel check, Same → gộp.
+            Check(same.Calls == 1, $"dash-variant pair must cost one pixel check (calls={same.Calls})");
             await live.StopAsync();
         }
 
@@ -72,7 +75,8 @@ internal static class OcrLiveTailContract
             var afterD = await WaitIdleAsync(live);
             Check(afterD.Count == 1 && afterD[0].Start == 46.633 && afterD[0].End == 49.400 && afterD[0].Text == ChainText,
                 "live tail must collapse 109-112 into 46.633-49.400 without Pause");
-            Check(same.Calls == 3, $"109-112 chain must cost 3 pixel checks (calls={same.Calls})");
+            // A-B dash (1) + B-C dash variant Same (1) + C-D byte-identical sau gộp → fast-path (0) = 2 calls.
+            Check(same.Calls == 2, $"109-112 chain must cost 2 pixel checks (calls={same.Calls})");
             live.AppendCommitted([CueE()]);
             var afterE = await WaitIdleAsync(live);
             Check(afterE.Count == 2, $"distinct cue 113 must stay separate (got {afterE.Count})");
@@ -80,7 +84,8 @@ internal static class OcrLiveTailContract
                 "chain cue must survive E arrival with unchanged span/text; NeedsReview flags the rejected handoff");
             Check(afterE[1].Start == 49.400 && afterE[1].End == 51.133 && afterE[1].Text == "陈长安硬打天罚" && afterE[1].NeedsReview,
                 "cue 113 must stay separate with NeedsReview (Different handoff verified, not skipped)");
-            Check(same.Calls == 4, $"D-E handoff must be verified once and rejected by Different (calls={same.Calls})");
+            // D-E handoff Different (1 call) + chain 2 = 3 total.
+            Check(same.Calls == 3, $"D-E handoff must be verified once and rejected by Different (calls={same.Calls})");
             await live.StopAsync();
         }
 
@@ -97,7 +102,9 @@ internal static class OcrLiveTailContract
             var view = await WaitIdleAsync(live);
             Check(view.Count == 1 && view[0].Start == 46.633 && view[0].End == 51.133 && view[0].Text == ChainText,
                 "stale run must be discarded; fresh full-window run with Same must collapse A-E");
-            Check(blocking.Calls == 5, $"discarded run (1) + fresh run (4 boundaries) must total 5 checks (calls={blocking.Calls})");
+            // Stale run: A-B dash variant → 1 pixel check (bị chặn) rồi bị hủy khi C/D/E tới.
+            // Fresh run: A-B (1) + B-C (1) + C-D identical fast-path (0) + D-E (1, blocking Same) = 3 calls.
+            Check(blocking.Calls == 4, $"discarded run (1) + fresh run (3) must total 4 checks (calls={blocking.Calls})");
             Check(live.AppliedRevision == live.Revision, "applied revision must catch up to latest revision");
             await live.StopAsync();
         }
@@ -144,9 +151,49 @@ internal static class OcrLiveTailContract
                 Check(incremental[i].Start == full[i].Start && incremental[i].End == full[i].End
                     && incremental[i].Text == full[i].Text && incremental[i].NeedsReview == full[i].NeedsReview,
                     $"incremental cue {i} differs from full reconcile");
-            // Tail-only: offer1 4 (in-pair T1-T4) + offer2 6 (T5-T10) + offer3 3 (chain1-2, 2-3, 3-tail) = 13.
+            // Tail-only + fast path: 10 exact pairs gộp pixel-free (0); offer3 chain1-2 Same (1),
+            // chain đã gộp vs chain3 byte-identical → fast-path (0), chain-tail Different (1) = 2.
             // Between-instance boundaries (gap > window) không gọi comparer.
-            Check(same.Calls == 13, $"incremental must pay tail-only cost, not full rescan (calls={same.Calls})");
+            Check(same.Calls == 2, $"incremental must pay tail-only cost, not full rescan (calls={same.Calls})");
+            await live.StopAsync();
+        }
+
+        // 7: resume seed hiển thị bulk ngay lập tức, append sau chỉ trả chi phí tail.
+        using (var live = new OcrLiveTailReconciler())
+        {
+            var bulk = Enumerable.Range(0, 10).Select(i => Prov(10 * (i + 1), 10 * (i + 1) + 1, "散句" + (i + 1), 0.99)).ToArray();
+            live.ResetCommitted(bulk);
+            // Chưa Start/worker: view đã phải có đủ bulk đã normalize.
+            Check(live.CommittedView.Count == 10, $"resume must expose restored history immediately (got {live.CommittedView.Count})");
+            Check(live.CommittedView[0].Start == 10 && live.CommittedView[9].Start == 100, "seeded view must preserve order");
+            var same = new ScriptedPixelComparer(Verdict);
+            live.Start("v.mp4", same, Window);
+            live.AppendCommitted([Prov(200, 201, "新句不同", 0.99)]);
+            var view = await WaitIdleAsync(live);
+            Check(view.Count == 11 && view[0].Start == 10 && view[10].Start == 200, "resumed append lost history or the new cue");
+            Check(same.Calls == 0, $"disjoint resume append must not rescan bulk (calls={same.Calls})");
+            await live.StopAsync();
+        }
+
+        // 8: out-of-order multi-lane arrival (vu live-split p02): prefix co san 10 cue
+        // tuong lai (> TailWindow), fresh la cap dash-variant TOI TRE o qua khu.
+        // Cu: gop thanh 1 (pixel Same) thay vi nam tho song doi.
+        using (var live = new OcrLiveTailReconciler())
+        {
+            var futures = Enumerable.Range(0, 10).Select(i => Prov(1000 + 10 * i, 1000 + 10 * i + 1, "后来" + (i + 1), 0.99)).ToArray();
+            var same = new ScriptedPixelComparer(Verdict);
+            live.Start("v.mp4", same, Window);
+            live.AppendCommitted(futures);
+            await WaitIdleAsync(live);
+            Check(live.CommittedView.Count == 10, "futures must all show before late arrival");
+            var callsBefore = same.Calls;
+            live.AppendCommitted([CueA(), CueB()]);
+            var view = await WaitIdleAsync(live);
+            var pair = view.Where(cue => cue.Start < 100).ToArray();
+            Check(pair.Length == 1 && pair[0].Start == 46.633 && pair[0].End == 48.333 && pair[0].Text == ChainText,
+                $"late out-of-order identical pair must merge in live view (got {pair.Length} cues)");
+            Check(view.Count == 11, $"late merge must not drop futures (got {view.Count})");
+            Check(same.Calls - callsBefore <= 4, $"late merge must stay bounded, not rescan bulk (extra calls={same.Calls - callsBefore})");
             await live.StopAsync();
         }
     }

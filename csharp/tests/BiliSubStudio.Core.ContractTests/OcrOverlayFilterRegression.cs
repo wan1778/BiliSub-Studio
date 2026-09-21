@@ -199,5 +199,42 @@ internal static class OcrOverlayFilterRegression
             if (clean.Lines.Count != 3 || clean.Text != multiline.Text)
                 throw new InvalidOperationException("scene filtering removed multiline/inline subtitle content");
         }
+
+        // Vụ bức thư "休书" 21/09: cột ≥4 dòng chữ cảnh phía trên baseline thoại
+        // căn giữa -> loại toàn bộ cột. Dòng thứ 5 sát baseline (không farAbove)
+        // là bằng chứng luật cột hoạt động chứ không phải luật cũ dọn hộ.
+        var letterScene = new OcrResult(true, true,
+            "我们当初结婚从头到尾只是一场交易\n为应付家里催婚我找你当挡箭牌\n婚前协议写得很清楚婚后同住不同楼\n你打地铺不发生夫妻关系\n三年期满后我会按协议足额支付你五百万报酬\n冷氏集团这三年越做越强", .97,
+        [
+            new OcrLine("我们当初结婚从头到尾只是一场交易", .97, [150, 18, 700, 46]),
+            new OcrLine("为应付家里催婚我找你当挡箭牌", .97, [150, 60, 690, 88]),
+            new OcrLine("婚前协议写得很清楚婚后同住不同楼", .96, [150, 102, 720, 130]),
+            new OcrLine("你打地铺不发生夫妻关系", .95, [150, 144, 560, 172]),
+            new OcrLine("三年期满后我会按协议足额支付你五百万报酬", .96, [150, 196, 780, 246]),
+            new OcrLine("冷氏集团这三年越做越强", .999, [446, 254, 834, 292]),
+        ]);
+        var letterClean = (OcrResult)(filter.Invoke(null, [letterScene, defaultLowerRegion])
+            ?? throw new InvalidOperationException("OCR scene-column filter returned null"));
+        if (letterClean.Lines.Count != 1 || letterClean.Text != "冷氏集团这三年越做越强")
+            throw new InvalidOperationException("stacked scene-text column leaked into subtitle cues");
+
+        // 2 dòng phụ trên baseline (thoại 2 hàng) KHÔNG phải cột cảnh -> giữ.
+        var twoRowCaption = new OcrResult(true, true, "你说你家里穷得揭不开锅\n我冷氏集团凭什么看上你", .98,
+        [
+            new OcrLine("你说你家里穷得揭不开锅", .98, [350, 208, 780, 246]),
+            new OcrLine("我冷氏集团凭什么看上你", .98, [360, 254, 790, 292]),
+        ]);
+        var retainedRows = (OcrResult)(filter.Invoke(null, [twoRowCaption, defaultLowerRegion])
+            ?? throw new InvalidOperationException("OCR scene-column filter returned null for two-row caption"));
+        if (retainedRows.Lines.Count != 2 || retainedRows.Text != twoRowCaption.Text)
+            throw new InvalidOperationException("two-row subtitle was dropped as a scene column");
+
+        // ROI tay vùng trên (region.Y < .5): luật cột không áp — dòng sát
+        // baseline sống sót (farAbove cũ dọn phần xa, luật cột không được đụng).
+        var upperClean = (OcrResult)(filter.Invoke(null, [letterScene, upperRegion])
+            ?? throw new InvalidOperationException("OCR scene-column filter returned null for upper ROI"));
+        if (!upperClean.Lines.Any(line => line.Text == "三年期满后我会按协议足额支付你五百万报酬")
+            || !upperClean.Lines.Any(line => line.Text == "冷氏集团这三年越做越强"))
+            throw new InvalidOperationException("scene-column rule must not apply to a user-selected upper ROI");
     }
 }

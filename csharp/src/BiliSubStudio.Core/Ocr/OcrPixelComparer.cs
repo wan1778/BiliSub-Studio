@@ -120,6 +120,40 @@ public sealed class ProductionPixelComparer : IPixelComparer
         string videoPath, PixelObservation left, PixelObservation right, System.Drawing.Rectangle shared)
         => (videoPath, left.SourcePts!.Value, right.SourcePts!.Value, shared);
 
+    // Sidecar pxv: xuất verdict RÕ RÀNG cho file đệm (bỏ path — identity file cover),
+    // và nạp lại đầu scan sau. Chỉ Same/Different (Unavailable tính lại, xem OcrSidecar).
+    // Metrics (ssim/fg/edge) KHÔNG persist: verdict đủ cho merge; trace diagnostic
+    // (ReconcileRangeAsync) hiện trống cho hit từ sidecar — chấp nhận được.
+    public IReadOnlyList<(long First, long Second, System.Drawing.Rectangle Crop, PixelCheckResult Result)> Snapshot()
+    {
+        lock (_cacheGate)
+            return _comparisonCache
+                .Where(pair => pair.Value.Result is PixelCheckResult.Same or PixelCheckResult.Different)
+                .Select(pair => (pair.Key.First, pair.Key.Second, pair.Key.Crop, pair.Value.Result))
+                .ToArray();
+    }
+
+    public int Seed(string videoPath, IEnumerable<(long First, long Second, System.Drawing.Rectangle Crop, PixelCheckResult Result)> entries)
+    {
+        var added = 0;
+        lock (_cacheGate)
+        {
+            foreach (var (first, second, crop, result) in entries)
+            {
+                if (result is not (PixelCheckResult.Same or PixelCheckResult.Different)) continue;
+                if (crop.Right <= crop.Left || crop.Bottom <= crop.Top || crop.Left < 0 || crop.Top < 0) continue;
+                var key = (videoPath, first, second, crop);
+                if (_comparisonCache.ContainsKey(key)) continue;
+                _comparisonCache[key] = new PixelComparison(result,
+                    new FrameSample(double.NaN, double.NaN, double.NaN),
+                    new FrameSample(double.NaN, double.NaN, double.NaN),
+                    crop, null, null, null);
+                added++;
+            }
+        }
+        return added;
+    }
+
     // Threshold production v1 (calibration 30 + 20 hard samples, line-bbox):
     // SAME: SSIM min 0.626, Edge min 0.857. DIFFERENT touching/handoff: SSIM max 0.196, Edge max 0.298.
     // ForegroundIoU chỉ telemetry (SAME min 0.477 vs DIFFERENT handoff 0.525, không clean separation).

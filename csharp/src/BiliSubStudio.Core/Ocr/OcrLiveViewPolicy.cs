@@ -34,4 +34,23 @@ public static class OcrLiveViewPolicy
         }
         return index;
     }
+
+    // Overload cho dòng đã qua pipeline chung (OcrExportRow: live-quét-xong =
+    // SRT): cùng semantics Start/End/Text, tên khác để không ambiguous với
+    // overload OcrCue ở call-site collection-expression.
+    public static int CommonRowPrefixLength(IReadOnlyList<OcrExportRow> oldRows, IReadOnlyList<OcrExportRow> newRows)
+    {
+        var count = Math.Min(oldRows.Count, newRows.Count);
+        var index = 0;
+        while (index < count)
+        {
+            var oldRow = oldRows[index];
+            var newRow = newRows[index];
+            if (oldRow.Start != newRow.Start || oldRow.End != newRow.End
+                || !string.Equals(oldRow.Text, newRow.Text, StringComparison.Ordinal))
+                break;
+            index++;
+        }
+        return index;
+    }
 }

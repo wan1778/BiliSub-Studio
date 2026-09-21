@@ -43,11 +43,11 @@ internal static class OcrHardwarePolicyRegression
             ?? throw new InvalidOperationException("OCR segment-lane policy returned null"));
         int DeviceWorkers(HardwareSnapshot hardware, string mode) => (int)(workerPolicy.Invoke(null, [hardware, mode])
             ?? throw new InvalidOperationException("device-aware OCR worker policy returned null"));
-        bool ResourceAllowed(HardwareSnapshot hardware, double freeVramGiB, int currentWorkers, int candidate, double observedVramMiB)
+        bool ResourceAllowed(HardwareSnapshot hardware, double freeVramGiB, int currentWorkers, int candidate, double observedVramMiB, int decoderLanes = 0)
         {
             var live = new HardwareResourceSnapshot(GiB(32), GiB(10), true, GiB(4), GiB(freeVramGiB));
             var decision = resourcePolicy.Invoke(null,
-                [hardware, live, "gpu", currentWorkers, candidate, MiB(observedVramMiB), true])
+                [hardware, live, "gpu", currentWorkers, candidate, MiB(observedVramMiB), true, decoderLanes])
                 ?? throw new InvalidOperationException("OCR live resource policy returned null");
             return (bool)(decision.GetType().GetProperty("Allowed")?.GetValue(decision)
                 ?? throw new InvalidOperationException("OCR live resource decision lost Allowed"));
@@ -100,5 +100,9 @@ internal static class OcrHardwarePolicyRegression
             throw new InvalidOperationException("measured VRAM growth no longer protects reserve when the machine-specific slope is too large");
         if (ResourceAllowed(measured4Gb, 0.5, 8, 8, 256))
             throw new InvalidOperationException("post-probe VRAM reserve gate accepted an already overcommitted 4 GB GPU");
+        if (!ResourceAllowed(measured4Gb, 0.7, 2, 2, 400, decoderLanes: 8))
+            throw new InvalidOperationException("eight decoder lanes incorrectly budgeted eight GPU model copies");
+        if (ResourceAllowed(measured4Gb with { LogicalProcessors = 4 }, 2, 2, 2, 400, decoderLanes: 8))
+            throw new InvalidOperationException("independent decoder lanes bypassed CPU headroom");
     }
 }

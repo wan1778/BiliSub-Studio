@@ -28,7 +28,26 @@ public sealed partial class OcrPage : Page
     private OcrScanRequest? _activeRequest;
     private bool _cancelInProgress;
     private IReadOnlyList<OcrCue> _cues = [];
-    private IReadOnlyList<OcrCue> _visibleCues = [];
+    // Dòng đang hiển thị = dòng pipeline chung (OcrExportRow: Start/End/Text
+    // đã loại-trừ/đắp-fix/normalize/trim — live-quét-xong = SRT theo cấu trúc).
+    private IReadOnlyList<OcrExportRow> _visibleCues = [];
+    // Chế độ hiển thị: true = quét xong/dừng (list qua pipeline chung, bằng
+    // SRT); false = đang quét (list tạm từ accumulator + journal, bản chất
+    // chưa chốt nên chỉ là preview).
+    private bool _authoritative;
+    private IReadOnlyList<OcrExportRow> _displayRows = [];
+    private IReadOnlyList<OcrCueExclusion>? _displayExclusions;
+    private IReadOnlyList<OcrCueFix>? _displayFixes;
+    private string _displayDropNote = "";
+    // LIFO các câu user tự xoá khỏi list chốt (21/09): mỗi phần tử là entry đã
+    // ghi vào .exclude.json + số thứ tự lúc xoá (để báo lại khi hoàn tác).
+    // Hoàn tác = gỡ đúng entry đó khỏi file — quyết định của user vẫn nằm
+    // ngoài checkpoint, resume/quét lại không đụng.
+    private readonly Stack<(OcrCueExclusion Entry, int RowNumber)> _manualDeletes = new();
+    // Verdict lọc thời gian trên bảng live: câu nào bị drop thì ẨN khỏi list
+    // (list = SRT 100%). Đọc từ nhật ký temporal đang ghi live lúc quét
+    // (append-only nên so số lượng là đủ; đổi là vẽ lại toàn bảng 1 lần).
+    private Dictionary<string, OcrCueVerdict> _judgeMarks = new(StringComparer.Ordinal);
     private readonly OcrLiveCueAccumulator _liveCues = new();
     private DateTimeOffset _nextCueRenderAt;
     private bool _cueViewDirty;
@@ -57,6 +76,9 @@ public sealed partial class OcrPage : Page
         CueList.Loaded += (_, _) => AttachCueListScroll();
         Unloaded += (_, _) => DetachCueListScroll();
         Unloaded += (_, _) => _player?.Pause();
+        var judgeTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
+        judgeTimer.Tick += (_, _) => RefreshJudgeMarks();
+        judgeTimer.Start();
     }
 
     // Test-only stress hook (chỉ chạy với flag --ocr-list-stress, không ảnh hưởng production):
@@ -249,6 +271,7 @@ public sealed partial class OcrPage : Page
             _activeRequest = null;
             _cues = [];
             _visibleCues = [];
+            _authoritative = false;
             _liveCues.Clear();
             _nextCueRenderAt = default;
             _cueViewDirty = false;
@@ -256,7 +279,9 @@ public sealed partial class OcrPage : Page
             CueList.Items.Clear();
             CueCountText.Text = "0 câu";
             CancelButton.IsEnabled = false;
+            ResetManualEdits();
             ScanButton.Content = "Quét từ đầu";
+            ScanButton.IsEnabled = false;
             RestartButton.Visibility = Visibility.Collapsed;
             ExportButton.IsEnabled = false;
             Progress.Value = 0;
@@ -276,8 +301,8 @@ public sealed partial class OcrPage : Page
             Timeline.IsEnabled = true;
             SelectRegionButton.IsEnabled = true;
             RefreshFrameButton.IsEnabled = true;
-            RefreshRegionActions();
             var checkpointRequest = BuildRequest();
+            StatusText.Text = "Đang kiểm tra checkpoint OCR; chưa thể bắt đầu quét mới...";
             var checkpoint = await _application.InspectOcrCheckpointAsync(checkpointRequest, CancellationToken.None);
             if (checkpoint.Exists)
             {
@@ -285,6 +310,11 @@ public sealed partial class OcrPage : Page
                 ApplyRecoverableCheckpointCues(checkpoint);
                 ApplyCheckpointUi();
                 StatusText.Text = $"Có checkpoint schema {checkpoint.Schema}: {checkpoint.ProgressPercent:0.0}% · {checkpoint.CueCount} câu; có thể Tiếp tục hoặc Xuất SRT phục hồi.";
+            }
+            else
+            {
+                RefreshRegionActions();
+                StatusText.Text = "Video đã sẵn sàng. Không có checkpoint; có thể Quét từ đầu.";
             }
         }
         catch (Exception error)
@@ -411,7 +441,19 @@ public sealed partial class OcrPage : Page
         if (_path is null || _media is null) return;
         var request = _checkpointRequest ?? BuildRequest();
         var startMode = _checkpointRequest is null ? OcrScanStartMode.Fresh : OcrScanStartMode.Resume;
-        await StartScanAsync(request, startMode);
+        // Tiep tuc sau khi sua ROI luc tam dung: giu request goc (giu checkpoint key),
+        // truyen ROI moi rieng de quet. Khong sua -> null -> chay nhu cu.
+        OcrRegion? regionOverride = null;
+        if (_checkpointRequest is not null)
+        {
+            var edited = ReadRegion();
+            if (!edited.Equals(_checkpointRequest.Region))
+            {
+                regionOverride = edited;
+                StatusText.Text = "Tiếp tục với ROI mới sửa: phần đã quét giữ nguyên, phần còn lại đọc theo khung mới.";
+            }
+        }
+        await StartScanAsync(request, startMode, regionOverride);
     }
 
     private async void Restart_Click(object sender, RoutedEventArgs e)
@@ -436,24 +478,40 @@ public sealed partial class OcrPage : Page
         }
     }
 
-    private async Task StartScanAsync(OcrScanRequest request, OcrScanStartMode startMode)
+    private async Task StartScanAsync(OcrScanRequest request, OcrScanStartMode startMode, OcrRegion? regionOverride = null)
     {
         var autoSaveDirectory = _ocrOutputDirectory;
-        _cues = [];
-        _visibleCues = [];
-        _liveCues.Clear();
+        var resuming = startMode == OcrScanStartMode.Resume;
+        if (!resuming)
+        {
+            _cues = [];
+            _visibleCues = [];
+            _authoritative = false;
+            _liveCues.Clear();
+            _cueViewDirty = false;
+            CueList.Items.Clear();
+            CueCountText.Text = "0 câu";
+            Progress.Value = 0;
+            TelemetryText.Text = "Đang chờ kết quả OCR...";
+            ExportButton.IsEnabled = false;
+            ResetManualEdits();
+        }
+        else
+        {
+            // Resume: giữ nguyên danh sách pause-authoritative đang hiển thị và
+            // seed accumulator từ nó. Snapshot rolling sau đó reconcile tiếp về
+            // phía trước, thay vì xóa sạch list rồi chờ telemetry refill.
+            // Quét chạy lại -> list về chế độ tạm (preview) cho tới khi xong.
+            _authoritative = false;
+            _liveCues.Seed(_cues);
+            _cueViewDirty = true;
+        }
         _nextCueRenderAt = default;
-        _cueViewDirty = false;
         _userAtEnd = true;
-        CueList.Items.Clear();
-        CueCountText.Text = "0 câu";
-        ExportButton.IsEnabled = false;
         AutoSaveFolderButton.IsEnabled = false;
-        Progress.Value = 0;
-        TelemetryText.Text = "Đang chờ kết quả OCR...";
         _checkpointRequest = null;
         _activeRequest = request;
-        var runningId = _application.StartOcrScan(request, startMode);
+        var runningId = _application.StartOcrScan(request, startMode, regionOverride);
         _jobId = runningId;
         OcrScanResult? latestResult = null;
         PickVideoButton.IsEnabled = false;
@@ -476,6 +534,10 @@ public sealed partial class OcrPage : Page
             StatusText.Text = snapshot.Message;
             if (snapshot.Result is OcrScanResult result)
             {
+                var safeProgress = SafeFrontierProgress(request, result.SafeFrontierSeconds, snapshot.Done);
+                Progress.Value = string.Equals(snapshot.Status, "finalizing", StringComparison.OrdinalIgnoreCase)
+                    ? snapshot.Progress
+                    : safeProgress;
                 latestResult = result;
                 var authoritative = snapshot.Done
                     && !string.Equals(snapshot.Status, "cancelled", StringComparison.OrdinalIgnoreCase)
@@ -487,11 +549,12 @@ public sealed partial class OcrPage : Page
                     MergeLiveCueSnapshot(result.Cues);
                     RefreshLiveCueView(force: snapshot.Done);
                 }
-                TelemetryText.Text = $"{result.ParallelismSelected} FFmpeg lane · {result.WorkerCount} worker ({result.WorkerKinds}) · {result.CompletedLanes}/{result.ParallelismSelected} lane xong · {result.Frames} frames · {result.OcrImages} OCR · {result.RealtimeSpeed:0.00}× · frontier {FormatClock(result.SafeFrontierSeconds)}";
+                TelemetryText.Text = $"SRT liên tục {safeProgress:0.0}% ({FormatClock(result.SafeFrontierSeconds)}) · tổng xử lý {snapshot.Progress:0.0}% · {result.ParallelismSelected} FFmpeg lane · {result.WorkerCount} worker ({result.WorkerKinds}) · {result.CompletedLanes}/{result.ParallelismSelected} lane xong · {result.Frames} frames · {result.OcrImages} OCR · {result.RealtimeSpeed:0.00}×";
             }
             else if (snapshot.Result is OcrScanTelemetry telemetry)
             {
-                TelemetryText.Text = $"{telemetry.SegmentLanes} FFmpeg lane · {telemetry.WorkerCount} worker ({telemetry.WorkerKinds}) · {telemetry.ActiveLanes} đang chạy · {telemetry.CompletedLanes} xong · {telemetry.Frames} frames · {telemetry.OcrImages} OCR · frontier {FormatClock(telemetry.SafeFrontierSeconds)}";
+                Progress.Value = SafeFrontierProgress(request, telemetry.SafeFrontierSeconds, snapshot.Done);
+                TelemetryText.Text = $"SRT liên tục {Progress.Value:0.0}% ({FormatClock(telemetry.SafeFrontierSeconds)}) · tổng xử lý {snapshot.Progress:0.0}% · {telemetry.SegmentLanes} FFmpeg lane · {telemetry.WorkerCount} worker ({telemetry.WorkerKinds}) · {telemetry.ActiveLanes} đang chạy · {telemetry.CompletedLanes} xong · {telemetry.Frames} frames · {telemetry.OcrImages} OCR";
             }
             else if (snapshot.Result is OcrBenchmarkTelemetry benchmark)
             {
@@ -544,8 +607,11 @@ public sealed partial class OcrPage : Page
                     ExportButton.IsEnabled = _cues.Count > 0;
                     try
                     {
-                        var path = await ExportCurrentSrtAsync(autoSaveDirectory, recovery: false);
-                        StatusText.Text = "Đã quét xong và tự lưu SRT: " + path;
+                        var exported = await ExportCurrentSrtAsync(autoSaveDirectory, recovery: false);
+                        var message = "Đã quét xong và tự lưu SRT: " + exported.Path;
+                        if (exported.Warnings.Count > 0)
+                            message += " · lưu ý: " + string.Join(" · ", exported.Warnings.Take(3));
+                        StatusText.Text = message;
                     }
                     catch (Exception error)
                     {
@@ -556,6 +622,13 @@ public sealed partial class OcrPage : Page
             }
             await Task.Delay(400);
         }
+    }
+
+    private static double SafeFrontierProgress(OcrScanRequest request, double frontierSeconds, bool done)
+    {
+        if (done) return 100;
+        if (!(request.Duration > 0) || !double.IsFinite(frontierSeconds)) return 0;
+        return Math.Clamp((frontierSeconds - request.ScanStartOffset) / request.Duration * 100, 0, 99.5);
     }
 
     private async void Pause_Click(object sender, RoutedEventArgs e)
@@ -631,12 +704,15 @@ public sealed partial class OcrPage : Page
         DeviceBox.IsEnabled = false;
         ScanModeBox.IsEnabled = false;
         LanesBox.IsEnabled = false;
-        SelectRegionButton.IsEnabled = false;
+        // Tam dung van cho sua ROI: Scan_Click so ReadRegion() voi _checkpointRequest.Region
+        // va truyen regionOverride (giu checkpoint key). Device/mode/lane khoa vi doi la doi key.
+        SelectRegionButton.IsEnabled = _media is not null;
         ScanButton.Content = "Tiếp tục";
         CancelButton.Content = "Hủy và xóa";
         CancelButton.IsEnabled = true;
         RestartButton.Visibility = Visibility.Visible;
         RestartButton.IsEnabled = true;
+        ScanButton.IsEnabled = true;
         ExportButton.IsEnabled = _cues.Count > 0;
     }
 
@@ -654,6 +730,7 @@ public sealed partial class OcrPage : Page
         TelemetryText.Text = "Chưa có telemetry.";
         OcrResultText.Text = string.Empty;
         ExportButton.IsEnabled = false;
+        ResetManualEdits();
         ScanButton.Content = "Quét từ đầu";
         CancelButton.Content = "Hủy";
         CancelButton.IsEnabled = false;
@@ -666,8 +743,11 @@ public sealed partial class OcrPage : Page
         try
         {
             var recovery = _checkpointRequest is not null;
-            var path = await ExportCurrentSrtAsync(_ocrOutputDirectory, recovery);
-            StatusText.Text = recovery ? "Đã xuất SRT phục hồi chưa hoàn chỉnh: " + path : "Đã xuất: " + path;
+            var exported = await ExportCurrentSrtAsync(_ocrOutputDirectory, recovery);
+            var message = recovery ? "Đã xuất SRT phục hồi chưa hoàn chỉnh: " + exported.Path : "Đã xuất: " + exported.Path;
+            if (exported.Warnings.Count > 0)
+                message += " · lưu ý: " + string.Join(" · ", exported.Warnings.Take(3));
+            StatusText.Text = message;
         }
         catch (Exception error)
         {
@@ -712,11 +792,28 @@ public sealed partial class OcrPage : Page
         }
     }
 
-    private Task<string> ExportCurrentSrtAsync(string outputDirectory, bool recovery)
+    private async Task<BiliSubStudio.Core.Application.BiliSubApplication.OcrExportResult> ExportCurrentSrtAsync(string outputDirectory, bool recovery)
     {
         var suffix = recovery ? "_Chinese.partial.srt" : "_Chinese.srt";
-        return _application.ExportOcrAsync(
-            _cues, outputDirectory, Path.GetFileNameWithoutExtension(_path) + suffix, CancellationToken.None);
+        // Danh sách loại trừ câu lọc xóa + file fix (best-effort tuyệt đối:
+        // thiếu/hỏng là xuất như cũ, không bao giờ chặn export).
+        IReadOnlyList<BiliSubStudio.Core.Ocr.OcrCueExclusion>? exclusions = null;
+        IReadOnlyList<BiliSubStudio.Core.Ocr.OcrCueFix>? fixes = null;
+        try
+        {
+            var request = _checkpointRequest ?? BuildRequest();
+            exclusions = await _application.LoadOcrExclusionsAsync(request, CancellationToken.None);
+            fixes = await _application.LoadOcrFixesAsync(request, CancellationToken.None);
+        }
+        catch { }
+        var exported = await _application.ExportOcrAsync(
+            _cues, outputDirectory, Path.GetFileNameWithoutExtension(_path) + suffix, CancellationToken.None, exclusions, fixes);
+        // Đồng bộ display sau xuất (18/09): list hiển thị nạp lại đúng sổ vừa
+        // dùng để xuất — file sổ có thể đổi dưới chân app đang chạy (judge ghi
+        // tiếp, thao tác tay ngoài) mà journal không đổi nên không trigger
+        // reload; không đồng bộ thì live và SRT lệch nhau oan.
+        if (_authoritative) await ReloadDisplayRowsAsync();
+        return exported;
     }
 
     private void SetOcrOutputDirectory(string path)
@@ -728,6 +825,8 @@ public sealed partial class OcrPage : Page
 
     private bool MergeLiveCueSnapshot(IReadOnlyList<OcrCue> incoming)
     {
+        // Snapshot lúc đang quét là tạm -> list về chế độ preview.
+        _authoritative = false;
         var changed = _liveCues.Merge(incoming);
         _cueViewDirty |= changed;
         return changed;
@@ -745,13 +844,17 @@ public sealed partial class OcrPage : Page
 
     private void ApplyAuthoritativeCues(IReadOnlyList<OcrCue> cues)
     {
-        // Final cues đã qua ReconcileAsync (pixel-gated) trong OcrScanner. Dùng trực tiếp cho cả
-        // preview lẫn export (_cues), không chạy lại legacy accumulator (no-pixel safe-fail) làm mất merge.
+        // Final cues đã qua ReconcileAsync (pixel-gated) trong OcrScanner. List
+        // hiển thị đi qua pipeline chung (OcrExportPipeline) với cùng sổ
+        // loại/fix như export -> live-quét-xong = SRT theo cấu trúc.
         _liveCues.Clear();
         _cues = cues.OrderBy(cue => cue.Start).ToArray();
+        _authoritative = true;
+        RebuildDisplayRows();
         RenderCues();
         _cueViewDirty = false;
         _nextCueRenderAt = DateTimeOffset.UtcNow.AddSeconds(2);
+        _ = ReloadDisplayRowsAsync();
     }
 
     private void ApplyRecoverableCheckpointCues(OcrCheckpointInfo checkpoint)
@@ -760,22 +863,118 @@ public sealed partial class OcrPage : Page
         ApplyAuthoritativeCues(cues);
     }
 
+    // Nạp sổ loại/fix (best-effort như export) rồi dựng lại dòng hiển thị từ
+    // cùng pipeline với export. Không đụng checkpoint/judgment — chỉ đọc.
+    private async Task ReloadDisplayRowsAsync()
+    {
+        try
+        {
+            var request = _checkpointRequest ?? BuildRequest();
+            _displayExclusions = await _application.LoadOcrExclusionsAsync(request, CancellationToken.None);
+            _displayFixes = await _application.LoadOcrFixesAsync(request, CancellationToken.None);
+        }
+        catch { _displayExclusions = null; _displayFixes = null; }
+        if (!_authoritative) return;
+        RebuildDisplayRows();
+        _visibleCues = [];
+        RenderCues();
+    }
+
+    private void RebuildDisplayRows()
+    {
+        var built = OcrExportPipeline.Build(_cues, _displayExclusions, _displayFixes);
+        _displayRows = built.Rows;
+        var dropped = built.Excluded + built.NormalizeDropped;
+        _displayDropNote = dropped > 0 ? $" (bỏ {dropped})" : "";
+    }
+
+    private void RefreshJudgeMarks()
+    {
+        // Đọc nhật ký lọc thời gian (ghi live lúc quét), đổi là vẽ lại bảng
+        // để dòng bị drop biến mất ngay. Best-effort tuyệt đối: lỗi là thôi,
+        // bảng cũ giữ.
+        try
+        {
+            if (_path is null)
+            {
+                if (_judgeMarks.Count > 0)
+                {
+                    _judgeMarks = new Dictionary<string, OcrCueVerdict>(StringComparer.Ordinal);
+                    _visibleCues = [];
+                    RenderCues();
+                }
+                return;
+            }
+            var journalPath = OcrVerdictJournal.JournalPath(_path, _application.Paths.Data);
+            var map = OcrJudgeBadge.BuildMap(OcrVerdictJournal.Load(journalPath));
+            if (map.Count == _judgeMarks.Count) return;
+            _judgeMarks = map;
+            _visibleCues = [];
+            RenderCues();
+            // Chế độ chốt: verdict mới luôn đi kèm file loại/fix đã ghi trước
+            // (judge ghi file TRƯỚC journal) -> nạp lại để list = SRT mới nhất.
+            if (_authoritative) _ = ReloadDisplayRowsAsync();
+        }
+        catch { }
+    }
+
+    // Danh sách live = SRT 100%: dòng nào bộ lọc quyết drop (có verdict drop
+    // trong journal — tương đương exclusion đã ghi, export sẽ loại) thì ẨN
+    // khỏi list luôn, không gắn badge. Dòng nào có verdict fix thì hiện CHỮ
+    // ĐÃ SỬA (export đắp chữ đó). Số thứ tự = số thứ tự trong SRT.
+    private bool IsDroppedByFilter(OcrCue cue) =>
+        _judgeMarks.TryGetValue(OcrJudgeBadge.Key(cue.Start, cue.Text), out var verdict)
+        && verdict is not null
+        && verdict.Decision == "drop";
+
+    private static string TruncateReason(string? reason)
+    {
+        if (string.IsNullOrWhiteSpace(reason)) return string.Empty;
+        var runes = reason.EnumerateRunes().Take(48).ToArray();
+        var kept = string.Concat(runes);
+        return kept.Length < reason.Length ? kept + "…" : kept;
+    }
+
+    private string DisplayTextFor(OcrCue cue)
+    {
+        if (_judgeMarks.TryGetValue(OcrJudgeBadge.Key(cue.Start, cue.Text), out var verdict)
+            && verdict is not null
+            && verdict.Decision == "fix"
+            && !string.IsNullOrWhiteSpace(verdict.FixedText))
+            return verdict.FixedText;
+        return cue.Text;
+    }
+
     private void RenderCues()
     {
         // Incremental render: chỉ rebuild rows từ first-changed index (tail merge/append),
         // prefix giữ nguyên nên ListView virtualization không realize lại hàng nghìn containers.
         // Mirror invariant cũ: CueList.Items[i] <-> _visibleCues[i] (selection/edit giữ nguyên).
-        var cues = _cues.OrderBy(cue => cue.Start).ToArray();
-        var common = OcrLiveViewPolicy.CommonCuePrefixLength(_visibleCues, cues);
-        var appended = cues.Length > _visibleCues.Count;
-        _visibleCues = cues;
-        for (var index = common; index < cues.Length; index++)
+        // HAI CHẾ ĐỘ (18/09): quét xong -> dòng pipeline chung (bằng SRT theo
+        // cấu trúc); đang quét -> dòng tạm như cũ (journal + phantom).
+        IReadOnlyList<OcrExportRow> rows = _authoritative ? _displayRows : BuildProvisionalRows();
+        var common = OcrLiveViewPolicy.CommonRowPrefixLength(_visibleCues, rows);
+        var appended = rows.Count > _visibleCues.Count;
+        _visibleCues = rows;
+        for (var index = common; index < rows.Count; index++)
         {
-            var cue = cues[index];
-            var start = TimeSpan.FromSeconds(Math.Max(0, cue.Start));
-            var end = TimeSpan.FromSeconds(Math.Max(cue.Start, cue.End));
+            var cue = rows[index];
+            // Giờ dùng chung hàm format với SRT (làm tròn ms) — trước đây live
+            // cắt ngọn fff nên lệch 1ms ở biên.
+            var start = OcrExportPipeline.FormatSrtTime(cue.Start);
+            var end = OcrExportPipeline.FormatSrtTime(Math.Max(cue.Start, cue.End));
             var text = string.Join(" / ", cue.Text.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries));
-            var row = $"{index + 1}.  {start.ToString(@"hh\:mm\:ss\,fff")} → {end.ToString(@"hh\:mm\:ss\,fff")}  ·  {text}";
+            var row = $"{index + 1}.  {start} → {end}  ·  {text}{(cue.NeedsReview ? "  ⚠" : "")}";
+            // Lý do review (19/09): dòng ⚠️ mà có verdict fix giữ-chữ trong
+            // journal (F2 tai-im / F5 tai-phát-hiện-sai-chữ) thì hiện gợi ý
+            // ngay trên dòng để người duyệt khỏi mò — tra key Start|Text
+            // (fix giữ chữ nên key khớp chữ đang hiện).
+            if (cue.NeedsReview
+                && _judgeMarks.TryGetValue(OcrJudgeBadge.Key(cue.Start, cue.Text), out var mark)
+                && mark is not null
+                && mark.Decision == "fix"
+                && !string.IsNullOrWhiteSpace(mark.Reason))
+                row += $" ({TruncateReason(mark.Reason)})";
             if (index < CueList.Items.Count)
             {
                 if (!string.Equals(CueList.Items[index]?.ToString(), row, StringComparison.Ordinal))
@@ -786,18 +985,36 @@ public sealed partial class OcrPage : Page
                 CueList.Items.Add(row);
             }
         }
-        while (CueList.Items.Count > cues.Length)
+        while (CueList.Items.Count > rows.Count)
             CueList.Items.RemoveAt(CueList.Items.Count - 1);
-        CueCountText.Text = $"{cues.Length} câu";
+        CueCountText.Text = _authoritative && _displayDropNote.Length > 0
+            ? $"{rows.Count} câu{_displayDropNote}"
+            : $"{rows.Count} câu";
         // Auto-follow: chỉ scroll khi có cue mới VÀ user đang ở cuối. User scroll lên xem
         // cue cũ => giữ nguyên vị trí; quay lại gần cuối => ViewChanged bật follow, resume.
         if (appended && _userAtEnd && CueList.Items.Count > 0)
             CueList.ScrollIntoView(CueList.Items[CueList.Items.Count - 1]);
         SyncCueSelection(Timeline.Value);
+        UpdateManualEditButtons();
+    }
+
+    // Dòng tạm lúc đang quét (bản chất chưa chốt): giữ nguyên logic cũ — ẩn cue
+    // journal-drop, hiện chữ journal-fix, lọc phantom như Cleanup. Chữ/giờ/STT
+    // ở đây là preview, file SRT cuối vẫn do pipeline chốt.
+    private IReadOnlyList<OcrExportRow> BuildProvisionalRows()
+    {
+        var ordered = _cues.OrderBy(cue => cue.Start).ToArray();
+        return ordered.Where((cue, index) =>
+            !IsDroppedByFilter(cue) && !OcrTextCleanup.IsPhantom(cue,
+                index > 0 ? ordered[index - 1] : null,
+                index < ordered.Length - 1 ? ordered[index + 1] : null))
+            .Select(cue => new OcrExportRow(cue.Start, cue.End, DisplayTextFor(cue), cue.NeedsReview))
+            .ToArray();
     }
 
     private async void CueList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        UpdateManualEditButtons();
         if (_syncingCue || CueList.SelectedIndex < 0 || CueList.SelectedIndex >= _visibleCues.Count) return;
         var cue = _visibleCues[CueList.SelectedIndex];
         try
@@ -815,6 +1032,101 @@ public sealed partial class OcrPage : Page
         {
             _syncingTimeline = false;
         }
+    }
+
+    // Xoá/hoàn-tác tay trên danh sách ĐÃ CHỐT (21/09): thao tác chỉ ghi/gỡ sổ
+    // loại trừ (.exclude.json) — checkpoint giữ nguyên, list & SRT đi qua cùng
+    // OcrExportPipeline nên câu biến mất/trở lại và số thứ tự tự dồn ngay.
+    // Chỉ cho phép ở chế độ authoritative (quét xong/tạm dừng): list đang quét
+    // là tạm, text trên dòng chưa chắc khớp cue gốc để ghi exclusion đúng.
+    private void UpdateManualEditButtons()
+    {
+        DeleteCueButton.IsEnabled = _authoritative
+            && CueList.SelectedIndex >= 0
+            && CueList.SelectedIndex < _visibleCues.Count;
+        UndoDeleteCueButton.IsEnabled = _manualDeletes.Count > 0;
+    }
+
+    private void ResetManualEdits()
+    {
+        _manualDeletes.Clear();
+        UpdateManualEditButtons();
+    }
+
+    private async void DeleteCue_Click(object sender, RoutedEventArgs e) =>
+        await DeleteSelectedCueAsync();
+
+    private void CueList_KeyDown(object sender, KeyRoutedEventArgs e)
+    {
+        if (e.Key != Windows.System.VirtualKey.Delete || !DeleteCueButton.IsEnabled) return;
+        e.Handled = true;
+        _ = DeleteSelectedCueAsync();
+    }
+
+    private async Task DeleteSelectedCueAsync()
+    {
+        if (!_authoritative || CueList.SelectedIndex < 0 || CueList.SelectedIndex >= _visibleCues.Count)
+        {
+            StatusText.Text = "Chỉ xóa tay khi danh sách đã chốt (quét xong/tạm dừng).";
+            return;
+        }
+        var row = _visibleCues[CueList.SelectedIndex];
+        var rowNumber = CueList.SelectedIndex + 1;
+        // Dòng hiển thị có thể đang là chữ ĐÃ FIX — exclusion phải ghi chữ GỐC
+        // của cue trong checkpoint thì export mới khớp (match Start ±1ms + Text).
+        var cue = _cues.LastOrDefault(candidate =>
+            Math.Abs(candidate.Start - row.Start) <= OcrExportExclusions.StartToleranceSeconds);
+        if (cue is null)
+        {
+            StatusText.Text = "Không tìm thấy cue gốc khớp dòng này; không ghi gì.";
+            return;
+        }
+        try
+        {
+            var request = _checkpointRequest ?? BuildRequest();
+            var entry = new OcrCueExclusion(cue.Start, cue.Text);
+            var added = await _application.AppendOcrExclusionsAsync(request,
+                [entry], CancellationToken.None);
+            if (added > 0)
+            {
+                _manualDeletes.Push((entry, rowNumber));
+                StatusText.Text = $"Đã xóa câu {rowNumber} — danh sách và SRT tự dồn số. Bấm \"Hoàn tác xóa\" để khôi phục.";
+            }
+            else
+            {
+                StatusText.Text = $"Câu {rowNumber} đã nằm trong sổ loại trừ từ trước.";
+            }
+            await ReloadDisplayRowsAsync();
+        }
+        catch (Exception error)
+        {
+            StatusText.Text = error.Message;
+        }
+        UpdateManualEditButtons();
+    }
+
+    private async void UndoDeleteCue_Click(object sender, RoutedEventArgs e) =>
+        await UndoDeleteAsync();
+
+    private async Task UndoDeleteAsync()
+    {
+        if (_manualDeletes.Count == 0) return;
+        var (entry, rowNumber) = _manualDeletes.Pop();
+        try
+        {
+            var request = _checkpointRequest ?? BuildRequest();
+            var removed = await _application.RemoveOcrExclusionsAsync(request, [entry], CancellationToken.None);
+            StatusText.Text = removed > 0
+                ? $"Đã khôi phục câu {rowNumber} — danh sách và SRT tự dồn lại."
+                : "Sổ loại trừ không còn entry này (có thể đã gỡ ngoài app).";
+            await ReloadDisplayRowsAsync();
+        }
+        catch (Exception error)
+        {
+            _manualDeletes.Push((entry, rowNumber));
+            StatusText.Text = error.Message;
+        }
+        UpdateManualEditButtons();
     }
 
     private void RefreshRegionActions()

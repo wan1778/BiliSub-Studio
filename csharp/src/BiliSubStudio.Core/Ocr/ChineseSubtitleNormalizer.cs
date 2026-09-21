@@ -51,8 +51,12 @@ public static partial class ChineseSubtitleNormalizer
 
         // Keep mixed Chinese tokens such as B站, VIP会员 or OpenAI模型, but reject
         // standalone Latin OCR noise such as ABC or A N that should never enter Chinese SRT.
+        // Digit-led alphanumeric tokens count too (map/UI junk "7or", damage numbers):
+        // legit mixed tokens never stand alone with spaces (B站/VIP会员/OpenAI模型
+        // attach directly to Han). (Digit-only strings are rejected separately by
+        // the Han-required rule below.)
         if (Regex.IsMatch(output,
-                @"(?:^|\s)[A-Za-z]+(?=\s|[，。！？、；：,.!?…]|$)",
+                @"(?:^|\s)[A-Za-z0-9]*[A-Za-z][A-Za-z0-9]*(?=\s|[，。！？、；：,.!?…]|$)",
                 RegexOptions.CultureInvariant))
         {
             output = string.Empty;

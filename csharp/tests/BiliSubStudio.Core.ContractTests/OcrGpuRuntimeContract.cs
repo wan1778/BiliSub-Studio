@@ -45,7 +45,7 @@ internal static class OcrGpuRuntimeContract
                 var image = await File.ReadAllBytesAsync(imagePath);
                 var run = workerType.GetMethod("RunAsync")?.Invoke(
                     worker,
-                    [Convert.ToBase64String(image), CancellationToken.None, false, null]) as Task
+                    [Convert.ToBase64String(image), CancellationToken.None, false, null, Type.Missing]) as Task
                     ?? throw new InvalidOperationException("OCR worker inference did not return Task");
                 await run;
                 var result = run.GetType().GetProperty("Result")?.GetValue(run) as OcrResult

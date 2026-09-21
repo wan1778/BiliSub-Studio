@@ -36,7 +36,30 @@ public sealed class OcrLiveTailReconciler : IDisposable
     public long AppliedRevision { get { lock (_gate) return _appliedRevision; } }
 
     // Authoritative committed view (đã reconcile tới AppliedRevision). Copy để UI render.
+    // LƯU Ý PERF (lag cuối scan 15/9, pause tại 24:27 với ~9000 cue): CommittedView copy
+    // toàn bộ _view mỗi lần gọi. PublishTelemetry chạy 8 lane × mỗi 500ms = 16 copy/s
+    // của cả lịch sử -> càng về cuối càng đơ (nhảy 2-5s/frame). Đường telemetry PHẢI
+    // dùng GetTailBelow (chỉ lấy đuôi dưới frontier, 1 lần lock, không copy full).
     public IReadOnlyList<OcrCue> CommittedView { get { lock (_gate) return _view.ToArray(); } }
+
+    // Tail-only snapshot cho telemetry: lấy tối đa `limit` cue có Start <= frontier,
+    // duyệt ngược từ cuối (đã sort) nên cost hằng số, không tăng theo độ dài scan.
+    // Kết quả Y HỆT vòng lặp tail cũ trong PublishTelemetry, chỉ khác là không copy full.
+    public List<OcrCue> GetTailBelow(double frontier, int limit)
+    {
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            var tail = new List<OcrCue>(Math.Min(limit, _view.Count));
+            for (var index = _view.Count - 1; index >= 0 && tail.Count < limit; index--)
+            {
+                var cue = _view[index];
+                if (cue.Start <= frontier + .001) tail.Add(cue);
+            }
+            tail.Reverse();
+            return tail;
+        }
+    }
 
     // Ghép active provisional để hiển thị; active KHÔNG thành committed, không vào _view.
     public IReadOnlyList<OcrCue> ViewWithActive(OcrCue? active)
@@ -51,21 +74,41 @@ public sealed class OcrLiveTailReconciler : IDisposable
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            var added = false;
-            foreach (var cue in cues)
+            var batch = cues as IList<OcrCue> ?? cues.ToList();
+            if (batch.Count == 0) return;
+            // PERF (lag cuối scan): _committed luôn giữ sorted. Trường hợp thường gặp là
+            // cue mới tới đúng thứ tự (nối tiếp tail) -> chỉ sort batch nhỏ rồi nối đuôi,
+            // thay vì sort lại toàn bộ history mỗi lần commit. Chỉ sort full khi batch tới
+            // out-of-order (multi-lane arrival muộn). Kết quả cuối Y HỆT như trước.
+            var ordered = batch.OrderBy(cue => cue.Start).ThenBy(cue => cue.End).ToList();
+            var inOrder = _committed.Count == 0
+                || CompareCue(ordered[0], _committed[^1]) >= 0;
+            if (inOrder) _committed.AddRange(ordered);
+            else if (ordered.Count * 32 < _committed.Count)
             {
-                _committed.Add(cue);
-                added = true;
+                // PERF (lag cuối scan): batch muộn nhỏ (multi-lane arrival) chèn nhị phân
+                // từng cue, O(m log n) thay vì sort lại toàn bộ O(n log n) mỗi lần commit.
+                // Kết quả Y HỆT sort full (cùng CompareCue).
+                foreach (var cue in ordered)
+                {
+                    var at = _committed.BinarySearch(cue, Comparer<OcrCue>.Create(CompareCue));
+                    _committed.Insert(at < 0 ? ~at : at, cue);
+                }
             }
-            if (!added) return;
-            _committed.Sort(static (a, b) =>
+            else
             {
-                var byStart = a.Start.CompareTo(b.Start);
-                return byStart != 0 ? byStart : a.End.CompareTo(b.End);
-            });
+                _committed.AddRange(ordered);
+                _committed.Sort(CompareCue);
+            }
             _revision++;
         }
         Pulse();
+    }
+
+    private static int CompareCue(OcrCue a, OcrCue b)
+    {
+        var byStart = a.Start.CompareTo(b.Start);
+        return byStart != 0 ? byStart : a.End.CompareTo(b.End);
     }
 
     public void ResetCommitted(IEnumerable<OcrCue> cues)
@@ -75,14 +118,18 @@ public sealed class OcrLiveTailReconciler : IDisposable
             ObjectDisposedException.ThrowIf(_disposed, this);
             _committed.Clear();
             _committed.AddRange(cues);
-            _committed.Sort(static (a, b) =>
-            {
-                var byStart = a.Start.CompareTo(b.Start);
-                return byStart != 0 ? byStart : a.End.CompareTo(b.End);
-            });
+            _committed.Sort(CompareCue);
+            // Resume/lane-recovery path: expose the restored history immediately
+            // (same normalization as the sync path, no pixel work) instead of
+            // re-running pixel reconciliation over the whole bulk, which stalls
+            // live telemetry until thousands of FFmpeg comparisons finish and
+            // leaves the UI list blank. New appends still get incremental
+            // pixel-gated tail reconciliation through the normal loop.
+            _view = OcrCueReconciler.MergeTouchingIdentical(_committed).ToList();
             _covered.Clear();
-            _view = [];
+            foreach (var cue in _committed) _covered.Add(cue);
             _revision++;
+            _appliedRevision = _revision;
         }
         Pulse();
     }

@@ -146,6 +146,13 @@ public sealed class AppJob : IDisposable
         lock (_gate)
         {
             _logs.Add($"{DateTime.Now:HH:mm:ss}  {message}");
+            // PERF (lag cuối scan): log hiển thị trên UI chỉ cần đuôi gần nhất;
+            // log đầy đủ đã ghi ra application.log qua _applicationLog. Giữ tối đa
+            // 2000 dòng để Snapshot().Skip().ToArray() (poll 250ms) không duyệt
+            // lại hàng chục nghìn dòng mỗi lần.
+            const int maxUiLogLines = 2000;
+            if (_logs.Count > maxUiLogLines)
+                _logs.RemoveRange(0, _logs.Count - maxUiLogLines);
         }
         switch (level)
         {

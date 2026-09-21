@@ -1,8 +1,12 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Channels;
+using BiliSubStudio.Core.Configuration;
+using BiliSubStudio.Core.Editor;
 using BiliSubStudio.Core.Hardware;
 using BiliSubStudio.Core.Jobs;
 using BiliSubStudio.Core.Processes;
@@ -25,15 +29,23 @@ public sealed class OcrScanner
     private readonly OcrManager _ocr;
     private readonly HardwareService _hardware;
     private readonly OcrCheckpointStore _checkpoints;
+    private readonly OcrSidecarStore _sidecars;
+    private readonly LocalAsrService? _asr;
     private OwnedProcessGroup? _activeProcesses;
+    // Probe/sidecar cache app-lifetime: metadata video tĩnh, key = vân file
+    // (đổi file là miss). Null chỉ cache memory (lỗi thoáng không poison disk).
+    private readonly ConcurrentDictionary<string, VideoProbe?> _probeCache = new();
+    private readonly ConcurrentDictionary<string, OcrSidecar.SidecarDocument?> _sidecarDocs = new();
 
-    internal OcrScanner(ToolManager tools, ProcessRunner processes, OcrManager ocr, HardwareService hardware, OcrCheckpointStore checkpoints)
+    internal OcrScanner(ToolManager tools, ProcessRunner processes, OcrManager ocr, HardwareService hardware, OcrCheckpointStore checkpoints, AppPaths paths, LocalAsrService? asrService = null)
     {
         _tools = tools;
         _processes = processes;
         _ocr = ocr;
         _hardware = hardware;
         _checkpoints = checkpoints;
+        _sidecars = new OcrSidecarStore(paths.Data);
+        _asr = asrService;
     }
 
     public async Task<OcrResult> RecognizeFrameAsync(string path, double at, OcrRegion region, string device, CancellationToken cancellationToken)
@@ -52,9 +64,20 @@ public sealed class OcrScanner
         return result;
     }
 
-    public async Task<OcrScanResult> RunAsync(AppJob job, OcrScanRequest request, OcrScanStartMode startMode)
+    public async Task<OcrScanResult> RunAsync(AppJob job, OcrScanRequest request, OcrScanStartMode startMode, OcrRegion? resumeRegionOverride = null)
     {
         request = request with { Region = OcrCheckpointStore.CanonicalRegion(request.Region) };
+        // Tiep tuc sau khi sua ROI luc tam dung: checkpoint key TINH THEO request goc
+        // (doi ROI la doi key -> mat checkpoint), con quet dung ROI moi.
+        // keyRequest cho moi op checkpoint; request cho moi thu con lai.
+        // Override chi co nghia o Resume; Fresh bo qua (khong bao gio doi key ngam).
+        var keyRequest = request;
+        if (startMode == OcrScanStartMode.Resume && resumeRegionOverride is not null)
+        {
+            var effective = OcrCheckpointStore.CanonicalRegion(resumeRegionOverride);
+            if (!effective.Equals(request.Region))
+                request = request with { Region = effective };
+        }
         var processes = new OwnedProcessGroup();
         if (Interlocked.CompareExchange(ref _activeProcesses, processes, null) is not null)
         {
@@ -63,7 +86,7 @@ public sealed class OcrScanner
         }
         try
         {
-            return await RunCoreAsync(job, request, startMode, processes);
+            return await RunCoreAsync(job, request, keyRequest, startMode, processes);
         }
         catch (Exception) when (job.CancellationToken.IsCancellationRequested)
         {
@@ -71,7 +94,7 @@ public sealed class OcrScanner
             // Python worker is stopped, and the exact checkpoint identity is verified absent.
             await processes.StopAsync();
             await _ocr.StopAsync();
-            await _checkpoints.RemoveAsync(request, CancellationToken.None);
+            await _checkpoints.RemoveAsync(keyRequest, CancellationToken.None);
             throw new OperationCanceledException(job.CancellationToken);
         }
         finally
@@ -83,9 +106,35 @@ public sealed class OcrScanner
 
     internal int ActiveProcessCount => Volatile.Read(ref _activeProcesses)?.ActiveCount ?? 0;
 
+    // Scope vét batch của scan đang chạy (ambient theo async-flow: lane/canary/audit
+    // đều chảy từ RunCoreAsync nên thấy; scan khác không thấy). Null = đi đường cũ.
+    private static readonly AsyncLocal<OcrManager.OcrBatchScope?> _ambientBatchScope = new();
+
     private async Task<OcrScanResult> RunCoreAsync(
         AppJob job,
         OcrScanRequest request,
+        OcrScanRequest keyRequest,
+        OcrScanStartMode startMode,
+        OwnedProcessGroup processes)
+    {
+        // Scope vét batch theo scan (cap=1 lúc này = đường cũ y hệt; mở 8 sau parity).
+        // Dispose cuối scan (sau lane). finally dọn ambient để scan sau không thấy scope chết.
+        await using var batchScope = _ocr.CreateBatchScope(job.CancellationToken);
+        _ambientBatchScope.Value = batchScope;
+        try
+        {
+            return await RunCoreInnerAsync(job, request, keyRequest, startMode, processes);
+        }
+        finally
+        {
+            _ambientBatchScope.Value = null;
+        }
+    }
+
+    private async Task<OcrScanResult> RunCoreInnerAsync(
+        AppJob job,
+        OcrScanRequest request,
+        OcrScanRequest keyRequest,
         OcrScanStartMode startMode,
         OwnedProcessGroup processes)
     {
@@ -93,13 +142,74 @@ public sealed class OcrScanner
         var source = Path.GetFullPath(request.Path.Trim());
         if (!File.Exists(source) || new FileInfo(source).Length <= 0) throw new FileNotFoundException("Thiếu video nguồn.", source);
         if (request.Duration <= 0) throw new ArgumentException("Thiếu thời lượng video.");
+        // Sidecar identity: vân file cho probe/VAD/pxv cache (đổi file là miss).
+        // Doc sidecar cập nhật dần trong scan (probe → VAD → pxv), lưu best-effort.
+        var fileIdentity = OcrSidecar.FileIdentity.FromFile(source);
+        OcrSidecar.SidecarDocument? sidecarDoc = null;
+        long sidecarProbeHits = 0;
+        long sidecarVadHits = 0;
+        // E.0 pre-flight TRUOC Fresh-remove: input hong thi dung, giu checkpoint cu.
+        var inputHealth = await OcrInputHealth.CheckAsync(_tools, _processes, source, token);
+        foreach (var warning in inputHealth.Warnings) job.Warn("Input health: " + warning);
+        if (!inputHealth.Passed)
+            throw new InvalidDataException("Input health FAIL, không quét: " + string.Join(" · ", inputHealth.Failures));
+        job.Log($"Input health PASS: {inputHealth.Width}x{inputHealth.Height} {inputHealth.AvgFps:0.00}fps "
+            + $"tb {inputHealth.TimeBaseNum}/{inputHealth.TimeBaseDen} "
+            + (inputHealth.HasAudio ? "có tiếng (VAD chạy)" : "không tiếng (VAD nghỉ)") + " "
+            + $"PTS {inputHealth.PtsChecked} frame đầu đơn điệu.");
+        if (!keyRequest.Region.Equals(request.Region))
+            job.Warn("Tiếp tục với ROI mới sửa lúc tạm dừng: checkpoint giữ theo ROI cũ; cue trước/sau điểm nối khác Geometry nên tách an toàn, không gộp sai.");
         if (startMode == OcrScanStartMode.Fresh)
-            await _checkpoints.RemoveAsync(request, token);
+        {
+            await _checkpoints.RemoveAsync(keyRequest, token);
+            // Lọc thời gian: Fresh = chấm lại từ đầu — xóa journal cũ (verdict
+            // của lần trước/logic cũ không được dedup chặn chấm lại).
+            try { File.Delete(OcrVerdictJournal.JournalPath(source, string.Empty)); } catch { }
+        }
         var saved = startMode == OcrScanStartMode.Resume
-            ? await _checkpoints.LoadAsync(request, token)
+            ? await _checkpoints.LoadAsync(keyRequest, token)
             : null;
         if (startMode == OcrScanStartMode.Resume && saved is null)
             throw new InvalidOperationException("Không còn checkpoint OCR phù hợp để tiếp tục. Hãy Quét từ đầu.");
+
+        // Phase 0 — tai nghe trước (Whisper, 17/09): 1 lần/video (checkpoint
+        // nên quét lại gần như miễn phí), chạy TRƯỚC khi dựng worker OCR để
+        // không tranh VRAM. Tai cho 2 thứ: timeline im-lặng (lane bỏ qua OCR
+        // chỗ im -> nhanh) + chữ đã nghe (judge đối chiếu tai-mắt). Hỏng/
+        // thiếu/không tiếng -> quét chay như cũ (fail-open, không chặn scan).
+        IReadOnlyList<EditorSpeechSegment> speechSegments = [];
+        VadTimeline? whisperTimeline = null;
+        if (inputHealth.HasAudio && _asr is not null)
+        {
+            try
+            {
+                var speech = await RunWhisperPhaseAsync(job, source, request.Duration, token);
+                if (speech is { Segments.Count: > 0 })
+                {
+                    speechSegments = speech.Segments;
+                    whisperTimeline = OcrSpeechMatch.BuildTimeline(speechSegments, request.Duration);
+                    var speechSeconds = speechSegments.Sum(segment =>
+                        Math.Max(0, Math.Min(segment.End, request.Duration) - Math.Max(0, segment.Start)));
+                    job.Log($"Tai nghe: {speechSegments.Count} đoạn thoại "
+                        + $"({speechSeconds:0}s có tiếng / {request.Duration:0}s) — lane bỏ qua OCR chỗ im lặng, judge đối chiếu chữ tai-mắt.");
+                    // Vùng quét kỹ, phương án A (18/09): khe im > 60s thì OCR
+                    // mọi frame trong đó (đánh Suspicious) — sub-không-tiếng /
+                    // fade-in trong đoạn im dài không thoát. Judge/guard đọc
+                    // segment gốc nên không ảnh hưởng.
+                    var longSilences = OcrSpeechMatch.FindLongSilences(speechSegments, request.Duration);
+                    if (longSilences.Count > 0)
+                    {
+                        OcrSpeechMatch.MarkLongSilences(whisperTimeline, longSilences);
+                        var zoneSeconds = longSilences.Sum(zone => Math.Max(0, zone.End - zone.Start));
+                        var zoneSamples = string.Join(" · ", longSilences.Select(zone =>
+                            FormattableString.Invariant($"{zone.Start:0}s–{zone.End:0}s")));
+                        job.Log($"Quét kỹ {longSilences.Count} đoạn im dài ({zoneSeconds:0}s): {zoneSamples} — OCR mọi frame, tắt skip trong đó.");
+                    }
+                }
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception error) { job.Warn("Whisper lỗi (quét chay, không đối chiếu tai-mắt): " + Compact(error.Message)); }
+        }
 
         // A Hybrid request may have explicitly fallen back to GPU. Resume the
         // persisted device mode, not a newly selected interpretation of the request.
@@ -155,7 +265,7 @@ public sealed class OcrScanner
         var configuredWorkerKinds = _ocr.Status.WorkerKinds;
         if (configuredWorkers != OcrTopologyBenchmark.WorkerTarget(_ocr.Status.ActiveMode, selected))
             throw new InvalidDataException($"OCR topology chưa khóa đúng: {selected} FFmpeg lane nhưng có {configuredWorkers} Python worker.");
-        var checkpoint = saved ?? (await _checkpoints.NewAsync(request, selected, token)) with
+        var checkpoint = saved ?? (await _checkpoints.NewAsync(keyRequest, selected, token)) with
         {
             Workers = configuredWorkers,
             WorkerMode = _ocr.Status.ActiveMode,
@@ -163,8 +273,111 @@ public sealed class OcrScanner
         selected = checkpoint.SelectedParallelism;
         if (checkpoint.Lanes.Count != selected)
             throw new InvalidDataException($"OCR checkpoint topology không hợp lệ: {checkpoint.Lanes.Count}/{selected} lane.");
+        // Tự nhận diện kiểu sub (16/09, khỏi gạt tay): chụp khung cách đều, cắt
+        // đúng ROI, worker đo vành chữ -> vote mức lọc cho CẢ lượt quét. Mọi lỗi
+        // -> "off" (y hệt cũ, không mất chữ). Mỗi lượt GÁN LẠI từ đầu nên không
+        // rò sang lượt khác.
+        var styleMode = await ProbeSubtitleStyleAsync(job, ffmpeg, source, request, token);
+        OcrWorkerClient.AmbientStyleFilter.Value = styleMode == "off" ? null : styleMode;
+        job.Log(styleMode == "off"
+            ? "Tách chữ khỏi nền: không rõ kiểu sub (chữ màu/không đo được) -> không lọc, quét như cũ."
+            : $"Tách chữ khỏi nền: sub {OcrSubtitleStyle.Describe(styleMode)} (tự đo lúc bắt đầu) -> lọc trước khi đọc.");
+        // P0 container-padding: file co the het stream truoc container (p02: stream
+        // 6726.667s, container 6726.914s). Lane cuoi doi toi CoreEnd-container thi
+        // ValidateLaneCoverage fail vinh vien, retry mai khong qua, job chet.
+        // Kep CoreEnd/ScanEnd lane cuoi theo stream thuc do + log truy duoc.
+        // Neu lane da quet toi noi thi danh dau xong (padding khong co frame nen
+        // khong the co sub); nguoc lai resume binh thuong tu checkpoint.
+        {
+            double streamEnd = 0;
+            try
+            {
+                var (padProbe, padDoc, padHit) = await ProbeVideoAsync(source, fileIdentity, token);
+                sidecarDoc = padDoc ?? sidecarDoc;
+                if (padHit) sidecarProbeHits++;
+                streamEnd = padProbe?.StreamDurationSeconds ?? 0;
+            }
+            catch (OperationCanceledException) { throw; }
+            catch { }
+            var last = checkpoint.Lanes[^1];
+            var clampedEnd = OcrInputHealth.ClampStreamEnd(last.Segment.CoreEnd, streamEnd);
+            if (clampedEnd < last.Segment.CoreEnd)
+            {
+                var done = last.MediaSeconds + 0.1 >= clampedEnd;
+                var fixedLanes = checkpoint.Lanes.ToList();
+                fixedLanes[^1] = last with
+                {
+                    Segment = last.Segment with
+                    {
+                        CoreEnd = clampedEnd,
+                        ScanEnd = Math.Min(last.Segment.ScanEnd, clampedEnd),
+                    },
+                    MediaSeconds = done ? clampedEnd : last.MediaSeconds,
+                    Completed = last.Completed || done,
+                };
+                checkpoint = checkpoint with { Lanes = fixedLanes };
+                job.Warn($"Input padding cuoi file: lane cuoi {last.Segment.Index + 1} kep {FormatClock(last.Segment.CoreEnd)} ve {FormatClock(clampedEnd)} theo stream thuc "
+                    + (done ? "(da quet toi noi: danh dau xong, khong quet lai padding khong frame)." : "(resume tiep tu checkpoint)."));
+            }
+        }
         if (configuredWorkers != checkpoint.Workers)
             throw new InvalidDataException($"OCR checkpoint yêu cầu {selected} lane nhưng worker pool đang có {configuredWorkers}.");
+        // E.5 VAD NỀN (vụ sidecar chặn phiên 20:34 15/9): decode audio KHÔNG chặn lane nữa.
+        // Miss sidecar -> decode chạy nền song song, lane chạy trước với vad=null
+        // (vote=Suspicious = đúng luật thiếu-tín-hiệu, council không skip khi chưa có tai);
+        // xong tự gắn vào council + lưu sidecar. Hit sidecar -> dùng ngay như cũ.
+        // Hủy scan -> nền tự chết theo token, không níu. Không tiếng -> nghỉ (E.0 đã báo).
+        VadTimeline? vadSnapshot = null;
+        Func<VadTimeline?> vadSource = () => Volatile.Read(ref vadSnapshot);
+        // Tai nghe (Whisper) ưu tiên cao nhất: timeline im-lặng từ đoạn thoại
+        // thật chính xác hơn VAD năng lượng (báo-im-sai từng ăn chữ thật nên
+        // council skip bị tắt 16/09 — Whisper chính là "VAD được sửa" để mở lại).
+        // Không tai -> sidecar/energy như cũ.
+        if (whisperTimeline is not null)
+        {
+            vadSnapshot = whisperTimeline;
+            job.Log($"VAD từ tai nghe Whisper: {whisperTimeline.Flags.Length} khung 0.2s "
+                + "(có tiếng -> quét, im lặng -> council được skip khi các cổng khác đồng ý).");
+        }
+        else if (inputHealth.HasAudio)
+        {
+            vadSnapshot = OcrSidecar.ToTimeline(sidecarDoc?.Vad);
+            if (vadSnapshot is not null)
+            {
+                sidecarVadHits++;
+                job.Log($"VAD từ sidecar cạnh video: {vadSnapshot.Flags.Length} khung 0.2s, khỏi decode audio.");
+            }
+            else
+            {
+                job.Log("VAD miss sidecar: decode audio chạy NỀN song song lane (lane không đợi); xong tự gắn vào council + lưu sidecar.");
+                var vadWatch = Stopwatch.StartNew();
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        var background = await OcrVadProbe.DecodeAsync(_tools, _processes, source, token);
+                        if (background is null)
+                        {
+                            job.Warn("VAD vang mat (khong giai ma duoc audio): tai nghi, mat (B/C) quyet theo luat dong thuan.");
+                            return;
+                        }
+                        Volatile.Write(ref vadSnapshot, background);
+                        job.Log($"VAD nền xong trong {vadWatch.Elapsed.TotalSeconds:0.0}s: {background.Flags.Length} khung 0.2s — council đã gắn, lưu sidecar.");
+                        if (fileIdentity is not null)
+                        {
+                            // Best-effort: copy Pixel hiện tại để không chà đè verdict pxv của phiên.
+                            var updated = new OcrSidecar.SidecarDocument(
+                                sidecarDoc?.Identity ?? fileIdentity, sidecarDoc?.Probe,
+                                OcrSidecar.FromTimeline(background), sidecarDoc?.Pixel);
+                            sidecarDoc = updated;
+                            try { await _sidecars.SaveAsync(fileIdentity.Path, updated, CancellationToken.None); } catch { }
+                        }
+                    }
+                    catch (OperationCanceledException) { }
+                    catch (Exception error) { job.Warn("VAD nền lỗi (bỏ qua, council chạy mù): " + Compact(error.Message)); }
+                }, CancellationToken.None);
+            }
+        }
         job.Log(saved is null
             ? $"OCR Commit: benchmark xong, khóa {selected} pipeline = {selected} FFmpeg lane + {configuredWorkers} Python worker ({configuredWorkerKinds})."
             : $"Resume checkpoint schema {checkpoint.Schema}: giữ topology {selected} = {selected} FFmpeg lane + {configuredWorkers} Python worker ({configuredWorkerKinds}).");
@@ -174,6 +387,9 @@ public sealed class OcrScanner
         // phase above also flows through the same manager/queue counters.
         var telemetry = new OcrScanTelemetryCounters();
         telemetry.Touch();
+        // Sidecar hits xảy ra TRƯỚC khi telemetry ra đời (padding/VAD): dồn vào đây.
+        Interlocked.Add(ref telemetry.SidecarProbeHits, sidecarProbeHits);
+        Interlocked.Add(ref telemetry.SidecarVadHits, sidecarVadHits);
         var inferenceBefore = _ocr.GetInferenceTelemetry();
 
         var started = Stopwatch.StartNew();
@@ -203,7 +419,6 @@ public sealed class OcrScanner
             .ToArray();
         Exception? laneFailure = null;
         using var laneCancellation = CancellationTokenSource.CreateLinkedTokenSource(token);
-
         // Live incremental reconcile: tail committed cues được pixel-gate ngay trong lúc scan,
         // preview thay tail sạch không đợi Pause. Final ReconcileAsync bên dưới vẫn chạy safety pass.
         // Khai báo trước RunGuardedLaneAsync để local function capture hợp lệ.
@@ -216,11 +431,57 @@ public sealed class OcrScanner
         // scan mới/video khác luôn có instance (cache) mới — không leak xuyên video.
         // Không static/global. Key identity giữ nguyên, không nới lỏng.
         var sharedPixelComparer = new ProductionPixelComparer(_tools, _processes, _activeProcesses);
+        // Sidecar pxv: nạp verdict pixel scan trước (key chuẩn hóa theo vân file, xem OcrSidecar).
+        // Miss là bình thường (scan đầu/đổi ROI) — đường tính lại giữ nguyên bên dưới.
+        // Seed CHỈ thêm hit, không xóa/sửa gì của session này.
+        if (sidecarDoc?.Pixel is { } pxvSection && pxvSection.V == OcrSidecar.PixelVersion)
+        {
+            var seedEntries = new List<(long First, long Second, System.Drawing.Rectangle Crop, PixelCheckResult Result)>();
+            foreach (var entry in pxvSection.Entries)
+            {
+                if (OcrSidecar.FromEntry(entry) is { } decoded)
+                    seedEntries.Add((entry.First, entry.Second, decoded.Crop, decoded.Verdict));
+            }
+            if (seedEntries.Count > 0)
+            {
+                var seeded = 0;
+                try { seeded = sharedPixelComparer.Seed(source, seedEntries); } catch { seeded = 0; }
+                if (seeded > 0)
+                {
+                    Interlocked.Add(ref telemetry.SidecarPxvHits, seeded);
+                    job.Log($"Pixel từ sidecar cạnh video: {seeded} verdict nạp sẵn, khỏi decode lại frame.");
+                }
+            }
+        }
         using var liveTail = new OcrLiveTailReconciler();
         liveTail.ResetCommitted(liveCommitted);
         liveTail.Start(source, sharedPixelComparer, liveWindow,
             onError: error => job.Log("Live tail reconcile lỗi (preview giữ raw, final pass vẫn chạy): " + Compact(error.Message)),
             linkedToken: laneCancellation.Token);
+        // Lọc thời gian (17/09) nằm TRONG pipeline OCR: luôn chạy, KHÔNG toggle,
+        // KHÔNG key, KHÔNG AI. Sub cứng thật ĐỨNG YÊN qua nhiều frame (vị trí
+        // cố định), chữ trong video (trang sách/bối cảnh) DI CHUYỂN theo camera
+        // -> chụp 3 khung, OCR lại, so vị trí -> keep/drop. Journal file RIÊNG
+        // (verdict VLM cũ không được nạp — dedup sẽ chặn chấm lại). Dispose cuối
+        // scan + finally của await using cho mọi đường thoát.
+        var temporalJournal = OcrVerdictJournal.JournalPath(source, string.Empty);
+        await using var trailingJudge = OcrTrailingJudge.CreateTemporalLive(
+            _tools, _processes, _ocr, source, ffmpeg,
+            temporalJournal,
+            async (fix, token) => { await SaveFixesAsync(keyRequest, new[] { fix }, token); },
+            async (exclusion, token) => { await SaveExclusionsAsync(keyRequest, new[] { exclusion }, token); },
+            checkpoint.Lanes.Count,
+            inputHealth.Width,
+            inputHealth.Height,
+            speech: speechSegments);
+        job.Log($"Lọc thời gian: bật ({trailingJudge.Workers} luồng chấm theo {checkpoint.Lanes.Count} lane OCR) — sub đứng yên qua nhiều khung thì qua, chữ di chuyển (trang sách/bối cảnh) thì xóa khỏi SRT.");
+        // Tốc độ thật cho vụ số giả .5x: theo dõi trung bình + 5 phút + kẹt lane.
+        // Diagnostic thuần túy, không đụng scheduling/tracker/checkpoint nên resume-safe.
+        // Resume-base (vụ panel 281×): progress gieo sẵn checkpoint cũ nhưng đồng hồ bấm
+        // lại từ 0, nên tracker trừ mốc đầu phiên — mọi tốc độ là PHẦN LÀM THÊM / giờ chạy thêm.
+        var initialUnique = checkpoint.Lanes.Sum(x =>
+            Math.Max(0, Math.Min(x.Segment.CoreEnd, progress[x.Segment.Index]) - x.Segment.CoreStart));
+        var pace = new ScanPaceTracker(checkpoint.Lanes.Count, initialUnique);
 
         OcrParallelCheckpoint SnapshotRecoverableCheckpoint()
         {
@@ -239,12 +500,45 @@ public sealed class OcrScanner
         async Task SaveRecoverableCheckpointAsync()
         {
             await checkpointSaveGate.WaitAsync(CancellationToken.None);
+            var saveWatch = Stopwatch.StartNew();
             try
             {
                 var snapshot = SnapshotRecoverableCheckpoint();
-                await _checkpoints.SaveAsync(request, snapshot, CancellationToken.None);
+                await _checkpoints.SaveAsync(keyRequest, snapshot, CancellationToken.None);
             }
-            finally { checkpointSaveGate.Release(); }
+            finally
+            {
+                checkpointSaveGate.Release();
+                saveWatch.Stop();
+                Interlocked.Increment(ref telemetry.CheckpointSaves);
+                Interlocked.Add(ref telemetry.CheckpointSaveMs, saveWatch.ElapsedMilliseconds);
+            }
+        }
+
+        // Sidecar pxv dump: verdict pixel session này -> file đệm cạnh video để scan sau
+        // (finish/export/mở-checkpoint) khỏi decode lại frame. Best-effort TUYỆT ĐỐI:
+        // mọi lỗi nuốt lặng bên trong, không bao giờ giết lane hay checkpoint.
+        async Task FlushPixelSidecarAsync()
+        {
+            try
+            {
+                if (fileIdentity is null) return;
+                var snapshot = sharedPixelComparer.Snapshot();
+                if (snapshot.Count == 0) return;
+                var entries = new List<OcrSidecar.PixelEntry>(snapshot.Count);
+                foreach (var (first, second, crop, result) in snapshot)
+                {
+                    if (OcrSidecar.ToEntry(first, second, crop, result) is { } entry)
+                        entries.Add(entry);
+                }
+                if (entries.Count == 0) return;
+                sidecarDoc = new OcrSidecar.SidecarDocument(
+                    sidecarDoc?.Identity ?? fileIdentity,
+                    sidecarDoc?.Probe, sidecarDoc?.Vad,
+                    new OcrSidecar.PixelSection(OcrSidecar.PixelVersion, entries));
+                await _sidecars.SaveAsync(fileIdentity.Path, sidecarDoc, CancellationToken.None);
+            }
+            catch { }
         }
 
         using var checkpointWriterCancellation = new CancellationTokenSource();
@@ -254,7 +548,10 @@ public sealed class OcrScanner
             try
             {
                 while (await timer.WaitForNextTickAsync(checkpointWriterCancellation.Token))
+                {
                     await SaveRecoverableCheckpointAsync();
+                    await FlushPixelSidecarAsync();
+                }
             }
             catch (OperationCanceledException) when (checkpointWriterCancellation.IsCancellationRequested) { }
             catch (Exception error)
@@ -310,6 +607,13 @@ public sealed class OcrScanner
                                     // Trigger live tail reconcile đúng khi tracker commit boundary mới,
                                     // không phải mỗi frame. Worker serialize + revision-guard ở trong.
                                     if (owned.Count > 0) liveTail.AppendCommitted(owned);
+                                    // Chấm nền: chỉ cue đã chốt mới vào hàng (câu live đang mở không chấm).
+                                    // TryWrite không block — hàng đầy là bỏ + đếm, lane không đợi.
+                                    var (judgeAccepted, judgeSkipped) = trailingJudge.EnqueueCues(owned);
+                                    if (judgeAccepted > 0)
+                                        Interlocked.Add(ref telemetry.JudgeEnqueued, judgeAccepted);
+                                    if (judgeSkipped > 0)
+                                        Interlocked.Add(ref telemetry.JudgeSkipped, judgeSkipped);
                                     liveActive[lane.Segment.Index] = laneSnapshot.Active is not null
                                         && laneSnapshot.Active.Start >= lane.Segment.CoreStart
                                         && (isLast ? laneSnapshot.Active.Start <= lane.Segment.CoreEnd : laneSnapshot.Active.Start < lane.Segment.CoreEnd)
@@ -317,10 +621,10 @@ public sealed class OcrScanner
                                             : null;
                                     PublishTelemetry(
                                         job, checkpoint.Lanes, progress, frameProgress, imageProgress, completed,
-                                        configuredWorkers, configuredWorkerKinds, request.Duration, liveTail.CommittedView, liveActive,
-                                        started.Elapsed.TotalSeconds);
+                                        configuredWorkers, configuredWorkerKinds, request.Duration, liveTail, liveActive,
+                                        started.Elapsed.TotalSeconds, pace);
                                 }
-                            }, job, processes, telemetry, laneCancellation.Token);
+                            }, job, processes, telemetry, laneCancellation.Token, vadSource);
                         return outcome;
                     }
                     catch (Exception error) when (
@@ -339,13 +643,22 @@ public sealed class OcrScanner
                             token.ThrowIfCancellationRequested();
                             laneCancellation.Token.ThrowIfCancellationRequested();
                             var workerStatus = _ocr.Status;
-                             if (!workerStatus.Ready || workerStatus.Workers != configuredWorkers)
+                             if (!_ocr.IsPoolUsableForRetry())
                             {
+                                 // Pool chet han (kenh chet hoac 0 worker song): dung lai toan bo.
+                                 // Con lai (meo 1 slot nhung van chay) thi TUYET DOI khong rebuild:
+                                 // rebuild retire queue -> huy hang loat viec dang bay cua lane khac
+                                 // -> moi lane dot attempt -> rebuild storm (10:40 + 19:00 13/9).
+                                 // Slot hong do request-recovery (ReplaceWorkerAsync) tu va lazily.
                                  var restored = await _ocr.ConfigureWorkerPoolAsync(configuredWorkers, token);
                                 workerStatus = _ocr.Status;
                                  if (restored != configuredWorkers || !workerStatus.Ready || workerStatus.Workers != configuredWorkers)
                                     throw new InvalidOperationException(
                                          $"Cannot restore OCR: {selected} lanes, {workerStatus.Workers}/{configuredWorkers} workers.");
+                            }
+                            else if (!workerStatus.Ready || workerStatus.Workers != configuredWorkers)
+                            {
+                                job.Log($"OCR pool meo nhe (song {workerStatus.LiveWorkers}/{workerStatus.Workers}): bo qua rebuild giua scan; request-recovery tu va slot hong, lane retry tu checkpoint.");
                             }
 
                             OcrLaneCheckpoint restart;
@@ -425,8 +738,8 @@ public sealed class OcrScanner
                     }
                     PublishTelemetry(
                         job, checkpoint.Lanes, progress, frameProgress, imageProgress, completed,
-                        configuredWorkers, configuredWorkerKinds, request.Duration, liveTail.CommittedView, liveActive,
-                        started.Elapsed.TotalSeconds);
+                        configuredWorkers, configuredWorkerKinds, request.Duration, liveTail, liveActive,
+                        started.Elapsed.TotalSeconds, pace);
                 }
             }
         }
@@ -463,18 +776,88 @@ public sealed class OcrScanner
         }
         await StopCheckpointWriterAsync();
         await liveTail.StopAsync();
+        // Chấm nền: lane xong là hết câu mới — dừng service (ca dở chạy nốt rồi
+        // thôi), tóm tắt 1 dòng. Số còn lại hoãn cho lượt sau (nhật ký giữ ca xong).
+        var trailingStats = trailingJudge.Snapshot();
+        await trailingJudge.DisposeAsync();
+        if (trailingStats.Enqueued > 0)
+        {
+            job.Log($"Lọc thời gian: {trailingStats.Enqueued} ca vào hàng "
+                + $"({trailingStats.Judged} đã chấm: {trailingStats.Keeps} giữ (đứng yên)/{trailingStats.Deleted} xóa khỏi SRT (di chuyển); "
+                + $"{trailingStats.Duplicates} trùng/{trailingStats.QueueFullDropped} tràn hàng/{trailingStats.GrabFailed} lỗi frame/{trailingStats.Deferred} hoãn).");
+        }
 
         token.ThrowIfCancellationRequested();
         var paused = lanes.Any(x => !x.Completed) && job.IsPauseRequested;
         var exactWindow = liveWindow;
-        var (mergedAll, boundaryMerges) = await ReconcileAsync(lanes, source, sharedPixelComparer, token, exactWindow);
+        var lastReconcilePublish = 0L;
         var frontier = OcrCheckpointStore.ContiguousFrontier(lanes);
-        var merged = paused ? mergedAll.Where(x => x.Start <= frontier + 0.001).ToArray() : mergedAll;
+        IReadOnlyList<OcrCue> mergedAll;
+        int boundaryMerges;
+        IReadOnlyList<OcrCue> merged;
+        if (paused)
+        {
+            // Pause-nhanh (vụ chờ "tải song song 2529 frame" 15/9): reconcile pixel hàng nghìn
+            // frame là việc của FINISH/export, không phải của tạm dừng. Preview pause = câu
+            // lane-owned thô cắt theo frontier (đúng thứ vẫn thấy lúc quét), gộp pixel để dành
+            // finish/export/mở-checkpoint. BoundaryMerges giữ số cũ (grep toàn src: không chỗ
+            // nào đọc). Checkpoint vẫn đủ lanes để resume; finish về sau tính lại từ đầu.
+            job.Set("finalizing", 99.5, "Đang lưu checkpoint tạm dừng · bỏ qua ghép SRT (để dành lúc finish/xuất).");
+            mergedAll = BuildPausedPreview(lanes, frontier);
+            boundaryMerges = checkpoint.BoundaryMerges;
+            merged = mergedAll;
+        }
+        else
+        {
+            job.Set("finalizing", 99.5, "Đang chuẩn bị ghép SRT cuối · OCR đã xong.");
+            (mergedAll, boundaryMerges) = await ReconcileAsync(
+                lanes, source, sharedPixelComparer, token, exactWindow,
+                (current, total) =>
+                {
+                    var now = Stopwatch.GetTimestamp();
+                    if (current < total && lastReconcilePublish != 0
+                        && Stopwatch.GetElapsedTime(lastReconcilePublish, now) < TimeSpan.FromMilliseconds(500)) return;
+                    lastReconcilePublish = now;
+                    var fraction = total > 0 ? current / (double)total : 1;
+                    job.Set("finalizing", 99.5 + fraction * .4,
+                        $"Đang ghép SRT cuối · FFmpeg kiểm tra ranh giới {current:N0}/{total:N0} · OCR đã xong, ứng dụng không bị treo.");
+                },
+                (current, total) =>
+                {
+                    var now = Stopwatch.GetTimestamp();
+                    if (current < total && lastReconcilePublish != 0
+                        && Stopwatch.GetElapsedTime(lastReconcilePublish, now) < TimeSpan.FromMilliseconds(500)) return;
+                    lastReconcilePublish = now;
+                    var fraction = total > 0 ? current / (double)total : 1;
+                    job.Set("finalizing", 99.5 + fraction * .3,
+                        $"Đang ghép SRT cuối · tải song song frame {current:N0}/{total:N0} · OCR đã xong.");
+                },
+                speechSegments: speechSegments);
+            merged = mergedAll;
+            // Guard chữ nền tĩnh (18/09): bù cho việc bỏ drop-im-lặng — chữ
+            // banner/watermark đứng yên trong đoạn im phải bị bắt ở đây (ghi
+            // .exclude.json như judge drop nên list cuối = SRT theo đường cũ).
+            // Chỉ chạy ở finish (không chạy pause: resume-finish tính lại).
+            var bannerDrops = OcrBannerGuard.Evaluate(mergedAll, speechSegments, request.Duration);
+            if (bannerDrops.Count > 0)
+            {
+                var added = await SaveExclusionsAsync(keyRequest,
+                    bannerDrops.Select(drop => new OcrCueExclusion(drop.Start, drop.Text)).ToArray(),
+                    token);
+                var bannerSamples = string.Join(" · ", bannerDrops.Take(5).Select(drop =>
+                    FormattableString.Invariant($"{drop.Start:0.0}s {drop.Reason}")));
+                job.Log($"Guard banner: {bannerDrops.Count} câu chữ nền tĩnh loại khỏi SRT (+{added} mới): {bannerSamples}");
+            }
+            // Cảnh báo thiếu sub (18/09): chỉ báo, không sinh — người duyệt
+            // kiểm tra tay đoạn có tiếng mà không có sub nào.
+            foreach (var warning in OcrMissingSubWarning.Find(speechSegments, mergedAll, request.Duration))
+                job.Warn(warning);
+        }
         string? pauseMessage = null;
         if (paused)
         {
             var pausedCheckpoint = checkpoint with { Lanes = lanes.ToList(), BoundaryMerges = boundaryMerges };
-            await _checkpoints.SaveAsync(request, pausedCheckpoint, CancellationToken.None);
+            await _checkpoints.SaveAsync(keyRequest, pausedCheckpoint, CancellationToken.None);
             token.ThrowIfCancellationRequested();
             await processes.StopAsync();
             await _ocr.StopAsync();
@@ -482,23 +865,30 @@ public sealed class OcrScanner
                 throw new IOException($"Tạm dừng OCR chưa thu sạch tài nguyên: {processes.ActiveCount} FFmpeg/process tree · {_ocr.Status.Workers} Python worker.");
             pauseMessage = $"Đã tạm dừng an toàn tại {FormatClock(frontier)} · 0 Python worker · 0 FFmpeg/process tree.";
         }
-        else
-        {
-            await _checkpoints.RemoveAsync(request, CancellationToken.None);
-        }
+        // KHONG xoa checkpoint khi finish (sua 2026-09-14, vu mat file p06):
+        // export SRT chay SAU, o UI. Xoa truoc ma export hong (cong E.6 cu chan)
+        // thi mat ca hai, dung nhu loi backup da hua. Giu checkpoint completed lam
+        // duong lui cuoi (mo lai app van Tiep tuc/Xuat phuc hoi duoc); chi xoa khi
+        // Fresh moi (dau scan) hoac tay (Quet lai tu dau). Ton vai MB/video, re.
 
         var frames = lanes.Sum(x => x.Frames);
         var images = lanes.Sum(x => x.OcrImages);
         var media = lanes.Sum(x => Math.Max(0, Math.Min(x.Segment.CoreEnd, x.MediaSeconds) - x.Segment.CoreStart));
         LogScanTelemetry(job, telemetry, inferenceBefore, selected, configuredWorkers,
-            frames, images, media, started.Elapsed.TotalSeconds);
+            frames, images, media, started.Elapsed.TotalSeconds, mergedAll.Count(x => x.NeedsReview), initialUnique);
+        // Resume-base như live: media gieo sẵn checkpoint cũ, đồng hồ bấm lại từ 0.
+        var sessionMedia = Math.Max(0, media - initialUnique);
+        var sessionRealtime = started.Elapsed.TotalSeconds > 0 ? sessionMedia / started.Elapsed.TotalSeconds : 0;
         var result = new OcrScanResult(
             merged, frames, images, media, started.Elapsed.TotalSeconds,
-            started.Elapsed.TotalSeconds > 0 ? media / started.Elapsed.TotalSeconds : 0,
+            sessionRealtime,
             selected, lanes.Count(x => x.Completed), boundaryMerges, decoder,
             configuredWorkers, configuredWorkerKinds, frontier, mergedAll.Count, paused);
 
         job.SetResult(result);
+        // Dump pixel verdicts cuối phiên vào sidecar (best-effort, không throw):
+        // finish/export/mở-checkpoint lần sau khỏi decode lại frame đã verdict.
+        await FlushPixelSidecarAsync();
         if (paused)
         {
             job.PauseComplete(pauseMessage);
@@ -509,6 +899,11 @@ public sealed class OcrScanner
 
     public Task<OcrCheckpointInfo> InspectCheckpointAsync(OcrScanRequest request, CancellationToken cancellationToken) => _checkpoints.InspectAsync(request, cancellationToken);
     public Task RemoveCheckpointAsync(OcrScanRequest request, CancellationToken cancellationToken) => _checkpoints.RemoveAsync(request, cancellationToken);
+    public Task<IReadOnlyList<OcrCueExclusion>> LoadExclusionsAsync(OcrScanRequest request, CancellationToken cancellationToken) => _checkpoints.LoadExclusionsAsync(request, cancellationToken);
+    public Task<int> SaveExclusionsAsync(OcrScanRequest request, IReadOnlyList<OcrCueExclusion> additions, CancellationToken cancellationToken) => _checkpoints.SaveExclusionsAsync(request, additions, cancellationToken);
+    public Task<int> RemoveExclusionsAsync(OcrScanRequest request, IReadOnlyList<OcrCueExclusion> removals, CancellationToken cancellationToken) => _checkpoints.RemoveExclusionsAsync(request, removals, cancellationToken);
+    public Task<IReadOnlyList<OcrCueFix>> LoadFixesAsync(OcrScanRequest request, CancellationToken cancellationToken) => _checkpoints.LoadFixesAsync(request, cancellationToken);
+    public Task<int> SaveFixesAsync(OcrScanRequest request, IReadOnlyList<OcrCueFix> additions, CancellationToken cancellationToken) => _checkpoints.SaveFixesAsync(request, additions, cancellationToken);
 
     private async Task<int> SelectParallelismAsync(
         AppJob job,
@@ -699,9 +1094,10 @@ public sealed class OcrScanner
         int workers,
         string workerKinds,
         double duration,
-        IReadOnlyList<OcrCue> committedView,
+        OcrLiveTailReconciler liveTail,
         IReadOnlyList<OcrCue?> liveActive,
-        double elapsedSeconds)
+        double elapsedSeconds,
+        ScanPaceTracker pace)
     {
         var unique = lanes.Sum(x =>
             Math.Max(0, Math.Min(x.Segment.CoreEnd, progress[x.Segment.Index]) - x.Segment.CoreStart));
@@ -716,22 +1112,235 @@ public sealed class OcrScanner
                 break;
             }
         }
+        var scanStart = lanes.Count > 0 ? lanes.Min(lane => lane.Segment.CoreStart) : 0;
+        var frontierPercent = duration > 0
+            ? Math.Clamp((frontier - scanStart) / duration * 100, 0, 99.5)
+            : 0;
         var completedCount = completed.Count(x => x);
-        var active = Math.Max(0, lanes.Count - completedCount);
         // Preview live: committed tail đã qua pixel-gate incremental (OcrLiveTailReconciler),
         // active provisional ghép riêng để hiển thị, không thành authoritative. Final Finish/Export
         // dùng ReconcileAsync safety pass + _cues, cùng một collection semantics.
-        var recentCues = committedView
+        // PERF (lag cuối scan 15/9): tail lấy TRỰC TIẾP từ reconciler dưới 1 lock
+        // (GetTailBelow), không copy toàn bộ _view mỗi 500ms/lane. Kết quả Y HỆT vòng
+        // lặp tail cũ (tối đa 120 cue ở/below frontier) nhưng cost hằng số.
+        const int previewCueLimit = 120;
+        List<OcrCue> tail;
+        try { tail = liveTail.GetTailBelow(frontier, previewCueLimit); }
+        catch (ObjectDisposedException) { tail = []; }
+        var recentCues = tail
             .Concat(liveActive.Where(cue => cue is not null).Select(cue => cue!))
-            .OrderBy(cue => cue.Start).ThenBy(cue => cue.End)
             .Where(cue => cue.Start <= frontier + .001)
-            .TakeLast(120)
+            .OrderBy(cue => cue.Start).ThenBy(cue => cue.End)
+            .TakeLast(previewCueLimit)
             .ToArray();
-        job.Set("scanning", percent, $"Đang quét OCR · {lanes.Count} FFmpeg lane · {workers} worker · {percent:0.0}%");
+        // Số thật (vụ số giả .5x và panel 281×): trung bình phiên + tức thời 5 phút
+        // gần nhất + lane kẹt. unique gieo sẵn checkpoint cũ nhưng đồng hồ bấm lại từ 0
+        // khi resume, nên TRỪ mốc đầu phiên — mọi tốc độ là phần làm thêm / giờ chạy thêm.
+        // realtime trung bình phiên che đà chậm dần thì số 5p lột ra; lane đứng yên >3p báo tên.
+        var paceInfo = pace.Observe(unique, progress, completed);
+        var sessionUnique = Math.Max(0, unique - pace.BaseUnique);
+        var average = elapsedSeconds > 0 ? sessionUnique / elapsedSeconds : 0;
+        var instant = paceInfo.Instant > 0 ? paceInfo.Instant : average;
+        var stallNote = paceInfo.StalledLanes.Count == 0
+            ? string.Empty
+            : $" · kẹt lane {string.Join(",", paceInfo.StalledLanes)}>{ScanPaceTracker.StallSeconds / 60:0}p";
+        job.Set("scanning", percent,
+            $"Đang quét OCR · SRT liên tục {frontierPercent:0.0}% · tổng xử lý {percent:0.0}% · {completedCount}/{lanes.Count} lane xong · TB phiên {average:0.00}× · 5p {instant:0.00}×{stallNote}");
         job.SetResult(new OcrScanResult(
             recentCues, frames.Sum(), images.Sum(), unique, elapsedSeconds,
-            elapsedSeconds > 0 ? unique / elapsedSeconds : 0,
+            average,
             lanes.Count, completedCount, 0, "live", workers, workerKinds, frontier, recentCues.Length, false));
+    }
+
+    // Tốc độ thật theo thời gian: giữ mẫu (thời điểm, media ĐÃ TRỪ MỐC ĐẦU PHIÊN) trong
+    // cửa sổ 5 phút trượt; instant = delta media / delta giờ. Per-lane: nhớ media + mốc
+    // đổi cuối; lane chưa xong mà đứng yên quá StallSeconds thì liệt vào kẹt. Thuần
+    // diagnostic, không can thiệp scheduling/tracker/checkpoint.
+    private sealed class ScanPaceTracker
+    {
+        public const double WindowSeconds = 300;
+        public const double StallSeconds = 180;
+        private readonly record struct Sample(long Ticks, double Unique);
+        private readonly Queue<Sample> _window = new();
+        private readonly double[] _lastMedia;
+        private readonly long[] _lastChangeTicks;
+        private readonly bool[] _stallReported;
+
+        public double BaseUnique { get; }
+
+        public ScanPaceTracker(int lanes, double baseUnique)
+        {
+            BaseUnique = baseUnique;
+            _lastMedia = new double[Math.Max(0, lanes)];
+            _lastChangeTicks = new long[Math.Max(0, lanes)];
+            _stallReported = new bool[Math.Max(0, lanes)];
+            var now = Stopwatch.GetTimestamp();
+            for (var i = 0; i < _lastChangeTicks.Length; i++) _lastChangeTicks[i] = now;
+        }
+
+        public sealed record PaceInfo(double Average, double Instant, IReadOnlyList<int> StalledLanes);
+
+        public PaceInfo Observe(double unique, IReadOnlyList<double> progress, IReadOnlyList<bool> completed)
+        {
+            var now = Stopwatch.GetTimestamp();
+            var session = Math.Max(0, unique - BaseUnique);
+            _window.Enqueue(new Sample(now, session));
+            while (_window.Count > 1
+                && Stopwatch.GetElapsedTime(_window.Peek().Ticks, now).TotalSeconds > WindowSeconds)
+                _window.Dequeue();
+            var elapsed = Stopwatch.GetElapsedTime(_window.Peek().Ticks, now).TotalSeconds;
+            // Cửa sổ-first: khi scan mới (<10s mẫu) chưa đủ baseline thì instant = average
+            // ở call-site (truyền average vào); ở đây trả 0 để báo chưa đủ mẫu.
+            var instant = 0d;
+            if (_window.Count > 1 && elapsed >= 10)
+            {
+                var oldest = _window.Peek();
+                instant = Math.Max(0, (session - oldest.Unique) / Math.Max(1, elapsed));
+            }
+            var stalled = new List<int>();
+            for (var i = 0; i < _lastMedia.Length && i < progress.Count && i < completed.Count; i++)
+            {
+                if (completed[i]) continue;
+                if (Math.Abs(progress[i] - _lastMedia[i]) > 1e-9)
+                {
+                    _lastMedia[i] = progress[i];
+                    _lastChangeTicks[i] = now;
+                    _stallReported[i] = false;
+                }
+                else if (Stopwatch.GetElapsedTime(_lastChangeTicks[i], now).TotalSeconds >= StallSeconds)
+                {
+                    stalled.Add(i + 1);
+                }
+            }
+            return new PaceInfo(0, instant, stalled);
+        }
+    }
+
+    // Probe cache 2 tầng (memory/app-lifetime + sidecar/disk): metadata video tĩnh nên
+    // 8 lane + padding + NVDEC chỉ spawn ffprobe 1 lần/scan (lần đầu), các scan sau đọc
+    // sidecar. Trả kèm doc sidecar mới nhất + cờ trúng sidecar (để đếm, không để gate).
+    // Phase 0 — tai nghe Whisper (17/09): phiên dịch audio 1 lần/video qua
+    // LocalAsrService có sẵn (tự chọn GPU/CPU, tự resume checkpoint theo key
+    // vân file nên quét lại gần như miễn phí). ProjectId tổng hợp từ vân file
+    // ("ocr-" + 12 hex) để tách khỏi project Editor. Trả null khi không có
+    // thoại/không tiếng/lỗi (caller fail-open quét chay). VRAM rảnh lúc này
+    // vì worker OCR chưa dựng.
+    private async Task<EditorSpeechAnalysis?> RunWhisperPhaseAsync(
+        AppJob job, string source, double duration, CancellationToken cancellationToken)
+    {
+        var service = _asr;
+        if (service is null) return null;
+        FileInfo info;
+        try { info = new FileInfo(Path.GetFullPath(source.Trim())); }
+        catch { return null; }
+        if (!info.Exists || info.Length <= 0 || !(duration > 0)) return null;
+        var identity = $"{info.FullName}\n{info.Length}\n{info.LastWriteTimeUtc.Ticks}\n{duration:0.000}";
+        var projectId = "ocr-" + Convert.ToHexStringLower(
+            SHA256.HashData(Encoding.UTF8.GetBytes(identity)))[..12];
+        job.Set("whisper", 0.5, "Tai nghe: đang phiên dịch thoại (Whisper local, 1 lần/video)...");
+        EditorAsrResult result;
+        try
+        {
+            result = await service.TranscribeAsync(job, new EditorAsrRequest(
+                projectId, info.FullName, duration));
+        }
+        catch (InvalidDataException)
+        {
+            // Không thoại/không hợp lệ: quét chay (fail-open, không phải bug).
+            return null;
+        }
+        try
+        {
+            return await EditorSpeechAnalysisDocument.LoadVerifiedAsync(
+                result.AnalysisPath, result.AnalysisSha256, cancellationToken);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch
+        {
+            return null;
+        }
+    }
+
+    // Cold-start 8 lane đua nhau: cùng miss memory → cùng probe như hôm nay (không tệ hơn),
+    // lane đầu xong ghi sidecar, các scan sau trúng. Null chỉ cache memory.
+    private Task<(VideoProbe? Probe, OcrSidecar.SidecarDocument? Doc, bool SidecarHit)> ProbeVideoAsync(
+        string source, CancellationToken cancellationToken)
+        => ProbeVideoAsync(source, OcrSidecar.FileIdentity.FromFile(source), cancellationToken);
+
+    private async Task<(VideoProbe? Probe, OcrSidecar.SidecarDocument? Doc, bool SidecarHit)> ProbeVideoAsync(
+        string source, OcrSidecar.FileIdentity? identity, CancellationToken cancellationToken)
+    {
+        var key = identity is null
+            ? "noid|" + Path.GetFullPath(source.Trim()).ToLowerInvariant()
+            : identity.Size + "|" + identity.ModUnixNano + "|" + identity.Path;
+        if (_probeCache.TryGetValue(key, out var cached))
+            return (cached, identity is null ? null : _sidecarDocs.GetValueOrDefault(key), false);
+        OcrSidecar.SidecarDocument? doc = null;
+        if (identity is not null)
+        {
+            try { doc = await _sidecars.LoadAsync(identity.Path, identity, cancellationToken); } catch { doc = null; }
+            _sidecarDocs[key] = doc;
+            if (OcrSidecar.ToProbe(doc?.Probe) is { } restored)
+            {
+                _probeCache[key] = restored;
+                return (restored, doc, true);
+            }
+        }
+        var probed = await OcrFrameExtractor.ProbeAsync(_tools, _processes, source, cancellationToken);
+        _probeCache[key] = probed;
+        if (identity is not null && probed is not null)
+        {
+            doc = new OcrSidecar.SidecarDocument(
+                doc?.Identity ?? identity, OcrSidecar.FromProbe(probed), doc?.Vad, doc?.Pixel);
+            _sidecarDocs[key] = doc;
+            try { await _sidecars.SaveAsync(identity.Path, doc, CancellationToken.None); } catch { }
+        }
+        return (probed, doc, false);
+    }
+
+    // Chụp khung mẫu đo kiểu sub (tự nhận diện, khỏi gạt tay): 12 khung cách
+    // đều trong phạm vi lượt quét, cắt đúng ROI, worker đo vành chữ. Trả
+    // "off"|"medium"|"strong"; mọi lỗi -> "off" (y hệt cũ). Best-effort: từng
+    // khung hỏng là bỏ qua, đủ <2 khung là thôi.
+    private async Task<string> ProbeSubtitleStyleAsync(
+        AppJob job, string ffmpeg, string source, OcrScanRequest request, CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (!OperatingSystem.IsWindows()) return "off";
+            if (!(request.Duration > 60)) return "off";
+            var region = request.Region;
+            if (!(region.Width > 0) || !(region.Height > 0)) return "off";
+            job.Set("style-probe", -1, "OCR · tự nhận diện kiểu sub (viền đen/bóng nhẹ/chữ màu)...");
+            var crops = new List<string>(12);
+            for (var index = 0; index < 12; index++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var at = request.ScanStartOffset + (request.Duration * (index + 0.5) / 12);
+                byte[]? jpeg;
+                try
+                {
+                    jpeg = await _processes.CaptureBytesAsync(ffmpeg,
+                        ["-hide_banner", "-loglevel", "error", "-nostdin",
+                         "-ss", at.ToString("0.000", System.Globalization.CultureInfo.InvariantCulture),
+                         "-i", source, "-map", "0:v:0", "-an", "-sn", "-dn",
+                         "-frames:v", "1", "-q:v", "6", "-c:v", "mjpeg", "-f", "image2pipe", "pipe:1"],
+                        cancellationToken);
+                }
+                catch { continue; }
+                if (jpeg is null || jpeg.Length == 0 || jpeg.Length > 8 * 1024 * 1024) continue;
+                var crop = OcrImageCrop.CropJpeg(jpeg, region.X, region.Y, region.Width, region.Height);
+                if (crop is null || crop.Length == 0) continue;
+                crops.Add(Convert.ToBase64String(crop));
+            }
+            if (crops.Count < 2) return "off";
+            var scores = await _ocr.ProbeSubtitleStyleAsync(crops, cancellationToken);
+            return OcrSubtitleStyle.Decide(scores);
+        }
+        catch
+        {
+            return "off";
+        }
     }
 
     private async Task<OcrLaneCheckpoint> RunLaneWithFallbackAsync(
@@ -745,18 +1354,19 @@ public sealed class OcrScanner
         AppJob job,
         OwnedProcessGroup processes,
         OcrScanTelemetryCounters telemetry,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<VadTimeline?>? vadSource = null)
     {
         if (lane.Completed) return lane;
         try
         {
-            return await RunLaneAsync(ffmpeg, source, request, mode, lane, decoder == "nvdec", onProgress, job, processes, telemetry, cancellationToken);
+            return await RunLaneAsync(ffmpeg, source, request, mode, lane, decoder == "nvdec", onProgress, job, processes, telemetry, cancellationToken, vadSource);
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception error) when (decoder == "nvdec" && error is not OcrRecognitionException)
         {
             job.Log($"Lane {lane.Segment.Index + 1}: NVDEC lỗi, fallback software: {error.Message}");
-            return await RunLaneAsync(ffmpeg, source, request, mode, lane, false, onProgress, job, processes, telemetry, cancellationToken);
+            return await RunLaneAsync(ffmpeg, source, request, mode, lane, false, onProgress, job, processes, telemetry, cancellationToken, vadSource);
         }
     }
 
@@ -771,11 +1381,14 @@ public sealed class OcrScanner
         AppJob job,
         OwnedProcessGroup processes,
         OcrScanTelemetryCounters telemetry,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<VadTimeline?>? vadSource = null)
     {
         var segment = saved.Segment;
         var startAtMedia = Math.Clamp(saved.MediaSeconds, segment.ScanStart, segment.ScanEnd);
-        var videoProbe = await OcrFrameExtractor.ProbeAsync(_tools, _processes, source, cancellationToken);
+        var (laneProbe, _, laneProbeHit) = await ProbeVideoAsync(source, cancellationToken);
+        if (laneProbeHit) Interlocked.Increment(ref telemetry.SidecarProbeHits);
+        var videoProbe = laneProbe;
         var streamStart = videoProbe?.StartTimeSeconds ?? 0;
         OcrFrameGeometry? laneGeometry = null;
         RationalTimeBase? laneTb = null;
@@ -824,13 +1437,43 @@ public sealed class OcrScanner
         var adaptiveWindow = new List<OcrBufferedFrame>();
         OcrBufferedFrame? previousVisualAnchor = null;
         var pendingVisualFollowups = 0;
+        // E.5 ROI static zones (per-lane, shadow): hoc vung chu lap lai (watermark).
+        // Chi ghi (zones + would-filter), khong loc that.
+        var roiZones = new OcrRoiStaticZones();
+        // E.4 canary state (per-lane): vong retro 0.5Hz (toi da 45 frame ~2.8MB,
+        // giu tham chieu JPEG san co) + trigger dem + tat reuse khi hit.
+        // Manual-reset = scan moi (flag theo scope lane).
+        var retroBuffer = new List<(OcrBufferedFrame Frame, bool Detected, string Text)>();
+        long paddleSinceAudit = 0;
+        long lastFullOcrTicks = Stopwatch.GetTimestamp();
+        var reuseEnabled = OcrGateShadow.ReuseEnabledDefault;
+        var canaryFlip = 0L;
+        var sampleCounter = 0L;
+        // E.4b2: tran carry lien tiep (fade-in/out dan: moi buoc doi < eps nhung
+        // cong don thanh chu that, canary 12:01 + 12:17 bat 2 ca 2 huong).
+        // Qua N carry thi bat buoc doc that 1 lan de chat chuoi.
+        long consecutiveCarries = 0;
+        const long MaxConsecutiveCarries = 5;
+        // Council v1 (E.5 enforce): neo blank + đếm skip liên tiếp cho ShouldCouncilSkip.
+        // prevBlankAnchored chỉ thành true bằng full-read BLANK (skip giữ nguyên, full-read
+        // có chữ/audit/resume làm rớt) — chuỗi skip luôn neo vào 1 lần đọc thật gần nhất.
+        long consecutiveSkips = 0;
+        bool prevBlankAnchored = false;
+        // Council skip: MỞ lại khi timeline từ TAI NGHE Whisper (17/09) — đúng
+        // điều kiện "VAD được sửa" mà OcrGateShadow đòi để mở lại (VAD năng
+        // lượng báo-im-sai ăn chữ thật nên tắt 16/09; tai nghe phân biệt
+        // nói/im thật nên chân VAD hết sai hệ thống). Dấu hiệu: timeline có
+        // cờ HasSub (chỉ Whisper sinh ra). Đa-cổng bảo thủ + cap + canary audit
+        // + kill-switch khi canary-hit giữ nguyên — skip sai là canary bắt ngay.
+        // Không tai (timeline năng lượng/sidecar cũ) -> vẫn TẮT như cũ.
+        var councilSkipsEnabled = OcrGateShadow.CouncilEnabledDefault
+            || vadSource?.Invoke()?.Flags.Contains(VadFlag.HasSub) == true;
         OcrResult? previousAdaptiveSample = mode.AdaptiveTiming && tracker.Active is { } restoredActive
             ? new OcrResult(true, true, restoredActive.Text, restoredActive.Confidence, [])
             : null;
         var pendingTinyGlyphRecovery = 0;
         var nextAdaptiveSampleMedia = startAtMedia;
         var lastProgressPublish = Stopwatch.GetTimestamp();
-
         async Task<OcrResult> RecognizeSingleAsync(
             OcrBufferedFrame frame,
             bool recoverShortBlank,
@@ -841,14 +1484,28 @@ public sealed class OcrScanner
             var activeShortText = tracker.Active?.Text is { } activeText && activeText.EnumerateRunes().Count() == 1
                 ? activeText
                 : null;
+            // Đường OCR của lane: có scope vét batch thì qua scope (cap=1 = đường cũ),
+            // không có (ngoài scan) thì gọi thẳng manager. Chữ ký/timing đo như cũ.
+            Task<OcrResult> SubmitOcrAsync(string base64, bool recover, string? active, Action<OcrPerfSample> perf)
+            {
+                var scope = _ambientBatchScope.Value;
+                return scope is null
+                    ? _ocr.RunAsync(base64, cancellationToken, recover, active, perf)
+                    : scope.SubmitAsync(base64, cancellationToken, recover, active, perf);
+            }
             try
             {
-                var raw = await _ocr.RunAsync(
-                    Convert.ToBase64String(frame.Jpeg), cancellationToken,
-                    recoverShortBlank, activeShortText);
+                RecordFlagCall(recoverShortBlank, activeShortText);
+                var requestWatch = Stopwatch.StartNew();
+                var raw = await SubmitOcrAsync(
+                    frame.Base64,
+                    recoverShortBlank, activeShortText,
+                    sample => RecordPerfSample(sample));
+                RecordRequestSample(requestWatch.ElapsedMilliseconds);
                 if (HasTinyNonChineseCompanion(raw))
                     pendingTinyGlyphRecovery = Math.Max(pendingTinyGlyphRecovery, 4);
                 result = FilterOffBaselineOverlayLines(raw, request.Region);
+                result = ApplyLuminanceGate(frame.Jpeg, result);
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception error)
@@ -868,9 +1525,13 @@ public sealed class OcrScanner
                 var enhanced = await CaptureFrameWithFfmpegAsync(
                     ffmpeg, source, frame.Timing.PresentationTime, request.Region,
                     enhanced: true, processes, cancellationToken);
-                var alternate = FilterOffBaselineOverlayLines(await _ocr.RunAsync(
-                    Convert.ToBase64String(enhanced), cancellationToken,
-                    recoverShortBlank, activeShortText), request.Region);
+                var enhancedWatch = Stopwatch.StartNew();
+                var alternate = FilterOffBaselineOverlayLines(await SubmitOcrAsync(
+                    Convert.ToBase64String(enhanced),
+                    recoverShortBlank, activeShortText, sample => RecordPerfSample(sample)), request.Region);
+                alternate = ApplyLuminanceGate(enhanced, alternate);
+                RecordRequestSample(enhancedWatch.ElapsedMilliseconds);
+                RecordFlagCall(recoverShortBlank, activeShortText);
                 if (alternate.Ok && PreferRecognition(alternate, result))
                 {
                     var recoveredMoreText = alternate.Text.EnumerateRunes().Count() > result.Text.EnumerateRunes().Count();
@@ -900,9 +1561,13 @@ public sealed class OcrScanner
             IReadOnlyList<OcrResult> results;
             try
             {
+                RecordFlagCall(recoverShortBlank, activeShortText);
+                var batchWatch = Stopwatch.StartNew();
                 results = await _ocr.RunBatchAsync(
-                    batch.Select(frame => Convert.ToBase64String(frame.Jpeg)).ToArray(),
-                    cancellationToken, recoverShortBlank, activeShortText);
+                    batch.Select(frame => frame.Base64).ToArray(),
+                    cancellationToken, recoverShortBlank, activeShortText,
+                    sample => RecordPerfSample(sample));
+                RecordRequestSample(batchWatch.ElapsedMilliseconds);
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception error)
@@ -919,32 +1584,185 @@ public sealed class OcrScanner
                 return result;
             }).Select((result, index) =>
             {
+                result = ApplyLuminanceGate(batch[index].Jpeg, result);
                 RecordOcrObservation(telemetry, batch[index].Timing.SourcePts, result, purpose);
                 return result;
             }).ToArray();
         }
 
-        async Task<IReadOnlyList<double>> ProbeVisualChangesAsync(IReadOnlyList<OcrBufferedFrame> probeFrames)
+        async Task<VisualProbeResult> ProbeVisualChangesAsync(IReadOnlyList<OcrBufferedFrame> probeFrames)
         {
             try
             {
-                var scores = await _ocr.ProbeVisualChangesAsync(
-                    probeFrames.Select(frame => Convert.ToBase64String(frame.Jpeg)).ToArray(),
+                var probe = await _ocr.ProbeVisualChangesExAsync(
+                    probeFrames.Select(frame => frame.Base64).ToArray(),
                     cancellationToken);
                 Interlocked.Increment(ref telemetry.ProbeCalls);
                 Interlocked.Add(ref telemetry.ProbeImages, probeFrames.Count);
-                foreach (var score in scores)
+                foreach (var score in probe.ChangeScores)
                 {
                     if (IsAdaptiveVisualChange(score)) Interlocked.Increment(ref telemetry.ProbeChangeFrames);
                     else Interlocked.Increment(ref telemetry.ProbeSameFrames);
                 }
-                return scores;
+                return probe;
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception error)
             {
                 throw new OcrRecognitionException("OCR visual probe lỗi: " + error.Message, error);
             }
+        }
+
+        // E.3 SHADOW: ghi diem B (band-diff cuoi) + C (edge-density sample) cung
+        // ket qua production (detected). CHI GHI, khong bao gio skip/quyet dinh.
+        // Worker cu thieu field -> vang mat am tham. Loi shadow khong giet lane.
+        void RecordShadowGate(VisualProbeResult probe, bool detected, long elapsedMs)
+        {
+            try
+            {
+                if (probe.BandChangeScores is not { Count: > 0 } band
+                    || probe.EdgeDensity is not { Count: > 0 } edge)
+                    return;
+                var bandBucket = OcrGateShadow.Bucketize(band[^1]);
+                var edgeBucket = OcrGateShadow.Bucketize(edge[^1]);
+                if (detected)
+                {
+                    Interlocked.Increment(ref telemetry.ShadowBandText[bandBucket]);
+                    Interlocked.Increment(ref telemetry.ShadowEdgeText[edgeBucket]);
+                }
+                else
+                {
+                    Interlocked.Increment(ref telemetry.ShadowBandBlank[bandBucket]);
+                    Interlocked.Increment(ref telemetry.ShadowEdgeBlank[edgeBucket]);
+                }
+                Interlocked.Increment(ref telemetry.GateBandDiffs);
+                Interlocked.Increment(ref telemetry.GateTextPresence);
+                Interlocked.Increment(ref telemetry.ShadowObservations);
+                Interlocked.Add(ref telemetry.ShadowMsTotal, elapsedMs);
+                Interlocked.Add(ref telemetry.ProbeMsTotal, elapsedMs);
+            }
+            catch { }
+        }
+
+        // Ứng viên 2 luminance SHADOW (spec khóa 16/09): đo chữ ký sáng từng dòng
+        // OCR (điểm trắng >=224 + điểm tối <64), đếm would-drop, KHÔNG bỏ dòng nào
+        // (EnforceDefault=false). GDI+ decode lỗi -> passthrough. Không throw ra lane.
+        // Cổng màu CHROMA (user chốt 18/09: sub luôn TRẮNG, chữ màu loại luôn):
+        // chạy TIẾP sau luminance trên kết quả đã lọc, enforce TRỰC TIẾP
+        // (EnforceDefault=true) — dòng không điểm trắng + thừa điểm màu thì bỏ,
+        // fail-open mọi lỗi decode/box. Chữ trắng trên nền màu (trời xanh) giữ
+        // nhờ cổng trắng đứng trước.
+        OcrResult ApplyLuminanceGate(byte[] jpeg, OcrResult result)
+        {
+            try
+            {
+                var gated = OcrLineLuminance.Apply(jpeg, result,
+                    laneGeometry?.CanvasW ?? 0, laneGeometry?.CanvasH ?? 0,
+                    OcrLineLuminance.EnforceDefault);
+                if (gated.Stats.MeasuredLines > 0 || gated.Stats.DecodeFails > 0)
+                    Interlocked.Increment(ref telemetry.LumFrames);
+                Interlocked.Add(ref telemetry.LumLines, gated.Stats.MeasuredLines);
+                Interlocked.Add(ref telemetry.LumWouldDrop, gated.Stats.WouldDropLines);
+                Interlocked.Add(ref telemetry.LumDecodeFails, gated.Stats.DecodeFails);
+                var chroma = OcrLineChroma.Apply(jpeg, gated.Result,
+                    laneGeometry?.CanvasW ?? 0, laneGeometry?.CanvasH ?? 0,
+                    OcrLineChroma.EnforceDefault);
+                if (chroma.Stats.MeasuredLines > 0 || chroma.Stats.DecodeFails > 0)
+                    Interlocked.Increment(ref telemetry.ChromaFrames);
+                Interlocked.Add(ref telemetry.ChromaLines, chroma.Stats.MeasuredLines);
+                Interlocked.Add(ref telemetry.ChromaDropped, chroma.Stats.WouldDropLines);
+                Interlocked.Add(ref telemetry.ChromaDecodeFails, chroma.Stats.DecodeFails);
+                return chroma.Result;
+            }
+            catch { return result; }
+        }
+
+        // Round-trip mỗi OCR request (queue + IPC + inference): tổng + max (CAS lock-free)
+        // + đếm request >=30s. Max lành là điều kiện gate để hạ timeout 90s về sau.
+        void RecordRequestSample(long milliseconds)
+        {
+            try
+            {
+                if (milliseconds < 0) return;
+                Interlocked.Add(ref telemetry.RequestMsTotal, milliseconds);
+                if (milliseconds >= 30_000) Interlocked.Increment(ref telemetry.Over30sRequests);
+                long observed, computed;
+                do
+                {
+                    observed = Interlocked.Read(ref telemetry.MaxRequestMs);
+                    computed = Math.Max(observed, milliseconds);
+                }
+                while (observed != computed
+                    && Interlocked.CompareExchange(ref telemetry.MaxRequestMs, computed, observed) != observed);
+            }
+            catch { }
+        }
+
+        // D.1 flag-histogram + det/rec split: dem combo co moi paddle_call + cong don
+        // timing. CHI GHI CHEP. Callback perf chay trong worker thread: lock Gate.
+        void RecordFlagCall(bool recoverShortBlank, string? activeShortText)
+        {
+            try
+            {
+                var bucket = OcrGateShadow.FlagBucket(recoverShortBlank, activeShortText);
+                if ((uint)bucket < (uint)telemetry.FlagCalls.Length)
+                    Interlocked.Increment(ref telemetry.FlagCalls[bucket]);
+            }
+            catch { }
+        }
+
+        void RecordPerfSample(OcrPerfSample sample)
+        {
+            try
+            {
+                lock (telemetry.Gate)
+                {
+                    telemetry.PaddleDetMs += sample.DetMs;
+                    telemetry.PaddleRecMs += sample.RecMs;
+                    telemetry.PaddleDetBoxes += sample.DetBoxes;
+                    telemetry.PaddleRecCrops += sample.RecCrops;
+                    telemetry.PaddleCacheHits += sample.CacheHits;
+                }
+            }
+            catch { }
+        }
+
+        // E.4b canary audit: doc lai 1 mau bo-qua bang OCR day du tu vong retro.
+        // Stratified: doi nhau blank-carry / text-carry, lay mau moi nhat.
+        // Hit -> WARN to + tat skip ca scan (reuse dormant + council: quay ve doc day du).
+        // Quy trách nhiệm VAD: mẫu audit im mà đọc ra chữ thì tai hùa sai (đếm riêng).
+        // Khong backfill (nguy hiem PTS nguoc) + khong bao gio giet lane.
+        // Manual-reset = scan moi (flag theo scope lane).
+        async Task RunCanaryAuditAsync()
+        {
+            try
+            {
+                if (retroBuffer.Count == 0) return;
+                var wantBlank = canaryFlip++ % 2 == 0;
+                var pick = retroBuffer.FindLastIndex(item => item.Detected == !wantBlank);
+                if (pick < 0) pick = retroBuffer.Count - 1;
+                var sample = retroBuffer[pick];
+                var audit = await RecognizeSingleAsync(sample.Frame, recoverShortBlank: false);
+                images++;
+                consecutiveCarries = 0;
+                consecutiveSkips = 0;
+                prevBlankAnchored = false;
+                Interlocked.Increment(ref telemetry.RetroOcrCalls);
+                paddleSinceAudit = 0;
+                lastFullOcrTicks = Stopwatch.GetTimestamp();
+                if (!OcrGateShadow.IsCanaryHit(sample.Detected, sample.Text, audit.Detected, audit.Text))
+                    return;
+                Interlocked.Increment(ref telemetry.CanaryHits);
+                var auditVote = vadSource?.Invoke()?.At(sample.Frame.Timing.PresentationTime - streamStart) ?? VadFlag.Suspicious;
+                if (auditVote == VadFlag.NoSub)
+                    Interlocked.Increment(ref telemetry.CanaryVadAttributed);
+                reuseEnabled = false;
+                councilSkipsEnabled = false;
+                retroBuffer.Clear();
+                job.Warn($"CANARY HIT o {FormatClock(sample.Frame.Timing.PresentationTime - streamStart)}: mau bo-qua ( {(sample.Detected ? "co chu" : "trang")} ) doc lai ra {(audit.Detected ? "co chu" : "trang")} (tai: {auditVote}) "
+                    + "-> da TAT skip ca scan nay, quay ve doc day du. Mo scan moi de bat lai (manual-reset).");
+            }
+            catch { }
         }
 
         void PublishProgress(bool force = false)
@@ -959,7 +1777,11 @@ public sealed class OcrScanner
             onProgress(saved with
             {
                 MediaSeconds = mediaSeconds,
-                Cues = tracker.Cues.ToList(),
+                // PERF (lag cuối scan): danh sách Cues đầy đủ chỉ được dùng khi
+                // checkpointSafe (clone vào recoverableLanes). Lần báo tiến độ thường
+                // (500ms/lane) không ai đọc Cues -> gửi rỗng, tránh copy nghìn cue
+                // mỗi lần. Đường pause/recovery/final tự lấy tracker.Cues trực tiếp.
+                Cues = tracker.CanCheckpoint ? tracker.Cues.ToList() : [],
                 Active = tracker.Active,
                 Frames = frames,
                 OcrImages = images,
@@ -975,9 +1797,9 @@ public sealed class OcrScanner
                 // Quality-first mode: every native frame reaches PaddleOCR.
                 // Batching only changes transport/inference overhead; tracker
                 // observations remain in exact source-PTS order.
-                for (var offset = 0; offset < adaptiveWindow.Count; offset += 8)
+                for (var offset = 0; offset < adaptiveWindow.Count; offset += OcrRequestBatcher.WorkerBatchLimit)
                 {
-                    var batch = adaptiveWindow.Skip(offset).Take(8).ToArray();
+                    var batch = adaptiveWindow.Skip(offset).Take(OcrRequestBatcher.WorkerBatchLimit).ToArray();
                     var results = await RecognizeBatchAsync(batch, recoverShortBlank: tracker.Active is not null, purpose: "window");
                     images += batch.Length;
                     for (var index = 0; index < batch.Length; index++)
@@ -993,8 +1815,82 @@ public sealed class OcrScanner
                 return;
             }
             var sample = adaptiveWindow[^1];
-            var sampleResult = await RecognizeSingleAsync(sample, recoverShortBlank: false);
-            images++;
+            // E.4a: probe truoc (von da chay moi window) de lay band-diff cho reuse.
+            // Thu tu cu (recognize roi probe) doi thanh (probe roi recognize): lane fail
+            // khi probe hong thi truoc sau deu fail nhu nhau, khong doi hanh vi.
+            VisualProbeResult? earlyProbe = null;
+            var probeWatch = Stopwatch.StartNew();
+            if (previousVisualAnchor is not null)
+            {
+                var probeFrames = new[] { previousVisualAnchor }.Concat(adaptiveWindow).ToArray();
+                earlyProbe = await ProbeVisualChangesAsync(probeFrames);
+            }
+            var probeMs = probeWatch.ElapsedMilliseconds;
+            OcrResult sampleResult;
+            // Mẫu skip (blank giả, KHÔNG đọc thật) không được vào tracker và
+            // không được làm anchor chuyển cảnh (18/09: ObserveEmpty giả chốt
+            // cue đang mở oan + blank giả che biên chữ thật).
+            var skippedSample = false;
+            var prevSample = previousAdaptiveSample;
+            // Dieu kien provenance: carry text DOI HOI boxes (prev.Lines). Truong hop
+            // resume gieo prev rong (Active restore khong co Lines) hoac overlay-loc het
+            // lines: buoc doc that de lay boxes, khong carry mu.
+            // Carry blank khong can boxes (blank khong tao cue can merge).
+            var carryHasProvenance = prevSample is null || !prevSample.Detected || prevSample.Lines.Count > 0;
+            if (reuseEnabled && consecutiveCarries < MaxConsecutiveCarries && prevSample is not null && carryHasProvenance && earlyProbe is not null
+                && OcrGateShadow.ShouldReuse(earlyProbe.BandChangeScores?[^1], hasPrevious: true))
+            {
+                // B-reuse: frame gan nhu he frame truoc -> be ket qua truoc sang,
+                // KHONG goi Paddle (images khong tang: day la tiet kiem that).
+                // GIU Lines (boxes): tracker dung boxes lam pixel provenance cho merge
+                // sau nay. Bo Lines ([]) se lam mat provenance -> block merge vinh vien.
+                // Boxes van dung vi 2 frame near-dup (tien de cua reuse).
+                sampleResult = new OcrResult(true, prevSample.Detected, prevSample.Text, prevSample.Confidence, prevSample.Lines);
+                consecutiveCarries++;
+                Interlocked.Increment(ref telemetry.CouncilSkips);
+                if (sampleCounter % 5 == 0)
+                {
+                    retroBuffer.Add((sample, sampleResult.Detected, sampleResult.Text));
+                    if (retroBuffer.Count > 45) retroBuffer.RemoveAt(0);
+                }
+            }
+            else if (councilSkipsEnabled
+                && OcrGateShadow.ShouldCouncilSkip(
+                    (vadSource?.Invoke()?.At(sample.Timing.PresentationTime - streamStart) ?? VadFlag.Suspicious) == VadFlag.NoSub,
+                    earlyProbe?.BandChangeScores?[^1],
+                    prevBlankAnchored,
+                    consecutiveSkips))
+            {
+                // Council SKIP (E.5 enforce): im + đứng yên + neo blank-đọc-thật — KHÔNG gọi
+                // Paddle (images không tăng: tiết kiệm thật). Ghi blank rỗng, không boxes
+                // (blank không tạo cue nên không cần provenance — comment provenance ở trên).
+                // 18/09: blank này là GIẢ (không đọc) nên cấm vào tracker ở dưới —
+                // tracker chỉ nghe kết quả đọc thật. Retro cho canary soi; cap chuỗi
+                // bằng CouncilMaxSkips trong hàm thuần.
+                sampleResult = new OcrResult(true, false, string.Empty, 0, []);
+                skippedSample = true;
+                consecutiveSkips++;
+                Interlocked.Increment(ref telemetry.CouncilSkips);
+                if (sampleCounter % 5 == 0)
+                {
+                    retroBuffer.Add((sample, false, string.Empty));
+                    if (retroBuffer.Count > 45) retroBuffer.RemoveAt(0);
+                }
+            }
+            else
+            {
+                sampleResult = await RecognizeSingleAsync(sample, recoverShortBlank: false);
+                images++;
+                consecutiveCarries = 0;
+                consecutiveSkips = 0;
+                prevBlankAnchored = !sampleResult.Detected;
+                Interlocked.Increment(ref telemetry.CouncilScans);
+                paddleSinceAudit++;
+                lastFullOcrTicks = Stopwatch.GetTimestamp();
+            }
+            sampleCounter++;
+            if (earlyProbe is not null)
+                RecordShadowGate(earlyProbe, sampleResult.Detected, probeMs);
             var transition = previousAdaptiveSample is not null
                 && NeedsAdaptiveRefinement(previousAdaptiveSample, sampleResult);
 
@@ -1003,7 +1899,15 @@ public sealed class OcrScanner
             if (transition && tracker.Active is not null && !sampleResult.Detected)
             {
                 var recovered = await RecognizeSingleAsync(sample, recoverShortBlank: true);
-                if (recovered.Detected) sampleResult = recovered;
+                if (recovered.Detected)
+                {
+                    // Đọc thật phục hồi đè blank (kể cả blank giả của skip) ->
+                    // gỡ cờ skip để tracker được nghe kết quả thật ở dưới.
+                    sampleResult = recovered;
+                    skippedSample = false;
+                }
+                paddleSinceAudit++;
+                lastFullOcrTicks = Stopwatch.GetTimestamp();
                 transition = previousAdaptiveSample is not null
                     && NeedsAdaptiveRefinement(previousAdaptiveSample, sampleResult);
             }
@@ -1023,8 +1927,9 @@ public sealed class OcrScanner
                 IReadOnlyList<int> candidateIndexes = [];
                 if (previousVisualAnchor is not null)
                 {
-                    var probeFrames = new[] { previousVisualAnchor }.Concat(adaptiveWindow).ToArray();
-                    var scores = await ProbeVisualChangesAsync(probeFrames);
+                    // Probe da chay o dau window (earlyProbe): tai su dung, khong goi lai.
+                    // earlyProbe chac chan non-null o nhanh nay (probe hong thi lane da fail o tren).
+                    var scores = earlyProbe!.ChangeScores;
                     candidateIndexes = SelectTransitionRefinementFrames(scores, ref pendingVisualFollowups);
                     pendingVisualFollowups = 0;
                 }
@@ -1041,8 +1946,8 @@ public sealed class OcrScanner
                 // backgrounds can nominate nearly the whole window even while
                 // the sampled subtitle is stable; retain four evenly spread
                 // representatives so that noise cannot restore exhaustive OCR.
-                var probeFrames = new[] { previousVisualAnchor }.Concat(adaptiveWindow).ToArray();
-                var scores = await ProbeVisualChangesAsync(probeFrames);
+                // Probe da chay o dau window (earlyProbe): tai su dung, khong goi lai.
+                var scores = earlyProbe!.ChangeScores;
                 var candidateIndexes = SelectAdaptiveRefinementFrames(scores, ref pendingVisualFollowups);
                 // When the same subtitle is already present at both sampled
                 // ends, changes on most native frames are animated background,
@@ -1063,20 +1968,59 @@ public sealed class OcrScanner
                     .Select(index => adaptiveWindow[index]).ToArray();
             }
 
-            for (var offset = 0; offset < refinementFrames.Count; offset += 8)
+            for (var offset = 0; offset < refinementFrames.Count; offset += OcrRequestBatcher.WorkerBatchLimit)
             {
-                var batch = refinementFrames.Skip(offset).Take(8).ToArray();
+                var batch = refinementFrames.Skip(offset).Take(OcrRequestBatcher.WorkerBatchLimit).ToArray();
                 var results = await RecognizeBatchAsync(batch, recoverShortBlank: tracker.Active is not null, purpose: "refinement");
                 images += batch.Length;
+                paddleSinceAudit += batch.Length;
+                lastFullOcrTicks = Stopwatch.GetTimestamp();
                 for (var index = 0; index < batch.Length; index++)
                     tracker.Observe(batch[index].Timing.SourcePts, batch[index].Timing.PresentationTime, batch[index].Timing.Duration, results[index]);
             }
-            tracker.Observe(sample.Timing.SourcePts, sample.Timing.PresentationTime, sample.Timing.Duration, sampleResult);
+            // Tracker chỉ nghe mẫu đọc thật — mẫu skip (blank giả) mà vào đây
+            // sẽ chốt cue oan qua ObserveEmpty (18/09).
+            if (!skippedSample)
+                tracker.Observe(sample.Timing.SourcePts, sample.Timing.PresentationTime, sample.Timing.Duration, sampleResult);
+            // E.5 SHADOW + council gate:
+            // - VAD vote theo gio media + outcome production -> histogram 2x2; vote im là 1
+            //   chân trong ShouldCouncilSkip (C abstain — xem OcrGateShadow).
+            // - ROI static zones: CHỈ HỌC khi ROI scan phủ nửa trên khung hình
+            //   (LearningEnabledFor); ROI dải-sub đáy thì text lặp nào cũng là thoại lặp
+            //   nên tắt học (zones rỗng, wouldfilter 0) thay vì học zone oan.
+            try
+            {
+                var vote = vadSource?.Invoke()?.At(sample.Timing.PresentationTime - streamStart) ?? VadFlag.Suspicious;
+                Interlocked.Increment(ref telemetry.GateVadVotes);
+                if (vote == VadFlag.NoSub)
+                {
+                    if (sampleResult.Detected) Interlocked.Increment(ref telemetry.VadNoText);
+                    else Interlocked.Increment(ref telemetry.VadNoBlank);
+                }
+                else
+                {
+                    if (sampleResult.Detected) Interlocked.Increment(ref telemetry.VadSuspText);
+                    else Interlocked.Increment(ref telemetry.VadSuspBlank);
+                }
+                if (OcrRoiStaticZones.LearningEnabledFor(request.Region))
+                    Interlocked.Add(ref telemetry.RoiLinesWouldFilter, roiZones.Observe(sampleResult.Lines));
+            }
+            catch { }
+            // E.4b canary audit: kiem tra mau bo-qua (reuse dormant + council-skip) bang OCR
+            // day du tu vong retro. Audit CHI BAO + tu ha cap (tat skip ca scan), khong backfill
+            // (E.5+). Audit khong bao gio giet lane. Reuse tắt hẳn nên trigger thực tế là council.
+            if ((reuseEnabled || councilSkipsEnabled) && retroBuffer.Count > 0
+                && OcrGateShadow.ShouldTriggerCanary(paddleSinceAudit,
+                    Stopwatch.GetElapsedTime(lastFullOcrTicks, Stopwatch.GetTimestamp()).TotalSeconds))
+                await RunCanaryAuditAsync();
             // Confirm a new reading/blank with nearby source frames rather than
             // only the next baseline sample, even if the visual probe is quiet.
             if (!tracker.CanCheckpoint)
                 pendingVisualFollowups = Math.Max(pendingVisualFollowups, 2);
-            previousAdaptiveSample = sampleResult;
+            // Anchor chuyển cảnh giữ mẫu đọc thật gần nhất — blank giả của
+            // skip mà thành anchor sẽ che biên chữ thật ở mẫu sau (18/09).
+            if (!skippedSample)
+                previousAdaptiveSample = sampleResult;
             previousVisualAnchor = sample;
             adaptiveWindow.Clear();
             PublishProgress();
@@ -1114,57 +2058,18 @@ public sealed class OcrScanner
                     do nextAdaptiveSampleMedia += 1 / mode.Fps;
                     while (nextAdaptiveSampleMedia <= atMedia + .000001);
                 }
-                                    else
-                                    {
-                                        // Exhaustive mode: Use buffering to batch frames instead of single requests
-                                        var exhaustiveBatch = new List<OcrBufferedFrame>();
-                                        while (await reader.ReadAsync(cancellationToken) is { } jpeg)
-                                        {
-                                            var timing = await timestamps.ReadAsync(cancellationToken);
-                                            var atAbsolute = timing.PresentationTime;
-                                            var atMedia = atAbsolute - streamStart;
-                                            if (atMedia > segment.ScanEnd + 0.001)
-                                            {
-                                                stoppedAtBoundary = true;
-                                                break;
-                                            }
-                                            frames++;
-                                            var dur = timing.Duration ?? lastFrameDuration;
-                                            if (dur > 0) lastFrameDuration = dur;
-                                            if (!(dur > 0)) dur = nativeFrameDuration;
-                                            mediaSeconds = Math.Min(segment.ScanEnd, atMedia + dur);
-                                            lastFrameDuration = dur;
-                                            
-                                            exhaustiveBatch.Add(new OcrBufferedFrame(timing, jpeg));
-                                            
-                                            if (exhaustiveBatch.Count >= 8 || job.IsPauseRequested)
-                                            {
-                                                var results = await RecognizeBatchAsync(exhaustiveBatch, recoverShortBlank: false, purpose: "exhaustive");
-                                                images += exhaustiveBatch.Count;
-                                                for (var i = 0; i < exhaustiveBatch.Count; i++)
-                                                {
-                                                    tracker.Observe(exhaustiveBatch[i].Timing.SourcePts, exhaustiveBatch[i].Timing.PresentationTime, exhaustiveBatch[i].Timing.Duration, results[i]);
-                                                }
-                                                exhaustiveBatch.Clear();
-                                                PublishProgress();
-                                                if (job.IsPauseRequested && tracker.CanCheckpoint)
-                                                {
-                                                    paused = true;
-                                                    break;
-                                                }
-                                            }
-                                        }
-                                        if (exhaustiveBatch.Count > 0)
-                                        {
-                                            var finalResults = await RecognizeBatchAsync(exhaustiveBatch, recoverShortBlank: false, purpose: "exhaustive");
-                                            images += exhaustiveBatch.Count;
-                                            for (var i = 0; i < exhaustiveBatch.Count; i++)
-                                            {
-                                                tracker.Observe(exhaustiveBatch[i].Timing.SourcePts, exhaustiveBatch[i].Timing.PresentationTime, exhaustiveBatch[i].Timing.Duration, finalResults[i]);
-                                            }
-                                            PublishProgress();
-                                        }
-                                    }
+                else
+                {
+                    var result = await RecognizeSingleAsync(frame, recoverShortBlank: false, allowEnhanced: true, purpose: "exhaustive");
+                    images++;
+                    tracker.Observe(timing.SourcePts, atAbsolute, timing.Duration, result);
+                    PublishProgress();
+                }
+                if (job.IsPauseRequested && tracker.CanCheckpoint)
+                {
+                    paused = true;
+                    break;
+                }
             }
             if (mode.AdaptiveTiming && !paused && !stoppedAtBoundary)
                 await ProcessAdaptiveWindowAsync();
@@ -1197,6 +2102,8 @@ public sealed class OcrScanner
             }, finalCommitted, tracker.CanCheckpoint);
             mediaSeconds = segment.CoreEnd;
         }
+        // E.5 shadow: so vung tinh lane nay hoc duoc (watermark lap lai).
+        Interlocked.Add(ref telemetry.RoiStaticZones, roiZones.Zones.Count);
         return saved with
         {
             MediaSeconds = mediaSeconds,
@@ -1222,6 +2129,28 @@ public sealed class OcrScanner
 
     private static OcrLaneCheckpoint CloneLaneCheckpoint(OcrLaneCheckpoint lane) =>
         lane with { Cues = lane.Cues.ToList() };
+
+    // Preview thô cho đường pause-nhanh: câu lane-owned (đúng bound ownership của Reconcile:
+    // lane thường Start < CoreEnd, lane cuối Start <= CoreEnd, Start >= CoreStart), cắt theo
+    // frontier, sắp xếp. Thuần bộ nhớ, KHÔNG FFmpeg/pixel — gộp pixel để dành finish/export/
+    // mở-checkpoint. Test trực tiếp qua OcrPausePreviewContract (không cần worker/video thật).
+    internal static IReadOnlyList<OcrCue> BuildPausedPreview(IReadOnlyList<OcrLaneCheckpoint> lanes, double frontier)
+    {
+        var owned = new List<OcrCue>();
+        foreach (var lane in lanes)
+        {
+            var isLast = lane.Segment.Index == lanes.Count - 1;
+            foreach (var cue in lane.Cues)
+            {
+                if (cue.Start < lane.Segment.CoreStart
+                    || (!isLast && cue.Start >= lane.Segment.CoreEnd)
+                    || (isLast && cue.Start > lane.Segment.CoreEnd)) continue;
+                if (cue.Start > frontier + 0.001) continue;
+                owned.Add(cue);
+            }
+        }
+        return owned.OrderBy(cue => cue.Start).ThenBy(cue => cue.End).ToArray();
+    }
 
     internal static IReadOnlyList<OcrCue> Reconcile(IReadOnlyList<OcrLaneCheckpoint> lanes, out int merges)
     {
@@ -1278,7 +2207,7 @@ public sealed class OcrScanner
         return 0.001;
     }
 
-    internal static async Task<(IReadOnlyList<OcrCue> Cues, int Merges)> ReconcileAsync(IReadOnlyList<OcrLaneCheckpoint> lanes, string videoPath, IPixelComparer comparer, CancellationToken cancellationToken, double continuationWindow = 0.001)
+    internal static async Task<(IReadOnlyList<OcrCue> Cues, int Merges)> ReconcileAsync(IReadOnlyList<OcrLaneCheckpoint> lanes, string videoPath, IPixelComparer comparer, CancellationToken cancellationToken, double continuationWindow = 0.001, Action<int, int>? onProgress = null, Action<int, int>? onFrameProgress = null, IReadOnlyList<EditorSpeechSegment>? speechSegments = null)
     {
         var owned = new List<(OcrCue Cue, int Lane)>();
         foreach (var lane in lanes)
@@ -1330,8 +2259,42 @@ public sealed class OcrScanner
             }
             else output.Add(item);
         }
-        var merged = await OcrCueReconciler.MergeTouchingIdenticalAsync(output.Select(item => item.Cue), videoPath, comparer, cancellationToken, continuationWindow);
-        return (merged, merges);
+        var finalCues = output.Select(item => item.Cue).ToArray();
+        if (comparer is ProductionPixelComparer)
+        {
+            var boundaries = Enumerable.Range(1, Math.Max(0, finalCues.Length - 1))
+                .Where(index => OcrCueReconciler.IsChainBoundary(finalCues[index - 1], finalCues[index], continuationWindow))
+                .Select(index => (Left: finalCues[index - 1].LastObservation!, Right: finalCues[index].FirstObservation!))
+                .ToArray();
+            var completedFrames = 0;
+            onFrameProgress?.Invoke(0, boundaries.Length);
+            await Parallel.ForEachAsync(boundaries, new ParallelOptions
+            {
+                MaxDegreeOfParallelism = 4,
+                CancellationToken = cancellationToken,
+            }, async (boundary, boundaryToken) =>
+            {
+                await comparer.CheckAsync(videoPath, boundary.Left, boundary.Right, boundaryToken);
+                onFrameProgress?.Invoke(Interlocked.Increment(ref completedFrames), boundaries.Length);
+            });
+        }
+        var merged = await OcrCueReconciler.MergeTouchingIdenticalAsync(finalCues, videoPath, comparer, cancellationToken, continuationWindow, onProgress);
+        // Dọn chữ (17/09): gộp cue kề trùng lặp (flicker OCR chẻ 1 câu) + xóa
+        // mảnh vụn (1-2 chữ kề câu dài chứa nó). Thuần logic chữ, chạy cho MỌI
+        // đường gọi ReconcileAsync (finish/export/checkpoint) nên list cuối =
+        // SRT. KHÔNG sửa chữ đọc sai (cần hiểu ngữ nghĩa) — giữ nguyên.
+        var cleaned = OcrTextCleanup.Cleanup(merged);
+        // Hồi tố sau-Cleanup (18/09): Cleanup xóa/gộp ở giữa khiến 2 cue kề
+        // nhau MỚI mà pixel chưa từng verify (cặp trùng hở 0.067-0.3s không
+        // review) — chấm đúng luật pass chính (pixel-gate + review), không
+        // đụng spec micro-gap đã ghim.
+        var (reverified, reverifyMerges) = await OcrCueReconciler.MergeCleanupAdjacentsAsync(
+            merged, cleaned.Cues, videoPath, comparer, cancellationToken, continuationWindow);
+        // Tai phân xử cặp trùng khe rộng (21/09): 1 đoạn thoại phủ liên tục qua
+        // khe = caption tĩnh bị tracker chẻ oan → gộp; khe im = thoại lặp thật
+        // → giữ. Chạy cuối reconcile, trước banner guard/missing-sub.
+        var echoed = OcrCueReconciler.MergeSpeechCoveredIdentical(reverified, speechSegments);
+        return (echoed, merges + cleaned.Merged + reverifyMerges);
     }
 
     private static string PreferReconciledText(string current, string candidate) =>
@@ -1430,7 +2393,8 @@ public sealed class OcrScanner
         OwnedProcessGroup processes,
         CancellationToken cancellationToken)
     {
-        var probe = await OcrFrameExtractor.ProbeAsync(_tools, _processes, source, cancellationToken);
+        var (nvdecProbe, _, _) = await ProbeVideoAsync(source, cancellationToken);
+        var probe = nvdecProbe;
         var args = BuildLaneArguments(source, region, mode, 0, Math.Min(2, mode.Fps > 0 ? 2 : 1), nvdec: true, probe).ToList();
         var frameIndex = args.IndexOf("-f");
         if (frameIndex >= 0)
@@ -1630,7 +2594,9 @@ public sealed class OcrScanner
         int nativeFrames,
         int ocrImages,
         double mediaSeconds,
-        double elapsedSeconds)
+        double elapsedSeconds,
+        int needReviewCues,
+        double baseMediaSeconds)
     {
         var inference = _ocr.GetInferenceTelemetry();
         // The pause path stops the pool (fresh queue instance) before this
@@ -1642,8 +2608,7 @@ public sealed class OcrScanner
         var probeImages = Delta(inference.ProbeImages, inferenceBefore.ProbeImages);
         var replacements = Delta(inference.WorkerReplacements, inferenceBefore.WorkerReplacements);
         var queueExecuted = Delta(inference.QueueExecuted, inferenceBefore.QueueExecuted);
-        int unique;
-        lock (telemetry.Gate) unique = telemetry.UniqueOcrPts.Count;
+        int unique = telemetry.UniqueOcrPts.Count;
         var process = Process.GetCurrentProcess();
         job.Log(
             "OCR telemetry "
@@ -1653,9 +2618,18 @@ public sealed class OcrScanner
             + $"window={telemetry.WindowBatchImages} refinement={telemetry.RefinementImages} sample={telemetry.SampleImages} exhaustive={telemetry.ExhaustiveImages} "
             + $"batch_calls={ocrCalls} avg_batch={(ocrCalls > 0 ? ocrRequested / (double)ocrCalls : 0):0.00} "
             + $"probe_calls={probeCalls} probe_images={probeImages} probe_change={telemetry.ProbeChangeFrames} probe_same={telemetry.ProbeSameFrames} "
-            + $"lane_restarts={telemetry.LaneRestarts} worker_replacements={replacements} "
+            + $"lane_restarts={telemetry.LaneRestarts} worker_replacements={replacements} worker_recycles={Delta(inference.PlannedRecycles, inferenceBefore.PlannedRecycles)} "
             + $"queue_executed={queueExecuted} queue_peak={inference.QueuePeakDepth} queue_avgdepth={inference.QueueAvgDepth:0.00} queue_wait_ms={Delta(inference.QueueTotalWaitMs, inferenceBefore.QueueTotalWaitMs)} "
-            + $"elapsed_s={elapsedSeconds:0.0} realtime={(elapsedSeconds > 0 ? mediaSeconds / elapsedSeconds : 0):0.000} "
+            + $"gates_vad={telemetry.GateVadVotes} gates_band={telemetry.GateBandDiffs} gates_text={telemetry.GateTextPresence} gates_roi={telemetry.GateRoiDecisions} council_skip={telemetry.CouncilSkips} council_scan={telemetry.CouncilScans} canary_hit={telemetry.CanaryHits} canary_vad={telemetry.CanaryVadAttributed} retro_ocr={telemetry.RetroOcrCalls} "
+            + $"shadow_b={OcrGateShadow.FormatHistogram(telemetry.ShadowBandText, telemetry.ShadowBandBlank)} shadow_c={OcrGateShadow.FormatHistogram(telemetry.ShadowEdgeText, telemetry.ShadowEdgeBlank)} shadow_obs={telemetry.ShadowObservations} shadow_ms={telemetry.ShadowMsTotal} "
+            + $"cues_needreview={needReviewCues} "
+            + $"flags_free={telemetry.FlagCalls[0]} flags_recover={telemetry.FlagCalls[1]} flags_active={telemetry.FlagCalls[2]} flags_both={telemetry.FlagCalls[3]} "
+            + $"paddle_det_ms={telemetry.PaddleDetMs:0} paddle_rec_ms={telemetry.PaddleRecMs:0} det_boxes={telemetry.PaddleDetBoxes} rec_crops={telemetry.PaddleRecCrops} cache_hits={telemetry.PaddleCacheHits} "
+            + $"probe_ms={telemetry.ProbeMsTotal} req_ms={telemetry.RequestMsTotal} req_max_ms={telemetry.MaxRequestMs} req_over30s={telemetry.Over30sRequests} "
+            + $"sidecar_probe={telemetry.SidecarProbeHits} sidecar_vad={telemetry.SidecarVadHits} sidecar_pxv={telemetry.SidecarPxvHits} "
+            + $"vad_no_text={telemetry.VadNoText} vad_no_blank={telemetry.VadNoBlank} vad_susp_text={telemetry.VadSuspText} vad_susp_blank={telemetry.VadSuspBlank} roi_zones={telemetry.RoiStaticZones} roi_wouldfilter={telemetry.RoiLinesWouldFilter} lum_frames={telemetry.LumFrames} lum_lines={telemetry.LumLines} lum_woulddrop={telemetry.LumWouldDrop} lum_decodefails={telemetry.LumDecodeFails} chroma_frames={telemetry.ChromaFrames} chroma_lines={telemetry.ChromaLines} chroma_dropped={telemetry.ChromaDropped} chroma_decodefails={telemetry.ChromaDecodeFails} judge_enq={telemetry.JudgeEnqueued} judge_skip={telemetry.JudgeSkipped} "
+            + $"elapsed_s={elapsedSeconds:0.0} realtime={(elapsedSeconds > 0 ? Math.Max(0, mediaSeconds - baseMediaSeconds) / elapsedSeconds : 0):0.000} "
+            + $"ckpt_saves={telemetry.CheckpointSaves} ckpt_ms={telemetry.CheckpointSaveMs} "
             + $"app_ram_mb={process.WorkingSet64 / 1048576:0} gc_mb={GC.GetTotalMemory(false) / 1048576:0}");
     }
 
@@ -1671,7 +2645,7 @@ public sealed class OcrScanner
         }
         Interlocked.Increment(ref telemetry.OcrCompletedImages);
         if (!result.Detected) Interlocked.Increment(ref telemetry.OcrBlankReadings);
-        lock (telemetry.Gate) telemetry.UniqueOcrPts.Add(sourcePts);
+        telemetry.UniqueOcrPts.TryAdd(sourcePts, 0);
     }
 
     private static OcrResult FilterOffBaselineOverlayLines(OcrResult result, OcrRegion region)
@@ -1692,8 +2666,30 @@ public sealed class OcrScanner
 
         var baselineHeight = baseline is null ? 1 : Math.Max(1, Math.Abs(baseline.Box[3] - baseline.Box[1]));
         var baselineCenter = baseline is null ? 0 : baseline.Box[1] + baseline.Box[3];
+        // Cột chữ cảnh xếp chồng (thư giấy/biển/bảng rơi vào ROI, vụ bức thư
+        // "休书" 21/09): thoại thật tối đa 1-2 dòng phụ trên baseline, chữ cảnh
+        // xếp cả cột. Có baseline CĂN GIỮA khung 1280 + ≥4 dòng nằm gọn TRÊN
+        // đỉnh nó → toàn bộ phần trên là chữ cảnh, loại hết (kể cả dòng sát
+        // baseline mà luật farAbove đơn-lẻ không với tới). Chỉ áp cho ROI đáy
+        // (tôn-trọng ROI tay vùng trên); thiếu baseline căn giữa → passthrough
+        // (fail-open: mực-đen không baseline đã có cổng luminance lo).
+        var stackedSceneDrop = new HashSet<OcrLine>(ReferenceEqualityComparer.Instance);
+        if (region.Y >= .5 && baseline is not null
+            && Math.Min(baseline.Box[0], baseline.Box[2]) < 640
+            && Math.Max(baseline.Box[0], baseline.Box[2]) > 640)
+        {
+            var baselineTop = Math.Min(baseline.Box[1], baseline.Box[3]);
+            foreach (var stacked in result.Lines)
+            {
+                if (ReferenceEquals(stacked, baseline) || stacked.Box.Length < 4) continue;
+                if (Math.Max(stacked.Box[1], stacked.Box[3]) < baselineTop)
+                    stackedSceneDrop.Add(stacked);
+            }
+            if (stackedSceneDrop.Count < 4) stackedSceneDrop.Clear();
+        }
         var retained = result.Lines.Where(line =>
         {
+            if (stackedSceneDrop.Contains(line)) return false;
             if (line.Box.Length < 4) return true;
             if (!hasCenteredSubtitle && IsStandaloneRightEdgeBranding(line, region)) return false;
             if (companionBaseline is not null && IsRightEdgeBrandingCompanion(line, companionBaseline, region)) return false;
@@ -1836,14 +2832,24 @@ public sealed class OcrScanner
     private static string FormatClock(double seconds) => TimeSpan.FromSeconds(Math.Max(0, seconds)).ToString(seconds >= 3600 ? @"hh\:mm\:ss" : @"mm\:ss");
     private static string Compact(string value)
     {
+        // Loi that cua FFmpeg/tool nam o CUOI stderr (dong loi cuoi cung).
+        // Giu duoi, bo dau (header Input #0 dai vo ich). Truoc day giu dau nen
+        // log chi thay header, mat loi that (vu lane 8 p02).
         var text = string.Join(" ", value.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
-        return text.Length > 300 ? text[..300] + "…" : text;
+        return text.Length > 300 ? "…" + text[^300..] : text;
     }
     private static void Kill(Process process) { try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { } }
 
     private sealed record OcrTopologyProbe(double Throughput);
     private sealed class OcrRecognitionException(string message, Exception? inner = null) : Exception(message, inner);
-    private sealed record OcrBufferedFrame(FrameTiming Timing, byte[] Jpeg);
+    private sealed class OcrBufferedFrame(FrameTiming timing, byte[] jpeg)
+    {
+        private string? _base64;
+
+        public FrameTiming Timing { get; } = timing;
+        public byte[] Jpeg { get; } = jpeg;
+        public string Base64 => _base64 ??= Convert.ToBase64String(Jpeg);
+    }
     private readonly record struct FrameTiming(long SourcePts, double PresentationTime, double? Duration);
 
     // Diagnostic-only per-scan counters shared by lane closures. No
@@ -1851,7 +2857,11 @@ public sealed class OcrScanner
     private sealed class OcrScanTelemetryCounters
     {
         public readonly object Gate = new();
-        public readonly HashSet<long> UniqueOcrPts = [];
+        // PERF (lag cuối scan 15/9): 8 lane tranh 1 lock cho mỗi ảnh OCR (466k lần/scan)
+        // chỉ để đếm unique PTS cho telemetry cuối. ConcurrentDictionary cho Add/Count
+        // lock-free, cùng semantics (mỗi SourcePts đếm 1 lần), không còn contention
+        // tăng dần theo độ dài scan. Gate vẫn giữ cho PaddleDetMs/RecMs (double+=).
+        public readonly ConcurrentDictionary<long, byte> UniqueOcrPts = new();
         public long BatchCalls;
         public long SingleCalls;
         public long WindowBatchImages;
@@ -1865,6 +2875,75 @@ public sealed class OcrScanner
         public long ProbeChangeFrames;
         public long ProbeSameFrames;
         public long LaneRestarts;
+        // Checkpoint save cost (diagnostic only): số lần lưu + tổng ms. Save 30s/lần
+        // serialize toàn bộ cue (11MB ở pause 24:27) + copy .bak nên càng về cuối càng
+        // lâu; log để phát hiện khi save thành nguồn lag mới.
+        public long CheckpointSaves;
+        public long CheckpointSaveMs;
+        // E.2 dashboard skeleton (gates chua code: giu 0, co so de E.3/E.4 dien).
+        // Quy uoc: skip chi dem khi HOI DONG nhat tri (khong gate nao tu dem).
+        public long GateVadVotes;
+        public long GateBandDiffs;
+        public long GateTextPresence;
+        public long GateRoiDecisions;
+        public long CouncilSkips;
+        public long CouncilScans;
+        public long CanaryHits;
+        public long RetroOcrCalls;
+        // E.3 shadow histogram: diem B/C theo ngan x outcome production.
+        // CHI GHI CHEP, khong dieu tiet hanh vi.
+        public readonly long[] ShadowBandText = new long[OcrGateShadow.Buckets];
+        public readonly long[] ShadowBandBlank = new long[OcrGateShadow.Buckets];
+        public readonly long[] ShadowEdgeText = new long[OcrGateShadow.Buckets];
+        public readonly long[] ShadowEdgeBlank = new long[OcrGateShadow.Buckets];
+        public long ShadowObservations;
+        public long ShadowMsTotal;
+        // D.1 flag-histogram: dem combo co moi paddle_call (khong gioi han spans).
+        // 0=free, 1=recover, 2=active, 3=both. D.1 det/rec split: cong don timing.
+        public readonly long[] FlagCalls = new long[4];
+        public double PaddleDetMs;
+        public double PaddleRecMs;
+        public long PaddleDetBoxes;
+        public long PaddleRecCrops;
+        public long PaddleCacheHits;
+        // Stage timings (P1 diagnostics, thuần cộng dồn, không gate hành vi):
+        // - ProbeMsTotal: round-trip mỗi probe (queue + IPC + OpenCV).
+        // - RequestMsTotal/MaxRequestMs/Over30sRequests: round-trip mỗi OCR request —
+        //   phân phối latency để gate việc hạ timeout 90s (chỉ hạ khi max lành << 90s).
+        public long ProbeMsTotal;
+        public long RequestMsTotal;
+        public long MaxRequestMs;
+        public long Over30sRequests;
+        // Sidecar hits (diagnostic): probe/VAD/pxv xài lại từ file đệm thay vì tính lại.
+        public long SidecarProbeHits;
+        public long SidecarVadHits;
+        public long SidecarPxvHits;
+        // E.5 shadow: VAD vote x outcome (2x2) + ROI static zones.
+        // CHI GHI CHEP: co VAD khong bao gio du mot minh de skip (luat hoi dong).
+        public long VadNoText;
+        public long VadNoBlank;
+        public long VadSuspText;
+        public long VadSuspBlank;
+        // Canary quy trách nhiệm: hit mà mẫu audit im (VAD NoSub) thì tai hùa sai.
+        public long CanaryVadAttributed;
+        public long RoiStaticZones;
+        public long RoiLinesWouldFilter;
+        // Ứng viên 2 luminance SHADOW: đo mọi dòng, đếm would-drop, không bỏ dòng.
+        // CHI GHI CHEP (EnforceDefault=false).
+        public long LumFrames;
+        public long LumLines;
+        public long LumWouldDrop;
+        public long LumDecodeFails;
+        // Cổng màu chữ 18/09 (user chốt: sub luôn trắng): enforce trực tiếp,
+        // đếm dòng đo/bỏ/decode-hỏng.
+        public long ChromaFrames;
+        public long ChromaLines;
+        public long ChromaDropped;
+        public long ChromaDecodeFails;
+        // Chấm nền VLM lúc quét: ca vào hàng / bỏ qua (trùng/tràn/dispose).
+        // Verdict chi tiết (giữ/bỏ/chưa rõ) nằm nhật ký + log tóm tắt cuối scan.
+        public long JudgeEnqueued;
+        public long JudgeSkipped;
 
         // Interlocked(ref field) is not recognized as an assignment by the
         // compiler; touch every counter once so warnings-as-errors stays green.
@@ -1874,7 +2953,19 @@ public sealed class OcrScanner
             RefinementImages += 0; SampleImages += 0; ExhaustiveImages += 0;
             OcrCompletedImages += 0; OcrBlankReadings += 0; ProbeCalls += 0;
             ProbeImages += 0; ProbeChangeFrames += 0; ProbeSameFrames += 0;
-            LaneRestarts += 0;
+            LaneRestarts += 0; CheckpointSaves += 0; CheckpointSaveMs += 0;
+            GateVadVotes += 0; GateBandDiffs += 0; GateTextPresence += 0;
+            GateRoiDecisions += 0; CouncilSkips += 0; CouncilScans += 0;
+            CanaryHits += 0; RetroOcrCalls += 0;
+            PaddleDetMs += 0; PaddleRecMs += 0;
+            PaddleDetBoxes += 0; PaddleRecCrops += 0; PaddleCacheHits += 0;
+            ProbeMsTotal += 0; RequestMsTotal += 0; MaxRequestMs += 0; Over30sRequests += 0;
+            SidecarProbeHits += 0; SidecarVadHits += 0; SidecarPxvHits += 0;
+            VadNoText += 0; VadNoBlank += 0; VadSuspText += 0; VadSuspBlank += 0; CanaryVadAttributed += 0;
+            RoiStaticZones += 0; RoiLinesWouldFilter += 0;
+            LumFrames += 0; LumLines += 0; LumWouldDrop += 0; LumDecodeFails += 0;
+            ChromaFrames += 0; ChromaLines += 0; ChromaDropped += 0; ChromaDecodeFails += 0;
+            JudgeEnqueued += 0; JudgeSkipped += 0;
         }
     }
 

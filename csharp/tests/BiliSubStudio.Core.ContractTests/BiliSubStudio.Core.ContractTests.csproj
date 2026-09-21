@@ -4,6 +4,9 @@
     <TargetFramework>net10.0</TargetFramework>
     <RootNamespace>BiliSubStudio.Core.ContractTests</RootNamespace>
     <AssemblyName>BiliSubStudio.Core.ContractTests</AssemblyName>
+    <!-- Suite chạy trên Windows (như app win-x64): tắt cảnh báo platform cho
+         test GDI+ (đã guard OperatingSystem.IsWindows + SupportedOSPlatform). -->
+    <NoWarn>$(NoWarn);CA1416</NoWarn>
   </PropertyGroup>
   <ItemGroup>
     <Content Include="..\..\..\internal\ocr\worker.py" Link="Assets\worker.py" CopyToOutputDirectory="PreserveNewest" />

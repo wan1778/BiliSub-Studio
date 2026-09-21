@@ -31,9 +31,11 @@ internal static class Program
         ("application boundary validates settings", ApplicationBoundaryValidatesAsync),
         ("concurrent updates serialize file writes", ConcurrentUpdatesAreSerializedAsync),
         ("invalid JSON boots with in-memory defaults", InvalidJsonUsesDefaultsAsync),
+        ("config update before initialize loads first instead of persisting defaults", ConfigUpdateBeforeInitializeLoadsAsync),
         ("download speed maps to true 1 8 16 budgets", DownloadSpeedBudgetsAsync),
         ("video and audio telemetry reports the combined connection budget", DownloadTelemetryContractAsync),
         ("range downloader opens parallel requests and validates bodies", RangeDownloaderParallelismAsync),
+        ("download endpoint race selects fastest route and short-body dribble rotates fast", DownloadEndpointContract.RunAsync),
         ("completed range resume reports terminal transport progress", RangeCompletedResumeTelemetryAsync),
         ("range cancellation removes unfinished temp artifacts", RangeCancellationCleanupAsync),
         ("range downloader rejects CDN totals disagreeing with metadata", RangeProbeTotalMismatchAsync),
@@ -96,6 +98,10 @@ internal static class Program
         ("OCR pixel metrics SSIM foreground edge deterministic without threshold", OcrPixelMetricsContract.RunAsync),
         ("OCR threshold v1 Same Different abstention and repeat-instance gate", OcrThresholdContract.RunAsync),
         ("OCR exact-identical gap window from field 7-8 and 9-10", OcrExactGapRegression.RunAsync),
+        ("OCR post-cleanup adjacent re-verification for flicker-split pairs", OcrCleanupAdjacencyContract.RunAsync),
+        ("OCR canonical touching merge for 强/強 flicker without pixel gate", OcrCanonicalMergeContract.RunAsync),
+        ("OCR pause preview is pure lane-owned frontier cut without FFmpeg", OcrPausePreviewContract.RunAsync),
+        ("OCR sidecar caches probe/VAD/pixel verdicts with identity+version guards", OcrSidecarContract.RunAsync),
         ("OCR punctuation-only flicker from field 47-50", OcrPunctuationRegression.RunAsync),
         ("OCR checkpoint replay without worker and targeted range regression", OcrReplayContract.RunAsync),
         ("OCR worker model contract pins Medium installer payload validator", OcrWorkerModelContract.RunAsync),
@@ -104,6 +110,28 @@ internal static class Program
         ("OCR generic boundary property randomized vocabulary-invariant", OcrGenericBoundaryProperty.RunAsync),
         ("OCR checkpoint resume tolerates segment float drift", OcrCheckpointResumeContract.RunAsync),
         ("concurrent OCR worker crashes preserve diagnostics and recover both requests", OcrWorkerRecoveryContract.RunAsync),
+        ("terminal lane death never poisons the shared worker pool channel for siblings", OcrWorkerPoolPoisonContract.RunAsync),
+        ("lane recovery skips rebuild while pool usable and reuse stays off", OcrPoolUsableContract.RunAsync),
+        ("VAD votes NoSub only on silence and ROI learns only repeated static zones", OcrGateVadRoiContract.RunAsync),
+        ("SRT pathology blocks corrupt releases and warns suspicious ones", OcrSrtPathologyContract.RunAsync),
+        ("worker timeout error carries op kind and image count for hang forensics", OcrWorkerTimeoutContract.RunAsync),
+        ("OCR crash recovery keeps rotating checkpoint backup and reaps orphan workers", OcrCrashRecoveryContract.RunAsync),
+        ("OCR buffered frames reuse byte-identical Base64 transport", OcrBufferedFrameContract.RunAsync),
+        ("OCR bounded inference backpressure cancellation failure and ordered lanes != workers", OcrInferenceQueueContract.RunAsync),
+        ("OCR input health pre-flight fails bad input before checkpoint delete and warns VFR mute drift", OcrInputHealthContract.RunAsync),
+        ("OCR gate shadow bucketize and histogram never affect production decisions", OcrGateShadowContract.RunAsync),
+        ("OCR gate council reuse needs near-dup plus previous and canary dual-trigger with hit mismatch", OcrGateCouncilContract.RunAsync),
+        ("OCR request batcher coalesces compatibly with zero-wait and cancel safety", OcrBatchCoalesceContract.RunAsync),
+        ("OCR export exclusion drops exact Start+Text garbage without touching checkpoint", OcrExportExclusionContract.RunAsync),
+        ("OCR export fixes patch AI-corrected text after exclusion without touching checkpoint", OcrExportFixContract.RunAsync),
+        ("OCR export pipeline builds the single live=SRT cue list with counted drops", OcrExportPipelineContract.RunAsync),
+        ("OCR line luminance gate enforces bright-party rule against scene ink text", OcrLuminanceGateContract.RunAsync),
+        ("OCR temporal judge queues committed cues without blocking scan", OcrTrailingJudgeContract.RunAsync),
+        ("OCR speech match corroborates dialogue against Whisper words", OcrSpeechMatchContract.RunAsync),
+        ("OCR text cleanup merges flicker duplicates and drops splinters", OcrTextCleanupContract.RunAsync),
+        ("OCR banner guard drops static overlay text and warns on missing subs", OcrBannerGuardContract.RunAsync),
+        ("OCR judge badge marks AI-decided cues on the live list", OcrJudgeBadgeContract.RunAsync),
+        ("OCR subtitle style self-detects outline versus soft shadow without a manual switch", OcrSubtitleStyleContract.RunAsync),
         ("Paddle GPU wheel follows numeric CUDA compatibility", OcrGpuWheelContractAsync),
         ("OCR Auto benchmarks 1 2 4 8 16 and restores last PASS", OcrAutoBenchmarkContractAsync),
         ("OCR Auto resource guard keeps safe 8 and rejects unsafe 16", OcrAutoResourceGuardContractAsync),
@@ -410,6 +438,30 @@ internal static class Program
             Equal("dark", store.Snapshot.Theme);
             True(store.LastLoadWarning is not null, "invalid JSON should surface a non-fatal warning");
             Equal("{", await File.ReadAllTextAsync(paths.ConfigFile));
+        });
+    }
+
+    // Vụ mất config 16/09: Update trước Initialize mà ghi defaults là xóa sạch
+    // cấu hình user. Từ nay Update tự nạp file trước (dưới cùng gate).
+    private static async Task ConfigUpdateBeforeInitializeLoadsAsync()
+    {
+        await WithTemporaryRootAsync(async root =>
+        {
+            var paths = AppPaths.FromRoot(root);
+            paths.EnsureBootstrapDirectories();
+            await File.WriteAllTextAsync(paths.ConfigFile,
+                "{\"theme\":\"dark\",\"ocr_top\":79,\"ocr_bottom\":99,\"ocr_left\":22,\"ocr_right\":76}\n");
+            using var store = new JsonConfigStore(paths);
+            var changed = await store.UpdateAsync(config => config with { Theme = "light" });
+            Equal("light", changed.Theme);
+            Equal(79, changed.OcrTop);
+            Equal(99, changed.OcrBottom);
+            Equal(22, changed.OcrLeft);
+            Equal(76, changed.OcrRight);
+            using var reopened = new JsonConfigStore(paths);
+            await reopened.InitializeAsync();
+            Equal(79, reopened.Snapshot.OcrTop);
+            Equal("light", reopened.Snapshot.Theme);
         });
     }
 
@@ -2291,10 +2343,10 @@ internal static class Program
             "faster-whisper wheel hash drift");
         True((Constant(installer, "CTranslate2Wheel")?.ToString() ?? string.Empty).EndsWith("#sha256=49f96e861b57301f0b76a082109bde2cac8204a6b4fedc870883008271e82251", StringComparison.Ordinal),
             "CTranslate2 Windows wheel hash drift");
-        Equal("536b0662742c02347bc0e980a01041f333bce120", Constant(installer, "ModelRevision")?.ToString());
+        Equal("edaa852ec7e145841d8ffdb056a99866b5f0a478", Constant(installer, "ModelRevision")?.ToString());
         var files = (Array?)(installer.GetField("ModelFiles", BindingFlags.Static | BindingFlags.NonPublic)?.GetValue(null))
             ?? throw new InvalidOperationException("missing ASR model file manifest");
-        Equal(4, files.Length);
+        Equal(5, files.Length);
         long total = 0;
         var hashes = new HashSet<string>(StringComparer.Ordinal);
         foreach (var file in files)
@@ -2303,8 +2355,8 @@ internal static class Program
             total += (long)(type.GetProperty("Size")?.GetValue(file) ?? 0L);
             hashes.Add(type.GetProperty("Sha256")?.GetValue(file)?.ToString() ?? string.Empty);
         }
-        Equal(486_212_372L, total);
-        True(hashes.Contains("3e305921506d8872816023e4c273e75d2419fb89b24da97b4fe7bce14170d671"), "ASR model.bin SHA-256 drift");
+        Equal(3_090_835_702L, total);
+        True(hashes.Contains("69f74147e3334731bc3a76048724833325d2ec74642fb52620eda87352e3d4f1"), "ASR model.bin SHA-256 drift");
         Equal(7, EditorProjectStore.CurrentSchema);
         return Task.CompletedTask;
     }
@@ -2315,6 +2367,12 @@ internal static class Program
         Equal("你好，世界！", text);
         True(!ChineseSubtitleNormalizer.TryNormalize("你好 ABC", out _), "Latin garbage entered Chinese SRT");
         True(!ChineseSubtitleNormalizer.TryNormalize("123!?", out _), "non-Han sample accepted");
+        True(!ChineseSubtitleNormalizer.TryNormalize("入镇休整 7or", out _), "digit-led map/UI junk entered Chinese SRT (p06 field case)");
+        True(ChineseSubtitleNormalizer.TryNormalize("第12集", out _), "episode number rejected");
+        True(ChineseSubtitleNormalizer.TryNormalize("B站", out _), "mixed B站 rejected");
+        True(ChineseSubtitleNormalizer.TryNormalize("VIP会员", out _), "mixed VIP会员 rejected");
+        True(ChineseSubtitleNormalizer.TryNormalize("呼叫007", out _), "digits without letters rejected");
+        True(!ChineseSubtitleNormalizer.TryNormalize("12", out _), "digit-only without Han rejected by Han-required rule");
         return Task.CompletedTask;
     }
 
@@ -2656,7 +2714,7 @@ internal static class Program
             var cues = Enumerable.Range(0, 150)
                 .Select(index => new OcrCue(index * .5, index * .5 + .4, $"第{index + 1}句", .99))
                 .ToArray();
-            var path = await application.ExportOcrAsync(cues, root, "all-cues.srt", CancellationToken.None);
+            var path = (await application.ExportOcrAsync(cues, root, "all-cues.srt", CancellationToken.None)).Path;
             True(!Directory.EnumerateFiles(root, "*.tmp-*", SearchOption.TopDirectoryOnly).Any(),
                 "OCR SRT export leaked its atomic temporary file");
             var blocks = (await File.ReadAllTextAsync(path))
@@ -2698,13 +2756,15 @@ internal static class Program
                 binder: null, args: [paths], culture: null) ?? throw new InvalidOperationException("cannot create checkpoint store");
             var keyMethod = storeType.GetMethod("KeyAsync", BindingFlags.Instance | BindingFlags.NonPublic)
                 ?? throw new InvalidOperationException("missing checkpoint identity method");
-            var key = await ((Task<string>?)keyMethod.Invoke(store, [request, 18, CancellationToken.None])
+            var key = await ((Task<string>?)keyMethod.Invoke(store, [request, 19, CancellationToken.None])
                 ?? throw new InvalidOperationException("checkpoint identity did not return a task"));
             var directory = Path.Combine(paths.Data, "OCRCheckpoints");
             Directory.CreateDirectory(directory);
             await File.WriteAllTextAsync(Path.Combine(directory, key + ".json"), $$"""
                 {
-                  "schema": 18,
+                  "schema": 19,
+                  "workers": 2,
+                  "worker_mode": "cpu",
                   "key": "{{key}}",
                   "selected_parallelism": 2,
                   "lanes": [
@@ -2805,7 +2865,18 @@ internal static class Program
     {
         Equal("_CON.mp4", FileNamePolicy.Sanitize("CON.mp4", "fallback.mp4"));
         Equal("a_b_c.mp4", FileNamePolicy.Sanitize("a:b?c.mp4", "fallback.mp4"));
-        return Task.CompletedTask;
+        return WithTemporaryRootAsync(async root =>
+        {
+            var existing = Path.Combine(root, "luu kiem tong");
+            Directory.CreateDirectory(existing);
+            Equal(existing, FileNamePolicy.ResolveInitialDirectory(existing));
+            Equal(existing, FileNamePolicy.ResolveInitialDirectory(Path.Combine(existing, "video.mp4")));
+            Equal(root, FileNamePolicy.ResolveInitialDirectory(Path.Combine(root, "khong-co", "sau-hon")));
+            True(FileNamePolicy.ResolveInitialDirectory(null) is null, "null initial path must fall back to dialog default");
+            True(FileNamePolicy.ResolveInitialDirectory("   ") is null, "blank initial path must fall back to dialog default");
+            True(FileNamePolicy.ResolveInitialDirectory(":::\\/***") is null, "garbage path must fall back to dialog default");
+            await Task.CompletedTask;
+        });
     }
 
     private static Task UpdateVersionContractAsync()

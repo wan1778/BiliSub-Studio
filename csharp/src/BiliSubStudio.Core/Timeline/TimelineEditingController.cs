@@ -134,7 +134,8 @@ public sealed class TimelineEditingController
 
     // G31: track visibility/mute toggles ride the same atomic undo
     // history; the audio edit state carries the multi-track arrays.
-    public void SetTrackState(string trackId, bool? isVisible, bool? isMuted)
+    public void SetTrackState(
+        string trackId, bool? isVisible, bool? isMuted, bool? isLocked = null)
     {
         if (string.IsNullOrWhiteSpace(trackId))
             throw new InvalidDataException("Timeline track ID không hợp lệ.");
@@ -149,6 +150,7 @@ public sealed class TimelineEditingController
             {
                 IsVisible = isVisible ?? tracks[index].IsVisible,
                 IsMuted = isMuted ?? tracks[index].IsMuted,
+                IsLocked = isLocked ?? tracks[index].IsLocked,
             };
             var rebuilt = tracks.ToArray();
             rebuilt[index] = updated;

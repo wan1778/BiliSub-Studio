@@ -64,6 +64,16 @@ public sealed partial class MainWindow : Window
 
         _application = new BiliSubApplication(paths);
         _application.Jobs.AttachLog(_globalLog);
+        try
+        {
+            // Phiên trước có thể đã bị tắt đột ngột/crash, để lại Python/FFmpeg
+            // mồ côi giữ VRAM. Dọn ngay khi khởi động để checkpoint cũ Tiếp tục
+            // được; lúc này instance mới chưa sở hữu worker nào nên an toàn.
+            var orphans = _application.ReapOrphanOcrProcesses();
+            if (orphans > 0)
+                _globalLog.Warning("Ứng dụng", $"Đã dọn {orphans} process OCR/FFmpeg mồ côi từ phiên trước; checkpoint cũ (nếu còn) vẫn có thể Tiếp tục.");
+        }
+        catch { }
         _refreshGlobalTranslationProgress = () =>
         {
             var snapshot = _application.Jobs.ActiveSnapshots()
@@ -230,7 +240,17 @@ public sealed partial class MainWindow : Window
 
     private void Navigation_SelectionChanged(Microsoft.UI.Xaml.Controls.NavigationView sender, Microsoft.UI.Xaml.Controls.NavigationViewSelectionChangedEventArgs args)
     {
-        if (args.SelectedItemContainer?.Tag is string tag && _pages.TryGetValue(tag, out var page)) ContentFrame.Content = page;
+        try
+        {
+            if (args.SelectedItemContainer?.Tag is not string tag || !_pages.TryGetValue(tag, out var page)) return;
+            if (ReferenceEquals(ContentFrame.Content, page)) return;
+            ContentFrame.Content = page;
+        }
+        catch (Exception error)
+        {
+            _globalLog.Error("Điều hướng", "Chuyển trang lỗi: " + error.Message);
+            StartupDiagnostics.WriteException("navigation-failed", error);
+        }
     }
 
     private void ApplyTheme(string theme)

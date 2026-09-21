@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text.Json;
@@ -12,14 +13,15 @@ namespace BiliSubStudio.Core.Ocr;
 internal sealed record OcrRuntime(string Python, string Worker, string Models, string Device, string Kind);
 internal sealed record ManagedPythonEnvironment(string Uv, string Python, IReadOnlyDictionary<string, string?> Environment);
 
-internal sealed class OcrInstaller
+public sealed class OcrInstaller
 {
     public const string UvVersion = "0.12.0";
     public const string PythonVersion = "3.12";
     public const string PaddleVersion = "3.2.0";
     public const string PaddleOcrVersion = "3.7.0";
-    public const string DetectionModel = "PP-OCRv6_medium_det";
+public const string DetectionModel = "PP-OCRv6_medium_det";
     public const string RecognitionModel = "PP-OCRv6_medium_rec";
+
     private const string UvArchive = "uv-x86_64-pc-windows-msvc.zip";
     private const string UvUrl = "https://github.com/astral-sh/uv/releases/download/0.12.0/uv-x86_64-pc-windows-msvc.zip";
     private const string CpuIndex = "https://www.paddlepaddle.org.cn/packages/stable/cpu/";
@@ -67,7 +69,7 @@ internal sealed class OcrInstaller
         return nativePaddlePath.Length >= 220;
     }
 
-    public async Task<OcrRuntime> EnsureAsync(string kind, HardwareSnapshot hardware, CancellationToken cancellationToken)
+    internal async Task<OcrRuntime> EnsureAsync(string kind, HardwareSnapshot hardware, CancellationToken cancellationToken)
     {
         await _gate.WaitAsync(cancellationToken);
         try

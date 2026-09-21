@@ -54,8 +54,10 @@ internal static class OcrShortTextNoiseRegression
         var genuine = constructor.Invoke([30d, .68d, true]);
         for (var index = 0; index < 6; index++)
             observe.Invoke(genuine, [20d + index * frame, frame, falseRead]);
-        observe.Invoke(genuine, [20d + 6 * frame, frame, blank]);
-        observe.Invoke(genuine, [20d + 7 * frame, frame, blank]);
+        // A strong caption now tolerates brief dropouts, so four trailing
+        // blanks (not two) close it; production lane ends via Finish anyway.
+        for (var index = 6; index < 10; index++)
+            observe.Invoke(genuine, [20d + index * frame, frame, blank]);
         var retained = (IReadOnlyList<OcrCue>)cues.GetValue(genuine)!;
         if (retained.Count != 1 || retained[0].Text != "小小"
             || retained[0].End - retained[0].Start < .20 - .000001)

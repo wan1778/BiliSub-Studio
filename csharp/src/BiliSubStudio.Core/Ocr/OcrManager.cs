@@ -14,11 +14,24 @@ public sealed class OcrManager : IAsyncDisposable
     private readonly List<OcrWorkerClient> _workers = [];
     private CancellationTokenSource _preparationCancellation = new();
     private Channel<OcrWorkerClient>? _available;
+    private OcrInferenceQueue? _inference;
+    private readonly List<Task> _retiredInference = [];
     private string _deviceMode = "auto";
     private string _activeMode = string.Empty;
     private string _state = "stopped";
     private string? _error;
     private int _committedWorkerTarget = 1;
+    // Diagnostic counters only (Interlocked): never gate scheduling decisions.
+    private long _ocrBatchCalls;
+    private long _ocrBatchImages;
+    private long _probeCalls;
+    private long _probeImages;
+    private long _workerReplacements;
+    private long _plannedRecycles;
+    // Recycle chủ động chống suy giảm theo giờ: worker là fungible (cache chỉ là perf,
+    // lỗi đã tự xóa) nên cho về hưu sau ngần này ảnh, so le nhau, đúng điểm an toàn.
+    // ~25k ảnh ≈ 2h ở 3.5 ảnh/s/worker. Tuổi tính theo worker incarnation (worker mới đẻ = 0).
+    private const long RecycleAfterImages = 25000;
 
     internal OcrManager(AppPaths paths, HardwareService hardware, OcrInstaller installer)
     {
@@ -37,7 +50,42 @@ public sealed class OcrManager : IAsyncDisposable
             .Select(group => $"{group.Count()} {group.Key.ToUpperInvariant()}")),
         "PaddleOCR",
         OcrInstaller.DetectionModel + " + " + OcrInstaller.RecognitionModel,
-        _error);
+        _error,
+        CountLiveWorkers());
+
+    // Snapshot best-effort cho quyet dinh retry: pool dung duoc neu kenh con song
+    // va con >=1 worker song. Rebuild giua scan GIET viec dang bay cua moi lane
+    // (retire queue cancel hang loat -> rebuild storm 10:40 + 19:00 13/9), nen chi
+    // rebuild khi that su khong dung duoc; meo 1 slot thi request-recovery tu va.
+    internal bool IsPoolUsableForRetry()
+    {
+        try
+        {
+            if (_available is null) return false;
+            foreach (var worker in _workers)
+            {
+                try { if (worker.IsAlive) return true; }
+                catch { }
+            }
+            return false;
+        }
+        catch { return false; }
+    }
+
+    private int CountLiveWorkers()
+    {
+        try
+        {
+            var live = 0;
+            foreach (var worker in _workers)
+            {
+                try { if (worker.IsAlive) live++; }
+                catch { }
+            }
+            return live;
+        }
+        catch { return 0; }
+    }
 
     public async Task ConfigureDeviceAsync(string mode, CancellationToken cancellationToken)
     {
@@ -120,9 +168,12 @@ public sealed class OcrManager : IAsyncDisposable
     {
         target = Math.Clamp(target, 1, 16);
         await EnsureAsync(cancellationToken);
+        using var lifetime = LinkPreparationCancellation(cancellationToken);
+        cancellationToken = lifetime.Token;
         await _gate.WaitAsync(cancellationToken);
         try
         {
+            target = OcrTopologyBenchmark.WorkerTarget(_activeMode, target);
             var minimum = MinimumWorkerTarget(_activeMode);
             if (target < minimum)
                 throw new ArgumentOutOfRangeException(nameof(target),
@@ -144,14 +195,14 @@ public sealed class OcrManager : IAsyncDisposable
             }
             catch (OperationCanceledException)
             {
-                var retained = _workers.Count > 0 && _workers.All(x => x.IsAlive);
+                var retained = _available is not null && _workers.Count > 0 && _workers.All(x => x.IsAlive);
                 _state = retained ? "ready" : "stopped";
                 _error = null;
                 throw;
             }
             catch (Exception error)
             {
-                var retained = _workers.Count > 0 && _workers.All(x => x.IsAlive);
+                var retained = _available is not null && _workers.Count > 0 && _workers.All(x => x.IsAlive);
                 _state = retained ? "ready" : "failed";
                 _error = retained ? null : error.Message;
                 throw;
@@ -160,33 +211,210 @@ public sealed class OcrManager : IAsyncDisposable
         finally { _gate.Release(); }
     }
 
-    public async Task<OcrResult> RunAsync(string imageBase64, CancellationToken cancellationToken, bool recoverShortBlank = false, string? activeShortText = null)
-        => await RunWithRecoveryAsync(
-            worker => worker.RunAsync(imageBase64, cancellationToken, recoverShortBlank, activeShortText),
+    public async Task<OcrResult> RunAsync(string imageBase64, CancellationToken cancellationToken, bool recoverShortBlank = false, string? activeShortText = null, Action<OcrPerfSample>? onPerf = null)
+    {
+        Interlocked.Increment(ref _ocrBatchCalls);
+        Interlocked.Increment(ref _ocrBatchImages);
+        return await RunWithRecoveryAsync(
+            (worker, token) => worker.RunAsync(imageBase64, token, recoverShortBlank, activeShortText, onPerf),
             cancellationToken);
+    }
 
     public async Task<IReadOnlyList<OcrResult>> RunBatchAsync(
         IReadOnlyList<string> imageBase64,
         CancellationToken cancellationToken,
         bool recoverShortBlank = false,
-        string? activeShortText = null)
-        => await RunWithRecoveryAsync(
-            worker => worker.RunBatchAsync(imageBase64, cancellationToken, recoverShortBlank, activeShortText),
+        string? activeShortText = null,
+        Action<OcrPerfSample>? onPerf = null)
+    {
+        if (imageBase64.Count is < 1 or > 8 || imageBase64.Any(string.IsNullOrWhiteSpace))
+            throw new ArgumentException("Batch OCR phải có từ 1 đến 8 ảnh hợp lệ.", nameof(imageBase64));
+        return await RunBatchInternalAsync(imageBase64, cancellationToken, recoverShortBlank, activeShortText, onPerf);
+    }
+
+    // Đường batch nội bộ cho OcrBatchScope (vét batch): validation ở worker client
+    // giữ nguyên, ở đây chỉ đếm + recovery như đường public.
+    internal Task<IReadOnlyList<OcrResult>> RunBatchInternalAsync(
+        IReadOnlyList<string> imageBase64,
+        CancellationToken cancellationToken,
+        bool recoverShortBlank = false,
+        string? activeShortText = null,
+        Action<OcrPerfSample>? onPerf = null)
+    {
+        Interlocked.Increment(ref _ocrBatchCalls);
+        Interlocked.Add(ref _ocrBatchImages, imageBase64.Count);
+        return RunWithRecoveryAsync(
+            (worker, token) => worker.RunBatchAsync(imageBase64, token, recoverShortBlank, activeShortText, onPerf),
             cancellationToken);
+    }
+
+    // Scope vét batch theo scan: gom request đơn lẻ đang chờ sẵn thành batch worker.
+    // = 4 (parity 15/9 bằng worker thật đang chạy: text/box giống hệt 8/8, nhanh 1.53x;
+    // worker từ chối batch >4 nên cap theo worker, không theo protocol).
+    // Contract test ghim == 4.
+    public static int BatchCoalesceCap = 4;
+
+    public OcrBatchScope CreateBatchScope(CancellationToken scanToken) => new(this, scanToken);
+
+    public sealed class OcrBatchScope : IAsyncDisposable
+    {
+        private readonly OcrManager _manager;
+        private readonly OcrRequestBatcher? _batcher;
+
+        internal OcrBatchScope(OcrManager manager, CancellationToken scanToken)
+        {
+            _manager = manager;
+            _ = scanToken;
+            // Cap 1: không dựng batcher, SubmitAsync đi đường cũ từng ảnh.
+            if (BatchCoalesceCap > 1)
+                _batcher = new OcrRequestBatcher(manager.DispatchBatchAsync, BatchCoalesceCap);
+        }
+
+        public Task<OcrResult> SubmitAsync(
+            string imageBase64,
+            CancellationToken cancellationToken,
+            bool recoverShortBlank = false,
+            string? activeShortText = null,
+            Action<OcrPerfSample>? onPerf = null)
+        {
+            var batcher = _batcher;
+            return batcher is null
+                ? _manager.RunAsync(imageBase64, cancellationToken, recoverShortBlank, activeShortText, onPerf)
+                : batcher.SubmitAsync(imageBase64, cancellationToken, recoverShortBlank, activeShortText, onPerf);
+        }
+
+        public ValueTask DisposeAsync() => _batcher?.DisposeAsync() ?? ValueTask.CompletedTask;
+    }
+
+    // Style probe đi đường lease worker trực tiếp (1 lần lúc bắt đầu quét,
+    // không qua batcher). Worker cũ/lỗi -> ném -> scanner fail-open về "off".
+    public Task<IReadOnlyList<OcrSubtitleStyle.FrameScore>> ProbeSubtitleStyleAsync(
+        IReadOnlyList<string> imageBase64,
+        CancellationToken cancellationToken)
+        => RunWithRecoveryAsync(
+            (worker, token) => worker.ProbeSubtitleStyleAsync(imageBase64, token),
+            cancellationToken);
+
+    private static readonly OcrPerfSample ZeroPerf = new(0, 0, 0, 0, 0, 0);
+
+    // Production dispatch cho batcher: 1 batch = 1 worker call (recovery/retry giữ
+    // nguyên qua ExecuteWithRecoveryAsync). Token là scope-stop (chỉ fire khi dispose):
+    // pause hủy member TCS ngay (lane thoát nhanh), GPU chạy nốt batch mồ côi trong
+    // giới hạn timeout rồi bỏ kết quả — không giết worker (tránh replacement storm).
+    // Perf fan-out giữ tổng EXACT: member đầu gánh cả batch, còn lại sample 0.
+    private async Task DispatchBatchAsync(
+        IReadOnlyList<OcrRequestBatcher.Pending> batch,
+        CancellationToken scopeToken)
+    {
+        var live = new List<OcrRequestBatcher.Pending>(batch.Count);
+        foreach (var pending in batch)
+        {
+            if (!pending.Task.IsCompleted)
+                live.Add(pending);
+        }
+        if (live.Count == 0) return;
+        if (live.Count > OcrRequestBatcher.WorkerBatchLimit)
+        {
+            var overflow = new ArgumentException($"Batcher vượt giới hạn worker {OcrRequestBatcher.WorkerBatchLimit}.");
+            foreach (var pending in live)
+                pending.TrySetException(overflow);
+            return;
+        }
+        var images = live.Select(pending => pending.ImageBase64).ToList();
+        var recover = live[0].RecoverShortBlank;
+        var active = live[0].ActiveShortText;
+        try
+        {
+            var results = await RunBatchInternalAsync(
+                images,
+                scopeToken,
+                recover,
+                active,
+                sample =>
+                {
+                    try
+                    {
+                        var first = true;
+                        foreach (var pending in live)
+                        {
+                            if (first)
+                            {
+                                pending.OnPerf?.Invoke(sample);
+                                first = false;
+                            }
+                            else
+                            {
+                                pending.OnPerf?.Invoke(ZeroPerf);
+                            }
+                        }
+                    }
+                    catch { }
+                });
+            for (var index = 0; index < live.Count; index++)
+                live[index].TrySetResult(results[index]);
+        }
+        catch (OperationCanceledException) when (scopeToken.IsCancellationRequested)
+        {
+            foreach (var pending in live)
+                pending.TrySetCanceled();
+        }
+        catch (Exception error)
+        {
+            foreach (var pending in live)
+                pending.TrySetException(error);
+        }
+    }
 
     public async Task<IReadOnlyList<double>> ProbeVisualChangesAsync(
         IReadOnlyList<string> imageBase64,
         CancellationToken cancellationToken)
-        => await RunWithRecoveryAsync(
-            worker => worker.ProbeVisualChangesAsync(imageBase64, cancellationToken),
+    {
+        var probe = await ProbeVisualChangesExAsync(imageBase64, cancellationToken);
+        return probe.ChangeScores;
+    }
+
+    public async Task<VisualProbeResult> ProbeVisualChangesExAsync(
+        IReadOnlyList<string> imageBase64,
+        CancellationToken cancellationToken)
+    {
+        Interlocked.Increment(ref _probeCalls);
+        Interlocked.Add(ref _probeImages, imageBase64.Count);
+        return await RunWithRecoveryAsync(
+            (worker, token) => worker.ProbeVisualChangesExAsync(imageBase64, token),
             cancellationToken);
+    }
+
+    public OcrInferenceTelemetry GetInferenceTelemetry()
+    {
+        var queue = _inference?.Snapshot() ?? (0, 0, 0, 0);
+        return new OcrInferenceTelemetry(
+            Interlocked.Read(ref _ocrBatchCalls),
+            Interlocked.Read(ref _ocrBatchImages),
+            Interlocked.Read(ref _probeCalls),
+            Interlocked.Read(ref _probeImages),
+            Interlocked.Read(ref _workerReplacements),
+            queue.Executed, queue.PeakDepth, queue.AvgDepth, queue.TotalWaitMs,
+            Interlocked.Read(ref _plannedRecycles));
+    }
 
     private async Task<T> RunWithRecoveryAsync<T>(
-        Func<OcrWorkerClient, Task<T>> operation,
+        Func<OcrWorkerClient, CancellationToken, Task<T>> operation,
         CancellationToken cancellationToken)
     {
         await EnsureAsync(cancellationToken);
-        var channel = _available ?? throw new InvalidOperationException("OCR worker pool chưa sẵn sàng.");
+        using var lifetime = LinkPreparationCancellation(cancellationToken);
+        var inference = _inference ?? throw new InvalidOperationException("OCR inference queue is unavailable.");
+        var channel = _available ?? throw new InvalidOperationException("OCR worker pool is unavailable.");
+        // Stop cancels this lifetime before waiting for _gate, including a
+        // replacement's StartAsync while recovery owns that gate.
+        return await inference.RunAsync(token => ExecuteWithRecoveryAsync(operation, channel, token), lifetime.Token);
+    }
+
+    private async Task<T> ExecuteWithRecoveryAsync<T>(
+        Func<OcrWorkerClient, CancellationToken, Task<T>> operation,
+        Channel<OcrWorkerClient> channel,
+        CancellationToken cancellationToken)
+    {
         var worker = await channel.Reader.ReadAsync(cancellationToken);
         Exception? firstFailure = null;
         var recoveryCount = 0;
@@ -194,7 +422,12 @@ public sealed class OcrManager : IAsyncDisposable
         {
             while (true)
             {
-                try { return await operation(worker); }
+                try
+                {
+                    var result = await operation(worker, cancellationToken);
+                    worker = await MaybeRecycleAsync(worker, channel, cancellationToken);
+                    return result;
+                }
                 catch (Exception error) when (IsRecoverableWorkerFailure(worker, error, cancellationToken))
                 {
                     firstFailure ??= error;
@@ -209,8 +442,24 @@ public sealed class OcrManager : IAsyncDisposable
         }
         finally
         {
-            if (worker.IsAlive && ReferenceEquals(_available, channel))
-                channel.Writer.TryWrite(worker);
+            // Mot lane chet KHONG BAO GIO duoc dong kenh chung: TryComplete o day
+            // tung lam tat ca lane khac chet theo (ChannelClosedException day chuyen
+            // -> job chet, vu 06:43 13/9). Loi pool that da truyen qua exception;
+            // lane recovery + job lo phan con lai.
+            // - Cung kenh + song -> tra ve pool (TryWrite that bai chi khi teardown
+            //   da chot kenh: luc do teardown tu huy workers, Dispose thua o day vo hai).
+            // - Cung kenh + chet -> huy sach se (khong de python mo coi). Replace
+            //   da huy worker cu; Dispose goi thua vo hai.
+            // - Khac kenh (pool rebuild/teardown giua chung) -> KHONG DUNG VAO:
+            //   instance van thuoc pool moi (rebuild restart tai cho + republish),
+            //   huy o day se giet worker pool dang dung (vu resize test).
+            if (ReferenceEquals(_available, channel))
+            {
+                if (!worker.IsAlive || !channel.Writer.TryWrite(worker))
+                {
+                    try { await worker.DisposeAsync(); } catch { }
+                }
+            }
         }
     }
 
@@ -221,12 +470,47 @@ public sealed class OcrManager : IAsyncDisposable
         !cancellationToken.IsCancellationRequested
         && (error is OcrWorkerUnavailableException or TimeoutException || !worker.IsAlive);
 
+    // Recycle chủ động (chống "quét càng lâu càng chậm"): worker quá tuổi thì về hưu
+    // DÙ ĐANG KHỎE, đẻ worker mới thay chỗ — reset phân mảnh CUDA/nóng tích lũy/vé số
+    // ảnh độc. Chạy trên đường ReplaceWorkerAsync có sẵn (giữ _gate, mổ pool an toàn).
+    // Fail-open tuyệt đối: mọi lỗi (pool rebuild giữa chừng, cancel, khởi động hỏng)
+    // đều trả worker cũ về phục vụ tiếp + reset tuổi (không churn _gate mỗi request);
+    // pool đang què (thiếu worker sống) thì bỏ qua lượt (để recovery lo).
+    // Single-worker pool: vẫn recycle (nghỉ ~30s nạp model mỗi ~2h, có chặn trên).
+    private async Task<OcrWorkerClient> MaybeRecycleAsync(
+        OcrWorkerClient worker,
+        Channel<OcrWorkerClient> channel,
+        CancellationToken cancellationToken)
+    {
+        if (worker.ImagesServed < RecycleAfterImages) return worker;
+        if (CountLiveWorkers() < _workers.Count) return worker;
+        try
+        {
+            var fresh = await ReplaceWorkerAsync(worker, channel,
+                new InvalidOperationException(
+                    $"OCR worker tái tạo chủ động sau {worker.ImagesServed} ảnh (chống suy giảm theo giờ)."),
+                cancellationToken, planned: true);
+            Interlocked.Increment(ref _plannedRecycles);
+            return fresh;
+        }
+        catch (OperationCanceledException) { throw; }
+        catch
+        {
+            worker.ResetAge();
+            return worker;
+        }
+    }
+
     private async Task<OcrWorkerClient> ReplaceWorkerAsync(
         OcrWorkerClient failed,
         Channel<OcrWorkerClient> channel,
         Exception cause,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool planned = false)
     {
+        // Recycle chủ động KHÔNG tính vào WorkerReplacements-do-chết (đếm riêng planned):
+        // 2 số này là bằng chứng nghiệm thu time-invariance (chết≈0, recycle đều).
+        if (!planned) Interlocked.Increment(ref _workerReplacements);
         await _gate.WaitAsync(cancellationToken);
         try
         {
@@ -270,6 +554,7 @@ public sealed class OcrManager : IAsyncDisposable
 
         using var bounded = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         if (!cancellationToken.CanBeCanceled) bounded.CancelAfter(TimeSpan.FromSeconds(90));
+        Task[] retired;
         await _gate.WaitAsync(bounded.Token);
         try
         {
@@ -278,8 +563,10 @@ public sealed class OcrManager : IAsyncDisposable
             _activeMode = string.Empty;
             _committedWorkerTarget = MinimumWorkerTarget(_deviceMode);
             _error = null;
+            retired = _retiredInference.ToArray();
         }
         finally { _gate.Release(); }
+        await Task.WhenAll(retired).WaitAsync(bounded.Token);
     }
 
     public async Task RemoveAsync(CancellationToken cancellationToken)
@@ -304,6 +591,7 @@ public sealed class OcrManager : IAsyncDisposable
 
     private async Task BuildPoolLockedAsync(string mode, int target, HardwareSnapshot hardware, CancellationToken cancellationToken)
     {
+        target = OcrTopologyBenchmark.WorkerTarget(mode, target);
         await StopWorkersLockedAsync();
         var kinds = DesiredKinds(mode, target);
         try
@@ -340,8 +628,17 @@ public sealed class OcrManager : IAsyncDisposable
             return;
         }
 
+        RetireInferenceLocked();
         _available?.Writer.TryComplete();
         _available = null;
+        // Retiring the queue cancels request tokens and can kill workers that
+        // passed canReuse above. Stop drains each request gate before restarting
+        // its process; never republish those possibly killed processes as idle.
+        foreach (var worker in _workers.Take(shared))
+        {
+            await worker.StopAsync();
+            await worker.StartAsync(cancellationToken);
+        }
         if (_workers.Count > target)
         {
             for (var index = _workers.Count - 1; index >= target; index--)
@@ -382,6 +679,7 @@ public sealed class OcrManager : IAsyncDisposable
 
     private void RebuildAvailabilityLocked()
     {
+        RetireInferenceLocked();
         if (_workers.Count == 0)
         {
             _available = null;
@@ -394,6 +692,7 @@ public sealed class OcrManager : IAsyncDisposable
             FullMode = BoundedChannelFullMode.Wait,
         });
         foreach (var worker in _workers) _available.Writer.TryWrite(worker);
+        _inference = new OcrInferenceQueue(_workers.Count);
     }
 
     private static string[] DesiredKinds(string mode, int target) => mode switch
@@ -411,6 +710,7 @@ public sealed class OcrManager : IAsyncDisposable
 
     private async Task StopWorkersLockedAsync()
     {
+        RetireInferenceLocked();
         _available?.Writer.TryComplete();
         _available = null;
         Exception? firstFailure = null;
@@ -433,9 +733,26 @@ public sealed class OcrManager : IAsyncDisposable
             : throw new ArgumentException($"Thiết bị OCR không hợp lệ: {mode}");
     }
 
+    private void RetireInferenceLocked()
+    {
+        if (_inference is null) return;
+        // Recovery may be waiting for _gate. Cancel here, but never await its
+        // consumer while holding that same gate.
+        _retiredInference.RemoveAll(task => task.IsCompletedSuccessfully);
+        _retiredInference.Add(_inference.DisposeAsync().AsTask());
+        _inference = null;
+    }
+
+    private CancellationTokenSource LinkPreparationCancellation(CancellationToken cancellationToken)
+    {
+        lock (_lifecycleSync)
+            return CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _preparationCancellation.Token);
+    }
+
     public async ValueTask DisposeAsync()
     {
         await StopAsync();
+        await Task.WhenAll(_retiredInference);
         lock (_lifecycleSync) _preparationCancellation.Dispose();
         _gate.Dispose();
     }

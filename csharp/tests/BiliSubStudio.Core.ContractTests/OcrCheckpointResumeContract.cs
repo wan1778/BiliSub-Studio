@@ -74,7 +74,7 @@ internal static class OcrCheckpointResumeContract
             var video = Path.Combine(root, "video.mp4");
             await File.WriteAllBytesAsync(video, new byte[1024]);
             var region = new OcrRegion(0.05, 0.65, 0.90, 0.29);
-            var request = new OcrScanRequest(video, region, "accurate", "gpu", "1", 1.0, 100.0, 0);
+            var request = new OcrScanRequest(video, region, "accurate", "gpu", "4", 1.0, 100.0, 0);
             var paths = AppPaths.FromRoot(root);
             var store = Activator.CreateInstance(storeType, paths)
                 ?? throw new InvalidOperationException("cannot create OcrCheckpointStore");
@@ -84,10 +84,13 @@ internal static class OcrCheckpointResumeContract
                 ?? throw new InvalidOperationException("missing SaveAsync");
             var loadAsync = storeType.GetMethod("LoadAsync", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
                 ?? throw new InvalidOperationException("missing LoadAsync");
-            var freshTask = (Task)newAsync.Invoke(store, [request, 1, CancellationToken.None])!;
+            var freshTask = (Task)newAsync.Invoke(store, [request, 4, CancellationToken.None])!;
             await freshTask;
             var fresh = freshTask.GetType().GetProperty("Result")?.GetValue(freshTask)
                 ?? throw new InvalidOperationException("NewAsync returned no checkpoint");
+            var workersProp = parallelType.GetProperty("Workers")!;
+            Check((int)workersProp.GetValue(fresh)! == 2 && (int)parallelType.GetProperty("SelectedParallelism")!.GetValue(fresh)! == 4,
+                "checkpoint must persist two workers separately from four lanes");
             // Gắn cue có provenance đầy đủ (pixel observation 2 đầu) rồi save/load roundtrip.
             var tb = new RationalTimeBase(1, 90000);
             var geo = new OcrFrameGeometry(0, 0, 1920, 1080, 1280, 320, 0, 0, 1280, 320);
@@ -112,6 +115,29 @@ internal static class OcrCheckpointResumeContract
                 "loaded cue must preserve pixel provenance (SourcePts both ends)");
             Check(OcrCueReconciler.HasPixelProvenance(loadedCues.Cast<OcrCue>().First()),
                 "loaded cue must satisfy HasPixelProvenance for replay");
+            Check((int)workersProp.GetValue(loaded)! == 2 && (string)parallelType.GetProperty("WorkerMode")!.GetValue(loaded)! == "gpu",
+                "resume lost independent worker topology");
+            workersProp.SetValue(fresh, 4);
+            await (Task)saveAsync.Invoke(store, [request, fresh, CancellationToken.None])!;
+            // No rotated backup on disk: a stale lane-equals-worker GPU topology
+            // must still be rejected instead of resuming.
+            var checkpointFile = Directory.GetFiles(Path.Combine(root, "Data", "OCRCheckpoints"), "*.json").Single();
+            File.Delete(checkpointFile + ".bak");
+            var invalidLoad = (Task)loadAsync.Invoke(store, [request, CancellationToken.None])!;
+            await invalidLoad;
+            Check(invalidLoad.GetType().GetProperty("Result")!.GetValue(invalidLoad) is null,
+                "resume accepted stale lane-equals-worker GPU topology");
+            // With a rotated backup present, a torn/invalid main falls back to
+            // the previous save instead of forcing a fresh scan after a crash.
+            workersProp.SetValue(fresh, 2);
+            await (Task)saveAsync.Invoke(store, [request, fresh, CancellationToken.None])!;
+            workersProp.SetValue(fresh, 4);
+            await (Task)saveAsync.Invoke(store, [request, fresh, CancellationToken.None])!;
+            var fallbackLoad = (Task)loadAsync.Invoke(store, [request, CancellationToken.None])!;
+            await fallbackLoad;
+            var fallback = fallbackLoad.GetType().GetProperty("Result")!.GetValue(fallbackLoad);
+            Check(fallback is not null && (int)workersProp.GetValue(fallback)! == 2,
+                "invalid main checkpoint did not fall back to the rotated backup");
         }
         finally
         {

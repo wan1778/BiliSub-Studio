@@ -22,5 +22,14 @@ internal static class OcrCheckpointRegionRegression
 
         if (dragged != reopened || dragged != new OcrRegion(0.05, 0.65, 0.90, 0.29))
             throw new InvalidOperationException("OCR ROI identity changes after config percent persistence/restart");
+
+        // Resume-override rule (pause + sua ROI + tiep tuc): giong het -> khong
+        // override (chay nhu cu); mo rong khung (text tran nhu vu user) -> override.
+        var untouched = new OcrRegion(0.05, 0.65, 0.90, 0.29);
+        if (!untouched.Equals(reopened))
+            throw new InvalidOperationException("untouched ROI must resume without override");
+        var widened = Apply(canonical, new OcrRegion(0.03, 0.65, 0.94, 0.29));
+        if (widened.Equals(reopened))
+            throw new InvalidOperationException("widened ROI must trigger resume override");
     }
 }

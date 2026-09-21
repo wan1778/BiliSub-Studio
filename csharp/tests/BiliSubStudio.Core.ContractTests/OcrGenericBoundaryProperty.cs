@@ -9,9 +9,14 @@ namespace BiliSubStudio.Core.ContractTests;
 // mutate ngẫu nhiên (sub 1-3 rune / delete / insert / punct / duplicate rune) rồi assert:
 //   temporal+spatial dính + Pixel Same            => collapse bất kể ký tự cụ thể;
 //   arbitrary text + Pixel Different              => không merge;
-//   same text + blank > continuation window       => không merge, comparer không được hỏi;
+//   same text + blank > micro-gap (0.25s)         => không merge, comparer không được hỏi;
+//   byte-identical + micro-gap (<=0.25s)          => pixel quyết định (field flicker-split 0.133s);
 //   relabel toàn bộ rune set (A->X bijection)     => quyết định merge/collapse KHÔNG đổi
 //                                                    (structure-invariance: không lệch chữ cụ thể).
+// LƯU Ý hiệu chuẩn: blank thật có field evidence là 0.55s+/0.667s; không có evidence nào cho
+// blank thật 0.12-0.25s giữa hai caption giống hệt (ở độ phân giải đó flicker-split và blank
+// thật không phân biệt được bằng thời gian; viewer cũng không cảm nhận được). P3 vì vậy chỉ
+// pin từ 0.30s trở lên; khe micro identical-text do pixel verdict quyết định.
 internal static class OcrGenericBoundaryProperty
 {
     private static readonly OcrRegion TestRoi = new(0.05, 0.65, 0.90, 0.29);
@@ -172,12 +177,14 @@ internal static class OcrGenericBoundaryProperty
                 $"P2 trial {trial}: Different must not rewrite text");
         }
 
-        // P3 (40 trials): same text, blank > window => không merge, comparer KHÔNG được hỏi.
+        // P3 (40 trials): same text, blank > micro-gap => không merge, comparer KHÔNG được hỏi.
+        // Blank thật có field evidence 0.55s+/0.667s; dải [0.30, 0.92] pin invariant này.
+        // Khe identical-text <= 0.25s thuộc micro-gap: pixel quyết định (xem OcrExactGapRegression 9-11).
         for (var trial = 0; trial < 40; trial++)
         {
             string t;
             do { t = ArbitraryText(2, 8); } while (ChineseNormalized(t) is null);
-            var blank = 0.12 + Rng.NextDouble() * 0.8; // > window 0.1
+            var blank = 0.30 + Rng.NextDouble() * 0.62; // > micro-gap 0.25
             var a = Prov(30.0, 31.0, t, 0.99, 25);
             var b = Prov(31.0 + blank, 32.0 + blank, t, 0.98, 25);
             var counting = new ScriptedComparer((l, r) => PixelCheckResult.Same);
@@ -210,8 +217,8 @@ internal static class OcrGenericBoundaryProperty
             var relabeled = await OcrCueReconciler.MergeTouchingIdenticalAsync(Relabel(chain), "v.mp4", sameB, ct, Window);
             Check(original.Count == relabeled.Count,
                 $"P4 trial {trial}: relabel must not change decision count ({original.Count} vs {relabeled.Count})");
-            Check(sameA.Calls == sameB.Calls,
-                $"P4 trial {trial}: relabel must not change pixel call count ({sameA.Calls} vs {sameB.Calls})");
+            // Policy 21/09: fast path byte-identical merge is text-dependent, call count
+            // invariance under relabel no longer holds. Chỉ kiểm tra quyết định merge/split.
             for (var i = 0; i < Math.Min(original.Count, relabeled.Count); i++)
                 Check(original[i].NeedsReview == relabeled[i].NeedsReview
                     && Math.Abs(original[i].Start - relabeled[i].Start) < 1e-9
@@ -220,6 +227,7 @@ internal static class OcrGenericBoundaryProperty
         }
 
         // P5 (30 trials): chain 3-6 fragment arbitrary mutation, Same => 1 visual instance.
+        // Policy 21/09: byte-identical touching merges pixel-free, so call count may be < count-1.
         for (var trial = 0; trial < 30; trial++)
         {
             string baseText;
@@ -240,7 +248,7 @@ internal static class OcrGenericBoundaryProperty
             Check(merged.Count == 1, $"P5 trial {trial}: {count}-fragment chain Same must collapse to 1 (got {merged.Count})");
             Check(merged[0].Start == 50.0 && Math.Abs(merged[0].End - (50.0 + 0.4 * count)) < 1e-9,
                 $"P5 trial {trial}: chain span must cover all fragments");
-            Check(same.Calls == count - 1, $"P5 trial {trial}: each boundary one call (calls={same.Calls})");
+            // Policy 21/09: identical touching merges pixel-free, call count ≤ count-1
         }
     }
 

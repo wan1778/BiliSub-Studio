@@ -83,7 +83,7 @@ internal static class OcrFragmentRuntimeContract
         Check(full.Cues.Select(cue => cue.Text).SequenceEqual(resumed.Cues.Select(cue => cue.Text)), "pause/resume preserves final caption sequence");
         Check(full.Cues.Zip(resumed.Cues).All(pair => Math.Abs(pair.First.Start - pair.Second.Start) < .05
             && Math.Abs(pair.First.End - pair.Second.End) < .05), "pause/resume timing agrees within one source frame");
-        var srt = await app.ExportOcrAsync(resumed.Cues, paths.DefaultDownloads, "ocr-fragments-fixed", CancellationToken.None);
+        var srt = (await app.ExportOcrAsync(resumed.Cues, paths.DefaultDownloads, "ocr-fragments-fixed", CancellationToken.None)).Path;
         var text = await File.ReadAllTextAsync(srt);
         Check(text.Contains("\n走\n", StringComparison.Ordinal) && !text.Contains("\n杰\n", StringComparison.Ordinal)
             && !text.Contains("\n徒\n", StringComparison.Ordinal), "public SRT export contains corrected short caption");

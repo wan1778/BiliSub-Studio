@@ -63,7 +63,7 @@
                     </Grid.RowDefinitions>
                     <Border Background="Black" BorderBrush="{ThemeResource StrongBorderBrush}" BorderThickness="1" CornerRadius="13">
                         <Grid x:Name="PreviewHost" AutomationProperties.Name="Khung xem trước video và vùng OCR">
-                            <MediaPlayerElement x:Name="PreviewPlayer" AreTransportControlsEnabled="True" AutoPlay="False" Stretch="Uniform" Visibility="Collapsed" AutomationProperties.Name="Trình phát video OCR" />
+                            <MediaPlayerElement x:Name="PreviewPlayer" AreTransportControlsEnabled="False" AutoPlay="False" Stretch="Uniform" Visibility="Collapsed" AutomationProperties.Name="Trình phát video OCR" />
                             <Image x:Name="PreviewImage" Stretch="Uniform" AutomationProperties.Name="Frame xem trước bằng FFmpeg" />
                             <Canvas
                                 x:Name="PreviewCanvas"
@@ -124,12 +124,13 @@
                                     <Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
                                     <ComboBox x:Name="DeviceBox" Header="Thiết bị" SelectedIndex="0"><x:String>auto</x:String><x:String>cpu</x:String><x:String>gpu</x:String><x:String>hybrid</x:String></ComboBox>
                                     <ComboBox Grid.Column="1" x:Name="ScanModeBox" Header="Chế độ" SelectedIndex="0">
+                                        <ComboBoxItem Content="Chính xác nhất · kiểm tra mọi khung hình" Tag="accurate" />
                                         <ComboBoxItem Content="Cân bằng · PTS chuẩn" Tag="balanced" />
-                                        <ComboBoxItem Content="Chính xác nhất · Medium · mọi khung hình" Tag="accurate" />
                                         <ComboBoxItem Content="Nhanh · PTS chuẩn" Tag="fast" />
                                     </ComboBox>
                                     <ComboBox Grid.Column="2" x:Name="LanesBox" Header="Luồng OCR" SelectedIndex="0"><x:String>auto</x:String><x:String>1</x:String><x:String>2</x:String><x:String>3</x:String><x:String>4</x:String><x:String>5</x:String><x:String>6</x:String><x:String>7</x:String><x:String>8</x:String><x:String>16</x:String></ComboBox>
                                 </Grid>
+                                <TextBlock Style="{StaticResource MutedTextStyle}" TextWrapping="Wrap" Text="Chính xác nhất: kiểm tra mọi khung hình, OCR 4 lần/giây + xác nhận quanh mọi thay đổi để giữ PTS chuẩn. Cân bằng/Nhanh: lấy mẫu thưa hơn." />
                                 <StackPanel Orientation="Horizontal" Spacing="7">
                                     <Button x:Name="PrepareOcrButton" Click="Prepare_Click" Content="Chuẩn bị OCR" />
                                     <Button x:Name="TestFrameButton" Click="TestFrame_Click" Content="Test frame" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />
@@ -193,6 +194,7 @@
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="*" />
+                            <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
                         <Grid>
                             <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
@@ -203,6 +205,7 @@
                             x:Name="CueList"
                             Grid.Row="1"
                             Padding="0"
+                            KeyDown="CueList_KeyDown"
                             SelectionChanged="CueList_SelectionChanged"
                             ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                             ScrollViewer.VerticalScrollBarVisibility="Auto"
@@ -225,6 +228,31 @@
                                 </DataTemplate>
                             </ListView.ItemTemplate>
                         </ListView>
+                        <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="7">
+                            <Button
+                                x:Name="DeleteCueButton"
+                                Click="DeleteCue_Click"
+                                Content="Xóa câu đã chọn"
+                                IsEnabled="False"
+                                Style="{StaticResource DangerButtonStyle}"
+                                ToolTipService.ToolTip="Chọn 1 câu trong danh sách rồi bấm (hoặc phím Delete). Ghi vào sổ loại trừ — danh sách và SRT tự dồn số. Có Hoàn tác." />
+                            <Button
+                                x:Name="UndoDeleteCueButton"
+                                Click="UndoDeleteCue_Click"
+                                Content="Hoàn tác xóa (Ctrl+Z)"
+                                IsEnabled="False"
+                                Style="{StaticResource SecondaryButtonStyle}"
+                                ToolTipService.ToolTip="Khôi phục câu vừa xóa tay gần nhất (Ctrl+Z).">
+                                <Button.KeyboardAccelerators>
+                                    <KeyboardAccelerator Key="Z" Modifiers="Control" />
+                                </Button.KeyboardAccelerators>
+                            </Button>
+                            <TextBlock
+                                VerticalAlignment="Center"
+                                FontSize="10"
+                                Foreground="{ThemeResource MutedTextBrush}"
+                                Text="Xóa tay áp dụng khi đã quét xong / tạm dừng; xóa nhầm bấm Ctrl+Z hoặc nút Hoàn tác để khôi phục." />
+                        </StackPanel>
                     </Grid>
                 </Border>
             </Grid>

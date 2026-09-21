@@ -40,9 +40,11 @@ TEMPO_RETRY_MARGIN = 1.001
 MIN_GROUP_RATE_SCALE = MIN_RATE_SCALE
 MAX_GROUP_ACTUAL_SPEED = MAX_ACTUAL_SPEED
 # A sentence group may share only a continuously visible subtitle interval.
-# Any positive gap means that the screen has no subtitle, so voice must not be
-# packed into it.
-MAX_GROUP_GAP_FRAMES = 0
+# Gaps up to a breath beat are still one passage: rapid dialogue cues separated
+# by 0.1-0.25s pool their time instead of each fragment being squeezed alone.
+# Must mirror LocalTtsService.MaxSentenceGroupGapFrames exactly (frames
+# @22050 Hz); 5512 == 0.25s, the same magnitude as the overlap bound below.
+MAX_GROUP_GAP_FRAMES = 5512
 MAX_GROUP_DURATION_FRAMES = 300 * SAMPLE_RATE
 MAX_GROUP_CUES = 512
 SILENCE_AMPLITUDE = 32
@@ -52,6 +54,26 @@ MAX_PREFERRED_RATE_SCALE = 1.0
 PACKAGES = {"piper-tts": "1.7.0", "onnxruntime": "1.22.1", "vietnormalizer": "0.2.3", "numpy": "2.5.2"}
 MIN_SPEECH_FRAMES = round(.10 * SAMPLE_RATE)
 MIN_SPEECH_FRAMES_PER_UNIT = round(.07 * SAMPLE_RATE)
+
+# Vietnamese-first pronunciation overrides for the third-party dictionary.
+# These words are ordinary Vietnamese vocabulary that the packaged dictionary
+# mistranscribes (long -> lon, song -> xong...): drop the entry so the word
+# keeps its own spelling. Engineered overrides live here (not in the pip
+# package) so a runtime reinstall can never wipe them.
+TTS_DICTIONARY_DROPS = ("long", "song", "sen", "dan", "dao", "kia")
+TTS_DICTIONARY_FIXES = {
+    "gout": "gút",
+    "coin": "cô-in",
+    # NOTE: fix values must be plain Vietnamese syllables only. Anything the
+    # detector deems non-Vietnamese (for example a lone "ch") gets chewed by
+    # the transliterator AFTER replacement (tớt-ch -> tớt-kh), so "touch"
+    # keeps just "tớt" instead of a fancier but unstable spelling.
+    "touch": "tớt",
+    "sup": "xúp",
+    "okay": "ô-kê",
+    "ok": "ô-kê",
+}
+_SINGLE_UPPER_LETTER_PATTERN = re.compile(r"\b([A-Z])\b")
 
 
 def emit(payload: dict) -> None:
@@ -66,10 +88,25 @@ def normalize_vietnamese_text(normalizer, text: str) -> str:
     # decomposed input (for example u + dot-below) from taking a different
     # phonemization/cache path.
     source = unicodedata.normalize("NFC", text).strip()
+    # Spell out isolated uppercase single letters with Vietnamese letter names
+    # (R -> e-rờ, X -> ích). The packaged normalizer only spells codes of 2+
+    # characters, so a lone letter would otherwise reach Piper unhandled and be
+    # guessed, often English-style. Lowercase singletons (a, e, o...) can be
+    # real Vietnamese words, so they are left alone.
+    from vietnormalizer.normalizer import LETTER_NAMES
+    source = _SINGLE_UPPER_LETTER_PATTERN.sub(
+        lambda match: LETTER_NAMES[match.group(1)], source)
     normalized = unicodedata.normalize("NFC", normalizer.normalize(source)).strip()
     if not normalized:
         raise ValueError("Vietnamese normalization returned empty text")
     return normalized
+
+
+def apply_tts_dictionary_overrides(normalizer) -> None:
+    """Apply the Vietnamese-first overrides (see TTS_DICTIONARY_* above)."""
+    for dropped in TTS_DICTIONARY_DROPS:
+        normalizer.replacements.pop(dropped, None)
+    normalizer.replacements.update(TTS_DICTIONARY_FIXES)
 
 
 def minimum_speech_frames(text: str) -> int:
@@ -147,8 +184,123 @@ def needs_rate_review(length_scale: float, base_length_scale: float) -> bool:
     return not MIN_PREFERRED_RATE_SCALE <= length_scale / base_length_scale <= MAX_PREFERRED_RATE_SCALE
 
 
+def single_needs_sentence_group(record: dict) -> bool:
+    """A single-cue fit that only fits by speaking unnaturally fast must yield
+    to sentence-group synthesis when the cue belongs to a touching group.
+
+    Mirrors needs_rate_review on the slow side only: a too-SLOW single is never
+    improved by grouping (padding already handles it), but a too-FAST single
+    (relative scale below the preferred band, or pitch-safe atempo fallback)
+    reads naturally once it shares the group's wider window. Missing or
+    unparsable rate metadata fails open to the old behavior.
+    """
+    try:
+        base = float(record.get("base_length_scale", 0))
+        scale = float(record.get("length_scale", 0))
+    except (TypeError, ValueError):
+        return False
+    if base > 0 and math.isfinite(scale):
+        relative = scale / base
+        if math.isfinite(relative) and relative < MIN_PREFERRED_RATE_SCALE:
+            return True
+    return str(record.get("fit_method", "")) == "piper-atempo"
+
+
+PATHOLOGICAL_NEED_RATIO = 3.0
+FAST_SINGLE_NEED_RATIO = 1.43
+GROUP_DRIFT_WARN_SECONDS = 0.5
+EXCLAMATION_TERMINALS = ("!", "！", "?", "？")
+
+
+def speakable_units(text: str) -> int:
+    return sum(1 for token in re.findall(r"\w+", text, flags=re.UNICODE)
+               if any(character.isalnum() for character in token))
+
+
+def is_exclamation_exempt(text: str) -> bool:
+    """Short shouted lines read fast naturally ("Đại Tông Sư!"). Reporting-only
+    exemption: never blocks synthesis, only keeps them off the pathological and
+    isolated-fast watch lists (which target mistimed data, not shouts)."""
+    stripped = text.strip() if isinstance(text, str) else ""
+    return bool(stripped) and stripped[-1] in EXCLAMATION_TERMINALS and speakable_units(stripped) <= 4
+
+
+def need_ratio(native_reference_frames, window_frames) -> float:
+    """Authored-window shortfall: natural speech frames divided by authored
+    window frames. >1 means the window is too short; >3 means timing data bug.
+    Unparsable input fails open to 0 (never listed)."""
+    try:
+        native = float(native_reference_frames)
+        window = float(window_frames)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(native) or not math.isfinite(window) or window <= 0 or native <= 0:
+        return 0.0
+    return native / window
+
+
+def report_group_rate(group_indices, group_entries, cues, texts, tally):
+    """Classify this group's voicing outcome for the operator watch lists.
+
+    Pure bookkeeping over already-fitted records: never synthesizes, never
+    raises, never changes output. Reads:
+    - pathological: non-exempt member whose authored window holds less than a
+      third of its natural speech (timing data bug, not fast dialogue);
+    - isolated-fast: ungrouped single needing >1.43x (manual SRT fix candidate);
+    - drift: group-path window borrowing beyond 0.5s per boundary.
+    Grouped non-pathological members stay silent: sharing time is the design,
+    and their individual ratios are stale after borrowing.
+    """
+    drift = 0.0
+    try:
+        for position, entry in enumerate(group_entries):
+            index = group_indices[position]
+            active, record = entry[0], entry[3]
+            original = cues[index]
+            text = texts[index]
+            if record.get("timing_source") == "sentence-group":
+                start_drift = abs(float(active["voice_start"]) - float(original["voice_start"]))
+                end_drift = abs(float(active["voice_end"]) - float(original["voice_end"]))
+                drift = max(drift, start_drift, end_drift)
+                continue
+            span = round(float(original["cue_end"]) * SAMPLE_RATE) - round(float(original["cue_start"]) * SAMPLE_RATE)
+            ratio = need_ratio(record.get("native_reference_frames", 0), span)
+            if ratio <= 0 or is_exclamation_exempt(text):
+                continue
+            cue_id = original.get("id", f"cue-{index + 1}")
+            if ratio > PATHOLOGICAL_NEED_RATIO:
+                tally["pathological"].append({"id": cue_id, "need_ratio": round(ratio, 2),
+                                              "absorbed": len(group_indices) > 1})
+            elif len(group_indices) == 1 and ratio > FAST_SINGLE_NEED_RATIO:
+                tally["isolated_fast"].append({"id": cue_id, "need_ratio": round(ratio, 2)})
+    except (TypeError, ValueError, KeyError, IndexError):
+        return 0.0
+    if drift > 0:
+        tally["max_drift_s"] = max(tally.get("max_drift_s", 0.0), drift)
+        if drift > GROUP_DRIFT_WARN_SECONDS:
+            first, last = group_indices[0], group_indices[-1]
+            try:
+                emit({"event": "notice", "code": "boundary-drift",
+                      "message": (f"Nhóm cue {first + 1}..{last + 1} mượn cửa sổ tới "
+                                  f"{drift:.3f}s để vừa lời — kiểm tra biên timecode nếu voice lệch hình.")})
+            except Exception:
+                pass
+    return drift
+
+
 def native_record_valid(record: dict, target_frames: int, natural_sample: bool,
                         minimum_generated_frames: int = 1) -> bool:
+    if record.get("fit_method") == "silence-fallback":
+        return (record.get("status") == "review"
+                and type(record.get("source_frames")) is int and record["source_frames"] == 0
+                and type(record.get("generated_frames")) is int and record["generated_frames"] == 0
+                and type(record.get("trimmed_silence_frames")) is int and record["trimmed_silence_frames"] == 0
+                and type(record.get("padding_frames")) is int and record["padding_frames"] == target_frames
+                and type(record.get("frames")) is int and record["frames"] == target_frames
+                and type(record.get("target_frames")) is int and record["target_frames"] == target_frames
+                and type(record.get("synthesis_attempts")) is int
+                and 1 <= record["synthesis_attempts"] <= MAX_GROUP_SYNTHESIS_ATTEMPTS
+                and not natural_sample)
     base, scale = record["base_length_scale"], record["length_scale"]
     source, generated = record["source_frames"], record["generated_frames"]
     trimmed, padding = record["trimmed_silence_frames"], record["padding_frames"]
@@ -211,12 +363,28 @@ def load_clip(path: Path, key: str, cue: dict, minimum_generated_frames: int = 1
         record = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
         if record["key"] != key or record["sha256"] != sha256(path):
             return None
+        if record.get("fit_method") == "silence-fallback":
+            # Exact-length silence has no speech for read_wav to integrity-check
+            # (it rejects silent PCM); verify the container shape instead.
+            try:
+                with wave.open(str(path), "rb") as source:
+                    silent_ok = ((source.getnchannels(), source.getsampwidth(), source.getframerate())
+                                 == (1, 2, SAMPLE_RATE) and source.getnframes() == record["frames"])
+            except wave.Error:
+                return None
+            _, target_frames = cue_window(cue)
+            natural_sample = cue["timing_source"] == "sample"
+            if (silent_ok and record.get("status") == "review"
+                    and record["frames"] == target_frames and record["target_frames"] == target_frames
+                    and record["timing_source"] == cue["timing_source"]
+                    and native_record_valid(record, target_frames, natural_sample, minimum_generated_frames)):
+                return record
+            return None
         samples = read_wav(path)
         duration = len(samples) / SAMPLE_RATE
         _, target_frames = cue_window(cue)
         if not math.isfinite(record["raw_duration"]) or record["raw_duration"] <= 0:
             return None
-        natural_sample = cue["timing_source"] == "sample"
         if (record["frames"] != len(samples) or record["target_frames"] != target_frames
                 or record["timing_source"] != cue["timing_source"] or len(samples) > target_frames
                 or len(samples) != target_frames
@@ -417,6 +585,28 @@ def load_group_plan(path: Path, key: str, cues: list[dict]) -> list[dict] | None
         return None
 
 
+def group_windows(cue_starts: list[int], cue_ends: list[int], retained: list[int]):
+    """Minimal tiling where no cue starts before its own subtitle appears.
+
+    voice_start[0] sits exactly on the group start; every later cue starts at
+    max(previous speech end, its own cue_start), so gaps stay silent and a
+    voice never reads ahead of its subtitle. Padding absorbs the slack, which
+    is why the tiling is fully determined by the retained speech lengths.
+    Returns the voice-start samples, or None when even this tightest packing
+    overflows the group end (caller must speed up or fall back to silence).
+    """
+    starts = []
+    cursor = cue_starts[0]
+    for index in range(len(retained)):
+        if cursor < cue_starts[index]:
+            cursor = cue_starts[index]
+        starts.append(cursor)
+        cursor += retained[index]
+    if cursor > cue_ends[-1]:
+        return None
+    return starts
+
+
 def synthesize_sentence_group(voice, cues: list[dict], texts: list[str], run_root: Path,
                               clip_root: Path, worker_sha: str, plan_path: Path, plan_key: str,
                               ffmpeg: Path, on_attempt):
@@ -428,6 +618,8 @@ def synthesize_sentence_group(voice, cues: list[dict], texts: list[str], run_roo
     group_frames = group_end - group_start
     if group_frames <= 0:
         raise ValueError("Sentence group has no source time")
+    cue_starts = [round(cue["cue_start"] * SAMPLE_RATE) for cue in cues]
+    cue_ends = [round(cue["cue_end"] * SAMPLE_RATE) for cue in cues]
     scale = base
     raw_frames = [0] * len(cues)
     selected = None
@@ -457,7 +649,9 @@ def synthesize_sentence_group(voice, cues: list[dict], texts: list[str], run_roo
         actual_speed = native_retained_frames / total_retained
         last_total_retained = total_retained
         if (total_retained <= group_frames
-                and MIN_ACTUAL_SPEED <= actual_speed <= MAX_ACTUAL_SPEED):
+                and MIN_ACTUAL_SPEED <= actual_speed <= MAX_ACTUAL_SPEED
+                and group_windows(cue_starts, cue_ends,
+                                  [item["retained"] for item in measurements]) is not None):
             selected = (attempt, scale, measurements, actual_speed)
             break
         desired_frames = max(1, math.floor(group_frames * FIT_HEADROOM))
@@ -486,7 +680,9 @@ def synthesize_sentence_group(voice, cues: list[dict], texts: list[str], run_roo
                 })
             transformed_total = sum(item["retained"] for item in transformed)
             actual_speed = native_retained_frames / transformed_total
-            if transformed_total <= group_frames and MIN_ACTUAL_SPEED <= actual_speed <= MAX_ACTUAL_SPEED:
+            if (transformed_total <= group_frames and MIN_ACTUAL_SPEED <= actual_speed <= MAX_ACTUAL_SPEED
+                    and group_windows(cue_starts, cue_ends,
+                                      [item["retained"] for item in transformed]) is not None):
                 selected = (attempt, scale, transformed, actual_speed)
                 tempo_used = True
                 break
@@ -497,27 +693,28 @@ def synthesize_sentence_group(voice, cues: list[dict], texts: list[str], run_roo
             f"Nhóm câu {cues[0]['id']}..{cues[-1]['id']} không thể nén đủ nguyên lời vào timecode")
 
     attempt, scale, measurements, actual_speed = selected
-    retained_suffix = [0] * (len(measurements) + 1)
-    for index in range(len(measurements) - 1, -1, -1):
-        retained_suffix[index] = retained_suffix[index + 1] + measurements[index]["retained"]
-    cursor = group_start
+    retained = [item["retained"] for item in measurements]
+    starts = group_windows(cue_starts, cue_ends, retained)
+    if starts is None:
+        raise RuntimeError(
+            f"Nhóm cue {cues[0]['id']}..{cues[-1]['id']} không giữ được giờ sub khi xếp voice")
     entries, windows = [], []
     for index, (cue, text, measurement) in enumerate(zip(cues, texts, measurements)):
-        if index == len(cues) - 1:
-            window_end = group_end
-        else:
-            desired_end = round(cue["cue_end"] * SAMPLE_RATE)
-            earliest_end = cursor + measurement["retained"]
-            latest_end = group_end - retained_suffix[index + 1]
-            window_end = max(earliest_end, min(desired_end, latest_end))
-        target_frames = window_end - cursor
+        voice_start = starts[index]
+        # Fail-open guard: placement must never read ahead of the subtitle.
+        # group_windows guarantees this; a violation means the tiling drifted
+        # and the group must fall back to silence, never misplace a voice.
+        if voice_start < cue_starts[index]:
+            raise RuntimeError(
+                f"Nhóm cue {cues[0]['id']}..{cues[-1]['id']} đặt voice trước giờ sub")
+        window_end = group_end if index == len(cues) - 1 else starts[index + 1]
+        target_frames = window_end - voice_start
         padding = target_frames - measurement["retained"]
         if target_frames <= 0 or padding < 0:
             raise RuntimeError("Sentence group could not allocate every complete speech clip")
         active = dict(cue)
-        active["voice_start"] = cursor / SAMPLE_RATE
-        cursor = window_end
-        active["voice_end"] = cursor / SAMPLE_RATE
+        active["voice_start"] = voice_start / SAMPLE_RATE
+        active["voice_end"] = window_end / SAMPLE_RATE
         active["timing_source"] = "sentence-group"
         key = cache_identity(active, text, worker_sha)
         cached_path = clip_root / (key + ".wav")
@@ -542,10 +739,10 @@ def synthesize_sentence_group(voice, cues: list[dict], texts: list[str], run_roo
                   "sha256": sha256(final_path)}
         final_path.replace(cached_path)
         atomic_json(cached_path.with_suffix(".json"), record)
-        windows.append({"id": cue["id"], "start_sample": cursor - target_frames,
+        windows.append({"id": cue["id"], "start_sample": voice_start,
                         "target_frames": target_frames})
         entries.append((active, key, cached_path, record, False, attempt))
-    if cursor != group_end:
+    if window_end != group_end:
         raise RuntimeError("Sentence group allocation did not preserve its source boundary")
     atomic_json(plan_path, {"schema": 1, "key": plan_key, "timing_source": "sentence-group",
                             "windows": windows})
@@ -608,21 +805,80 @@ def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str,
         if math.isclose(corrected, scale, rel_tol=0, abs_tol=1e-7):
             break
         scale = corrected
-    output_path, tempo_input, generated, tempo_factor, tempo_attempts, actual_speed = tempo_fit_clip(
-        ffmpeg, fitted_source, final_path, target_frames, native_reference_frames, run_root, key)
-    output_frames = len(read_wav(output_path))
-    padding = output_frames - generated
-    record = {"raw_duration": raw_frames / SAMPLE_RATE, "fitted_duration": output_frames / SAMPLE_RATE,
-              "frames": output_frames, "target_frames": target_frames, "timing_source": timing_source,
-              "fit_method": "piper-atempo", "base_length_scale": base, "length_scale": scale,
-              "source_frames": source_frames, "generated_frames": generated,
-              "trimmed_silence_frames": trimmed_silence, "padding_frames": padding,
-              "native_reference_frames": native_reference_frames,
-              "group_native_frames": 0, "actual_speed_factor": actual_speed,
-              "tempo_input_frames": tempo_input, "tempo_factor": tempo_factor,
-              "tempo_attempts": tempo_attempts,
-              "synthesis_attempts": attempt, "status": "review"}
-    return output_path, record
+    try:
+        output_path, tempo_input, generated, tempo_factor, tempo_attempts, actual_speed = tempo_fit_clip(
+            ffmpeg, fitted_source, final_path, target_frames, native_reference_frames, run_root, key)
+        output_frames = len(read_wav(output_path))
+        padding = output_frames - generated
+        record = {"raw_duration": raw_frames / SAMPLE_RATE, "fitted_duration": output_frames / SAMPLE_RATE,
+                  "frames": output_frames, "target_frames": target_frames, "timing_source": timing_source,
+                  "fit_method": "piper-atempo", "base_length_scale": base, "length_scale": scale,
+                  "source_frames": source_frames, "generated_frames": generated,
+                  "trimmed_silence_frames": trimmed_silence, "padding_frames": padding,
+                  "native_reference_frames": native_reference_frames,
+                  "group_native_frames": 0, "actual_speed_factor": actual_speed,
+                  "tempo_input_frames": tempo_input, "tempo_factor": tempo_factor,
+                  "tempo_attempts": tempo_attempts,
+                  "synthesis_attempts": attempt, "status": "review"}
+        return output_path, record
+    except RuntimeError:
+        # Silence fallback: gen zero-PCM clip of exact target duration
+        silence_path = final_path
+        with wave.open(str(silence_path), "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(SAMPLE_RATE)
+            wf.writeframes(b"\x00\x00" * target_frames)
+        record = {"raw_duration": target_frames / SAMPLE_RATE,
+                  "fitted_duration": target_frames / SAMPLE_RATE,
+                  "frames": target_frames, "target_frames": target_frames,
+                  "timing_source": timing_source,
+                  "fit_method": "silence-fallback",
+                  "base_length_scale": base, "length_scale": base,
+                  "source_frames": 0, "generated_frames": 0,
+                  "trimmed_silence_frames": 0, "padding_frames": target_frames,
+                  "native_reference_frames": 0,
+                  "group_native_frames": 0, "actual_speed_factor": 0.0,
+                  "tempo_input_frames": 0, "tempo_factor": 0.0,
+                  "tempo_attempts": 0,
+                  "synthesis_attempts": attempt, "status": "review"}
+        return silence_path, record
+
+
+def silence_entry(cue: dict, text: str, base: float, attempts: int,
+                  run_root: Path, clip_root: Path, worker_sha: str):
+    """Stability quarantine: exact-length silence for an unsynthesizable cue.
+
+    Never aborts the run. The timeline stays intact (every sample is real
+    silence of exactly the window length); status review forces operator
+    attention and the cue is counted in review_count.
+    """
+    _, target_frames = cue_window(cue)
+    key = cache_identity(cue, text, worker_sha)
+    cached_path = clip_root / (key + ".wav")
+    temporary = run_root / (key + "-silence.wav")
+    with wave.open(str(temporary), "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(SAMPLE_RATE)
+        output.writeframes(b"\x00\x00" * target_frames)
+    record = {"raw_duration": target_frames / SAMPLE_RATE,
+              "fitted_duration": target_frames / SAMPLE_RATE,
+              "frames": target_frames, "target_frames": target_frames,
+              "timing_source": cue["timing_source"],
+              "fit_method": "silence-fallback",
+              "base_length_scale": base, "length_scale": base,
+              "source_frames": 0, "generated_frames": 0,
+              "trimmed_silence_frames": 0, "padding_frames": target_frames,
+              "native_reference_frames": 0,
+              "group_native_frames": 0, "actual_speed_factor": 0.0,
+              "tempo_input_frames": 0, "tempo_factor": 0.0,
+              "tempo_attempts": 0,
+              "synthesis_attempts": max(1, attempts), "status": "review",
+              "key": key, "sha256": sha256(temporary)}
+    temporary.replace(cached_path)
+    atomic_json(cached_path.with_suffix(".json"), record)
+    return cue, key, cached_path, record, False, max(1, attempts)
 
 
 def srt_fallback_cue(cue: dict):
@@ -648,7 +904,7 @@ def validate_manifest(manifest: dict, voice: str) -> list[dict]:
     if not isinstance(cues, list) or not 0 < len(cues) <= 100000:
         raise ValueError("TTS manifest has no valid cues")
     ids = set()
-    for cue in cues:
+    for position, cue in enumerate(cues, start=1):
         start, end = cue["cue_start"], cue["cue_end"]
         if not math.isfinite(start) or not math.isfinite(end) or not 0 <= start < end <= duration:
             raise ValueError("TTS cue time is outside source duration")
@@ -667,6 +923,24 @@ def validate_manifest(manifest: dict, voice: str) -> list[dict]:
         ids.add(cue["id"])
         if cue["voice"] != voice or not isinstance(cue.get("text"), str) or not cue["text"].strip():
             raise ValueError("TTS cue text or voice is invalid")
+        # Preflight advisories: flag likely-unreadable cues early, never abort.
+        text = cue["text"].strip()
+        cue_dur = cue["cue_end"] - cue["cue_start"]
+        if cue_dur < 0.15:
+            emit({"event": "notice", "code": "tts-preflight", "message": f"Cue {cue['id']} (SRT #{position}) window {cue_dur:.3f}s < 0.15s; "
+                f"timecode {cue['cue_start']:.3f}..{cue['cue_end']:.3f}; "
+                f"text={text[:80]!r}. Sửa timecode SRT hoặc gộp cue."})
+        has_vi_vowel = any(ch in "aeiouyàáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđAEIOUYÀÁẠẢÃÂẦẤẬẨẪĂẰẮẶẲẴÈÉẸẺẼÊỀẾỆỂỄÌÍỊỈĨÒÓỌỎÕÔỒỐỘỔỖƠỜỚỢỞỠÙÚỤỦŨƯỪỨỰỬỮỲÝỴỶỸĐ" for ch in text)
+        if not has_vi_vowel:
+            emit({"event": "notice", "code": "tts-preflight", "message": f"Cue {cue['id']} (SRT #{position}) không có nguyên âm Việt; "
+                f"timecode {cue['cue_start']:.3f}..{cue['cue_end']:.3f}; "
+                f"text={text[:80]!r}. Xóa cue rác hoặc sửa chữ."})
+        # Extremely dense text (>10 speakable units/sec) will force unnatural atempo.
+        speakable = sum(1 for t in re.findall(r"\w+", text, flags=re.UNICODE) if any(c.isalnum() for c in t))
+        if cue_dur > 0 and speakable / cue_dur > 10:
+            emit({"event": "notice", "code": "tts-preflight", "message": f"Cue {cue['id']} (SRT #{position}) quá chật: {speakable} units/{cue_dur:.2f}s; "
+                f"timecode {cue['cue_start']:.3f}..{cue['cue_end']:.3f}; "
+                f"text={text[:80]!r}. Mở rộng timecode hoặc rút gọn chữ."})
     return cues
 
 
@@ -755,10 +1029,14 @@ def main() -> int:
     from vietnormalizer import VietnameseNormalizer
     from piper import PiperVoice
     normalizer = VietnameseNormalizer()
+    apply_tts_dictionary_overrides(normalizer)
     # Load exactly once, fail closed on load failure, and reuse for all uncached cues.
     voice = PiperVoice.load(str(model), config_path=str(config), use_cuda=False)
     if voice.config.sample_rate != SAMPLE_RATE:
         raise ValueError("NGHI model sample rate mismatch")
+    base_scale = float(voice.config.length_scale)
+    if not math.isfinite(base_scale) or base_scale <= 0:
+        raise ValueError("Invalid length_scale in verified model config")
     emit({"event": "ready", "cues": len(cues), "voice": VOICE_NAME, "model_loads": 1,
           "engine": ENGINE, "sample_rate": SAMPLE_RATE, "voice_revision": VOICE_REVISION})
     texts = [normalize_vietnamese_text(normalizer, cue["text"]) for cue in cues]
@@ -807,11 +1085,15 @@ def main() -> int:
             final_path.replace(candidate_path)
             atomic_json(candidate_path.with_suffix(".json"), candidate_record)
             return candidate_cue, candidate_key, candidate_path, candidate_record, False, synthesis_calls
-        raise RuntimeError(
-            f"Cue {index + 1} ({cue['id']}): không thể đọc vừa cả nhịp Whisper lẫn toàn timecode SRT. "
-            + " | ".join(failures))
+        # Stability quarantine (see silence_entry): report and continue.
+        emit({"event": "notice", "code": "silence-fallback",
+              "message": (f"Cue {index + 1} ({cue['id']}) không tổng hợp được "
+                          f"({' | '.join(failures)}); giữ im lặng đúng timecode, cần nghe lại.")})
+        return silence_entry(cue, text, base_scale, synthesis_calls,
+                             run_root, clip_root, worker_sha)
 
     ordered_entries = []
+    rate_tally: dict = {"pathological": [], "isolated_fast": [], "max_drift_s": 0.0, "groups": 0}
     for group_indices in sentence_groups(cues, texts):
         group_cues = [cues[index] for index in group_indices]
         group_texts = [texts[index] for index in group_indices]
@@ -831,13 +1113,30 @@ def main() -> int:
                         break
                     group_entries.append((active_cue, key, cached_path, record, True, 0))
         if not group_entries:
+            individual_error: RuntimeError | None = None
+            resolved: list | None = None
             try:
-                group_entries = [resolve_individual(index, cues[index], texts[index]) for index in group_indices]
-            except RuntimeError as individual_error:
+                resolved = [resolve_individual(index, cues[index], texts[index]) for index in group_indices]
+            except RuntimeError as error:
                 if len(group_indices) == 1:
                     raise RuntimeError(
                         f"Cue {group_indices[0] + 1} không thể xử lý đủ nguyên câu trong timecode: "
-                        f"{individual_error}") from individual_error
+                        f"{error}") from error
+                individual_error = error
+                resolved = []
+            else:
+                if len(group_indices) == 1 or not any(
+                        entry[0] is cues[group_indices[position]]
+                        and single_needs_sentence_group(entry[3])
+                        for position, entry in enumerate(resolved)):
+                    group_entries = resolved
+                    resolved = []
+            if not group_entries:
+                if individual_error is None:
+                    individual_error = RuntimeError(
+                        "Nhóm cue "
+                        + "..".join(str(group_indices[index] + 1) for index in (0, -1))
+                        + " có cue đọc đơn quá nhanh (dưới nhịp tự nhiên) — chuyển sang sentence-group")
 
                 def on_group_attempt(local_index, attempt, scale):
                     index = group_indices[local_index]
@@ -847,9 +1146,14 @@ def main() -> int:
                         voice, group_cues, group_texts, run_root, clip_root, worker_sha,
                         plan_path, plan_key, Path(options.ffmpeg), on_group_attempt)
                 except (ValueError, RuntimeError) as group_error:
-                    raise RuntimeError(
-                        f"Nhóm cue {group_indices[0] + 1}..{group_indices[-1] + 1} không đủ thời gian "
-                        f"để xử lý đủ nguyên lời kể cả sau tăng tốc động: {group_error}") from group_error
+                    emit({"event": "notice", "code": "silence-fallback",
+                          "message": (f"Nhóm cue {group_indices[0] + 1}..{group_indices[-1] + 1} "
+                                      f"không nén vừa timecode ({group_error}); giữ im lặng, cần nghe lại.")})
+                    group_entries = [silence_entry(group_cues[pos], group_texts[pos], base_scale, 0,
+                                                   run_root, clip_root, worker_sha)
+                                     for pos in range(len(group_indices))]
+        report_group_rate(group_indices, group_entries, cues, texts, rate_tally)
+        rate_tally["groups"] += 1
         ordered_entries.extend(group_entries)
 
     if len(ordered_entries) != len(cues):
@@ -889,6 +1193,32 @@ def main() -> int:
         emit({"event": "cue", "index": index + 1, "total": len(cues), "id": cue["id"],
               "status": output_status, "cache_hit": cache_hit,
               "timing_source": active_cue["timing_source"], "synthesis_calls": synthesis_calls})
+    pathological = rate_tally["pathological"]
+    isolated = rate_tally["isolated_fast"]
+    worst = sorted(pathological, key=lambda item: item["need_ratio"], reverse=True)[:5]
+    if not pathological and not isolated:
+        summary = (f"Voice giữ nhịp tự nhiên toàn bộ {len(cues)} cue qua "
+                   f"{rate_tally['groups']} nhóm (trôi biên tối đa "
+                   f"{rate_tally['max_drift_s']:.3f}s).")
+    else:
+        parts = []
+        if pathological:
+            examples = ", ".join(f"{item['id']} (gấp {item['need_ratio']:.1f} lần"
+                                 + (", đã gộp nhóm" if item["absorbed"] else ", đọc đơn")
+                                 + ")" for item in worst)
+            parts.append(f"{len(pathological)} cue mistimed cần sửa timecode SRT: {examples}")
+        if isolated:
+            parts.append(f"{len(isolated)} cue nhanh lẻ loi (đa phần cần gộp/sửa timing): "
+                         + ", ".join(item["id"] for item in isolated[:5]))
+        summary = ("Voice xong nhưng cần soát timing: " + "; ".join(parts)
+                   + f". Trôi biên tối đa {rate_tally['max_drift_s']:.3f}s.")
+    try:
+        emit({"event": "notice", "code": "voice-rate-summary", "message": summary,
+              "pathological_total": len(pathological), "isolated_fast_total": len(isolated),
+              "max_drift_s": round(rate_tally["max_drift_s"], 3),
+              "groups": rate_tally["groups"]})
+    except Exception:
+        pass
     build_master(Path(options.ffmpeg), clips, manifest["duration"], run_root, master_path)
     result = {"schema": 2, "engine": ENGINE, "engine_version": ENGINE_VERSION, "voice": VOICE_NAME,
               "voice_revision": VOICE_REVISION, "cues": results,
