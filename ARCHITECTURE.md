@@ -320,13 +320,9 @@ traces; solid edges are direct calls from §3 traces.
 6. **TTS rides the OCR runtime** — a real coupling to weigh
    before touching `OcrInstaller`.
 
-## 6. Where to look next (graph entry points)
+## 6. Where to look next (entry points)
 
-- `codegraph brief` (or `.codegraph/REPORT.md`) for orientation;
-  `codegraph list types --top 20` for hub types.
-- `codegraph impact <symbol>` before editing — required by
-  `AGENTS.md`.
-- `codegraph path <A> <B>` for "how does A reach B".
-- `codegraph diff` after changes, before commit.
-- Re-run `codegraph index --solution csharp/BiliSubStudio.sln`
-  after structural changes; this doc's numbers are pinned to `e3fd178`.
+- `csharp/BiliSubStudio.sln` for orientation; start from
+  `BiliSubStudio.Core` hub types.
+- Grep callers before editing — required by `AGENTS.md`.
+- This doc's numbers are pinned to `e3fd178`.

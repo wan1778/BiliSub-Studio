@@ -4,15 +4,12 @@
 **/artifacts/
 **/TestResults/
 **/__pycache__/
-.codegraph/
 # Local deploy / backup outputs
 csharp/publish/
 csharp/publish-backup/
 .artifacts/
 # Editor / environment leftovers
 .vscode/
-.mcp.json
 apm.yml
-codegraph.json
 (disabled)
 **/*.bak
