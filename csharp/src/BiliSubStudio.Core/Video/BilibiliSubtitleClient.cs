@@ -118,8 +118,9 @@ public sealed partial class BilibiliSubtitleClient
         string cookieHeader,
         CancellationToken cancellationToken)
     {
-        // Đường vòng khi view bị chặn: pagelist cho cid từng phần,
-        // archive/stat cho aid. Cả hai thường mở không cần ký.
+        // Đường vòng khi view bị chặn: pagelist cho cid từng phần (200 đã kiểm
+        // chứng), HTML trang video cho aid (__NEXT_DATA__, archive/stat đã
+        // chết 404). Cả hai thường mở không cần ký.
         using var pages = await SendJsonAsync(
             new Uri("https://api.bilibili.com/x/player/pagelist?bvid=" + Uri.EscapeDataString(bvid) + "&jsonp=jsonp"),
             cookieHeader,
@@ -145,16 +146,31 @@ public sealed partial class BilibiliSubtitleClient
             throw new InvalidDataException($"Đường vòng pagelist không thấy phần {part}.");
         var cid = selected.GetProperty("cid").GetInt64();
 
-        using var stat = await SendJsonAsync(
-            new Uri("https://api.bilibili.com/x/web-interface/archive/stat?bvid=" + Uri.EscapeDataString(bvid)),
-            cookieHeader,
-            bvid,
-            cancellationToken);
-        if (!stat.RootElement.TryGetProperty("code", out var statCode) || statCode.GetInt32() != 0
-            || !stat.RootElement.TryGetProperty("data", out var statData) || statData.ValueKind != JsonValueKind.Object
-            || !statData.TryGetProperty("aid", out var aidElement) || !aidElement.TryGetInt64(out var aid) || aid <= 0)
-            throw new InvalidDataException("Đường vòng archive/stat không trả AID.");
+        var aid = await ResolveAidFromPageAsync(bvid, cookieHeader, cancellationToken);
         return (aid, cid);
+    }
+
+    private async Task<long> ResolveAidFromPageAsync(string bvid, string cookieHeader, CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get,
+            new Uri("https://www.bilibili.com/video/" + Uri.EscapeDataString(bvid) + "/"));
+        request.Headers.TryAddWithoutValidation("Referer", "https://www.bilibili.com/");
+        request.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151 Safari/537.36");
+        if (!string.IsNullOrWhiteSpace(cookieHeader)) request.Headers.TryAddWithoutValidation("Cookie", cookieHeader);
+        using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+            throw new HttpRequestException($"Bilibili video page HTTP {(int)response.StatusCode}.", null, response.StatusCode);
+        var html = await response.Content.ReadAsStringAsync(cancellationToken);
+        foreach (var pair in AidBvidRegex().Matches(html).Cast<Match>())
+        {
+            if (string.Equals(pair.Groups["bvid"].Value, bvid, StringComparison.Ordinal)
+                && long.TryParse(pair.Groups["aid"].Value, out var aid) && aid > 0)
+                return aid;
+        }
+        var loose = AidRegex().Match(html);
+        if (loose.Success && long.TryParse(loose.Groups["aid"].Value, out var looseAid) && looseAid > 0)
+            return looseAid;
+        throw new InvalidDataException("Đường vòng trang video không thấy AID.");
     }
 
     private async Task<(long Aid, long Cid)> ResolveVideoIdentityAsync(
@@ -471,6 +487,12 @@ public sealed partial class BilibiliSubtitleClient
 
     [GeneratedRegex(@"BV[0-9A-Za-z]+", RegexOptions.CultureInvariant)]
     private static partial Regex BvidRegex();
+
+    [GeneratedRegex(@"""aid"":(?<aid>\d+),""bvid"":""(?<bvid>BV[0-9A-Za-z]+)""", RegexOptions.CultureInvariant)]
+    private static partial Regex AidBvidRegex();
+
+    [GeneratedRegex(@"""aid"":(?<aid>\d+)", RegexOptions.CultureInvariant)]
+    private static partial Regex AidRegex();
 
     [GeneratedRegex(@"_p(?<part>\d+)$", RegexOptions.CultureInvariant | RegexOptions.IgnoreCase)]
     private static partial Regex PartRegex();

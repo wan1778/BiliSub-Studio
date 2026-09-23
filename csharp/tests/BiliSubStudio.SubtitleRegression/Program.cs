@@ -10,6 +10,7 @@ try
 {
     await VerifyNormalBeatsAiAsync(cookieFile);
     await VerifyProtobufAiFallbackAsync(cookieFile);
+    await VerifyViewBlockedFallbackAsync(cookieFile);
     Console.WriteLine("PASS: Bilibili subtitle source priority and authenticated AI Protobuf fallback");
     return 0;
 }
@@ -66,7 +67,28 @@ static async Task VerifyProtobufAiFallbackAsync(string cookieFile)
     Console.WriteLine("PASS normal metadata empty → Bilibili AI Protobuf subtitle");
 }
 
-internal sealed class SubtitleFixtureHandler(bool protobufFallback) : HttpMessageHandler
+static async Task VerifyViewBlockedFallbackAsync(string cookieFile)
+{
+    var handler = new SubtitleFixtureHandler(protobufFallback: false, viewBlocked: true);
+    using var http = new HttpClient(handler);
+    var client = new BilibiliSubtitleClient(http);
+    var tracks = await client.GetTracksAsync(
+        "https://www.bilibili.com/video/BV1SubtitleFixture?p=1",
+        "BV1SubtitleFixture",
+        cookieFile,
+        CancellationToken.None);
+
+    if (tracks.Count != 2)
+        throw new InvalidOperationException($"View-blocked fallback lost subtitle tracks, got {tracks.Count}.");
+    var preferred = SubtitleTrackPolicy.Preferred(tracks)
+        ?? throw new InvalidOperationException("Subtitle priority returned no preferred track.");
+    if (!preferred.Official || preferred.Ai)
+        throw new InvalidOperationException("View-blocked fallback changed subtitle priority.");
+
+    Console.WriteLine("PASS view 412 → pagelist + page fallback keeps subtitle tracks");
+}
+
+internal sealed class SubtitleFixtureHandler(bool protobufFallback, bool viewBlocked = false) : HttpMessageHandler
 {
     public bool SawProtobuf { get; private set; }
     public bool SawSessionCookie { get; private set; }
@@ -79,6 +101,8 @@ internal sealed class SubtitleFixtureHandler(bool protobufFallback) : HttpMessag
 
         if (path == "/x/web-interface/view")
         {
+            if (viewBlocked)
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.PreconditionFailed));
             return Json("""
                 {
                   "code":0,
@@ -123,6 +147,26 @@ internal sealed class SubtitleFixtureHandler(bool protobufFallback) : HttpMessag
                   }
                 }
                 """);
+        }
+
+        if (path == "/x/player/pagelist")
+        {
+            return Json("""
+                {
+                  "code":0,
+                  "message":"0",
+                  "data":[{"cid":11223344,"page":1,"part":"p1"}]
+                }
+                """);
+        }
+
+        if (path == "/video/BV1SubtitleFixture/")
+        {
+            const string html = "<html><head></head><body>{\"aid\":99887766,\"bvid\":\"BV1SubtitleFixture\"}</body></html>";
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(html, Encoding.UTF8, "text/html"),
+            });
         }
 
         if (path == "/x/v2/subtitle/web/view")
