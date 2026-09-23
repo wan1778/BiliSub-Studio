@@ -122,13 +122,17 @@ internal sealed partial class LocalAsrService : IDisposable
                                 {
                                     cue = NormalizeCue(cue, checkpoint.Cues);
                                     if (cue is null) return;
-                                    checkpoint.Cues.Add(cue);
-                                    checkpoint = checkpoint with { Frontier = cue.End };
+                                    // Cắt câu theo khe im (23/09): mỗi mảnh là 1 câu
+                                    // riêng, chữ chia theo giờ chữ, checkpoint lưu đủ.
+                                    foreach (var piece in SplitOnPauses(cue))
+                                        checkpoint.Cues.Add(piece);
+                                    checkpoint = checkpoint with { Frontier = checkpoint.Cues[^1].End };
                                     await SaveCheckpointAsync(checkpointPath, checkpoint, CancellationToken.None, job.Warn);
-                                    var percent = 34 + Math.Clamp(cue.End / Math.Max(.1, request.Duration), 0, 1) * 62;
+                                    var frontier = checkpoint.Cues[^1].End;
+                                    var percent = 34 + Math.Clamp(frontier / Math.Max(.1, request.Duration), 0, 1) * 62;
                                     var words = checkpoint.Cues.Sum(x => x.Words.Count);
                                     job.Set("asr-transcribe", percent,
-                                        $"Đang phân tích nhịp thoại · {checkpoint.Cues.Count} đoạn / {words} từ · {Time(cue.End)}/{Time(request.Duration)} · checkpoint đã lưu.");
+                                        $"Đang phân tích nhịp thoại · {checkpoint.Cues.Count} đoạn / {words} từ · {Time(frontier)}/{Time(request.Duration)} · checkpoint đã lưu.");
                                 }
                                 finally { sync.Release(); }
                             }
