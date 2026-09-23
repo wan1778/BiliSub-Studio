@@ -31,6 +31,8 @@ public sealed partial class MainWindow : Window
     private bool _safeToClose;
     private bool _closing;
     private int _errorCount;
+    private bool _navigating;
+    private string? _pendingNavigationTag;
 
     public MainWindow()
     {
@@ -240,16 +242,75 @@ public sealed partial class MainWindow : Window
 
     private void Navigation_SelectionChanged(Microsoft.UI.Xaml.Controls.NavigationView sender, Microsoft.UI.Xaml.Controls.NavigationViewSelectionChangedEventArgs args)
     {
+        if (args.SelectedItemContainer?.Tag is not string tag || !_pages.TryGetValue(tag, out var page)) return;
+        if (ReferenceEquals(ContentFrame.Content, page) && !_navigating) return;
+        if (_navigating)
+        {
+            // Đang đổi trang dở (trang cũ nặng, dỡ chưa xong): không chen ngang,
+            // ghi nhớ tab mới nhất, đổi xong sẽ qua đó.
+            _pendingNavigationTag = tag;
+            return;
+        }
+        _navigating = true;
+        // Đổi trang sau 1 nhịp để khung hình cũ dỡ xong hẳn rồi mới lắp trang mới;
+        // lắp ngay trong nhịp bấm chính là chỗ hay bị thư viện màn hình hủy (E_ABORT).
+        DispatcherQueue.TryEnqueue(() => SwitchContent(tag, page, retried: false));
+    }
+
+    private void SwitchContent(string tag, UIElement page, bool retried)
+    {
         try
         {
-            if (args.SelectedItemContainer?.Tag is not string tag || !_pages.TryGetValue(tag, out var page)) return;
-            if (ReferenceEquals(ContentFrame.Content, page)) return;
             ContentFrame.Content = page;
         }
         catch (Exception error)
         {
-            _globalLog.Error("Điều hướng", "Chuyển trang lỗi: " + error.Message);
+            const int operationAborted = unchecked((int)0x80004004);
+            if (!retried && error.HResult == operationAborted)
+            {
+                // Khung hình cũ vẫn chưa dỡ xong: thử lại 1 lần sau 1 nhịp nữa.
+                DispatcherQueue.TryEnqueue(() => SwitchContent(tag, page, retried: true));
+                return;
+            }
+            _navigating = false;
+            _pendingNavigationTag = null;
+            var detail = string.IsNullOrWhiteSpace(error.Message)
+                ? $"{error.GetType().Name} (mã 0x{error.HResult:X8})"
+                : error.Message;
+            _globalLog.Error("Điều hướng", $"Chuyển sang '{tag}' lỗi: {detail}");
             StartupDiagnostics.WriteException("navigation-failed", error);
+            // Trả thanh điều hướng về đúng trang đang hiện để khỏi kẹt dở dang.
+            SyncNavigationSelection();
+            return;
+        }
+        _navigating = false;
+        if (_pendingNavigationTag is { } pending
+            && !string.Equals(pending, tag, StringComparison.Ordinal)
+            && _pages.TryGetValue(pending, out var pendingPage))
+        {
+            _pendingNavigationTag = null;
+            _navigating = true;
+            DispatcherQueue.TryEnqueue(() => SwitchContent(pending, pendingPage, retried: false));
+        }
+        else
+        {
+            _pendingNavigationTag = null;
+        }
+    }
+
+    private void SyncNavigationSelection()
+    {
+        foreach (var collection in new[] { Navigation.MenuItems, Navigation.FooterMenuItems })
+        {
+            foreach (var item in collection.OfType<NavigationViewItem>())
+            {
+                if (item.Tag is string itemTag && _pages.TryGetValue(itemTag, out var page)
+                    && ReferenceEquals(ContentFrame.Content, page))
+                {
+                    Navigation.SelectedItem = item;
+                    return;
+                }
+            }
         }
     }
 
