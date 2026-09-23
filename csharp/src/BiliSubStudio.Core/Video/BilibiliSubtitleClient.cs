@@ -17,7 +17,10 @@ public sealed partial class BilibiliSubtitleClient
         MaxConnectionsPerServer = 4,
         PooledConnectionLifetime = TimeSpan.FromMinutes(5),
         PooledConnectionIdleTimeout = TimeSpan.FromMinutes(2),
-        AutomaticDecompression = DecompressionMethods.None,
+        // Bilibili gzip trang video dù không hỏi (23/09): không giải nén là
+        // đọc ra rác nhị phân, regex aid mù tịt. Bật giải nén không ảnh hưởng
+        // JSON/protobuf trả về thường.
+        AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate | DecompressionMethods.Brotli,
     })
     {
         Timeout = TimeSpan.FromSeconds(45),
