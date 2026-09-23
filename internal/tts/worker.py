@@ -1119,11 +1119,17 @@ def main() -> int:
                 resolved = [resolve_individual(index, cues[index], texts[index]) for index in group_indices]
             except RuntimeError as error:
                 if len(group_indices) == 1:
-                    raise RuntimeError(
-                        f"Cue {group_indices[0] + 1} không thể xử lý đủ nguyên câu trong timecode: "
-                        f"{error}") from error
-                individual_error = error
-                resolved = []
+                    # Một câu hỏng không được giết cả video (23/09): giữ im
+                    # lặng đúng timecode + cờ review, các câu khác vẫn có voice.
+                    only = group_indices[0]
+                    emit({"event": "notice", "code": "silence-fallback",
+                          "message": (f"Cue {only + 1} ({cues[only]['id']}) không thể xử lý "
+                                      f"đủ nguyên câu trong timecode ({error}); giữ im lặng, cần nghe lại.")})
+                    resolved = [silence_entry(cues[only], texts[only], base_scale, 0,
+                                              run_root, clip_root, worker_sha)]
+                else:
+                    individual_error = error
+                    resolved = []
             else:
                 if len(group_indices) == 1 or not any(
                         entry[0] is cues[group_indices[position]]

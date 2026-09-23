@@ -60,6 +60,92 @@ internal static class EditorVoiceCuePlanner
         return cues.Where(cue => VietnameseTtsTextNormalizer.HasSpeakableUnits(cue.VietnameseText)).ToArray();
     }
 
+    // Vá cửa sổ voice trước khi đọc (23/09): mảnh timecode quá hẹp (<0.15s)
+    // thì không giọng nào đọc vừa -> worker giữ im lặng oan. Vá bằng 2 cách,
+    // đều KHÔNG đụng chữ, KHÔNG lấn câu khác, KHÔNG đổi thứ tự:
+    // 1. Hấp thụ mảnh trùng Y HỆT: mảnh hẹp kề (hở 0..1s, không chồng) với câu
+    //    chữ y hệt từng chữ thì gộp vào câu lành (giữ Id + chữ câu lành, nới
+    //    khung phủ cả mảnh). Chỉ gộp khi một bên hẹp + một bên lành nên thoại
+    //    lặp lành mạnh không bao giờ bị gộp oan.
+    // 2. Nới mảnh hẹp còn lại vào khoảng im kề (mỗi bên tối đa 2s, chừa 0.05s
+    //    với câu bên). Mảnh chạm khít 2 bên thì không có chỗ nới -> giữ nguyên
+    //    cho worker xử lý (im lặng + cờ review, hiếm).
+    public static IReadOnlyList<EditorSubtitleCue> RepairVoiceWindows(IReadOnlyList<EditorSubtitleCue> source)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        const double MinVoiceWindowSeconds = .15;
+        const double MaxAbsorbGapSeconds = 1.0;
+        const double MaxExtendSeconds = 2.0;
+        const double NeighborClearanceSeconds = .05;
+        if (source.Count < 2) return source.ToArray();
+        static bool Sliver(EditorSubtitleCue cue) => cue.End - cue.Start < MinVoiceWindowSeconds;
+        static bool Healthy(EditorSubtitleCue cue) => cue.End - cue.Start >= MinVoiceWindowSeconds;
+        static bool Identical(string left, string right) =>
+            !string.IsNullOrEmpty(left) && string.Equals(left, right, StringComparison.Ordinal);
+
+        var absorbed = new List<EditorSubtitleCue>(source.Count);
+        for (var index = 0; index < source.Count; index++)
+        {
+            var cue = source[index];
+            if (Sliver(cue))
+            {
+                if (absorbed.Count > 0)
+                {
+                    var prev = absorbed[^1];
+                    var gap = cue.Start - prev.End;
+                    if (Healthy(prev) && gap >= 0 && gap <= MaxAbsorbGapSeconds
+                        && Identical(cue.VietnameseText, prev.VietnameseText))
+                    {
+                        absorbed[^1] = prev with { End = Math.Max(prev.End, cue.End) };
+                        continue;
+                    }
+                }
+                if (index + 1 < source.Count)
+                {
+                    var next = source[index + 1];
+                    var gap = next.Start - cue.End;
+                    if (Healthy(next) && gap >= 0 && gap <= MaxAbsorbGapSeconds
+                        && Identical(cue.VietnameseText, next.VietnameseText))
+                    {
+                        absorbed.Add(next with { Start = Math.Min(next.Start, cue.Start) });
+                        index++;
+                        continue;
+                    }
+                }
+            }
+            absorbed.Add(cue);
+        }
+
+        var repaired = new List<EditorSubtitleCue>(absorbed.Count);
+        for (var index = 0; index < absorbed.Count; index++)
+        {
+            var cue = absorbed[index];
+            if (!Sliver(cue) || string.IsNullOrWhiteSpace(cue.VietnameseText))
+            {
+                repaired.Add(cue);
+                continue;
+            }
+            var start = cue.Start;
+            var end = cue.End;
+            if (index + 1 < absorbed.Count)
+            {
+                var next = absorbed[index + 1];
+                // Chỉ nới khi hở thật (chừa 0.05s với câu sau); chạm khít thì thôi.
+                if (next.Start - NeighborClearanceSeconds > end)
+                    end = Math.Min(next.Start - NeighborClearanceSeconds, end + MaxExtendSeconds);
+            }
+            if (end - start < MinVoiceWindowSeconds && repaired.Count > 0)
+            {
+                var prev = repaired[^1];
+                // Chỉ nới lùi khi hở thật; chạm khít hoặc chồng thì thôi.
+                if (prev.End + NeighborClearanceSeconds < start)
+                    start = Math.Max(prev.End + NeighborClearanceSeconds, start - MaxExtendSeconds);
+            }
+            repaired.Add(start == cue.Start && end == cue.End ? cue : cue with { Start = start, End = end });
+        }
+        return repaired;
+    }
+
     private static int FindFlickerEnd(IReadOnlyList<EditorSubtitleCue> cues, int first, int last)
     {
         if (last <= first) return first;

@@ -82,8 +82,12 @@ internal sealed partial class LocalTtsService : IDisposable
         // Collapse only proven OCR flicker runs (for example A/B/A with a
         // sub-250 ms frame) before speech mapping. The subtitle document stays
         // untouched; the voice must not read the same live-caption frame twice.
+        // Vá cửa sổ voice hẹp sau gộp flicker (23/09): mảnh <0.15s không giọng
+        // nào đọc vừa -> worker giữ im lặng oan. Chỉ nới khung/gộp mảnh trùng
+        // y hệt, không đụng chữ, không lấn câu khác.
         var voiceCues = EditorVoiceCuePlanner.RemoveUnspeakable(
-            EditorVoiceCuePlanner.Build(request.Subtitle.Cues));
+            EditorVoiceCuePlanner.RepairVoiceWindows(
+                EditorVoiceCuePlanner.Build(request.Subtitle.Cues)));
         if (voiceCues.Count == 0)
             throw new InvalidDataException("Không có cue chứa chữ hoặc số để tạo voice.");
         // ASR is advisory metadata only (for example voice classification). It
