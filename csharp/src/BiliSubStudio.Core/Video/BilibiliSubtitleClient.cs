@@ -45,8 +45,25 @@ public sealed partial class BilibiliSubtitleClient
         var part = ExtractPart(infoId, sourceUrl);
         var cookieHeader = await ReadCookieHeaderAsync(cookieFile, cancellationToken);
         cookieHeader = await WithFingerprintAsync(cookieHeader, bvid, cancellationToken);
-        var identity = await ResolveVideoIdentityAsync(bvid, part, cookieHeader, cancellationToken);
-
+        (long Aid, long Cid) identity;
+        try
+        {
+            identity = await ResolveVideoIdentityAsync(bvid, part, cookieHeader, cancellationToken);
+        }
+        catch (HttpRequestException viewError)
+        {
+            // view hay bị chặn 412 trong khi pagelist/archive-stat thường mở:
+            // đi đường vòng lấy cid/aid, giữ nguyên lỗi gốc để báo rõ.
+            try
+            {
+                identity = await ResolveVideoIdentityFallbackAsync(bvid, part, cookieHeader, cancellationToken);
+            }
+            catch
+            {
+                throw new HttpRequestException(
+                    $"Bilibili subtitle API HTTP {(int?)viewError.StatusCode} (bước lấy mã video view).", null, viewError.StatusCode);
+            }
+        }
         var tracks = new List<SubtitleTrack>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
@@ -93,6 +110,51 @@ public sealed partial class BilibiliSubtitleClient
             .OrderBy(SubtitleTrackPolicy.Priority)
             .ThenBy(track => track.DisplayName, StringComparer.OrdinalIgnoreCase)
             .ToArray();
+    }
+
+    private async Task<(long Aid, long Cid)> ResolveVideoIdentityFallbackAsync(
+        string bvid,
+        int part,
+        string cookieHeader,
+        CancellationToken cancellationToken)
+    {
+        // Đường vòng khi view bị chặn: pagelist cho cid từng phần,
+        // archive/stat cho aid. Cả hai thường mở không cần ký.
+        using var pages = await SendJsonAsync(
+            new Uri("https://api.bilibili.com/x/player/pagelist?bvid=" + Uri.EscapeDataString(bvid) + "&jsonp=jsonp"),
+            cookieHeader,
+            bvid,
+            cancellationToken);
+        if (!pages.RootElement.TryGetProperty("code", out var pageCode) || pageCode.GetInt32() != 0
+            || !pages.RootElement.TryGetProperty("data", out var pageData) || pageData.ValueKind != JsonValueKind.Array)
+            throw new InvalidDataException("Đường vòng pagelist không trả danh sách phần video.");
+        JsonElement selected = default;
+        var found = false;
+        foreach (var page in pageData.EnumerateArray())
+        {
+            if (page.ValueKind != JsonValueKind.Object) continue;
+            if (page.TryGetProperty("page", out var number) && number.GetInt32() == part
+                && page.TryGetProperty("cid", out var pageCid) && pageCid.TryGetInt64(out var cidValue) && cidValue > 0)
+            {
+                selected = page;
+                found = true;
+                break;
+            }
+        }
+        if (!found)
+            throw new InvalidDataException($"Đường vòng pagelist không thấy phần {part}.");
+        var cid = selected.GetProperty("cid").GetInt64();
+
+        using var stat = await SendJsonAsync(
+            new Uri("https://api.bilibili.com/x/web-interface/archive/stat?bvid=" + Uri.EscapeDataString(bvid)),
+            cookieHeader,
+            bvid,
+            cancellationToken);
+        if (!stat.RootElement.TryGetProperty("code", out var statCode) || statCode.GetInt32() != 0
+            || !stat.RootElement.TryGetProperty("data", out var statData) || statData.ValueKind != JsonValueKind.Object
+            || !statData.TryGetProperty("aid", out var aidElement) || !aidElement.TryGetInt64(out var aid) || aid <= 0)
+            throw new InvalidDataException("Đường vòng archive/stat không trả AID.");
+        return (aid, cid);
     }
 
     private async Task<(long Aid, long Cid)> ResolveVideoIdentityAsync(
