@@ -1,4 +1,5 @@
 using System.Net;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -75,14 +76,30 @@ public sealed partial class BilibiliSubtitleClient
         var tracks = new List<SubtitleTrack>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
+        // player wbi/v2 ký trước (track URL host mới còn sống), hỏng thì
+        // player/v2 cũ (giữ tương thích fixture + video cũ).
         try
         {
-            using var legacy = await SendJsonAsync(
-                new Uri($"https://api.bilibili.com/x/player/v2?bvid={Uri.EscapeDataString(bvid)}&cid={identity.Cid}"),
-                cookieHeader,
-                bvid,
-                cancellationToken);
-            AddLegacyTracks(legacy.RootElement, tracks, seen);
+            var playerUri = await PlayerV2UriAsync(identity, bvid, cookieHeader, cancellationToken);
+            JsonDocument legacy;
+            try
+            {
+                legacy = await SendJsonAsync(playerUri, cookieHeader, bvid, cancellationToken);
+                probe?.Invoke($"legacy player: { (playerUri.AbsolutePath.Contains("/wbi/", StringComparison.Ordinal) ? "wbi" : "plain")}");
+            }
+            catch (HttpRequestException) when (playerUri.AbsolutePath.Contains("/wbi/", StringComparison.Ordinal))
+            {
+                probe?.Invoke("legacy player: wbi hỏng, lùi về plain");
+                legacy = await SendJsonAsync(
+                    new Uri($"https://api.bilibili.com/x/player/v2?bvid={Uri.EscapeDataString(bvid)}&cid={identity.Cid}"),
+                    cookieHeader,
+                    bvid,
+                    cancellationToken);
+            }
+            using (legacy)
+            {
+                AddLegacyTracks(legacy.RootElement, tracks, seen);
+            }
             probe?.Invoke($"legacy player/v2: {tracks.Count} track");
         }
         catch (OperationCanceledException) { throw; }
@@ -467,6 +484,95 @@ public sealed partial class BilibiliSubtitleClient
         {
             FingerGate.Release();
         }
+    }
+
+    // WBI ký cho player (theo yt-dlp 2026): nav -> wbi_img img/sub key ->
+    // mixin 64 số -> w_rid=md5(query đã sắp xếp + wts + mixin). Endpoint không
+    // ký trả track URL host cũ đã chết; bản ký trả host mới. Không ký được thì
+    // null để caller dùng đường cũ.
+    private static readonly int[] WbiMixinTable =
+    [
+        46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49,
+        33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13, 37, 48, 7, 16, 24, 55, 40,
+        61, 26, 17, 0, 1, 60, 51, 30, 4, 22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11,
+        36, 20, 34, 44, 52,
+    ];
+    private static readonly SemaphoreSlim WbiGate = new(1, 1);
+    private static string? _wbiMixin;
+
+    private async Task<string?> WbiMixinAsync(string cookieHeader, string bvid, CancellationToken cancellationToken)
+    {
+        if (_wbiMixin is not null) return _wbiMixin;
+        await WbiGate.WaitAsync(cancellationToken);
+        try
+        {
+            if (_wbiMixin is not null) return _wbiMixin;
+            try
+            {
+                using var nav = await SendJsonAsync(
+                    new Uri("https://api.bilibili.com/x/web-interface/nav"),
+                    cookieHeader, bvid, cancellationToken);
+                if (nav.RootElement.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Object
+                    && data.TryGetProperty("wbi_img", out var img) && img.ValueKind == JsonValueKind.Object
+                    && img.TryGetProperty("img_url", out var imgUrl) && img.TryGetProperty("sub_url", out var subUrl))
+                {
+                    var lookup = WbiFileName(imgUrl.GetString()) + WbiFileName(subUrl.GetString());
+                    if (lookup.Length >= 64)
+                        _wbiMixin = string.Concat(WbiMixinTable.Select(index => lookup[index]))[..32];
+                }
+            }
+            catch
+            {
+            }
+            return _wbiMixin;
+        }
+        finally
+        {
+            WbiGate.Release();
+        }
+    }
+
+    private static string WbiFileName(string? url)
+    {
+        if (string.IsNullOrEmpty(url)) return string.Empty;
+        var name = url[(url.LastIndexOf('/') + 1)..];
+        var dot = name.IndexOf('.');
+        return dot < 0 ? name : name[..dot];
+    }
+
+    private static string SignWbiQuery(IEnumerable<KeyValuePair<string, string>> parameters, string mixin)
+    {
+        var wts = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString();
+        var query = string.Join("&", parameters
+            .Append(new KeyValuePair<string, string>("wts", wts))
+            .OrderBy(pair => pair.Key, StringComparer.Ordinal)
+            .Select(pair => pair.Key + "=" + Uri.EscapeDataString(WbiStrip(pair.Value))));
+        return query + "&w_rid=" + Convert.ToHexStringLower(MD5.HashData(Encoding.UTF8.GetBytes(query + mixin)));
+    }
+
+    private static string WbiStrip(string value)
+    {
+        if (string.IsNullOrEmpty(value)) return string.Empty;
+        var output = new StringBuilder(value.Length);
+        foreach (var character in value)
+            if (character is not ('!' or '\'' or '(' or ')' or '*')) output.Append(character);
+        return output.ToString();
+    }
+
+    private async Task<Uri> PlayerV2UriAsync((long Aid, long Cid) identity, string bvid, string cookieHeader, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var mixin = await WbiMixinAsync(cookieHeader, bvid, cancellationToken);
+            if (!string.IsNullOrEmpty(mixin))
+                return new Uri("https://api.bilibili.com/x/player/wbi/v2?" + SignWbiQuery(
+                    [new KeyValuePair<string, string>("aid", identity.Aid.ToString()),
+                     new KeyValuePair<string, string>("cid", identity.Cid.ToString())], mixin));
+        }
+        catch
+        {
+        }
+        return new Uri($"https://api.bilibili.com/x/player/v2?bvid={Uri.EscapeDataString(bvid)}&cid={identity.Cid}");
     }
 
     private static string? ExtractBvid(string? value)
