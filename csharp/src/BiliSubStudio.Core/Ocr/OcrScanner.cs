@@ -30,14 +30,13 @@ public sealed class OcrScanner
     private readonly HardwareService _hardware;
     private readonly OcrCheckpointStore _checkpoints;
     private readonly OcrSidecarStore _sidecars;
-    private readonly LocalAsrService? _asr;
     private OwnedProcessGroup? _activeProcesses;
     // Probe/sidecar cache app-lifetime: metadata video tĩnh, key = vân file
     // (đổi file là miss). Null chỉ cache memory (lỗi thoáng không poison disk).
     private readonly ConcurrentDictionary<string, VideoProbe?> _probeCache = new();
     private readonly ConcurrentDictionary<string, OcrSidecar.SidecarDocument?> _sidecarDocs = new();
 
-    internal OcrScanner(ToolManager tools, ProcessRunner processes, OcrManager ocr, HardwareService hardware, OcrCheckpointStore checkpoints, AppPaths paths, LocalAsrService? asrService = null)
+    internal OcrScanner(ToolManager tools, ProcessRunner processes, OcrManager ocr, HardwareService hardware, OcrCheckpointStore checkpoints, AppPaths paths)
     {
         _tools = tools;
         _processes = processes;
@@ -45,7 +44,6 @@ public sealed class OcrScanner
         _hardware = hardware;
         _checkpoints = checkpoints;
         _sidecars = new OcrSidecarStore(paths.Data);
-        _asr = asrService;
     }
 
     public async Task<OcrResult> RecognizeFrameAsync(string path, double at, OcrRegion region, string device, CancellationToken cancellationToken)
@@ -172,44 +170,10 @@ public sealed class OcrScanner
         if (startMode == OcrScanStartMode.Resume && saved is null)
             throw new InvalidOperationException("Không còn checkpoint OCR phù hợp để tiếp tục. Hãy Quét từ đầu.");
 
-        // Phase 0 — tai nghe trước (Whisper, 17/09): 1 lần/video (checkpoint
-        // nên quét lại gần như miễn phí), chạy TRƯỚC khi dựng worker OCR để
-        // không tranh VRAM. Tai cho 2 thứ: timeline im-lặng (lane bỏ qua OCR
-        // chỗ im -> nhanh) + chữ đã nghe (judge đối chiếu tai-mắt). Hỏng/
-        // thiếu/không tiếng -> quét chay như cũ (fail-open, không chặn scan).
+        // Tai nghe Whisper đã bỏ khỏi đường quét (22/09: tốn ~1 tiếng/phim mà
+        // chỉ bỏ được ~2% lượt đọc). Quét thuần bằng mắt; các chỗ ăn theo
+        // (gộp trùng, banner, judge, cảnh báo sót) tự chạy luật mắt.
         IReadOnlyList<EditorSpeechSegment> speechSegments = [];
-        VadTimeline? whisperTimeline = null;
-        if (inputHealth.HasAudio && _asr is not null)
-        {
-            try
-            {
-                var speech = await RunWhisperPhaseAsync(job, source, request.Duration, token);
-                if (speech is { Segments.Count: > 0 })
-                {
-                    speechSegments = speech.Segments;
-                    whisperTimeline = OcrSpeechMatch.BuildTimeline(speechSegments, request.Duration);
-                    var speechSeconds = speechSegments.Sum(segment =>
-                        Math.Max(0, Math.Min(segment.End, request.Duration) - Math.Max(0, segment.Start)));
-                    job.Log($"Tai nghe: {speechSegments.Count} đoạn thoại "
-                        + $"({speechSeconds:0}s có tiếng / {request.Duration:0}s) — lane bỏ qua OCR chỗ im lặng, judge đối chiếu chữ tai-mắt.");
-                    // Vùng quét kỹ, phương án A (18/09): khe im > 60s thì OCR
-                    // mọi frame trong đó (đánh Suspicious) — sub-không-tiếng /
-                    // fade-in trong đoạn im dài không thoát. Judge/guard đọc
-                    // segment gốc nên không ảnh hưởng.
-                    var longSilences = OcrSpeechMatch.FindLongSilences(speechSegments, request.Duration);
-                    if (longSilences.Count > 0)
-                    {
-                        OcrSpeechMatch.MarkLongSilences(whisperTimeline, longSilences);
-                        var zoneSeconds = longSilences.Sum(zone => Math.Max(0, zone.End - zone.Start));
-                        var zoneSamples = string.Join(" · ", longSilences.Select(zone =>
-                            FormattableString.Invariant($"{zone.Start:0}s–{zone.End:0}s")));
-                        job.Log($"Quét kỹ {longSilences.Count} đoạn im dài ({zoneSeconds:0}s): {zoneSamples} — OCR mọi frame, tắt skip trong đó.");
-                    }
-                }
-            }
-            catch (OperationCanceledException) { throw; }
-            catch (Exception error) { job.Warn("Whisper lỗi (quét chay, không đối chiếu tai-mắt): " + Compact(error.Message)); }
-        }
 
         // A Hybrid request may have explicitly fallen back to GPU. Resume the
         // persisted device mode, not a newly selected interpretation of the request.
@@ -329,17 +293,9 @@ public sealed class OcrScanner
         // Hủy scan -> nền tự chết theo token, không níu. Không tiếng -> nghỉ (E.0 đã báo).
         VadTimeline? vadSnapshot = null;
         Func<VadTimeline?> vadSource = () => Volatile.Read(ref vadSnapshot);
-        // Tai nghe (Whisper) ưu tiên cao nhất: timeline im-lặng từ đoạn thoại
-        // thật chính xác hơn VAD năng lượng (báo-im-sai từng ăn chữ thật nên
-        // council skip bị tắt 16/09 — Whisper chính là "VAD được sửa" để mở lại).
-        // Không tai -> sidecar/energy như cũ.
-        if (whisperTimeline is not null)
-        {
-            vadSnapshot = whisperTimeline;
-            job.Log($"VAD từ tai nghe Whisper: {whisperTimeline.Flags.Length} khung 0.2s "
-                + "(có tiếng -> quét, im lặng -> council được skip khi các cổng khác đồng ý).");
-        }
-        else if (inputHealth.HasAudio)
+        // Không tai nghe: sidecar/energy như cũ (timeline không có cờ HasSub
+        // nên council skip tắt sẵn — quét thuần bằng mắt).
+        if (inputHealth.HasAudio)
         {
             vadSnapshot = OcrSidecar.ToTimeline(sidecarDoc?.Vad);
             if (vadSnapshot is not null)
@@ -1219,47 +1175,6 @@ public sealed class OcrScanner
     // Probe cache 2 tầng (memory/app-lifetime + sidecar/disk): metadata video tĩnh nên
     // 8 lane + padding + NVDEC chỉ spawn ffprobe 1 lần/scan (lần đầu), các scan sau đọc
     // sidecar. Trả kèm doc sidecar mới nhất + cờ trúng sidecar (để đếm, không để gate).
-    // Phase 0 — tai nghe Whisper (17/09): phiên dịch audio 1 lần/video qua
-    // LocalAsrService có sẵn (tự chọn GPU/CPU, tự resume checkpoint theo key
-    // vân file nên quét lại gần như miễn phí). ProjectId tổng hợp từ vân file
-    // ("ocr-" + 12 hex) để tách khỏi project Editor. Trả null khi không có
-    // thoại/không tiếng/lỗi (caller fail-open quét chay). VRAM rảnh lúc này
-    // vì worker OCR chưa dựng.
-    private async Task<EditorSpeechAnalysis?> RunWhisperPhaseAsync(
-        AppJob job, string source, double duration, CancellationToken cancellationToken)
-    {
-        var service = _asr;
-        if (service is null) return null;
-        FileInfo info;
-        try { info = new FileInfo(Path.GetFullPath(source.Trim())); }
-        catch { return null; }
-        if (!info.Exists || info.Length <= 0 || !(duration > 0)) return null;
-        var identity = $"{info.FullName}\n{info.Length}\n{info.LastWriteTimeUtc.Ticks}\n{duration:0.000}";
-        var projectId = "ocr-" + Convert.ToHexStringLower(
-            SHA256.HashData(Encoding.UTF8.GetBytes(identity)))[..12];
-        job.Set("whisper", 0.5, "Tai nghe: đang phiên dịch thoại (Whisper local, 1 lần/video)...");
-        EditorAsrResult result;
-        try
-        {
-            result = await service.TranscribeAsync(job, new EditorAsrRequest(
-                projectId, info.FullName, duration));
-        }
-        catch (InvalidDataException)
-        {
-            // Không thoại/không hợp lệ: quét chay (fail-open, không phải bug).
-            return null;
-        }
-        try
-        {
-            return await EditorSpeechAnalysisDocument.LoadVerifiedAsync(
-                result.AnalysisPath, result.AnalysisSha256, cancellationToken);
-        }
-        catch (OperationCanceledException) { throw; }
-        catch
-        {
-            return null;
-        }
-    }
 
     // Cold-start 8 lane đua nhau: cùng miss memory → cùng probe như hôm nay (không tệ hơn),
     // lane đầu xong ghi sidecar, các scan sau trúng. Null chỉ cache memory.

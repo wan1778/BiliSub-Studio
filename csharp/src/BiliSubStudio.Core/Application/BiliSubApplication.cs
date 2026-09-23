@@ -67,8 +67,8 @@ public sealed class BiliSubApplication : IAsyncDisposable
         var pythonBootstrap = new OcrInstaller(paths, _http, Processes);
         _ocr = new OcrManager(paths, Hardware, pythonBootstrap);
         _asr = new LocalAsrService(paths, new LocalAsrInstaller(paths, pythonBootstrap, Processes), Tools, Processes, Hardware);
-        // Phase 0 tai nghe (Whisper) nằm trong OcrScanner: dựng _asr TRƯỚC để truyền vào.
-        _ocrScanner = new OcrScanner(Tools, Processes, _ocr, Hardware, new OcrCheckpointStore(paths), paths, _asr);
+        // Tai nghe Whisper đã bỏ khỏi đường quét OCR (22/09); _asr giữ lại cho tab Edit/voice.
+        _ocrScanner = new OcrScanner(Tools, Processes, _ocr, Hardware, new OcrCheckpointStore(paths), paths);
         _tts = new LocalTtsService(paths, new LocalTtsInstaller(paths, pythonBootstrap, Processes), Tools, Processes);
     }
 
