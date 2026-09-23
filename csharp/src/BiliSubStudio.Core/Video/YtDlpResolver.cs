@@ -122,30 +122,13 @@ public sealed class YtDlpResolver
             AddTracks(info.Subtitles, official: true, ai: false, tracks, seen);
             AddTracks(info.AutomaticCaptions, official: false, ai: true, tracks, seen);
 
-            // Product contract: if any normal/platform-provided subtitle exists, use
-            // that class only. Bilibili AI captions are the fallback class, never a
-            // higher-priority replacement merely because their language is Chinese.
-            IReadOnlyList<SubtitleTrack> selectedTracks;
-            var available = tracks.Where(track => track.Official)
+            // Hiển thị TẤT CẢ các bản sub để user tự chọn (chính thức trước,
+            // AI sau). Bản mặc định vẫn là chính thức vì Preferred() xếp
+            // official lên đầu; AI chỉ là lựa chọn thêm, không thay mặc định.
+            var selectedTracks = tracks
                 .OrderBy(SubtitleTrackPolicy.Priority)
                 .ThenBy(track => track.DisplayName, StringComparer.OrdinalIgnoreCase)
                 .ToArray();
-            if (available.Length > 0)
-            {
-                selectedTracks = available;
-            }
-            else
-            {
-                var ai = tracks.Where(track => track.Ai)
-                    .OrderBy(SubtitleTrackPolicy.Priority)
-                    .ThenBy(track => track.DisplayName, StringComparer.OrdinalIgnoreCase)
-                    .ToArray();
-                selectedTracks = ai.Length > 0
-                    ? ai
-                    : tracks.OrderBy(SubtitleTrackPolicy.Priority)
-                        .ThenBy(track => track.DisplayName, StringComparer.OrdinalIgnoreCase)
-                        .ToArray();
-            }
 
             return new VideoMetadata(info.Title, info.Id, qualities, selectedTracks, info.Thumbnail, subtitleWarning);
         }

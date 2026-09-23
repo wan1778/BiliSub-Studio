@@ -114,7 +114,7 @@ public sealed partial class VideoPage : Page
             var normalCount = metadata.Subtitles.Count(track => track.Official);
             var aiCount = metadata.Subtitles.Count(track => track.Ai);
             var subtitleSummary = normalCount > 0
-                ? $"{normalCount} có sẵn"
+                ? $"{normalCount} có sẵn" + (aiCount > 0 ? $" + {aiCount} Bilibili AI" : string.Empty)
                 : aiCount > 0
                     ? $"{aiCount} Bilibili AI"
                     : "Không";
