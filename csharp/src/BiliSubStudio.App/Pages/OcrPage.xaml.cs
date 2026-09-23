@@ -1,5 +1,6 @@
 using BiliSubStudio.App.Services;
 using BiliSubStudio.Core.Application;
+using BiliSubStudio.Core.Jobs;
 using BiliSubStudio.Core.Media;
 using BiliSubStudio.Core.Ocr;
 using Microsoft.UI.Xaml;
@@ -27,6 +28,8 @@ public sealed partial class OcrPage : Page
     private OcrScanRequest? _checkpointRequest;
     private OcrScanRequest? _activeRequest;
     private bool _cancelInProgress;
+    private bool _listening;
+    private string? _listenProjectId;
     private IReadOnlyList<OcrCue> _cues = [];
     // Dòng đang hiển thị = dòng pipeline chung (OcrExportRow: Start/End/Text
     // đã loại-trừ/đắp-fix/normalize/trim — live-quét-xong = SRT theo cấu trúc).
@@ -439,6 +442,11 @@ public sealed partial class OcrPage : Page
     private async void Scan_Click(object sender, RoutedEventArgs e)
     {
         if (_path is null || _media is null) return;
+        if (string.Equals(Selected(SourceBox), "listen", StringComparison.Ordinal))
+        {
+            await StartListenAsync();
+            return;
+        }
         var request = _checkpointRequest ?? BuildRequest();
         var startMode = _checkpointRequest is null ? OcrScanStartMode.Fresh : OcrScanStartMode.Resume;
         // Tiep tuc sau khi sua ROI luc tam dung: giu request goc (giu checkpoint key),
@@ -454,6 +462,233 @@ public sealed partial class OcrPage : Page
             }
         }
         await StartScanAsync(request, startMode, regionOverride);
+    }
+
+    // Nghe riêng (Whisper-only): hiện trực tiếp % + giờ + chữ từ checkpoint,
+    // dừng giữ sổ dở, chạy lại tự nối. Xong thì copy sub ra cùng chỗ sub OCR.
+    private async Task StartListenAsync()
+    {
+        if (_path is null || _media is null || !(_media.Duration > 0) || _jobId is not null) return;
+        var projectId = TryListenProjectId();
+        if (projectId is null) { StatusText.Text = "Video chưa hợp lệ để nghe."; return; }
+        var fromScratch = string.Equals(ScanButton.Content?.ToString(), "Nghe lại từ đầu", StringComparison.Ordinal);
+        if (fromScratch) _application.RemoveOcrListenCheckpoint(projectId);
+        var heardBefore = fromScratch ? [] : _application.ReadOcrListenCues(projectId);
+        var resuming = !fromScratch
+            && string.Equals(_listenProjectId, projectId, StringComparison.Ordinal)
+            && _cues.Count > 0 && heardBefore.Count > 0;
+        if (!resuming)
+        {
+            _cues = [];
+            _visibleCues = [];
+            _authoritative = false;
+            _liveCues.Clear();
+            _manualDeletes.Clear();
+            _cueViewDirty = false;
+            CueList.Items.Clear();
+            CueCountText.Text = "0 đoạn";
+            Progress.Value = 0;
+            TelemetryText.Text = "Đang chuẩn bị tai nghe...";
+            ExportButton.IsEnabled = false;
+        }
+        else
+        {
+            _authoritative = false;
+            _liveCues.Seed(_cues);
+            _cueViewDirty = true;
+        }
+        _nextCueRenderAt = default;
+        _userAtEnd = true;
+        _listening = true;
+        _listenProjectId = projectId;
+        AutoSaveFolderButton.IsEnabled = false;
+        PickVideoButton.IsEnabled = false;
+        DeviceBox.IsEnabled = false;
+        ScanModeBox.IsEnabled = false;
+        SourceBox.IsEnabled = false;
+        LanesBox.IsEnabled = false;
+        PrepareOcrButton.IsEnabled = false;
+        ScanButton.IsEnabled = false;
+        RestartButton.Visibility = Visibility.Collapsed;
+        TestFrameButton.IsEnabled = false;
+        SelectRegionButton.IsEnabled = false;
+        PauseButton.IsEnabled = false;
+        CancelButton.IsEnabled = true;
+        CancelButton.Content = "Dừng";
+        string runningId;
+        try
+        {
+            (runningId, _) = _application.StartOcrListen(_path, _media.Duration);
+        }
+        catch (Exception error)
+        {
+            StatusText.Text = error.Message;
+            _listening = false;
+            _jobId = null;
+            ApplyListenIdleControls();
+            return;
+        }
+        _jobId = runningId;
+        var duration = _media.Duration;
+        while (_jobId == runningId)
+        {
+            JobSnapshot snapshot;
+            try
+            {
+                snapshot = _application.Jobs.GetSnapshot(runningId);
+            }
+            catch
+            {
+                break;
+            }
+            Progress.Value = snapshot.Progress;
+            StatusText.Text = snapshot.Message;
+            var heard = _application.ReadOcrListenCues(projectId);
+            if (heard.Count > 0)
+            {
+                MergeLiveCueSnapshot(heard);
+                RefreshLiveCueView(force: snapshot.Done);
+                TelemetryText.Text = $"Đang nghe · tới {FormatClock(heard[^1].End)} / {FormatClock(duration)} · {heard.Count} đoạn";
+            }
+            if (snapshot.Done)
+            {
+                var cancelled = string.Equals(snapshot.Status, "cancelled", StringComparison.OrdinalIgnoreCase);
+                var failed = string.Equals(snapshot.Status, "error", StringComparison.OrdinalIgnoreCase) || !string.IsNullOrWhiteSpace(snapshot.Error);
+                _jobId = null;
+                _listening = false;
+                if (cancelled)
+                {
+                    ScanButton.Content = "Nghe tiếp";
+                    StatusText.Text = "Đã dừng nghe, chữ đã nghe được giữ lại. Bấm Nghe tiếp để nối.";
+                }
+                else if (failed)
+                {
+                    ScanButton.Content = "Nghe tiếp";
+                    StatusText.Text = snapshot.Error ?? snapshot.Message;
+                }
+                else
+                {
+                    var final = _application.ReadOcrListenCues(projectId);
+                    _liveCues.Clear();
+                    _cues = final.OrderBy(cue => cue.Start).ToArray();
+                    _authoritative = true;
+                    RebuildDisplayRows();
+                    RenderCues();
+                    CueCountText.Text = $"{_cues.Count} đoạn";
+                    try
+                    {
+                        var name = BiliSubStudio.Core.IO.FileNamePolicy.Sanitize(
+                            Path.GetFileNameWithoutExtension(_path) + "_Whisper_Chinese.srt",
+                            "BiliSub_Whisper_Chinese.srt");
+                        Directory.CreateDirectory(_ocrOutputDirectory);
+                        var dest = Path.Combine(_ocrOutputDirectory, name);
+                        File.Copy(_application.OcrListenSrtPath(projectId), dest, overwrite: true);
+                        StatusText.Text = "Đã nghe xong và lưu SRT: " + dest;
+                    }
+                    catch (Exception error)
+                    {
+                        StatusText.Text = "Nghe xong nhưng lưu SRT lỗi: " + error.Message;
+                    }
+                    ScanButton.Content = "Nghe lại từ đầu";
+                }
+                ApplyListenIdleControls();
+                break;
+            }
+            await Task.Delay(400);
+        }
+        if (_jobId == runningId)
+        {
+            // Job mất khỏi sổ mà vòng poll chưa dọn: coi như dừng, giữ chữ đã nghe.
+            _jobId = null;
+            _listening = false;
+            ScanButton.Content = "Nghe tiếp";
+            StatusText.Text = "Phiên nghe mất khỏi sổ tác vụ; chữ đã nghe được giữ lại.";
+            ApplyListenIdleControls();
+        }
+    }
+
+    private void ApplyListenIdleControls()
+    {
+        PickVideoButton.IsEnabled = true;
+        AutoSaveFolderButton.IsEnabled = true;
+        CancelButton.IsEnabled = false;
+        CancelButton.Content = "Hủy";
+        PauseButton.IsEnabled = false;
+        SourceBox.IsEnabled = true;
+        DeviceBox.IsEnabled = false;
+        ScanModeBox.IsEnabled = false;
+        LanesBox.IsEnabled = false;
+        PrepareOcrButton.IsEnabled = false;
+        TestFrameButton.IsEnabled = false;
+        SelectRegionButton.IsEnabled = false;
+        RestartButton.Visibility = Visibility.Collapsed;
+        ScanButton.IsEnabled = true;
+    }
+
+    private async Task CancelListenAsync()
+    {
+        if (_cancelInProgress || !_listening || _jobId is null) return;
+        try
+        {
+            _cancelInProgress = true;
+            CancelButton.Content = "Đang dừng...";
+            CancelButton.IsEnabled = true;
+            _application.CancelJob(_jobId);
+            var waited = 0;
+            while (_jobId is not null && waited < 150)
+            {
+                await Task.Delay(200);
+                waited++;
+            }
+        }
+        catch (Exception error)
+        {
+            StatusText.Text = error.Message;
+        }
+        finally
+        {
+            _cancelInProgress = false;
+        }
+    }
+
+    private string? TryListenProjectId()
+    {
+        try
+        {
+            return _path is not null && _media is not null && _media.Duration > 0
+                ? BiliSubApplication.OcrListenProjectId(_path, _media.Duration)
+                : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private void SourceBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_jobId is not null) return;
+        if (!string.Equals(Selected(SourceBox), "listen", StringComparison.Ordinal))
+        {
+            // Về mắt đọc: dựng lại nút bấm theo trạng thái OCR hiện tại.
+            RestoreIdleControls();
+            RefreshRegionActions();
+            ScanButton.Content = _checkpointRequest is not null ? "Tiếp tục" : (_cues.Count > 0 ? "Quét lại từ đầu" : "Quét / Tiếp tục");
+            return;
+        }
+        DeviceBox.IsEnabled = false;
+        ScanModeBox.IsEnabled = false;
+        LanesBox.IsEnabled = false;
+        PrepareOcrButton.IsEnabled = false;
+        TestFrameButton.IsEnabled = false;
+        SelectRegionButton.IsEnabled = false;
+        RestartButton.Visibility = Visibility.Collapsed;
+        PauseButton.IsEnabled = false;
+        var projectId = TryListenProjectId();
+        _listenProjectId = projectId;
+        var heard = projectId is not null && _application.ReadOcrListenCues(projectId).Count > 0;
+        ScanButton.Content = heard ? "Nghe tiếp" : "Nghe từ đầu";
+        TelemetryText.Text = "Chế độ tai nghe: chỉ chạy Whisper lấy lời thoại rồi xuất SRT, không quét mắt.";
     }
 
     private async void Restart_Click(object sender, RoutedEventArgs e)
@@ -517,6 +752,7 @@ public sealed partial class OcrPage : Page
         PickVideoButton.IsEnabled = false;
         DeviceBox.IsEnabled = false;
         ScanModeBox.IsEnabled = false;
+        SourceBox.IsEnabled = false;
         LanesBox.IsEnabled = false;
         PrepareOcrButton.IsEnabled = false;
         ScanButton.IsEnabled = false;
@@ -633,7 +869,7 @@ public sealed partial class OcrPage : Page
 
     private async void Pause_Click(object sender, RoutedEventArgs e)
     {
-        if (_jobId is null) return;
+        if (_jobId is null || _listening) return;
         try
         {
             PauseButton.IsEnabled = false;
@@ -649,6 +885,11 @@ public sealed partial class OcrPage : Page
     private async void Cancel_Click(object sender, RoutedEventArgs e)
     {
         if (_cancelInProgress) return;
+        if (_listening)
+        {
+            await CancelListenAsync();
+            return;
+        }
         var request = _activeRequest ?? _checkpointRequest;
         if (request is null) return;
 
@@ -692,6 +933,7 @@ public sealed partial class OcrPage : Page
         PickVideoButton.IsEnabled = true;
         DeviceBox.IsEnabled = true;
         ScanModeBox.IsEnabled = true;
+        SourceBox.IsEnabled = true;
         LanesBox.IsEnabled = true;
         PrepareOcrButton.IsEnabled = true;
         AutoSaveFolderButton.IsEnabled = true;
@@ -703,6 +945,7 @@ public sealed partial class OcrPage : Page
     {
         DeviceBox.IsEnabled = false;
         ScanModeBox.IsEnabled = false;
+        SourceBox.IsEnabled = false;
         LanesBox.IsEnabled = false;
         // Tam dung van cho sua ROI: Scan_Click so ReadRegion() voi _checkpointRequest.Region
         // va truyen regionOverride (giu checkpoint key). Device/mode/lane khoa vi doi la doi key.

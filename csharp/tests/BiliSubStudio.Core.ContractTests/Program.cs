@@ -128,6 +128,7 @@ internal static class Program
         ("OCR line luminance gate enforces bright-party rule against scene ink text", OcrLuminanceGateContract.RunAsync),
         ("OCR temporal judge queues committed cues without blocking scan", OcrTrailingJudgeContract.RunAsync),
         ("OCR speech match corroborates dialogue against Whisper words", OcrSpeechMatchContract.RunAsync),
+        ("OCR listen mode reads Whisper checkpoint live without throwing", OcrListenContract.RunAsync),
         ("OCR text cleanup merges flicker duplicates and drops splinters", OcrTextCleanupContract.RunAsync),
         ("OCR banner guard drops static overlay text and warns on missing subs", OcrBannerGuardContract.RunAsync),
         ("OCR judge badge marks AI-decided cues on the live list", OcrJudgeBadgeContract.RunAsync),

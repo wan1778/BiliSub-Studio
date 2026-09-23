@@ -1,4 +1,6 @@
+using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using BiliSubStudio.Core.Authentication;
 using BiliSubStudio.Core.Configuration;
 using BiliSubStudio.Core.Editor;
@@ -649,6 +651,91 @@ public sealed class BiliSubApplication : IAsyncDisposable
             if (!result.Paused) job.Finish(null, $"Đã quét xong: {result.Cues.Count} câu · {result.RealtimeSpeed:0.0}× realtime", result);
         });
         return job.Id;
+    }
+
+    // Nghe riêng (Whisper-only, 23/09): chỉ chạy tai nghe lấy lời thoại rồi
+    // xuất SRT, không đụng đường mắt đọc. Checkpoint ASR có sẵn nên dừng
+    // giữa chừng chạy lại tự nối. Mã project "nghe-…" tách khỏi project Edit.
+    public (string JobId, string ProjectId) StartOcrListen(string videoPath, double duration, string executionMode = "gpu")
+    {
+        if (string.IsNullOrWhiteSpace(videoPath)) throw new ArgumentException("Chưa chọn video.", nameof(videoPath));
+        if (!(duration > 0) || !double.IsFinite(duration)) throw new ArgumentException("Video chưa có thời lượng.", nameof(duration));
+        if (executionMode is not ("cpu" or "gpu" or "hybrid")) throw new ArgumentException("Chế độ ASR không hợp lệ.", nameof(executionMode));
+        if (Jobs.HasActiveJobs) throw new InvalidOperationException("Hãy hoàn tất hoặc hủy tác vụ Media/OCR/Editor đang chạy trước khi nghe.");
+        var projectId = OcrListenProjectId(videoPath, duration);
+        var job = Jobs.Create("ocr-listen", cleanupAwareCancel: true);
+        _ = RunJobAsync(job, async () =>
+        {
+            var result = await _asr.TranscribeAsync(job, new EditorAsrRequest(projectId, Path.GetFullPath(videoPath.Trim()), duration, executionMode));
+            job.Finish(null, $"Nghe xong: {result.SegmentCount} đoạn / {result.WordCount} từ.", result);
+        });
+        return (job.Id, projectId);
+    }
+
+    public static string OcrListenProjectId(string videoPath, double duration)
+    {
+        var info = new FileInfo(Path.GetFullPath(videoPath.Trim()));
+        if (!info.Exists || info.Length <= 0) throw new FileNotFoundException("Video nguồn không tồn tại hoặc rỗng.", videoPath);
+        var identity = $"{info.FullName}\n{info.Length}\n{info.LastWriteTimeUtc.Ticks}\n{duration:0.000}";
+        return "nghe-" + Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(identity)))[..12];
+    }
+
+    public string OcrListenSrtPath(string projectId) =>
+        Path.Combine(Paths.Data, "Projects", "ASR", projectId + ".zh.srt");
+
+    // Xóa sổ dở + sub đã xuất của lần nghe để "Nghe lại từ đầu" thật sự từ đầu.
+    public void RemoveOcrListenCheckpoint(string projectId)
+    {
+        if (string.IsNullOrWhiteSpace(projectId)) return;
+        foreach (var suffix in new[] { ".json", ".hybrid-v1.json", ".zh.srt" })
+        {
+            try { File.Delete(Path.Combine(Paths.Data, "Projects", "ASR", projectId + suffix)); }
+            catch { }
+        }
+    }
+
+    // Đọc chữ nghe được tới hiện tại từ checkpoint ASR (ghi atomic nên đọc
+    // giữa chừng an toàn; hỏng/thiếu -> rỗng, không bao giờ throw).
+    public IReadOnlyList<OcrCue> ReadOcrListenCues(string projectId)
+    {
+        if (string.IsNullOrWhiteSpace(projectId)) return [];
+        foreach (var suffix in new[] { ".json", ".hybrid-v1.json" })
+        {
+            var cues = TryReadOcrListenCheckpoint(Path.Combine(Paths.Data, "Projects", "ASR", projectId + suffix));
+            if (cues is not null) return cues;
+        }
+        return [];
+    }
+
+    internal static IReadOnlyList<OcrCue>? TryReadOcrListenCheckpoint(string path)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(File.ReadAllBytes(path));
+            if (!document.RootElement.TryGetProperty("cues", out var cues) || cues.ValueKind != JsonValueKind.Array)
+                return null;
+            var output = new List<OcrCue>();
+            foreach (var cue in cues.EnumerateArray())
+            {
+                if (output.Count >= 100_000) break;
+                if (!cue.TryGetProperty("start", out var startElement)
+                    || !cue.TryGetProperty("end", out var endElement)
+                    || !cue.TryGetProperty("text", out var textElement))
+                    continue;
+                var start = startElement.GetDouble();
+                var end = endElement.GetDouble();
+                var text = textElement.GetString();
+                if (!double.IsFinite(start) || !double.IsFinite(end) || end <= start || start < 0
+                    || string.IsNullOrWhiteSpace(text))
+                    continue;
+                output.Add(new OcrCue(start, end, text.Trim(), 1, 0, 0, false));
+            }
+            return output;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     public async Task SetOcrRegionAsync(OcrRegion region, CancellationToken cancellationToken)
