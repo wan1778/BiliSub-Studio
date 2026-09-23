@@ -25,6 +25,12 @@ public sealed partial class BilibiliSubtitleClient
 
     private readonly HttpClient _http;
 
+    // Vân tay buvid chống chặn 412 (23/09): API sub của Bilibili khóa rủi ro
+    // khi thiếu buvid3. Lấy 1 lần/process từ finger/spi (không cần đăng nhập),
+    // hỏng thì thôi (best-effort, không bao giờ chặn metadata).
+    private static readonly SemaphoreSlim FingerGate = new(1, 1);
+    private static string? _fingerCookies;
+
     public BilibiliSubtitleClient() : this(SharedHttp) { }
     public BilibiliSubtitleClient(HttpClient http) => _http = http;
 
@@ -38,6 +44,7 @@ public sealed partial class BilibiliSubtitleClient
             ?? throw new InvalidOperationException("Không xác định được BVID để lấy phụ đề Bilibili.");
         var part = ExtractPart(infoId, sourceUrl);
         var cookieHeader = await ReadCookieHeaderAsync(cookieFile, cancellationToken);
+        cookieHeader = await WithFingerprintAsync(cookieHeader, bvid, cancellationToken);
         var identity = await ResolveVideoIdentityAsync(bvid, part, cookieHeader, cancellationToken);
 
         var tracks = new List<SubtitleTrack>();
@@ -308,6 +315,66 @@ public sealed partial class BilibiliSubtitleClient
     private static bool ContainsCookie(string cookieHeader, string name) => cookieHeader
         .Split(';', StringSplitOptions.RemoveEmptyEntries)
         .Any(part => part.TrimStart().StartsWith(name + "=", StringComparison.OrdinalIgnoreCase));
+
+    private async Task<string> WithFingerprintAsync(string cookieHeader, string bvid, CancellationToken cancellationToken)
+    {
+        var finger = await FingerCookiesAsync(cancellationToken);
+        if (string.IsNullOrWhiteSpace(finger)) return cookieHeader;
+        foreach (var part in finger.Split(';', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var trimmed = part.Trim();
+            var split = trimmed.IndexOf('=');
+            if (split <= 0) continue;
+            var name = trimmed[..split].Trim();
+            if (name.Length == 0 || ContainsCookie(cookieHeader, name)) continue;
+            cookieHeader = string.IsNullOrWhiteSpace(cookieHeader) ? trimmed : cookieHeader + "; " + trimmed;
+        }
+        return cookieHeader;
+    }
+
+    private async Task<string> FingerCookiesAsync(CancellationToken cancellationToken)
+    {
+        if (_fingerCookies is not null) return _fingerCookies;
+        await FingerGate.WaitAsync(cancellationToken);
+        try
+        {
+            if (_fingerCookies is not null) return _fingerCookies;
+            var cookies = string.Empty;
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get,
+                    new Uri("https://api.bilibili.com/x/frontend/finger/spi"));
+                request.Headers.TryAddWithoutValidation("Referer", "https://www.bilibili.com/");
+                request.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151 Safari/537.36");
+                using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+                if (response.IsSuccessStatusCode)
+                {
+                    using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
+                    var root = document.RootElement;
+                    if (root.TryGetProperty("code", out var code) && code.ValueKind == JsonValueKind.Number
+                        && code.GetInt32() == 0 && root.TryGetProperty("data", out var data)
+                        && data.ValueKind == JsonValueKind.Object)
+                    {
+                        var parts = new List<string>();
+                        if (data.TryGetProperty("b_3", out var b3) && b3.ValueKind == JsonValueKind.String
+                            && !string.IsNullOrWhiteSpace(b3.GetString())) parts.Add("buvid3=" + b3.GetString());
+                        if (data.TryGetProperty("b_4", out var b4) && b4.ValueKind == JsonValueKind.String
+                            && !string.IsNullOrWhiteSpace(b4.GetString())) parts.Add("buvid4=" + b4.GetString());
+                        cookies = string.Join("; ", parts);
+                    }
+                }
+            }
+            catch
+            {
+            }
+            _fingerCookies = cookies;
+            return cookies;
+        }
+        finally
+        {
+            FingerGate.Release();
+        }
+    }
 
     private static string? ExtractBvid(string? value)
     {
