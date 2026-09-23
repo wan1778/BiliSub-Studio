@@ -38,7 +38,8 @@ public sealed partial class BilibiliSubtitleClient
         string sourceUrl,
         string infoId,
         string? cookieFile,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action<string>? probe = null)
     {
         var bvid = ExtractBvid(infoId) ?? ExtractBvid(sourceUrl)
             ?? throw new InvalidOperationException("Không xác định được BVID để lấy phụ đề Bilibili.");
@@ -49,17 +50,21 @@ public sealed partial class BilibiliSubtitleClient
         try
         {
             identity = await ResolveVideoIdentityAsync(bvid, part, cookieHeader, cancellationToken);
+            probe?.Invoke("identity: view");
         }
         catch (HttpRequestException viewError)
         {
             // view hay bị chặn 412 trong khi pagelist/archive-stat thường mở:
             // đi đường vòng lấy cid/aid, giữ nguyên lỗi gốc để báo rõ.
+            probe?.Invoke($"identity: view HTTP {(int?)viewError.StatusCode}, thử đường vòng");
             try
             {
                 identity = await ResolveVideoIdentityFallbackAsync(bvid, part, cookieHeader, cancellationToken);
+                probe?.Invoke($"identity: fallback aid={identity.Aid} cid={identity.Cid}");
             }
-            catch
+            catch (Exception fallbackError)
             {
+                probe?.Invoke("identity: fallback lỗi: " + Compact(fallbackError.GetBaseException().Message));
                 throw new HttpRequestException(
                     $"Bilibili subtitle API HTTP {(int?)viewError.StatusCode} (bước lấy mã video view).", null, viewError.StatusCode);
             }
@@ -75,16 +80,20 @@ public sealed partial class BilibiliSubtitleClient
                 bvid,
                 cancellationToken);
             AddLegacyTracks(legacy.RootElement, tracks, seen);
+            probe?.Invoke($"legacy player/v2: {tracks.Count} track");
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception)
+        catch (Exception error)
         {
             // Metadata remains usable; the authenticated binary endpoint below can
             // still recover an AI caption track when available.
+            probe?.Invoke("legacy player/v2 lỗi: " + Compact(error.GetBaseException().Message));
         }
 
         var hasAi = tracks.Any(track => track.Ai);
-        if (!hasAi && ContainsCookie(cookieHeader, "SESSDATA"))
+        var hasSession = ContainsCookie(cookieHeader, "SESSDATA");
+        probe?.Invoke($"web/view: hasAi={hasAi} hasSession={hasSession}");
+        if (!hasAi && hasSession)
         {
             var context = Uri.EscapeDataString("{\"video_type\":1}");
             var uri = new Uri(
@@ -93,16 +102,19 @@ public sealed partial class BilibiliSubtitleClient
             try
             {
                 var payload = await SendBytesAsync(uri, cookieHeader, bvid, cancellationToken);
+                var before = tracks.Count;
                 foreach (var raw in ParseWebSubtitleTracks(payload))
                 {
                     if (!raw.Language.StartsWith("ai-", StringComparison.OrdinalIgnoreCase)) continue;
                     AddTrack(tracks, seen, raw.Language, raw.DisplayName, ai: true, raw.Url);
                 }
+                probe?.Invoke($"web/view: +{tracks.Count - before} AI track ({payload.Length} bytes)");
             }
             catch (OperationCanceledException) { throw; }
-            catch (Exception)
+            catch (Exception error)
             {
                 // AI subtitle absence/failure is optional and must not block media.
+                probe?.Invoke("web/view lỗi: " + Compact(error.GetBaseException().Message));
             }
         }
 

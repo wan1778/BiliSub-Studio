@@ -104,9 +104,10 @@ public sealed class YtDlpResolver
 
             // Prefer Bilibili's player metadata because yt-dlp can expose zero tracks
             // for videos whose signed-in player still offers normal or AI captions.
+            var probeLines = new List<string>();
             try
             {
-                var nativeTracks = await _subtitles.GetTracksAsync(url, info.Id, cookieFile, cancellationToken);
+                var nativeTracks = await _subtitles.GetTracksAsync(url, info.Id, cookieFile, cancellationToken, probeLines.Add);
                 foreach (var track in nativeTracks)
                 {
                     if (seen.Add(track.Language)) tracks.Add(track);
@@ -121,6 +122,8 @@ public sealed class YtDlpResolver
                     && httpError.StatusCode == (HttpStatusCode)412
                     ? "Bilibili chặn lấy phụ đề (mã 412): thường do chưa đăng nhập hoặc hết phiên — hãy đăng nhập lại tài khoản Bilibili trong app rồi dán link lại."
                     : "Không đọc được phụ đề trực tiếp từ Bilibili: " + Compact(error.GetBaseException().Message);
+                if (probeLines.Count > 0)
+                    subtitleWarning += " · Chi tiết: " + string.Join(" · ", probeLines);
             }
 
             // yt-dlp remains a compatibility source. Native Bilibili tracks win on a
