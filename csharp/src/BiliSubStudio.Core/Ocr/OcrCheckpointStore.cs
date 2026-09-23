@@ -345,6 +345,22 @@ internal sealed class OcrCheckpointStore
         }
     }
 
+    // Dọn file .bak sau khi quét xong sạch (23/09): backup chống crash chỉ cần
+    // lúc đang quét (mất điện/tắt đột ngột); xong rồi thì file chính đã đủ,
+    // giữ .bak chỉ tốn đĩa (vài chục MB). Best-effort tuyệt đối: không bao giờ
+    // throw, không đụng file chính/sổ tay. Tạm dừng/hủy/lỗi thì KHÔNG gọi.
+    public async Task DeleteBackupAsync(OcrScanRequest request, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var key = await KeyAsync(request, Schema, cancellationToken);
+            TryDelete(Path.Combine(DirectoryPath, key + ".json.bak"));
+        }
+        catch
+        {
+        }
+    }
+
     public async Task<OcrParallelCheckpoint> NewAsync(OcrScanRequest request, int parallelism, CancellationToken cancellationToken)
     {
         var scanMode = ModeFor(request.Mode, request.Sensitivity);

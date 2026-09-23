@@ -648,7 +648,14 @@ public sealed class BiliSubApplication : IAsyncDisposable
             // thời gian (chữ đứng yên = keep, di chuyển = drop).
             await _configStore.UpdateAsync(config => config with { OcrDevice = request.Device }, job.CancellationToken);
             var result = await _ocrScanner.RunAsync(job, request, startMode, resumeRegionOverride);
-            if (!result.Paused) job.Finish(null, $"Đã quét xong: {result.Cues.Count} câu · {result.RealtimeSpeed:0.0}× realtime", result);
+            if (!result.Paused)
+            {
+                // Quét xong sạch: dọn file .bak chống crash cho gọn đĩa (giữ
+                // checkpoint chính + sổ tay). Best-effort, không chặn hoàn tất.
+                try { await _ocrScanner.DeleteCheckpointBackupAsync(request, CancellationToken.None); }
+                catch { }
+                job.Finish(null, $"Đã quét xong: {result.Cues.Count} câu · {result.RealtimeSpeed:0.0}× realtime", result);
+            }
         });
         return job.Id;
     }

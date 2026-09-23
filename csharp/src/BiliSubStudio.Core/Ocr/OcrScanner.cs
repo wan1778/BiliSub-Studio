@@ -855,6 +855,7 @@ public sealed class OcrScanner
 
     public Task<OcrCheckpointInfo> InspectCheckpointAsync(OcrScanRequest request, CancellationToken cancellationToken) => _checkpoints.InspectAsync(request, cancellationToken);
     public Task RemoveCheckpointAsync(OcrScanRequest request, CancellationToken cancellationToken) => _checkpoints.RemoveAsync(request, cancellationToken);
+    public Task DeleteCheckpointBackupAsync(OcrScanRequest request, CancellationToken cancellationToken) => _checkpoints.DeleteBackupAsync(request, cancellationToken);
     public Task<IReadOnlyList<OcrCueExclusion>> LoadExclusionsAsync(OcrScanRequest request, CancellationToken cancellationToken) => _checkpoints.LoadExclusionsAsync(request, cancellationToken);
     public Task<int> SaveExclusionsAsync(OcrScanRequest request, IReadOnlyList<OcrCueExclusion> additions, CancellationToken cancellationToken) => _checkpoints.SaveExclusionsAsync(request, additions, cancellationToken);
     public Task<int> RemoveExclusionsAsync(OcrScanRequest request, IReadOnlyList<OcrCueExclusion> removals, CancellationToken cancellationToken) => _checkpoints.RemoveExclusionsAsync(request, removals, cancellationToken);
