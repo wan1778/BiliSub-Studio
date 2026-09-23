@@ -667,6 +667,9 @@ public sealed partial class OcrPage : Page
 
     private void SourceBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        // Sự kiện nổ ngay trong lúc trang đang dựng (SelectedIndex mặc định):
+        // nút bấm chưa có nên bỏ qua, mặc định vốn là mắt đọc.
+        if (ScanButton is null || TelemetryText is null) return;
         if (_jobId is not null) return;
         if (!string.Equals(Selected(SourceBox), "listen", StringComparison.Ordinal))
         {
