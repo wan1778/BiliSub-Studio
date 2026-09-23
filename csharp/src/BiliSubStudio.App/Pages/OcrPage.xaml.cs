@@ -465,13 +465,13 @@ public sealed partial class OcrPage : Page
     }
 
     // Nghe riêng (Whisper-only): hiện trực tiếp % + giờ + chữ từ checkpoint,
-    // dừng giữ sổ dở, chạy lại tự nối. Xong thì copy sub ra cùng chỗ sub OCR.
-    private async Task StartListenAsync()
+    // dừng giữ sổ dở, nút Nghe lại từ đầu (RestartButton) xóa sổ nghe lại;
+    // Hủy và xóa khi idle cũng xóa sạch. Xong thì copy sub ra chỗ sub OCR.
+    private async Task StartListenAsync(bool fromScratch = false)
     {
         if (_path is null || _media is null || !(_media.Duration > 0) || _jobId is not null) return;
         var projectId = TryListenProjectId();
         if (projectId is null) { StatusText.Text = "Video chưa hợp lệ để nghe."; return; }
-        var fromScratch = string.Equals(ScanButton.Content?.ToString(), "Nghe lại từ đầu", StringComparison.Ordinal);
         if (fromScratch) _application.RemoveOcrListenCheckpoint(projectId);
         var heardBefore = fromScratch ? [] : _application.ReadOcrListenCues(projectId);
         var resuming = !fromScratch
@@ -559,7 +559,7 @@ public sealed partial class OcrPage : Page
                 if (cancelled)
                 {
                     ScanButton.Content = "Nghe tiếp";
-                    StatusText.Text = "Đã dừng nghe, chữ đã nghe được giữ lại. Bấm Nghe tiếp để nối.";
+                    StatusText.Text = "Đã dừng nghe, chữ đã nghe được giữ lại. Bấm Nghe tiếp để nối, Nghe lại từ đầu để nghe mới.";
                 }
                 else if (failed)
                 {
@@ -589,7 +589,7 @@ public sealed partial class OcrPage : Page
                     {
                         StatusText.Text = "Nghe xong nhưng lưu SRT lỗi: " + error.Message;
                     }
-                    ScanButton.Content = "Nghe lại từ đầu";
+                    ScanButton.Content = "Nghe tiếp";
                 }
                 ApplyListenIdleControls();
                 break;
@@ -611,8 +611,6 @@ public sealed partial class OcrPage : Page
     {
         PickVideoButton.IsEnabled = true;
         AutoSaveFolderButton.IsEnabled = true;
-        CancelButton.IsEnabled = false;
-        CancelButton.Content = "Hủy";
         PauseButton.IsEnabled = false;
         SourceBox.IsEnabled = true;
         DeviceBox.IsEnabled = false;
@@ -621,8 +619,13 @@ public sealed partial class OcrPage : Page
         PrepareOcrButton.IsEnabled = false;
         TestFrameButton.IsEnabled = false;
         SelectRegionButton.IsEnabled = false;
-        RestartButton.Visibility = Visibility.Collapsed;
         ScanButton.IsEnabled = true;
+        // Nút nghe chế độ nghe luôn hiện: Nghe lại từ đầu (xóa sổ) + Hủy và xóa.
+        RestartButton.Content = "Nghe lại từ đầu";
+        RestartButton.Visibility = Visibility.Visible;
+        RestartButton.IsEnabled = true;
+        CancelButton.IsEnabled = _cues.Count > 0;
+        CancelButton.Content = _cues.Count > 0 ? "Hủy và xóa" : "Hủy";
     }
 
     private async Task CancelListenAsync()
@@ -665,6 +668,40 @@ public sealed partial class OcrPage : Page
         }
     }
 
+    // Hủy và xóa (idle): xóa sổ nghe + sub đã lưu, dọn bảng, về trạng thái chưa nghe.
+    private async Task CancelListenDeleteAsync()
+    {
+        var projectId = TryListenProjectId();
+        if (projectId is null) return;
+        try
+        {
+            CancelButton.IsEnabled = false;
+            _application.RemoveOcrListenCheckpoint(projectId);
+            _liveCues.Clear();
+            _cues = [];
+            _visibleCues = [];
+            _authoritative = false;
+            _manualDeletes.Clear();
+            _cueViewDirty = false;
+            CueList.Items.Clear();
+            CueCountText.Text = "0 đoạn";
+            Progress.Value = 0;
+            TelemetryText.Text = string.Empty;
+            ExportButton.IsEnabled = false;
+            _listenProjectId = projectId;
+            ScanButton.Content = "Nghe từ đầu";
+            RestartButton.IsEnabled = true;
+            CancelButton.Content = "Hủy";
+            StatusText.Text = "Đã xóa sạch chữ đã nghe và sub đã lưu. Bấm Nghe từ đầu để nghe lại.";
+        }
+        catch (Exception error)
+        {
+            StatusText.Text = error.Message;
+            CancelButton.IsEnabled = true;
+        }
+        await Task.CompletedTask;
+    }
+
     private void SourceBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         // Sự kiện nổ ngay trong lúc trang đang dựng (SelectedIndex mặc định):
@@ -685,18 +722,41 @@ public sealed partial class OcrPage : Page
         PrepareOcrButton.IsEnabled = false;
         TestFrameButton.IsEnabled = false;
         SelectRegionButton.IsEnabled = false;
-        RestartButton.Visibility = Visibility.Collapsed;
         PauseButton.IsEnabled = false;
         var projectId = TryListenProjectId();
         _listenProjectId = projectId;
         var heard = projectId is not null && _application.ReadOcrListenCues(projectId).Count > 0;
         ScanButton.Content = heard ? "Nghe tiếp" : "Nghe từ đầu";
+        RestartButton.Content = "Nghe lại từ đầu";
+        RestartButton.Visibility = Visibility.Visible;
+        RestartButton.IsEnabled = true;
+        CancelButton.IsEnabled = heard;
+        CancelButton.Content = heard ? "Hủy và xóa" : "Hủy";
         TelemetryText.Text = "Chế độ tai nghe: chỉ chạy Whisper lấy lời thoại rồi xuất SRT, không quét mắt.";
     }
 
     private async void Restart_Click(object sender, RoutedEventArgs e)
     {
         if (_path is null || _media is null || _jobId is not null) return;
+        if (string.Equals(Selected(SourceBox), "listen", StringComparison.Ordinal))
+        {
+            // Nghe lại từ đầu: xóa sổ nghe + sub đã lưu, nghe lại thật sự mới.
+            var projectId = TryListenProjectId();
+            if (projectId is null) return;
+            try
+            {
+                RestartButton.IsEnabled = false;
+                ScanButton.IsEnabled = false;
+                _application.RemoveOcrListenCheckpoint(projectId);
+                await StartListenAsync(fromScratch: true);
+            }
+            catch (Exception error)
+            {
+                RestartButton.IsEnabled = true;
+                StatusText.Text = error.Message;
+            }
+            return;
+        }
         var request = _checkpointRequest ?? BuildRequest();
         try
         {
@@ -891,6 +951,11 @@ public sealed partial class OcrPage : Page
         if (_listening)
         {
             await CancelListenAsync();
+            return;
+        }
+        if (string.Equals(Selected(SourceBox), "listen", StringComparison.Ordinal))
+        {
+            await CancelListenDeleteAsync();
             return;
         }
         var request = _activeRequest ?? _checkpointRequest;
