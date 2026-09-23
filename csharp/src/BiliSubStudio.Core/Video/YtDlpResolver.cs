@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using BiliSubStudio.Core.Processes;
@@ -114,7 +115,12 @@ public sealed class YtDlpResolver
             catch (OperationCanceledException) { throw; }
             catch (Exception error)
             {
-                subtitleWarning = "Không đọc được phụ đề trực tiếp từ Bilibili: " + Compact(error.GetBaseException().Message);
+                // 412 là Bilibili chặn (chưa đăng nhập/hết phiên/khóa IP): nói
+                // rõ để user đăng nhập lại thay vì mò.
+                subtitleWarning = error.GetBaseException() is HttpRequestException httpError
+                    && httpError.StatusCode == (HttpStatusCode)412
+                    ? "Bilibili chặn lấy phụ đề (mã 412): thường do chưa đăng nhập hoặc hết phiên — hãy đăng nhập lại tài khoản Bilibili trong app rồi dán link lại."
+                    : "Không đọc được phụ đề trực tiếp từ Bilibili: " + Compact(error.GetBaseException().Message);
             }
 
             // yt-dlp remains a compatibility source. Native Bilibili tracks win on a

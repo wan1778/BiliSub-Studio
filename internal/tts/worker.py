@@ -54,6 +54,9 @@ MAX_PREFERRED_RATE_SCALE = 1.0
 PACKAGES = {"piper-tts": "1.7.0", "onnxruntime": "1.22.1", "vietnormalizer": "0.2.3", "numpy": "2.5.2"}
 MIN_SPEECH_FRAMES = round(.10 * SAMPLE_RATE)
 MIN_SPEECH_FRAMES_PER_UNIT = round(.07 * SAMPLE_RATE)
+# Windows: child FFmpeg must never flash a console window (thousands of atempo
+# calls per video). Zero elsewhere (creationflags is ignored off Windows).
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 # Vietnamese-first pronunciation overrides for the third-party dictionary.
 # These words are ordinary Vietnamese vocabulary that the packaged dictionary
@@ -501,7 +504,8 @@ def apply_atempo(ffmpeg: Path, source_path: Path, output_path: Path, factor: flo
         [str(ffmpeg), "-hide_banner", "-loglevel", "error", "-y", "-i", str(source_path),
          "-af", atempo_filter(factor), "-ac", "1", "-ar", str(SAMPLE_RATE),
          "-c:a", "pcm_s16le", str(temporary)],
-        capture_output=True, text=True, encoding="utf-8", errors="replace")
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        creationflags=_NO_WINDOW)
     if completed.returncode != 0 or not temporary.is_file():
         temporary.unlink(missing_ok=True)
         raise RuntimeError("FFmpeg atempo failed: " + completed.stderr.strip()[-1000:])
@@ -961,7 +965,8 @@ def build_master(ffmpeg: Path, clips: list[dict], duration: float, run_root: Pat
             [str(ffmpeg), "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
              "-f", "s16le", "-ar", str(SAMPLE_RATE), "-ac", "1", "-i", "pipe:0",
              "-c:a", "flac", "-compression_level", "5", str(temporary)],
-            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=error_log)
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=error_log,
+            creationflags=_NO_WINDOW)
         try:
             for block_start in range(0, total_samples, block_size):
                 block_end = min(total_samples, block_start + block_size)
