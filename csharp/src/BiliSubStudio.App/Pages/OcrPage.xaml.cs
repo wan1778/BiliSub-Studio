@@ -1303,8 +1303,17 @@ public sealed partial class OcrPage : Page
             : $"{rows.Count} câu";
         // Auto-follow: chỉ scroll khi có cue mới VÀ user đang ở cuối. User scroll lên xem
         // cue cũ => giữ nguyên vị trí; quay lại gần cuối => ViewChanged bật follow, resume.
+        // Cuộn là việc trang trí: kẹt layout thì bỏ qua, không được gãy app.
         if (appended && _userAtEnd && CueList.Items.Count > 0)
-            CueList.ScrollIntoView(CueList.Items[CueList.Items.Count - 1]);
+        {
+            try
+            {
+                CueList.ScrollIntoView(CueList.Items[CueList.Items.Count - 1]);
+            }
+            catch
+            {
+            }
+        }
         SyncCueSelection(Timeline.Value);
         UpdateManualEditButtons();
     }
@@ -1699,23 +1708,37 @@ public sealed partial class OcrPage : Page
 
     private void SyncCueSelection(double seconds)
     {
-        if (_visibleCues.Count == 0) return;
-        var index = -1;
-        for (var i = 0; i < _visibleCues.Count; i++)
+        // Đồng bộ highlight theo timeline là việc trang trí: kẹt layout thì bỏ
+        // qua, không được gãy app.
+        try
         {
-            if (seconds >= _visibleCues[i].Start && seconds <= _visibleCues[i].End)
+            if (_visibleCues.Count == 0) return;
+            var index = -1;
+            for (var i = 0; i < _visibleCues.Count; i++)
             {
-                index = i;
-                break;
+                if (seconds >= _visibleCues[i].Start && seconds <= _visibleCues[i].End)
+                {
+                    index = i;
+                    break;
+                }
+            }
+            if (CueList.SelectedIndex == index) return;
+            _syncingCue = true;
+            try
+            {
+                CueList.SelectedIndex = index;
+                // Selection vẫn bám timeline, nhưng chỉ scroll khi đang follow cuối —
+                // user scroll lên xem cue cũ thì highlight di chuyển mà không bị kéo xuống.
+                if (index >= 0 && _userAtEnd) CueList.ScrollIntoView(CueList.Items[index]);
+            }
+            finally
+            {
+                _syncingCue = false;
             }
         }
-        if (CueList.SelectedIndex == index) return;
-        _syncingCue = true;
-        CueList.SelectedIndex = index;
-        // Selection vẫn bám timeline, nhưng chỉ scroll khi đang follow cuối —
-        // user scroll lên xem cue cũ thì highlight di chuyển mà không bị kéo xuống.
-        if (index >= 0 && _userAtEnd) CueList.ScrollIntoView(CueList.Items[index]);
-        _syncingCue = false;
+        catch
+        {
+        }
     }
 
     private static string FormatClock(double seconds)

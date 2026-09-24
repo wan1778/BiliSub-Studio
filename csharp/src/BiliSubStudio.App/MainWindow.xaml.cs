@@ -32,7 +32,9 @@ public sealed partial class MainWindow : Window
     private bool _closing;
     private int _errorCount;
     private bool _navigating;
+    private bool _resyncingNavigation;
     private string? _pendingNavigationTag;
+    private int _navigationRetries;
 
     public MainWindow()
     {
@@ -242,23 +244,33 @@ public sealed partial class MainWindow : Window
 
     private void Navigation_SelectionChanged(Microsoft.UI.Xaml.Controls.NavigationView sender, Microsoft.UI.Xaml.Controls.NavigationViewSelectionChangedEventArgs args)
     {
+        // Bỏ qua sự kiện do máy tự trả thanh chọn về (resync): không phải ý user.
+        if (_resyncingNavigation) return;
         if (args.SelectedItemContainer?.Tag is not string tag || !_pages.TryGetValue(tag, out var page)) return;
         if (ReferenceEquals(ContentFrame.Content, page) && !_navigating) return;
-        if (_navigating)
-        {
-            // Đang đổi trang dở (trang cũ nặng, dỡ chưa xong): không chen ngang,
-            // ghi nhớ tab mới nhất, đổi xong sẽ qua đó.
-            _pendingNavigationTag = tag;
-            return;
-        }
+        // Tab mới nhất thắng; đổi xong mới qua đó, không chen ngang lúc đang dỡ trang.
+        _pendingNavigationTag = tag;
+        _navigationRetries = 0;
+        if (_navigating) return;
         _navigating = true;
         // Đổi trang sau 1 nhịp để khung hình cũ dỡ xong hẳn rồi mới lắp trang mới;
         // lắp ngay trong nhịp bấm chính là chỗ hay bị thư viện màn hình hủy (E_ABORT).
-        DispatcherQueue.TryEnqueue(() => SwitchContent(tag, page, retried: false));
+        DispatcherQueue.TryEnqueue(ProcessPendingNavigation);
     }
 
-    private void SwitchContent(string tag, UIElement page, bool retried)
+    private void ProcessPendingNavigation()
     {
+        if (_pendingNavigationTag is not string tag || !_pages.TryGetValue(tag, out var page))
+        {
+            _navigating = false;
+            return;
+        }
+        if (ReferenceEquals(ContentFrame.Content, page))
+        {
+            _pendingNavigationTag = null;
+            _navigating = false;
+            return;
+        }
         try
         {
             ContentFrame.Content = page;
@@ -266,51 +278,65 @@ public sealed partial class MainWindow : Window
         catch (Exception error)
         {
             const int operationAborted = unchecked((int)0x80004004);
-            if (!retried && error.HResult == operationAborted)
+            // Khung hình cũ chưa dỡ xong: lùi lại thử sau ~120ms cho cây hình ổn
+            // định (tối đa 3 lần) thay vì chen ngay nhịp sau rồi gãy tiếp.
+            if (error.HResult == operationAborted && _navigationRetries < 3)
             {
-                // Khung hình cũ vẫn chưa dỡ xong: thử lại 1 lần sau 1 nhịp nữa.
-                DispatcherQueue.TryEnqueue(() => SwitchContent(tag, page, retried: true));
+                _navigationRetries++;
+                var timer = DispatcherQueue.CreateTimer();
+                timer.Interval = TimeSpan.FromMilliseconds(120);
+                timer.Tick += (_, _) => { timer.Stop(); ProcessPendingNavigation(); };
+                timer.Start();
                 return;
             }
-            _navigating = false;
-            _pendingNavigationTag = null;
             var detail = string.IsNullOrWhiteSpace(error.Message)
                 ? $"{error.GetType().Name} (mã 0x{error.HResult:X8})"
                 : error.Message;
             _globalLog.Error("Điều hướng", $"Chuyển sang '{tag}' lỗi: {detail}");
             StartupDiagnostics.WriteException("navigation-failed", error);
-            // Trả thanh điều hướng về đúng trang đang hiện để khỏi kẹt dở dang.
-            SyncNavigationSelection();
-            return;
+            _pendingNavigationTag = null;
         }
         _navigating = false;
+        // Tab bấm dồn trong lúc đổi: qua nốt tab mới nhất, xong mới đồng bộ thanh chọn.
         if (_pendingNavigationTag is { } pending
             && !string.Equals(pending, tag, StringComparison.Ordinal)
-            && _pages.TryGetValue(pending, out var pendingPage))
+            && _pages.ContainsKey(pending))
         {
-            _pendingNavigationTag = null;
             _navigating = true;
-            DispatcherQueue.TryEnqueue(() => SwitchContent(pending, pendingPage, retried: false));
+            DispatcherQueue.TryEnqueue(ProcessPendingNavigation);
+            return;
         }
-        else
-        {
-            _pendingNavigationTag = null;
-        }
+        _pendingNavigationTag = null;
+        SyncNavigationSelection();
     }
 
     private void SyncNavigationSelection()
     {
-        foreach (var collection in new[] { Navigation.MenuItems, Navigation.FooterMenuItems })
+        // Chỉ sửa hiển thị thanh chọn cho khớp trang đang hiện; chỗ này tuyệt đối
+        // không được nổ (nổ ở đây từng kéo gãy native ngay sau đó).
+        try
         {
-            foreach (var item in collection.OfType<NavigationViewItem>())
+            _resyncingNavigation = true;
+            foreach (var collection in new[] { Navigation.MenuItems, Navigation.FooterMenuItems })
             {
-                if (item.Tag is string itemTag && _pages.TryGetValue(itemTag, out var page)
-                    && ReferenceEquals(ContentFrame.Content, page))
+                foreach (var item in collection.OfType<NavigationViewItem>())
                 {
-                    Navigation.SelectedItem = item;
-                    return;
+                    if (item.Tag is string itemTag && _pages.TryGetValue(itemTag, out var page)
+                        && ReferenceEquals(ContentFrame.Content, page))
+                    {
+                        if (!ReferenceEquals(Navigation.SelectedItem, item))
+                            Navigation.SelectedItem = item;
+                        return;
+                    }
                 }
             }
+        }
+        catch
+        {
+        }
+        finally
+        {
+            _resyncingNavigation = false;
         }
     }
 
@@ -332,7 +358,14 @@ public sealed partial class MainWindow : Window
 
         GlobalLogEntries.Add(new GlobalLogItem(entry));
         while (GlobalLogEntries.Count > 500) GlobalLogEntries.RemoveAt(0);
-        if (GlobalLogEntries.Count > 0) GlobalLogList.ScrollIntoView(GlobalLogEntries[^1]);
+        // Cuộn list là việc trang trí: kẹt layout (E_ABORT) thì bỏ qua, không được gãy app.
+        try
+        {
+            if (GlobalLogEntries.Count > 0) GlobalLogList.ScrollIntoView(GlobalLogEntries[^1]);
+        }
+        catch
+        {
+        }
 
         if (entry.Level == AppLogLevel.Error)
         {
