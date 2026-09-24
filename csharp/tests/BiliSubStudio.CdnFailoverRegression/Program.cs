@@ -24,8 +24,11 @@ ResolvedStream Primary(long generation) => new(
     generation,
     new[]
     {
+        // Single known endpoint on purpose: the P1 startup race only runs
+        // with 2+ endpoints, and would otherwise steal this failover scenario
+        // by starting on backup. Rotation to backup still arrives through the
+        // refresh callback below, preserving the exact-offset assertions.
         "https://primary-cdn.fixture/media/video-30064.m4s?token=primary-secret",
-        "https://backup-cdn.fixture/media/video-30064.m4s?token=backup-secret",
     },
     0);
 
