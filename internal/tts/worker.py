@@ -37,6 +37,9 @@ MIN_ACTUAL_SPEED = 1.0
 MAX_ACTUAL_SPEED = 100.0
 FIT_HEADROOM = .995
 TEMPO_RETRY_MARGIN = 1.001
+# Smallest representable speedup: just above natural speed so a passthrough
+# attempt still records tempo_factor > 1 (required by result validation).
+_MIN_TEMPO_FACTOR = 1.000001
 MIN_GROUP_RATE_SCALE = MIN_RATE_SCALE
 MAX_GROUP_ACTUAL_SPEED = MAX_ACTUAL_SPEED
 # A sentence group may share only a continuously visible subtitle interval.
@@ -485,8 +488,14 @@ def trim_trailing_silence(source_path: Path, output_path: Path, guard_frames: in
 
 
 def atempo_filter(factor: float) -> str:
-    if not math.isfinite(factor) or factor <= 1:
-        raise ValueError("FFmpeg tempo factor must be greater than one")
+    # Floor, never raise (2026-09-24): a factor at/below natural speed means
+    # "no speedup", not an error. Raising here used to nuke the whole sentence
+    # group into silence when the retry update dipped below 1.0; a passthrough
+    # lets the tiling/speed checks decide and the loop keep converging.
+    # The floor stays just above 1.0 so any recorded tempo ratio keeps passing
+    # the result validation (tempo_factor must exceed one).
+    if not math.isfinite(factor) or factor <= _MIN_TEMPO_FACTOR:
+        factor = _MIN_TEMPO_FACTOR
     stages = []
     remaining = factor
     while remaining > 2:
@@ -518,7 +527,7 @@ def tempo_fit_clip(ffmpeg: Path, source_path: Path, final_path: Path, target_fra
                    native_reference_frames: int, run_root: Path, key: str):
     input_frames = len(read_wav(source_path))
     desired_frames = max(1, math.floor(target_frames * FIT_HEADROOM))
-    factor = max(1.000001, input_frames / desired_frames * TEMPO_RETRY_MARGIN)
+    factor = max(_MIN_TEMPO_FACTOR, input_frames / desired_frames * TEMPO_RETRY_MARGIN)
     for attempt in range(1, MAX_TEMPO_ATTEMPTS + 1):
         tempo_path = run_root / f"{key}-tempo-{attempt}.wav"
         generated = apply_atempo(ffmpeg, source_path, tempo_path, factor)
@@ -611,6 +620,39 @@ def group_windows(cue_starts: list[int], cue_ends: list[int], retained: list[int
     return starts
 
 
+def _tiling_growth(cue_starts: list[int], cue_ends: list[int], retained: list[int]) -> float:
+    """Speedup needed so the tightest cascade packing fits the group end.
+
+    Returns 1.0 when the tiling already fits. Replicates the group_windows
+    cascade to measure the overflow, then asks the speech *after the last
+    silence gap* to absorb it: earlier speech is shielded by gaps (shrinking
+    it never moves the tail), so sizing by the grand total undershoots and
+    creeps 1% per attempt past the attempt budget. Capped per attempt; the
+    retry loop re-measures every round.
+    """
+    total = sum(retained)
+    if total <= 0:
+        return 1.0
+    cursor = cue_starts[0]
+    tail = 0
+    for index in range(len(retained)):
+        if cursor < cue_starts[index]:
+            cursor = cue_starts[index]
+            tail = 0
+        tail += retained[index]
+        cursor += retained[index]
+    overflow = cursor - cue_ends[-1]
+    if overflow <= 0 or tail <= 0:
+        return 1.0
+    room = tail - overflow
+    if room > 0:
+        return min(tail / room, 4.0)
+    room_total = total - overflow
+    if room_total > 0:
+        return min(total / room_total, 4.0)
+    return 2.0
+
+
 def synthesize_sentence_group(voice, cues: list[dict], texts: list[str], run_root: Path,
                               clip_root: Path, worker_sha: str, plan_path: Path, plan_key: str,
                               ffmpeg: Path, on_attempt):
@@ -669,7 +711,8 @@ def synthesize_sentence_group(voice, cues: list[dict], texts: list[str], run_roo
     tempo_used = False
     if selected is None:
         desired_frames = max(1, math.floor(group_frames * FIT_HEADROOM))
-        tempo_factor = max(1.000001, last_total_retained / desired_frames * TEMPO_RETRY_MARGIN)
+        tempo_factor = max(_MIN_TEMPO_FACTOR,
+                           last_total_retained / desired_frames * TEMPO_RETRY_MARGIN)
         for tempo_attempt in range(1, MAX_TEMPO_ATTEMPTS + 1):
             transformed = []
             for local_index, measurement in enumerate(measurements):
@@ -684,14 +727,34 @@ def synthesize_sentence_group(voice, cues: list[dict], texts: list[str], run_roo
                 })
             transformed_total = sum(item["retained"] for item in transformed)
             actual_speed = native_retained_frames / transformed_total
+            retained_list = [item["retained"] for item in transformed]
+            tiling = group_windows(cue_starts, cue_ends, retained_list)
             if (transformed_total <= group_frames and MIN_ACTUAL_SPEED <= actual_speed <= MAX_ACTUAL_SPEED
-                    and group_windows(cue_starts, cue_ends,
-                                      [item["retained"] for item in transformed]) is not None):
+                    and tiling is not None):
                 selected = (attempt, scale, transformed, actual_speed)
                 tempo_used = True
                 break
-            tempo_factor *= max(transformed_total / group_frames,
-                                MIN_ACTUAL_SPEED / max(actual_speed, 1e-9)) * TEMPO_RETRY_MARGIN
+            # Direction-aware retry (2026-09-24): the old update shrank the
+            # factor whenever the speech total fit, even when per-cue tiling
+            # overflowed across the group's internal gaps. That spiralled the
+            # factor below 1.0, atempo_filter raised ValueError, and the whole
+            # group fell back to silence. Overflow (total or tiling) or a
+            # sub-natural crawl must GROW the factor; ease back only when the
+            # tiling already fits but the speech is merely too fast. The floor
+            # keeps every attempt a valid speedup, never a slowdown.
+            if transformed_total > group_frames or tiling is None or actual_speed < MIN_ACTUAL_SPEED:
+                growth = max(transformed_total / max(group_frames, 1),
+                             MIN_ACTUAL_SPEED / max(actual_speed, 1e-9),
+                             _tiling_growth(cue_starts, cue_ends, retained_list),
+                             1.0 + 1e-3)
+                tempo_factor = max(_MIN_TEMPO_FACTOR,
+                                   tempo_factor * growth * TEMPO_RETRY_MARGIN)
+            else:
+                tempo_factor = max(_MIN_TEMPO_FACTOR,
+                                   tempo_factor
+                                   * max(transformed_total / max(group_frames, 1),
+                                         MIN_ACTUAL_SPEED / max(actual_speed, 1e-9))
+                                   * TEMPO_RETRY_MARGIN)
     if selected is None:
         raise RuntimeError(
             f"Nhóm câu {cues[0]['id']}..{cues[-1]['id']} không thể nén đủ nguyên lời vào timecode")
