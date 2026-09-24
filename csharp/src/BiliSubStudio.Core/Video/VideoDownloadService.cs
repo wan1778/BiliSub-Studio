@@ -248,6 +248,10 @@ public sealed class VideoDownloadService
             {
                 rangeError = error;
             }
+            // Stall = tuyến + refresh đã cạn mà không thêm byte nào: thử lại 1
+            // kết nối hay yt-dlp fallback cũng chỉ bò trên cùng mạng chết —
+            // fail nhanh với câu rõ ràng thay vì treo vô hạn.
+            catch (DownloadStalledException) { throw; }
             catch (Exception error)
             {
                 rangeError = error;
@@ -280,7 +284,7 @@ public sealed class VideoDownloadService
             }
 
             var rootMessage = rangeError?.GetBaseException().Message ?? "Không rõ lỗi Range.";
-            job.Warn($"Range {stream.Kind} thất bại sau CDN rotation + refresh + adaptive 1 kết nối; yt-dlp chỉ còn là fallback cuối: {rangeError?.Message} · gốc: {rootMessage}");
+            job.Warn(WithBilibiliSessionGuidance($"Range {stream.Kind} thất bại sau CDN rotation + refresh + adaptive 1 kết nối; yt-dlp chỉ còn là fallback cuối: {rangeError?.Message} · gốc: {rootMessage}"));
             RangeDownloadStatus fallbackStatus;
             lock (transportGate)
             {
@@ -437,7 +441,7 @@ public sealed class VideoDownloadService
             var result = await _processes.RunAsync(ytDlp, args, cancellationToken);
             if (result.ExitCode != 0)
             {
-                throw new InvalidOperationException($"yt-dlp fallback {stream.Kind}: {result.StandardError.Trim()}");
+                throw new InvalidOperationException($"yt-dlp fallback {stream.Kind}: {WithBilibiliSessionGuidance(result.StandardError.Trim())}");
             }
             var candidates = result.StandardOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries)
                 .Select(x => x.Trim())
@@ -505,6 +509,17 @@ public sealed class VideoDownloadService
         >= 1024 => $"{bytesPerSecond / 1024:0} KiB/s",
         _ => $"{bytesPerSecond:0} B/s",
     };
+
+    // Field 2026-09-24: luồng tải chết vì 412 (hết phiên Bilibili) nhưng message
+    // yt-dlp thô không nói user phải làm gì. Gắn hướng dẫn đúng 1 lần; message
+    // không dính 412 đi qua nguyên vẹn.
+    internal static string WithBilibiliSessionGuidance(string message)
+    {
+        if (string.IsNullOrEmpty(message) || !message.Contains("412", StringComparison.Ordinal)) return message;
+        const string guidance = "Bilibili chặn (mã 412): thường do hết phiên đăng nhập — hãy đăng nhập lại tài khoản Bilibili trong app rồi tải lại (phần đã tải được giữ lại để resume).";
+        if (message.Contains("đăng nhập lại", StringComparison.Ordinal)) return message;
+        return message + " · " + guidance;
+    }
 
     // Field 2026-09-06: output fallback hoàn chỉnh cũ (audio_fallback.m4a
     // thiếu 43,9 MB) nằm lại work dir; yt-dlp --no-overwrites sẽ tái dùng nó

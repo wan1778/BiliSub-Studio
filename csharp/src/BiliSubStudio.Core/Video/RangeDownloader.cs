@@ -11,11 +11,23 @@ public sealed class RangeNotSupportedException : IOException
     public RangeNotSupportedException(string message) : base(message) { }
 }
 
+// Field 2026-09-24: tuyến CDN chết hẳn nhưng không lỗi dứt khoát — worker quay
+// vòng retry/backoff/refresh mãi, UI bò 1/8 cả đêm. Hết StallTimeout mà không
+// thêm byte nào thì fail nhanh với câu rõ ràng thay vì treo vô hạn.
+public sealed class DownloadStalledException : IOException
+{
+    public DownloadStalledException(string message) : base(message) { }
+}
+
 public sealed class RangeDownloader
 {
     // Proven field-stable size from the legacy 3.9.2/3.9.4 downloader. Larger 32 MiB
     // requests regress on Bilibili CDNs that terminate a Range body early.
     public const long DefaultChunkSize = 4L * 1024 * 1024;
+    // Zero byte tiến triển trong từng này thì coi như tuyến đã chết (kể cả khi
+    // worker vẫn quay retry): fail nhanh để user tải lại sau thay vì bò vô hạn.
+    // Chỉ tính đứng yên tuyệt đối — rỉ chậm vẫn là tiến triển, do rotation xử lý.
+    public static readonly TimeSpan DefaultStallTimeout = TimeSpan.FromMinutes(10);
     private const int MaxSegmentAttempts = 32;
     private const int MaxProbeAttempts = 6;
     private const int ManifestVersion = 2;
@@ -30,7 +42,8 @@ public sealed class RangeDownloader
         int concurrency,
         Func<long, CancellationToken, Task<ResolvedStream>>? refresh,
         Action<RangeDownloadStatus>? status,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        TimeSpan? stallTimeout = null)
     {
         if (string.IsNullOrWhiteSpace(original.Url)) throw new ArgumentException("Stream URL rỗng.", nameof(original));
         concurrency = Math.Clamp(concurrency, 1, 8);
@@ -128,11 +141,58 @@ public sealed class RangeDownloader
         var active = 0;
         var inFlight = new ConcurrentDictionary<int, long>();
         var queue = new ConcurrentQueue<Segment>(segments.Where(x => !completed.ContainsKey(x.Index)));
+        var lastRefreshUtc = DateTime.MinValue;
+        // Stall watchdog: high-water chỉ tiến (thụt lùi sau failure không tính
+        // là tiến triển). Rỉ chậm vẫn gia hạn — chỉ đứng yên tuyệt đối mới nổ.
+        var progressGate = new object();
+        var highWaterBytes = committedBytes;
+        var lastAdvanceUtc = DateTime.UtcNow;
+        var stallLimit = stallTimeout ?? DefaultStallTimeout;
+        if (stallLimit <= TimeSpan.Zero) stallLimit = DefaultStallTimeout;
+        void NoteProgress(long bytesNow)
+        {
+            lock (progressGate)
+            {
+                if (bytesNow > highWaterBytes)
+                {
+                    highWaterBytes = bytesNow;
+                    lastAdvanceUtc = DateTime.UtcNow;
+                }
+            }
+        }
+        var stallFired = 0;
         using var manifestGate = new SemaphoreSlim(1, 1);
         using var currentGate = new SemaphoreSlim(1, 1);
         using var workerCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var workerToken = workerCancellation.Token;
         Exception? fatalTransportError = null;
+        using var stallMonitorCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var stallCheckInterval = TimeSpan.FromMilliseconds(Math.Clamp(stallLimit.TotalMilliseconds / 4, 50, 15_000));
+        var stallMonitor = Task.Run(async () =>
+        {
+            try
+            {
+                while (!stallMonitorCancellation.Token.IsCancellationRequested)
+                {
+                    await Task.Delay(stallCheckInterval, stallMonitorCancellation.Token);
+                    DateTime last;
+                    lock (progressGate) { last = lastAdvanceUtc; }
+                    if (DateTime.UtcNow - last > stallLimit
+                        && Interlocked.CompareExchange(ref stallFired, 1, 0) == 0)
+                    {
+                        workerCancellation.Cancel();
+                        return;
+                    }
+                }
+            }
+            catch (OperationCanceledException) { }
+        }, CancellationToken.None);
+        async Task StopStallMonitorAsync()
+        {
+            stallMonitorCancellation.Cancel();
+            try { await stallMonitor; }
+            catch (OperationCanceledException) { }
+        }
 
         async Task WorkerAsync()
         {
@@ -166,6 +226,7 @@ public sealed class RangeDownloader
                                     Interlocked.Add(ref networkBytes, delta);
                                     inFlight.AddOrUpdate(segment.Index, delta, (_, existing) => existing + delta);
                                     var bytesNow = Math.Min(total, Volatile.Read(ref committedBytes) + inFlight.Values.Sum());
+                                    NoteProgress(bytesNow);
                                     var speed = Math.Max(0, Volatile.Read(ref networkBytes) / Math.Max(0.001, stopwatch.Elapsed.TotalSeconds));
                                     status?.Invoke(new RangeDownloadStatus(true, Volatile.Read(ref active), concurrency, bytesNow, total, speed));
                                 }, workerToken);
@@ -181,6 +242,7 @@ public sealed class RangeDownloader
                                 Interlocked.Exchange(ref committedBytes, completed.Keys.Sum(index => segments[index].Length));
                                 Interlocked.Exchange(ref consecutiveShortBody, 0);
                                 await SaveManifestAsync(manifestPath, total, chunkSize, completed.Keys, workerToken);
+                                NoteProgress(Volatile.Read(ref committedBytes));
                             }
                             finally { manifestGate.Release(); }
                             last = null;
@@ -228,16 +290,35 @@ public sealed class RangeDownloader
                             // same generation-guarded rotation instead of waiting it out.
                             var forceRotation = shortBody
                                 && Volatile.Read(ref consecutiveShortBody) >= ConsecutiveShortBodyRotationThreshold;
-                            if (refresh is not null && (immediateRefresh || forceRotation || (weakProgressFailures > 0 && weakProgressFailures % 2 == 0)))
+                            // Refresh chạy NGOÀI currentGate: giữ gate suốt yt-dlp
+                            // refetch làm mọi worker xếp hàng (kẹt 1/8). Check +
+                            // stamp cooldown trong gate; publish chỉ khi generation
+                            // còn nguyên (worker khác thắng thì bản này bỏ).
+                            var wantsRefresh = refresh is not null
+                                && (immediateRefresh || forceRotation || (weakProgressFailures > 0 && weakProgressFailures % 2 == 0));
+                            var refreshDue = false;
+                            await currentGate.WaitAsync(workerToken);
+                            try
                             {
+                                if (wantsRefresh && current.Generation == stream.Generation
+                                    && ShouldRefreshNow(lastRefreshUtc, DateTime.UtcNow))
+                                {
+                                    lastRefreshUtc = DateTime.UtcNow;
+                                    refreshDue = true;
+                                }
+                            }
+                            finally { currentGate.Release(); }
+                            if (refreshDue && refresh is not null)
+                            {
+                                var fresh = await refresh(stream.Generation, workerToken);
                                 await currentGate.WaitAsync(workerToken);
                                 try
                                 {
                                     if (current.Generation == stream.Generation)
                                     {
-                                        current = await refresh(stream.Generation, workerToken);
+                                        current = fresh;
+                                        Interlocked.Exchange(ref consecutiveShortBody, 0);
                                     }
-                                    Interlocked.Exchange(ref consecutiveShortBody, 0);
                                 }
                                 finally { currentGate.Release(); }
                             }
@@ -266,10 +347,20 @@ public sealed class RangeDownloader
             {
                 await Task.WhenAll(Enumerable.Range(0, Math.Min(concurrency, Math.Max(1, queue.Count))).Select(_ => WorkerAsync()));
             }
+            catch (OperationCanceledException) when (Volatile.Read(ref stallFired) == 1 && !cancellationToken.IsCancellationRequested)
+            {
+                // Stall watchdog nổ trước user cancel: tuyến chết hẳn dù worker
+                // vẫn quay retry. Fail nhanh với câu rõ ràng; resume giữ nguyên.
+                throw new DownloadStalledException(
+                    $"Tải đứng yên quá {(int)stallLimit.TotalMinutes} phút (không thêm byte nào) dù đã xoay CDN; " +
+                    "Bilibili/CDN có thể đang chặn hoặc nghẽn — hãy đăng nhập lại Bilibili rồi tải lại sau " +
+                    "(phần đã tải được giữ lại để resume).");
+            }
             catch (Exception) when (fatalTransportError is not null)
             {
                 throw fatalTransportError!;
             }
+            await StopStallMonitorAsync();
             if (completed.Count != segments.Count)
             {
                 throw new InvalidDataException("Resume manifest thiếu segment hoàn tất.");
@@ -282,6 +373,7 @@ public sealed class RangeDownloader
         }
         catch
         {
+            await StopStallMonitorAsync();
             DeleteFiles(segmentDirectory, "*.tmp");
             TryDelete(output + ".assembling.tmp");
             throw;
@@ -434,6 +526,16 @@ public sealed class RangeDownloader
     // partial progress (each attempt gains bytes, so the weak-progress path
     // below never fires); zero-gain failures keep rotating via that path.
     private const int ConsecutiveShortBodyRotationThreshold = 4;
+    // Field 2026-09-24: tuyến bệnh ném HttpRequestException liên tục, mỗi lỗi
+    // refetch playurl 1 lần (yt-dlp -J chục giây, đang 412/chập chờn) trong khi
+    // giữ currentGate → 7/8 worker xếp hàng sau gate, UI kẹt 1/8. Cooldown chặn
+    // storm: failure trong cửa sổ chỉ backoff thường, không refetch.
+    private static readonly TimeSpan RefreshCooldown = TimeSpan.FromSeconds(45);
+
+    // Pure decision seam for contract tests: first failure always refreshes,
+    // failures inside the cooldown window back off quietly instead.
+    internal static bool ShouldRefreshNow(DateTime lastRefreshUtc, DateTime now) =>
+        (now - lastRefreshUtc) >= RefreshCooldown;
 
     private async Task<ResolvedStream> RaceEndpointsAsync(
         ResolvedStream original, ResolvedStream current, CancellationToken cancellationToken)

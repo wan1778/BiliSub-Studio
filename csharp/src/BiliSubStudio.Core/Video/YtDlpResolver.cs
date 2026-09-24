@@ -147,6 +147,9 @@ public sealed class YtDlpResolver
         }
     }
 
+    private const int MaxResolveAttempts = 3;
+    private static readonly TimeSpan[] ResolveRetryDelays = [TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(5)];
+
     private async Task<YtDlpInfo> LoadInfoAsync(string url, string? cookieFile, CancellationToken cancellationToken)
     {
         var ytDlp = await _tools.EnsureYtDlpAsync(cancellationToken);
@@ -156,13 +159,53 @@ public sealed class YtDlpResolver
             args.AddRange(["--cookies", cookieFile]);
         }
         args.AddRange(["--ignore-config", "--no-playlist", "--skip-download", "--no-warnings", "-J", url.Trim()]);
-        var result = await _processes.RunAsync(ytDlp, args, cancellationToken);
-        if (result.ExitCode != 0)
+        // Field 2026-09-24: Bilibili reset/timeout thoáng qua (10054, read
+        // timeout) giết cả job dù thử lại là xong. Chỉ retry lỗi mạng nhất
+        // thời, tối đa 3 lượt với backoff 2s/5s; lỗi dứt khoát (412/403/404,
+        // video xóa/riêng tư) fail ngay để báo đúng bệnh.
+        Exception? last = null;
+        for (var attempt = 1; attempt <= MaxResolveAttempts; attempt++)
         {
-            throw new InvalidOperationException($"yt-dlp resolve: {Compact(result.StandardError)}");
+            cancellationToken.ThrowIfCancellationRequested();
+            var result = await _processes.RunAsync(ytDlp, args, cancellationToken);
+            if (result.ExitCode == 0)
+            {
+                return JsonSerializer.Deserialize<YtDlpInfo>(result.StandardOutput, JsonOptions)
+                    ?? throw new InvalidDataException("yt-dlp trả JSON rỗng.");
+            }
+            var message = Compact(result.StandardError);
+            last = new InvalidOperationException($"yt-dlp resolve: {message}");
+            if (attempt >= MaxResolveAttempts || !IsTransientResolveError(message)) break;
+            await Task.Delay(ResolveRetryDelays[attempt - 1], cancellationToken);
         }
-        return JsonSerializer.Deserialize<YtDlpInfo>(result.StandardOutput, JsonOptions)
-            ?? throw new InvalidDataException("yt-dlp trả JSON rỗng.");
+        throw last!;
+    }
+
+    // Pure classifier so the retry loop stays trivial: permanent failures
+    // (auth/WAF blocks, removed content) must surface immediately with their
+    // original message; only transport-level blips earn another attempt.
+    private static bool IsTransientResolveError(string message)
+    {
+        if (string.IsNullOrWhiteSpace(message)) return false;
+        if (message.Contains("HTTP Error 412", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("HTTP Error 403", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("HTTP Error 404", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("Private video", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("Video unavailable", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("has been removed", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("Login required", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("sign in to", StringComparison.OrdinalIgnoreCase))
+            return false;
+        return message.Contains("10054", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("connection aborted", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("connection reset", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("read timed out", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("timed out", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("timeout", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("TransportError", StringComparison.Ordinal)
+            || message.Contains("Temporary failure", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("urlopen error", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("Connection broken", StringComparison.OrdinalIgnoreCase);
     }
 
     private static void AddTracks(
