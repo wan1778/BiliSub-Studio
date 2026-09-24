@@ -1220,12 +1220,24 @@ def main() -> int:
                         voice, group_cues, group_texts, run_root, clip_root, worker_sha,
                         plan_path, plan_key, Path(options.ffmpeg), on_group_attempt)
                 except (ValueError, RuntimeError) as group_error:
-                    emit({"event": "notice", "code": "silence-fallback",
-                          "message": (f"Nhóm cue {group_indices[0] + 1}..{group_indices[-1] + 1} "
-                                      f"không nén vừa timecode ({group_error}); giữ im lặng, cần nghe lại.")})
-                    group_entries = [silence_entry(group_cues[pos], group_texts[pos], base_scale, 0,
-                                                   run_root, clip_root, worker_sha)
-                                     for pos in range(len(group_indices))]
+                    if resolved:
+                        # Nhóm không nén vừa nhưng từng câu lẻ đã có kết quả
+                        # riêng (đọc nhanh gắn cờ review, hoặc im riêng câu bất
+                        # khả thi): giữ lại thay vì câm lây cả nhóm. Mỗi entry
+                        # lẻ đã qua cùng validation với chế độ đọc đơn nên
+                        # timeline và review flag giữ nguyên ý nghĩa.
+                        emit({"event": "notice", "code": "silence-fallback",
+                              "message": (f"Nhóm cue {group_indices[0] + 1}..{group_indices[-1] + 1} "
+                                          f"không nén vừa timecode ({group_error}); giữ lại voice từng câu "
+                                          f"(câu quá chật vẫn im riêng + cờ review), cần nghe lại.")})
+                        group_entries = resolved
+                    else:
+                        emit({"event": "notice", "code": "silence-fallback",
+                              "message": (f"Nhóm cue {group_indices[0] + 1}..{group_indices[-1] + 1} "
+                                          f"không nén vừa timecode ({group_error}); giữ im lặng, cần nghe lại.")})
+                        group_entries = [silence_entry(group_cues[pos], group_texts[pos], base_scale, 0,
+                                                       run_root, clip_root, worker_sha)
+                                         for pos in range(len(group_indices))]
         report_group_rate(group_indices, group_entries, cues, texts, rate_tally)
         rate_tally["groups"] += 1
         ordered_entries.extend(group_entries)
