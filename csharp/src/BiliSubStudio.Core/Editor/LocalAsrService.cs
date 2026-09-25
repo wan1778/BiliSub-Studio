@@ -290,7 +290,10 @@ internal sealed partial class LocalAsrService : IDisposable
             "--compute", selection.Device == "hybrid" ? selection.ComputeType.Split('+')[0] : selection.ComputeType,
             "--threads", selection.Threads.ToString(CultureInfo.InvariantCulture),
             "--offset", offset.ToString(selection.Device == "hybrid" ? "R" : "0.000", CultureInfo.InvariantCulture),
-            "--beam", probe ? "1" : "5",
+            // Probe dùng đúng beam của chạy thật (2026-09-25): probe beam=1
+            // còn chạy thật beam=5 đã đo được 1.07x nhưng thật ra 1.55x —
+            // benchmark lừa cả quyết định thiết bị lẫn % dự kiến.
+            "--beam", "5",
         };
         if (selection.Device is "cuda" or "hybrid")
             foreach (var directory in selection.CudaDirectories ?? []) values.AddRange(["--cuda-bin", directory]);

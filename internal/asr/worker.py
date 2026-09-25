@@ -292,7 +292,6 @@ def main() -> int:
         configure_cuda(args.cuda_bin)
     from faster_whisper import WhisperModel
 
-    started = time.perf_counter()
     model = WhisperModel(
         str(model_dir),
         device=args.device,
@@ -301,7 +300,25 @@ def main() -> int:
         num_workers=1,
         local_files_only=True,
     )
+    # Warmup (2026-09-25): the first inference compiles cudnn/ctranslate2
+    # kernels and warms the weight cache. The probe timer used to include this
+    # cold start, so a 20s sample cost 30s+ and a GPU that really runs at 4.5x+
+    # (measured 2026-09-25: sequential 4.48x, the app's benchmark kept reading
+    # 1.65x and rejected it) fell back to CPU at 1.1x — a 2h video took 3h17m.
+    # Warm up on a tiny slice, then start the timer so the benchmark measures
+    # steady-state inference only. Harmless for the real run (one-time seconds).
+    import wave as _wave
+    import numpy as _np
+    with _wave.open(str(audio), "rb") as source:
+        _rate = source.getframerate()
+        _frames = min(source.getnframes(), _rate)
+        _raw = source.readframes(_frames)
+    warmup = _np.frombuffer(_raw, dtype="<i2").astype(_np.float32) / 32768.0 if len(_raw) >= 2 else _np.zeros(_rate, dtype=_np.float32)
+    if len(warmup) == 0:
+        warmup = _np.zeros(_rate, dtype=_np.float32)
+    model.transcribe(warmup, language="zh", beam_size=1, word_timestamps=False)
     emit({"event": "ready", "device": args.device, "compute": args.compute})
+    started = time.perf_counter()
     segments, info = model.transcribe(
         str(audio),
         language="zh",
