@@ -1530,36 +1530,6 @@ public sealed partial class EditorPage : Page
         return true;
     }
 
-    private void SubtitlePreset_Click(object sender, RoutedEventArgs e)
-    {
-        TryAddRegionPreset(EditorRegionPresetKind.SubtitleBottom);
-    }
-
-    private void WatermarkPreset_Click(object sender, RoutedEventArgs e)
-    {
-        TryAddRegionPreset(EditorRegionPresetKind.WatermarkTopRight);
-    }
-
-    private bool TryAddRegionPreset(EditorRegionPresetKind preset)
-    {
-        if (_media is null || EditorBusy || _playback.IsPreviewMode || _dragStartNormalized is not null) return false;
-        var region = EditorRegionGeometry.CreatePreset(preset, _media.Width, _media.Height, _media.Duration);
-        if (region is null)
-        {
-            StatusText.Text = "Preset không phù hợp với kích thước video nguồn.";
-            return false;
-        }
-
-        _document.Add(region);
-        _draftRegion = null;
-        LoadSelectedIntoInputs();
-        var status = preset == EditorRegionPresetKind.SubtitleBottom
-            ? "Đã thêm vùng làm mờ phụ đề phía dưới."
-            : "Đã thêm vùng Mosaic che logo góc phải.";
-        DocumentChanged(status);
-        return true;
-    }
-
     private void FileNameBox_TextChanged(object sender, TextChangedEventArgs e)
     {
         if (IsLoaded && !_syncingInputs)
@@ -2482,7 +2452,7 @@ public sealed partial class EditorPage : Page
         RemoveRegionButton.IsEnabled = editable && _document.Selected is not null;
         UndoButton.IsEnabled = editable && _document.CanUndo;
         RedoButton.IsEnabled = editable && _document.CanRedo;
-        SubtitlePresetButton.IsEnabled = WatermarkPresetButton.IsEnabled = editable;
+
         var subtitleReady = _subtitleSource is { Cues.Count: > 0 } && _subtitleSource.Cues.All(x => !string.IsNullOrWhiteSpace(x.VietnameseText));
         var audioChanged = _audioSettings.SourceMode != "keep";
         var trimChanged = hasMedia && _trimRangeValid

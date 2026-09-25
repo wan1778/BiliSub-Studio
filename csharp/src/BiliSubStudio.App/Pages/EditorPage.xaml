@@ -284,7 +284,7 @@
                             <ToggleButton x:Name="EffectModeButton" Grid.Column="1" Tag="Effect" ToolTipService.ToolTip="Hiệu ứng vùng">
                                 <Grid Width="56" VerticalAlignment="Center">
                                     <Grid.RowDefinitions><RowDefinition Height="28"/><RowDefinition Height="14"/></Grid.RowDefinitions>
-                                    <Grid Height="28" VerticalAlignment="Center"><FontIcon Glyph="&#xE7B3;" FontSize="22" HorizontalAlignment="Center" VerticalAlignment="Center"/></Grid>
+                                    <Grid Height="28" VerticalAlignment="Center"><TextBlock Text="fx" FontSize="19" FontWeight="Bold" FontStyle="Italic" HorizontalAlignment="Center" VerticalAlignment="Center"/></Grid>
                                     <TextBlock Grid.Row="1" Text="EFFECT" FontSize="9" FontWeight="SemiBold" HorizontalAlignment="Center" VerticalAlignment="Center" LineHeight="14" TextAlignment="Center"/>
                                 </Grid>
                             </ToggleButton>
@@ -490,7 +490,13 @@
 
                                 <Border Style="{StaticResource CardBorderStyle}" Padding="12">
                                     <StackPanel Spacing="8">
-                                        <TextBlock Text="TỌA ĐỘ (%)" FontSize="10" FontWeight="SemiBold" Foreground="{ThemeResource MutedTextBrush}"/>
+                                        <TextBlock Text="VÙNG HIỆU ỨNG" FontSize="10" FontWeight="SemiBold" Foreground="{ThemeResource MutedTextBrush}"/>
+                                        <Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
+                                            <ComboBox x:Name="EffectBox" Header="Hiệu ứng" SelectedIndex="0" SelectionChanged="EffectBox_SelectionChanged" HorizontalAlignment="Stretch">
+                                                <ComboBoxItem Tag="blur" Content="Làm mờ" /><ComboBoxItem Tag="mosaic" Content="Mosaic" /><ComboBoxItem Tag="cover" Content="Che đen" /><ComboBoxItem Tag="clean" Content="Xóa vật thể" />
+                                            </ComboBox>
+                                            <NumberBox Grid.Column="1" x:Name="StrengthBox" Header="Cường độ" Minimum="2" Maximum="64" SmallChange="1" SpinButtonPlacementMode="Inline" Value="18" ValueChanged="EffectStrength_ValueChanged" />
+                                        </Grid>
                                         <Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
                                             <NumberBox x:Name="RegionXBox" Header="X (%)" Minimum="0" Maximum="100" ValueChanged="RegionCoordinates_ValueChanged" />
                                             <NumberBox Grid.Column="1" x:Name="RegionYBox" Header="Y (%)" Minimum="0" Maximum="100" ValueChanged="RegionCoordinates_ValueChanged" />
@@ -499,19 +505,7 @@
                                             <NumberBox x:Name="RegionWidthBox" Header="Rộng (%)" Minimum="0" Maximum="100" ValueChanged="RegionCoordinates_ValueChanged" />
                                             <NumberBox Grid.Column="1" x:Name="RegionHeightBox" Header="Cao (%)" Minimum="0" Maximum="100" ValueChanged="RegionCoordinates_ValueChanged" />
                                         </Grid>
-                                    </StackPanel>
-                                </Border>
-
-                                <Border Style="{StaticResource CardBorderStyle}" Padding="12">
-                                    <StackPanel Spacing="8">
-                                        <TextBlock Text="HIỆU ỨNG" FontSize="10" FontWeight="SemiBold" Foreground="{ThemeResource MutedTextBrush}"/>
-                                        <Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
-                                            <ComboBox x:Name="EffectBox" Header="Hiệu ứng" SelectedIndex="0" SelectionChanged="EffectBox_SelectionChanged" HorizontalAlignment="Stretch">
-                                                <ComboBoxItem Tag="blur" Content="Làm mờ" /><ComboBoxItem Tag="mosaic" Content="Mosaic" /><ComboBoxItem Tag="cover" Content="Che đen" /><ComboBoxItem Tag="clean" Content="Xóa vật thể" />
-                                            </ComboBox>
-                                            <NumberBox Grid.Column="1" x:Name="StrengthBox" Header="Cường độ" Minimum="2" Maximum="64" SmallChange="1" SpinButtonPlacementMode="Inline" Value="18" ValueChanged="EffectStrength_ValueChanged" />
-                                        </Grid>
-                                        <TextBlock Text="Cover là che đen mờ đục; Xóa vật thể tự nội suy pixel xung quanh (hợp dây/logo/mic) — cả hai không dùng cường độ." FontSize="10" Foreground="{ThemeResource MutedTextBrush}" TextWrapping="Wrap"/>
+                                        <TextBlock Text="Cover là che đen mờ đục, không dùng cường độ. Xóa vật thể giống BCC Wire Remover: tự nội suy pixel xung quanh đè lên vùng chọn — hợp dây, logo, mic." FontSize="10" Foreground="{ThemeResource MutedTextBrush}" TextWrapping="Wrap"/>
                                     </StackPanel>
                                 </Border>
 
@@ -524,8 +518,8 @@
                                             <NumberBox Grid.Column="1" x:Name="EndBox" Header="Kết thúc (s)" IsEnabled="False" Minimum="0" SmallChange="0.1" LargeChange="1" SpinButtonPlacementMode="Inline" ValueChanged="EditInput_ValueChanged" />
                                         </Grid>
                                         <Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
-                                            <Button x:Name="EditorUseCurrentStartButton" Click="EditorUseCurrentStart_Click" Content="⏺ Lấy → đầu" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" HorizontalAlignment="Stretch" CornerRadius="8"/>
-                                            <Button Grid.Column="1" x:Name="EditorUseCurrentEndButton" Click="EditorUseCurrentEnd_Click" Content="⏺ Lấy → cuối" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" HorizontalAlignment="Stretch" CornerRadius="8"/>
+                                            <Button x:Name="EditorUseCurrentStartButton" Click="EditorUseCurrentStart_Click" Content="Lấy → đầu" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" HorizontalAlignment="Stretch" CornerRadius="8"/>
+                                            <Button Grid.Column="1" x:Name="EditorUseCurrentEndButton" Click="EditorUseCurrentEnd_Click" Content="Lấy → cuối" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" HorizontalAlignment="Stretch" CornerRadius="8"/>
                                         </Grid>
                                     </StackPanel>
                                 </Border>
@@ -535,16 +529,6 @@
                                 </Border>
 
                                 <Button x:Name="AddRegionButton" Click="AddRegion_Click" Content="＋  Thêm vùng" IsEnabled="False" HorizontalAlignment="Stretch" MinHeight="38" CornerRadius="8" FontWeight="SemiBold" Background="{ThemeResource AccentPrimaryBrush}" Foreground="White" BorderThickness="0"/>
-
-                                <Border Style="{StaticResource CardBorderStyle}" Padding="10">
-                                    <StackPanel Spacing="6">
-                                        <TextBlock Text="PRESET" FontSize="10" FontWeight="SemiBold" Foreground="{ThemeResource MutedTextBrush}"/>
-                                        <Grid ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
-                                            <Button x:Name="SubtitlePresetButton" Click="SubtitlePreset_Click" Content="Mờ sub dưới" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" AutomationProperties.Name="Thêm vùng làm mờ phụ đề phía dưới" HorizontalAlignment="Stretch" CornerRadius="8"/>
-                                            <Button Grid.Column="1" x:Name="WatermarkPresetButton" Click="WatermarkPreset_Click" Content="Mosaic logo" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" AutomationProperties.Name="Thêm vùng Mosaic che logo góc phải" HorizontalAlignment="Stretch" CornerRadius="8"/>
-                                        </Grid>
-                                    </StackPanel>
-                                </Border>
 
                                 <Border CornerRadius="8" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="1" Background="{ThemeResource InputSurfaceBrush}" Padding="2">
                                     <ListView x:Name="RegionList" MinHeight="82" MaxHeight="130" SelectionChanged="RegionList_SelectionChanged" AutomationProperties.Name="Danh sách vùng hiệu ứng"/>
