@@ -150,7 +150,7 @@ public sealed partial class EditorPage
         foreach (var toolButton in new[]
         {
             SubtitleModeButton,
-            BlurModeButton,
+            EffectModeButton,
             AudioModeButton,
             VoiceModeButton,
             ImageModeButton,
@@ -365,30 +365,30 @@ public sealed partial class EditorPage
     void SelectShellTool(string tag)
     {
         var subtitle = string.Equals(tag, "Subtitle", StringComparison.OrdinalIgnoreCase);
-        var blur = string.Equals(tag, "Blur", StringComparison.OrdinalIgnoreCase);
+        var effectTab = string.Equals(tag, "Effect", StringComparison.OrdinalIgnoreCase);
         var audio = string.Equals(tag, "Audio", StringComparison.OrdinalIgnoreCase);
         var voice = string.Equals(tag, "Voice", StringComparison.OrdinalIgnoreCase);
         var image = string.Equals(tag, "Image", StringComparison.OrdinalIgnoreCase);
         var export = string.Equals(tag, "Export", StringComparison.OrdinalIgnoreCase);
-        if (!subtitle && !blur && !audio && !voice && !image && !export) return;
+        if (!subtitle && !effectTab && !audio && !voice && !image && !export) return;
 
         // Core ROI state remains authoritative. Audio and Voice are separate Details
         // tools but both are intentionally non-ROI core modes.
         _inspectorMode = subtitle ? InspectorMode.Subtitle
-            : blur ? InspectorMode.Blur
+            : effectTab ? InspectorMode.Effect
             : image ? InspectorMode.Image
             : export ? InspectorMode.Export
             : InspectorMode.Audio;
 
         SubtitleModeButton.IsChecked = subtitle;
-        BlurModeButton.IsChecked = blur;
+        EffectModeButton.IsChecked = effectTab;
         AudioModeButton.IsChecked = audio;
         VoiceModeButton.IsChecked = voice;
         ImageModeButton.IsChecked = image;
         ExportModeButton.IsChecked = export;
 
         SubtitleInspectorPanel.Visibility = subtitle ? Visibility.Visible : Visibility.Collapsed;
-        BlurInspectorPanel.Visibility = blur ? Visibility.Visible : Visibility.Collapsed;
+        EffectInspectorPanel.Visibility = effectTab ? Visibility.Visible : Visibility.Collapsed;
         AudioInspectorPanel.Visibility = audio ? Visibility.Visible : Visibility.Collapsed;
         VoiceInspectorPanel.Visibility = voice ? Visibility.Visible : Visibility.Collapsed;
         ImageInspectorPanel.Visibility = image ? Visibility.Visible : Visibility.Collapsed;
@@ -428,7 +428,7 @@ public sealed partial class EditorPage
         var visiblePanels = new[]
         {
             SubtitleInspectorPanel,
-            BlurInspectorPanel,
+            EffectInspectorPanel,
             AudioInspectorPanel,
             VoiceInspectorPanel,
             ImageInspectorPanel,

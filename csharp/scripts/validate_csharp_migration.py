@@ -86,9 +86,13 @@ def read(path: Path) -> str:
 
 
 def source_files(pattern: str) -> list[Path]:
+    # publish/ and publish-backup/ are build outputs: an old framework publish
+    # layout can contain a native-metadata DIRECTORY named "Microsoft.UI.Xaml"
+    # whose suffix ".Xaml" case-insensitively matches the *.xaml glob.
     return [
         path for path in CSHARP.rglob(pattern)
-        if not {"bin", "obj", "artifacts"}.intersection(path.relative_to(CSHARP).parts)
+        if not {"bin", "obj", "artifacts", "publish", "publish-backup"}.intersection(path.relative_to(CSHARP).parts)
+        and path.is_file()
     ]
 
 
@@ -264,7 +268,8 @@ editor = editor_xaml + editor_partials
 for owner, source in (("OCR", ocr), ("Editor", editor)):
     for marker in ("MediaPlayerElement", "IsFullWindow", "MediaSource.CreateFromStorageFile", "PositionChanged"):
         require(marker in source, f"{owner} native playback/fullscreen contract missing {marker}")
-require('AreTransportControlsEnabled="True"' in ocr, "OCR native transport contract missing")
+require('AreTransportControlsEnabled="False"' in ocr,
+        "OCR must own preview chrome and disable native MediaPlayer transport")
 require('AreTransportControlsEnabled="False"' in editor, "Editor must own preview chrome and disable native MediaPlayer transport")
 for forbidden in (
     "SubtitleModeButton.Click +=", "BlurModeButton.Click +=", "AudioModeButton.Click +=", "ExportModeButton.Click +=",
@@ -777,10 +782,10 @@ require("_application.Media.ProbeAsync(candidatePath" in open_video and "_path =
         "candidate video must be probed before mutating current Editor source state")
 
 for marker in (
-    "SubtitleModeButton", "BlurModeButton", "AudioModeButton", "ExportModeButton",
-    "SubtitleInspectorPanel", "BlurInspectorPanel", "AudioInspectorPanel", "ExportInspectorPanel",
+    "SubtitleModeButton", "EffectModeButton", "AudioModeButton", "ExportModeButton",
+    "SubtitleInspectorPanel", "EffectInspectorPanel", "AudioInspectorPanel", "ExportInspectorPanel",
     "RunLayoutSmokeAsync", "ImportSrtButton.IsEnabled = idle && !_playback.IsPreviewMode;", "VoiceModelBox.IsEnabled = idle && !_playback.IsPreviewMode;",
-    "_inspectorMode == InspectorMode.Blur", "_inspectorMode == InspectorMode.Subtitle",
+    "_inspectorMode == InspectorMode.Effect", "_inspectorMode == InspectorMode.Subtitle",
     "EditorPlaybackController", "CreateEditorPreviewSegmentAsync", "PlayerMediaEnded",
 ):
     require(marker in editor, f"Editor icon-mode/action-state contract missing {marker}")
@@ -813,8 +818,8 @@ for marker in (
     'FasterWhisperVersion = "1.2.1"', 'CTranslate2Version = "4.8.1"',
     "79a66ad50688c0b794dd501dc340a736992a6342f7f95e5811be60b5224a26a7",
     "49f96e861b57301f0b76a082109bde2cac8204a6b4fedc870883008271e82251",
-    'ModelRevision = "536b0662742c02347bc0e980a01041f333bce120"',
-    "3e305921506d8872816023e4c273e75d2419fb89b24da97b4fe7bce14170d671",
+    'ModelRevision = "edaa852ec7e145841d8ffdb056a99866b5f0a478"',
+    "69f74147e3334731bc3a76048724833325d2ec74642fb52620eda87352e3d4f1",
     "EnsurePrivatePythonAsync", "SHA-256 {payloadLabel}", 'payloadLabel = "model ASR"', "HF_HUB_OFFLINE",
 ):
     require(marker in asr_installer, f"ASR pinned installer contract missing {marker}")
@@ -871,7 +876,10 @@ require("MIN_RATE_SCALE = .30" in tts_worker
         and "MIN_ACTUAL_SPEED = 1.0" in tts_worker
         and "FIT_HEADROOM = .995" in tts_worker
         and "MAX_ACTUAL_SPEED = 100.0" in tts_worker
-        and "MAX_GROUP_GAP_FRAMES = 0" in tts_worker
+        # 5512 = 0.25s pooled-timeline gap (must mirror
+        # LocalTtsService.MaxSentenceGroupGapFrames): rapid dialogue cues pool
+        # their time instead of each fragment being squeezed alone.
+        and "MAX_GROUP_GAP_FRAMES = 5512" in tts_worker
         and "minimum_speech_frames" in tts_worker
         and "normalize_vietnamese_text" in tts_worker
         and "MAX_GROUP_DURATION_FRAMES = 300 * SAMPLE_RATE" in tts_worker,

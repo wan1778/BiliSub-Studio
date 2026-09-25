@@ -281,11 +281,11 @@
                                     <TextBlock Grid.Row="1" Text="VĂN BẢN" FontSize="9" FontWeight="SemiBold" HorizontalAlignment="Center" VerticalAlignment="Center" LineHeight="14" TextAlignment="Center"/>
                                 </Grid>
                             </ToggleButton>
-                            <ToggleButton x:Name="BlurModeButton" Grid.Column="1" Tag="Blur" ToolTipService.ToolTip="Blur">
+                            <ToggleButton x:Name="EffectModeButton" Grid.Column="1" Tag="Effect" ToolTipService.ToolTip="Hiệu ứng vùng">
                                 <Grid Width="56" VerticalAlignment="Center">
                                     <Grid.RowDefinitions><RowDefinition Height="28"/><RowDefinition Height="14"/></Grid.RowDefinitions>
                                     <Grid Height="28" VerticalAlignment="Center"><FontIcon Glyph="&#xE7B3;" FontSize="22" HorizontalAlignment="Center" VerticalAlignment="Center"/></Grid>
-                                    <TextBlock Grid.Row="1" Text="BLUR" FontSize="9" FontWeight="SemiBold" HorizontalAlignment="Center" VerticalAlignment="Center" LineHeight="14" TextAlignment="Center"/>
+                                    <TextBlock Grid.Row="1" Text="EFFECT" FontSize="9" FontWeight="SemiBold" HorizontalAlignment="Center" VerticalAlignment="Center" LineHeight="14" TextAlignment="Center"/>
                                 </Grid>
                             </ToggleButton>
                             <ToggleButton x:Name="AudioModeButton" Grid.Column="2" Tag="Audio" ToolTipService.ToolTip="Âm nhạc">
@@ -476,14 +476,14 @@
                                 </Border>
                             </StackPanel>
 
-                            <StackPanel x:Name="BlurInspectorPanel" Spacing="12" Visibility="Collapsed">
+                            <StackPanel x:Name="EffectInspectorPanel" Spacing="12" Visibility="Collapsed">
                                 <Grid ColumnSpacing="8">
                                     <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                                     <Border Width="32" Height="32" CornerRadius="8" Background="{ThemeResource AccentSoftBrush}" BorderBrush="{ThemeResource AccentPrimaryBrush}" BorderThickness="1">
                                         <FontIcon Glyph="&#xE771;" FontSize="15" Foreground="{ThemeResource AccentPrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                                     </Border>
                                     <StackPanel Grid.Column="1" Spacing="1" VerticalAlignment="Center">
-                                        <TextBlock Text="Blur / Mosaic / Cover" FontSize="13" FontWeight="SemiBold" Foreground="{ThemeResource PrimaryTextBrush}"/>
+                                        <TextBlock Text="Effect · Hiệu ứng vùng" FontSize="13" FontWeight="SemiBold" Foreground="{ThemeResource PrimaryTextBrush}"/>
                                         <TextBlock Text="Kéo trực tiếp trên Player · pixel-chính xác" FontSize="10" Foreground="{ThemeResource MutedTextBrush}" TextWrapping="Wrap"/>
                                     </StackPanel>
                                 </Grid>

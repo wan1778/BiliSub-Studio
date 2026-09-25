@@ -22,7 +22,7 @@ namespace BiliSubStudio.App.Pages;
 public sealed partial class EditorPage : Page
 {
     private enum DragKind { None, Create, Move, North, South, East, West, NorthEast, NorthWest, SouthEast, SouthWest }
-    private enum InspectorMode { Subtitle, Blur, Audio, Image, Export }
+    private enum InspectorMode { Subtitle, Effect, Audio, Image, Export }
 
     private readonly BiliSubApplication _application;
     private readonly IFilePickerService _picker;
@@ -108,12 +108,12 @@ public sealed partial class EditorPage : Page
     {
         _inspectorMode = mode;
         SubtitleModeButton.IsChecked = mode == InspectorMode.Subtitle;
-        BlurModeButton.IsChecked = mode == InspectorMode.Blur;
+        EffectModeButton.IsChecked = mode == InspectorMode.Effect;
         AudioModeButton.IsChecked = mode == InspectorMode.Audio;
         ExportModeButton.IsChecked = mode == InspectorMode.Export;
         if (_imageModeButton is not null) _imageModeButton.IsChecked = mode == InspectorMode.Image;
         SubtitleInspectorPanel.Visibility = mode == InspectorMode.Subtitle ? Visibility.Visible : Visibility.Collapsed;
-        BlurInspectorPanel.Visibility = mode == InspectorMode.Blur ? Visibility.Visible : Visibility.Collapsed;
+        EffectInspectorPanel.Visibility = mode == InspectorMode.Effect ? Visibility.Visible : Visibility.Collapsed;
         AudioInspectorPanel.Visibility = mode == InspectorMode.Audio ? Visibility.Visible : Visibility.Collapsed;
         ExportInspectorPanel.Visibility = mode == InspectorMode.Export ? Visibility.Visible : Visibility.Collapsed;
         if (_imageInspectorPanel is not null) _imageInspectorPanel.Visibility = mode == InspectorMode.Image ? Visibility.Visible : Visibility.Collapsed;
@@ -143,7 +143,7 @@ public sealed partial class EditorPage : Page
         foreach (var mode in Enum.GetValues<InspectorMode>())
         {
             SetInspectorMode(mode);
-            var visible = new[] { SubtitleInspectorPanel, BlurInspectorPanel, AudioInspectorPanel, _imageInspectorPanel, ExportInspectorPanel }
+            var visible = new[] { SubtitleInspectorPanel, EffectInspectorPanel, AudioInspectorPanel, _imageInspectorPanel, ExportInspectorPanel }
                 .Count(panel => panel?.Visibility == Visibility.Visible);
             if (visible != 1) throw new InvalidOperationException("Editor tool state phải có đúng một inspector.");
         }
@@ -1777,7 +1777,7 @@ public sealed partial class EditorPage : Page
             _dragKind = subtitleHit;
             SelectRegion(-1);
         }
-        else if (_inspectorMode == InspectorMode.Blur)
+        else if (_inspectorMode == InspectorMode.Effect)
         {
             var hit = HitTestRegion(point);
             if (hit.Index >= 0)
@@ -1928,7 +1928,7 @@ public sealed partial class EditorPage : Page
 
     private void Page_KeyDown(object sender, KeyRoutedEventArgs e)
     {
-        if (_inspectorMode != InspectorMode.Blur || EditorBusy) return;
+        if (_inspectorMode != InspectorMode.Effect || EditorBusy) return;
         if (FocusManager.GetFocusedElement(XamlRoot) is TextBox) return;
         var controlDown = (InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Control) & CoreVirtualKeyStates.Down) != 0;
         var shiftDown = (InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Shift) & CoreVirtualKeyStates.Down) != 0;
@@ -2003,7 +2003,7 @@ public sealed partial class EditorPage : Page
             Overlay.Children.Add(RegionRectangle(_draftRegion, video,
                 ColorHelper.FromArgb(255, 255, 190, 60), ColorHelper.FromArgb(38, 255, 190, 60), 2));
         }
-        if (_inspectorMode == InspectorMode.Blur && _document.Selected is { } selectedRegion) RenderHandles(selectedRegion, video);
+        if (_inspectorMode == InspectorMode.Effect && _document.Selected is { } selectedRegion) RenderHandles(selectedRegion, video);
         if (_subtitleSource is not null) RenderSubtitlePlacement(video);
     }
 
@@ -2475,7 +2475,7 @@ public sealed partial class EditorPage : Page
         EmptyPreviewState.Visibility = hasMedia ? Visibility.Collapsed : Visibility.Visible;
         EmptyOpenVideoButton.IsEnabled = idle && !_playback.IsPreviewMode;
         Overlay.IsHitTestVisible = editable &&
-            (_inspectorMode == InspectorMode.Blur || _inspectorMode == InspectorMode.Subtitle && _subtitleSource is not null);
+            (_inspectorMode == InspectorMode.Effect || _inspectorMode == InspectorMode.Subtitle && _subtitleSource is not null);
         AddRegionButton.IsEnabled = editable && _draftRegion is not null;
         RemoveRegionButton.IsEnabled = editable && _document.Selected is not null;
         UndoButton.IsEnabled = editable && _document.CanUndo;
