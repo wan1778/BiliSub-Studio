@@ -515,7 +515,7 @@ public sealed class EditorProjectStore
                 || region.X >= 1 || region.Y >= 1 || region.X + region.Width > 1.0001 || region.Y + region.Height > 1.0001)
                 throw new InvalidDataException("Project Editor chứa vùng không hợp lệ.");
             var effect = region.Effect?.Trim().ToLowerInvariant();
-            if (effect is not ("blur" or "mosaic" or "cover"))
+            if (effect is not ("blur" or "mosaic" or "cover" or "clean"))
                 throw new InvalidDataException("Project Editor chứa hiệu ứng không hỗ trợ.");
             var identity = string.IsNullOrWhiteSpace(region.Id) ? string.Empty : region.Id.Trim();
             if (identity.Length == 0 || identity.Length > 64 || !identities.Add(identity))
@@ -531,7 +531,9 @@ public sealed class EditorProjectStore
                 {
                     "blur" => EditorBlurStrength.NormalizeStored(region.Strength),
                     "mosaic" => EditorMosaicStrength.NormalizeStored(region.Strength),
-                    _ => EditorCoverEffect.NormalizeStored(region.Strength),
+                    // cover và clean đều bất động: strength luôn 0.
+                    "cover" or "clean" => EditorCoverEffect.NormalizeStored(region.Strength),
+                    _ => EditorCoverEffect.StoredStrength,
                 },
             };
             normalized.Add(normalizeStored

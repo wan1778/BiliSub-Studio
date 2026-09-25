@@ -507,11 +507,11 @@
                                         <TextBlock Text="HIỆU ỨNG" FontSize="10" FontWeight="SemiBold" Foreground="{ThemeResource MutedTextBrush}"/>
                                         <Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
                                             <ComboBox x:Name="EffectBox" Header="Hiệu ứng" SelectedIndex="0" SelectionChanged="EffectBox_SelectionChanged" HorizontalAlignment="Stretch">
-                                                <ComboBoxItem Tag="blur" Content="Làm mờ" /><ComboBoxItem Tag="mosaic" Content="Mosaic" /><ComboBoxItem Tag="cover" Content="Che đen" />
+                                                <ComboBoxItem Tag="blur" Content="Làm mờ" /><ComboBoxItem Tag="mosaic" Content="Mosaic" /><ComboBoxItem Tag="cover" Content="Che đen" /><ComboBoxItem Tag="clean" Content="Xóa vật thể" />
                                             </ComboBox>
                                             <NumberBox Grid.Column="1" x:Name="StrengthBox" Header="Cường độ" Minimum="2" Maximum="64" SmallChange="1" SpinButtonPlacementMode="Inline" Value="18" ValueChanged="EffectStrength_ValueChanged" />
                                         </Grid>
-                                        <TextBlock Text="Cover là che đen mờ đục, không dùng cường độ." FontSize="10" Foreground="{ThemeResource MutedTextBrush}" TextWrapping="Wrap"/>
+                                        <TextBlock Text="Cover là che đen mờ đục; Xóa vật thể tự nội suy pixel xung quanh (hợp dây/logo/mic) — cả hai không dùng cường độ." FontSize="10" Foreground="{ThemeResource MutedTextBrush}" TextWrapping="Wrap"/>
                                     </StackPanel>
                                 </Border>
 

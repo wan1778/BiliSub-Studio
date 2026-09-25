@@ -1379,7 +1379,8 @@ public sealed partial class EditorPage : Page
             : EditorBlurStrength.TryFromInput(value, out strength);
 
     private static bool EffectUsesStrength(string effect) =>
-        !string.Equals(effect, "cover", StringComparison.OrdinalIgnoreCase);
+        !string.Equals(effect, "cover", StringComparison.OrdinalIgnoreCase)
+        && !string.Equals(effect, "clean", StringComparison.OrdinalIgnoreCase);
 
     private static int NormalizeEffectStrength(string effect, double value, int fallback) =>
         effect == "mosaic"
@@ -1398,7 +1399,7 @@ public sealed partial class EditorPage : Page
         ?? SelectedEffect() switch
         {
             "mosaic" => EditorMosaicStrength.Default,
-            "cover" => EditorCoverEffect.StoredStrength,
+            "cover" or "clean" => EditorCoverEffect.StoredStrength,
             _ => EditorBlurStrength.Default,
         };
 
@@ -2331,6 +2332,7 @@ public sealed partial class EditorPage : Page
     {
         "mosaic" => "Mosaic",
         "cover" => "Che đen",
+        "clean" => "Xóa vật thể",
         _ => "Làm mờ",
     };
 

@@ -725,6 +725,21 @@ public sealed class VideoEditorService
                 parts.Add($"[fx{index}]crop={width}:{height}:{x}:{y},boxblur=luma_radius={strength}:luma_power=1:chroma_radius='min({strength},floor((min(cw,ch)-1)/2))':chroma_power=1[rendered{index}]");
                 parts.Add($"[base{index}][rendered{index}]overlay={x}:{y}{enable}[{output}]");
             }
+            else if (effect == "clean")
+            {
+                // delogo nội suy pixel xung quanh đè lên vùng chọn (họ BCC Wire
+                // Remover cơ bản: dây, logo góc, mic). Đã kiểm thật ffmpeg:
+                // delogo đòi vùng nằm strictly trong khung (chừa >=1px mỗi
+                // bên) — x=0 hay crop-đè-nguyên-crop nổ "Logo area is outside
+                // of the frame" — nên đánh trực tiếp trên khung bằng tọa độ
+                // tuyệt đối + kẹp mép; enable timeline chạy trực tiếp (đã kiểm
+                // thật). Strength bất động như cover (delogo tự nội suy).
+                var left = Math.Clamp(x, 1, Math.Max(1, request.SourceWidth - 2));
+                var top = Math.Clamp(y, 1, Math.Max(1, request.SourceHeight - 2));
+                var right = Math.Clamp(x + width, left + 1, request.SourceWidth - 1);
+                var bottom = Math.Clamp(y + height, top + 1, request.SourceHeight - 1);
+                parts.Add($"[{current}]delogo=x={left}:y={top}:w={right - left}:h={bottom - top}:show=0{enable}[{output}]");
+            }
             else throw new ArgumentException($"Hiệu ứng {region.Effect} không hỗ trợ.");
             current = output;
         }

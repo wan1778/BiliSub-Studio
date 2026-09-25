@@ -19,7 +19,7 @@ public sealed record TimelineEffectSpec(
     int Strength)
 {
     // Documented encoding for V2 effect payloads:
-    //   {blur|mosaic|cover}:{x},{y},{w},{h}:{strength}
+    //   {blur|mosaic|cover|clean}:{x},{y},{w},{h}:{strength}
     // Fractions follow the classic EditRegion convention. Opaque legacy
     // payloads (bare "blur", file paths, ...) are rejected explicitly.
     public static TimelineEffectSpec Parse(string payload, string itemId)
@@ -33,7 +33,7 @@ public sealed record TimelineEffectSpec(
             throw new InvalidOperationException(
                 $"Timeline effect {itemId} phải có dạng effect:x,y,w,h:strength.");
         var effect = parts[0].Trim().ToLowerInvariant();
-        if (effect is not ("blur" or "mosaic" or "cover"))
+        if (effect is not ("blur" or "mosaic" or "cover" or "clean"))
             throw new InvalidOperationException(
                 $"Timeline effect {itemId} không hỗ trợ '{parts[0].Trim()}'.");
         var geometry = parts[1].Split(',');
