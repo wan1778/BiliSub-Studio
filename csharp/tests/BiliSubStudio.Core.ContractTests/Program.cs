@@ -116,6 +116,7 @@ internal static class Program
         ("OCR live view follow + incremental render policy", OcrLiveViewPolicyContract.RunAsync),
         ("OCR generic boundary property randomized vocabulary-invariant", OcrGenericBoundaryProperty.RunAsync),
         ("OCR sparse-mode steady refinement stays bounded with edges kept", OcrSparseRefinementContract.RunAsync),
+        ("OCR auto benchmark refines ceiling into free 12/14-class lanes", OcrTopologyRefineContract.RunAsync),
         ("OCR checkpoint resume tolerates segment float drift", OcrCheckpointResumeContract.RunAsync),
         ("concurrent OCR worker crashes preserve diagnostics and recover both requests", OcrWorkerRecoveryContract.RunAsync),
         ("terminal lane death never poisons the shared worker pool channel for siblings", OcrWorkerPoolPoisonContract.RunAsync),
@@ -2424,8 +2425,8 @@ internal static class Program
             (level, _) => { attempted.Add(level); return Task.CompletedTask; },
             (level, _) => { restored.Add(level); return Task.CompletedTask; },
             (_, _, _) => throw new InvalidOperationException("all-pass benchmark unexpectedly rejected a level"));
-        if (selected != 16 || !attempted.SequenceEqual([1, 2, 4, 8, 16]) || restored.Count != 0)
-            throw new InvalidOperationException("OCR Auto did not retain level 16 after every real probe passed");
+        if (selected != 14 || !attempted.SequenceEqual([1, 2, 4, 8, 16, 12, 14]) || restored.Count != 0)
+            throw new InvalidOperationException("OCR Auto did not refine a passing ceiling into free 12/14 lanes");
 
         attempted.Clear();
         restored.Clear();

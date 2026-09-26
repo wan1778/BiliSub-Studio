@@ -85,6 +85,54 @@ internal static class OcrTopologyBenchmark
             }
         }
 
+        // Free-lane refinement (26/09): the exponential ladder can lock the
+        // ceiling without ever measuring middle rungs — e.g. 8 → 16 passes on
+        // throughput, but 12 is the true peak under contention and 14 beats
+        // it. Probe at most two midpoints so auto lands on 10/12/14-class
+        // topologies instead of snapping to presets. Same pass/fail protocol
+        // (probe throws below useful gain) and same restore discipline, so a
+        // failed midpoint always leaves the proven-best pool behind.
+        if (best == levels[levels.Count - 1] && levels.Count >= 2)
+        {
+            var previous = levels[levels.Count - 2];
+            var middle = previous + (best - previous) / 2;
+            if (middle > previous)
+            {
+                try
+                {
+                    await probe(middle, cancellationToken);
+                    best = middle;
+                    var upper = middle + (levels[levels.Count - 1] - middle) / 2;
+                    if (upper > middle)
+                    {
+                        try
+                        {
+                            await probe(upper, cancellationToken);
+                            best = upper;
+                        }
+                        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                        {
+                            throw;
+                        }
+                        catch (Exception upperError)
+                        {
+                            await restore(best, cancellationToken);
+                            rejected(upper, best, upperError);
+                        }
+                    }
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception middleError)
+                {
+                    await restore(best, cancellationToken);
+                    rejected(middle, best, middleError);
+                }
+            }
+        }
+
         return best;
     }
 }
