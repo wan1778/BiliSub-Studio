@@ -335,8 +335,8 @@ public sealed class OcrScanner
             }
         }
         job.Log(saved is null
-            ? $"OCR Commit: benchmark xong, khóa {selected} pipeline = {selected} FFmpeg lane + {configuredWorkers} Python worker ({configuredWorkerKinds})."
-            : $"Resume checkpoint schema {checkpoint.Schema}: giữ topology {selected} = {selected} FFmpeg lane + {configuredWorkers} Python worker ({configuredWorkerKinds}).");
+            ? $"OCR Commit: benchmark xong, khóa {selected} pipeline = {selected} FFmpeg lane + {configuredWorkers} Python worker ({configuredWorkerKinds}). Chế độ quét: {request.Mode} ({mode.Fps:0.#}Hz)."
+            : $"Resume checkpoint schema {checkpoint.Schema}: giữ topology {selected} = {selected} FFmpeg lane + {configuredWorkers} Python worker ({configuredWorkerKinds}). Chế độ quét: {request.Mode} ({mode.Fps:0.#}Hz).");
         var decoder = await ProbeNvdecAsync(ffmpeg, source, request.Region, mode, processes, token) ? "nvdec" : "software";
         job.Log(decoder == "nvdec" ? "Decoder: NVIDIA NVDEC." : "Decoder: software fallback.");
         // Diagnostic baselines captured after the topology lock: the benchmark
@@ -1871,15 +1871,18 @@ public sealed class OcrScanner
                 // Do not spend Paddle inference on that dense noise. Sparse
                 // paired boundaries and blank-to-blank windows are retained so
                 // a complete short caption between baseline samples still has
-                // two native-frame confirmations.
-                var denseStableTextNoise = mode.Fps >= 4
-                    && sampleResult.Detected
+                // native-frame confirmations.
+                // Cost guard (26/09): sparse modes must stay bounded here too.
+                // Without a cap, one animated window costs unbounded inference
+                // and Balanced/Fast end up SLOWER than Accurate on dense
+                // dialogue. Earliest/latest are always kept so edge discovery
+                // survives; the 6-frame spread still covers any keepable
+                // (>=200ms) caption inside these windows.
+                var denseStableTextNoise = sampleResult.Detected
                     && IsDenseAdaptiveVisualNoise(scores);
-                var selectedIndexes = denseStableTextNoise
+                var selectedIndexes = denseStableTextNoise && mode.Fps >= 4
                     ? Array.Empty<int>()
-                    : mode.Fps >= 4
-                    ? CapRefinementIndexes(candidateIndexes, adaptiveWindow.Count - 1, maximum: 4)
-                    : candidateIndexes;
+                    : CapRefinementIndexes(candidateIndexes, adaptiveWindow.Count - 1, maximum: mode.Fps >= 4 ? 4 : 6);
                 refinementFrames = selectedIndexes
                     .Select(index => adaptiveWindow[index]).ToArray();
             }

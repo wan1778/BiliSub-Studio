@@ -114,6 +114,7 @@ internal static class Program
         ("OCR live incremental tail reconcile from field 109-112", OcrLiveTailContract.RunAsync),
         ("OCR live view follow + incremental render policy", OcrLiveViewPolicyContract.RunAsync),
         ("OCR generic boundary property randomized vocabulary-invariant", OcrGenericBoundaryProperty.RunAsync),
+        ("OCR sparse-mode steady refinement stays bounded with edges kept", OcrSparseRefinementContract.RunAsync),
         ("OCR checkpoint resume tolerates segment float drift", OcrCheckpointResumeContract.RunAsync),
         ("concurrent OCR worker crashes preserve diagnostics and recover both requests", OcrWorkerRecoveryContract.RunAsync),
         ("terminal lane death never poisons the shared worker pool channel for siblings", OcrWorkerPoolPoisonContract.RunAsync),
