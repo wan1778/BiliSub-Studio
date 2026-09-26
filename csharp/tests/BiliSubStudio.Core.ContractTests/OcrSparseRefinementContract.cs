@@ -28,6 +28,7 @@ internal static class OcrSparseRefinementContract
     {
         SparseSteadyBoundedAtSix();
         AccurateSteadyBoundedAtFour();
+        TransitionTierBoundedAtFour();
         EarliestLatestAlwaysKept();
         EvenSpreadCoversWindow();
         DenseNoiseGate();
@@ -54,6 +55,18 @@ internal static class OcrSparseRefinementContract
         var capped = InvokeCap(candidates, 20, 4);
         Check(capped.Count <= 4, $"accurate cap drifted (got {capped.Count})");
         Check(capped[0] == 0 && capped[^1] == 18, "accurate cap dropped window edges");
+    }
+
+    // Transition tier (all modes): onset cluster + offset cluster of one
+    // short caption must come back as at most 4 with both edges covered —
+    // sparse modes no longer spend 8 here while Accurate spends 4.
+    private static void TransitionTierBoundedAtFour()
+    {
+        var candidates = new[] { 2, 3, 4, 14, 15, 16 };
+        var capped = InvokeCap(candidates, 20, 4);
+        Check(capped.Count <= 4, $"transition tier not bounded (got {capped.Count})");
+        Check(capped[0] == 2 && capped[^1] == 16, "transition cap dropped a boundary edge");
+        Check(capped.Any(x => x <= 4) && capped.Any(x => x >= 14), "transition cap lost one side of the caption");
     }
 
     private static void EarliestLatestAlwaysKept()

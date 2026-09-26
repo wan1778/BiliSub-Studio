@@ -1850,8 +1850,14 @@ public sealed class OcrScanner
                     pendingVisualFollowups = 0;
                 }
                 var windowLength = adaptiveWindow.Count - 1;
+                // Cost guard (26/09): the transition budget must not grow for
+                // sparser sampling, or Balanced/Fast do MORE Paddle calls per
+                // boundary than Accurate (fewer baselines, costlier transitions)
+                // and the promised speed ranking inverts on dense dialogue.
+                // Probe-nominated edges stay covered (earliest/latest kept);
+                // the quiet-case spread below still nets weak-probe captions.
                 refinementFrames = (candidateIndexes.Count > 0
-                    ? CapRefinementIndexes(candidateIndexes, windowLength, maximum: mode.Fps >= 4 ? 4 : 8)
+                    ? CapRefinementIndexes(candidateIndexes, windowLength, maximum: 4)
                     : BoundedTransitionConfirmationFrames(windowLength, maximum: mode.Fps >= 4 ? 2 : 5))
                     .Select(index => adaptiveWindow[index]).ToArray();
             }
