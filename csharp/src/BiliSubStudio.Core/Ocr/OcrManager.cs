@@ -18,6 +18,10 @@ public sealed class OcrManager : IAsyncDisposable
     private readonly List<Task> _retiredInference = [];
     private string _deviceMode = "auto";
     private string _activeMode = string.Empty;
+    // Model tier đang chạy trong pool (2026-09-26): Accurate = Medium,
+    // Balanced/Fast = Small. Mặc định Medium (hành vi cũ); đổi tier là rebuild.
+    private string _activeDetModel = OcrInstaller.DetectionModel;
+    private string _activeRecModel = OcrInstaller.RecognitionModel;
     private string _state = "stopped";
     private string? _error;
     private int _committedWorkerTarget = 1;
@@ -207,6 +211,50 @@ public sealed class OcrManager : IAsyncDisposable
                 _error = retained ? null : error.Message;
                 throw;
             }
+        }
+        finally { _gate.Release(); }
+    }
+
+    // Model tier per scan mode (2026-09-26): Accurate = Medium, Balanced/Fast
+    // = Small. Called by the scanner after device ensure, before the worker
+    // topology lock. Publishes the desired tier first so a cold device build
+    // lands on it directly (no throwaway Medium pool); rebuilds only when the
+    // live pool runs another tier.
+    public async Task EnsureModelTierAsync(string detModel, string recModel, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(detModel);
+        ArgumentException.ThrowIfNullOrWhiteSpace(recModel);
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            _activeDetModel = detModel.Trim();
+            _activeRecModel = recModel.Trim();
+        }
+        finally { _gate.Release(); }
+        await EnsureAsync(cancellationToken);
+        using var lifetime = LinkPreparationCancellation(cancellationToken);
+        cancellationToken = lifetime.Token;
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            if (_workers.Count > 0 && _workers.All(x => x.IsAlive)
+                && _workers.All(x => string.Equals(x.DetModel, _activeDetModel, StringComparison.Ordinal)
+                    && string.Equals(x.RecognitionModel, _activeRecModel, StringComparison.Ordinal)))
+                return;
+            var hardware = _hardware.Snapshot();
+            string python;
+            if (_workers.Count > 0)
+            {
+                python = _workers[0].Runtime.Python;
+            }
+            else
+            {
+                var runtime = await _installer.EnsureAsync(_activeMode, hardware, cancellationToken);
+                python = runtime.Python;
+            }
+            await _installer.EnsureTierModelsAsync(_installer.TierModelsRoot(), python, _activeDetModel, _activeRecModel, cancellationToken);
+            var target = Math.Max(_workers.Count, MinimumWorkerTarget(_activeMode));
+            await BuildPoolLockedAsync(_activeMode, target, hardware, cancellationToken);
         }
         finally { _gate.Release(); }
     }
@@ -522,7 +570,7 @@ public sealed class OcrManager : IAsyncDisposable
             _workers.RemoveAt(index);
             try { await failed.DisposeAsync(); } catch { }
 
-            var replacement = new OcrWorkerClient(failed.Runtime);
+            var replacement = new OcrWorkerClient(failed.Runtime, failed.DetModel, failed.RecognitionModel);
             try
             {
                 await replacement.StartAsync(cancellationToken);
@@ -561,6 +609,8 @@ public sealed class OcrManager : IAsyncDisposable
             await StopWorkersLockedAsync();
             _state = "stopped";
             _activeMode = string.Empty;
+            _activeDetModel = OcrInstaller.DetectionModel;
+            _activeRecModel = OcrInstaller.RecognitionModel;
             _committedWorkerTarget = MinimumWorkerTarget(_deviceMode);
             _error = null;
             retired = _retiredInference.ToArray();
@@ -583,6 +633,8 @@ public sealed class OcrManager : IAsyncDisposable
             _installer.RemoveBootstrap();
             _state = "stopped";
             _activeMode = string.Empty;
+            _activeDetModel = OcrInstaller.DetectionModel;
+            _activeRecModel = OcrInstaller.RecognitionModel;
             _committedWorkerTarget = MinimumWorkerTarget(_deviceMode);
             _error = null;
         }
@@ -599,7 +651,7 @@ public sealed class OcrManager : IAsyncDisposable
             foreach (var kind in kinds)
             {
                 var runtime = await _installer.EnsureAsync(kind, hardware, cancellationToken);
-                var worker = new OcrWorkerClient(runtime);
+                var worker = new OcrWorkerClient(runtime, _activeDetModel, _activeRecModel);
                 try { await worker.StartAsync(cancellationToken); }
                 catch { await worker.DisposeAsync(); throw; }
                 _workers.Add(worker);
@@ -620,6 +672,8 @@ public sealed class OcrManager : IAsyncDisposable
         var shared = Math.Min(_workers.Count, desired.Length);
         var canReuse = string.Equals(_activeMode, mode, StringComparison.OrdinalIgnoreCase)
             && _workers.All(x => x.IsAlive)
+            && _workers.All(x => string.Equals(x.DetModel, _activeDetModel, StringComparison.Ordinal)
+                && string.Equals(x.RecognitionModel, _activeRecModel, StringComparison.Ordinal))
             && Enumerable.Range(0, shared).All(index =>
                 string.Equals(_workers[index].Kind, desired[index], StringComparison.OrdinalIgnoreCase));
         if (!canReuse)
@@ -657,7 +711,7 @@ public sealed class OcrManager : IAsyncDisposable
             for (var index = retained; index < desired.Length; index++)
             {
                 var runtime = await _installer.EnsureAsync(desired[index], hardware, cancellationToken);
-                var worker = new OcrWorkerClient(runtime);
+                var worker = new OcrWorkerClient(runtime, _activeDetModel, _activeRecModel);
                 try { await worker.StartAsync(cancellationToken); }
                 catch { await worker.DisposeAsync(); throw; }
                 _workers.Add(worker);

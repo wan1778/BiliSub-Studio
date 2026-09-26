@@ -195,7 +195,19 @@ internal static class OcrWorkerRecoveryContract
             await File.WriteAllTextAsync(Path.Combine(stateRoot, "replacement-started"), Environment.ProcessId.ToString());
             while (!File.Exists(Path.Combine(stateRoot, "release-replacement"))) await Task.Delay(10);
         }
-        Console.WriteLine("{\"type\":\"ready\",\"device\":\"gpu:0\",\"models\":[\"PP-OCRv6_medium_det\",\"PP-OCRv6_medium_rec\"]}");
+        // Echo the models this fake was started with, mirroring the production
+        // worker (tier-aware handshake): the client validates the echo.
+        static string Arg(string[] argv, string name, string fallback)
+        {
+            var at = Array.IndexOf(argv, name);
+            return at >= 0 && at + 1 < argv.Length && !string.IsNullOrWhiteSpace(argv[at + 1])
+                ? argv[at + 1].Trim()
+                : fallback;
+        }
+        var det = Arg(arguments, "--det-model", "PP-OCRv6_medium_det");
+        var rec = Arg(arguments, "--rec-model", "PP-OCRv6_medium_rec");
+        Console.WriteLine("{\"type\":\"ready\",\"device\":\"gpu:0\",\"models\":[\"" + det + "\",\"" + rec
+            + "\"],\"det_model\":\"" + det + "\",\"rec_model\":\"" + rec + "\"}");
         Console.Out.Flush();
         var marker = Path.Combine(stateRoot, "crashed-once");
         while (await Console.In.ReadLineAsync() is { } line)

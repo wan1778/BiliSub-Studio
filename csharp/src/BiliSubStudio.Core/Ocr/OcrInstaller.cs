@@ -21,6 +21,12 @@ public sealed class OcrInstaller
     public const string PaddleOcrVersion = "3.7.0";
 public const string DetectionModel = "PP-OCRv6_medium_det";
     public const string RecognitionModel = "PP-OCRv6_medium_rec";
+    // Light tier for Balanced/Fast scans (2026-09-26): 30MB weights vs 133MB,
+    // 2.8x cheaper per image on field hardware, dialogue-equivalent output
+    // (A/B 2026-09-26: identical on real dialogue lines, diffs only on noise
+    // scraps the tracker filters downstream). Accurate keeps Medium.
+    public const string SmallDetectionModel = "PP-OCRv6_small_det";
+    public const string SmallRecognitionModel = "PP-OCRv6_small_rec";
 
     private const string UvArchive = "uv-x86_64-pc-windows-msvc.zip";
     private const string UvUrl = "https://github.com/astral-sh/uv/releases/download/0.12.0/uv-x86_64-pc-windows-msvc.zip";
@@ -31,6 +37,65 @@ public const string DetectionModel = "PP-OCRv6_medium_det";
     private readonly HttpClient _http;
     private readonly ProcessRunner _processes;
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly HashSet<string> _ensuredModelTiers = new(StringComparer.Ordinal);
+
+    // Đảm bảo model det/rec của tier đã tải về TRƯỚC scan (2026-09-26):
+    // PaddleX tự tải BOS ở lần instantiate đầu — để worker làm việc đó giữa
+    // scan là treo cả lane. Fast path kiểm tra cache có sẵn; chậm thì chạy
+    // python một lần duy nhất mỗi tier mỗi session (gate chung).
+    internal async Task EnsureTierModelsAsync(string modelsRoot, string python, string detModel, string recModel, CancellationToken cancellationToken)
+    {
+        ValidateModelName(detModel);
+        ValidateModelName(recModel);
+        var key = detModel + "\n" + recModel;
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            if (_ensuredModelTiers.Contains(key)) return;
+            if (!TierModelsCached(modelsRoot, detModel) || !TierModelsCached(modelsRoot, recModel))
+            {
+                var fetch = "import sys\n"
+                    + "from paddleocr import TextDetection, TextRecognition\n"
+                    + $"TextDetection(model_name={ModelLiteral(detModel)})\n"
+                    + $"TextRecognition(model_name={ModelLiteral(recModel)})\n"
+                    + "print(\"BILISUB_MODELS_OK=" + detModel + "," + recModel + "\")\n";
+                var environment = ExplicitPythonEnvironment();
+                environment["PADDLE_PDX_CACHE_HOME"] = modelsRoot;
+                environment["PADDLE_PDX_MODEL_SOURCE"] = "BOS";
+                var result = await _processes.RunAsync(python, ["-I", "-c", fetch], cancellationToken, environment);
+                var ok = result.ExitCode == 0 && result.StandardOutput
+                    .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                    .Any(line => line.Trim() == "BILISUB_MODELS_OK=" + detModel + "," + recModel);
+                if (!ok)
+                    throw new InvalidDataException($"Không tải được model OCR {detModel} + {recModel}: {result.StandardError.Trim()}");
+            }
+            _ensuredModelTiers.Add(key);
+        }
+        finally { _gate.Release(); }
+    }
+
+    private static void ValidateModelName(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name) || name.Any(c => !(char.IsAsciiLetterOrDigit(c) || c is '_' or '-' or '.')))
+            throw new ArgumentException("Tên model OCR không hợp lệ.", nameof(name));
+    }
+
+    private static string ModelLiteral(string name) =>
+        "\"" + name.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal) + "\"";
+
+    // Fast path: PaddleX cache layout <modelsRoot>/official_models/official_models/<name>/.
+    // Chỉ là gợi ý tăng tốc — python ensure ở trên mới là chuẩn cuối.
+    private static bool TierModelsCached(string modelsRoot, string model)
+    {
+        try
+        {
+            var directory = Path.Combine(modelsRoot, "official_models", "official_models", model);
+            return Directory.Exists(directory)
+                && Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories).Any();
+        }
+        catch (IOException) { return false; }
+        catch (UnauthorizedAccessException) { return false; }
+    }
 
     public OcrInstaller(AppPaths paths, HttpClient http, ProcessRunner processes)
     {
@@ -51,6 +116,9 @@ public const string DetectionModel = "PP-OCRv6_medium_det";
     }
 
     private string PythonInstallRoot => Path.Combine(BootstrapRoot, "python");
+
+    // Models live outside the per-kind runtime root and survive repairs.
+    internal string TierModelsRoot() => Path.Combine(StorageRoot, "models");
 
     // Paddle loads several native DLLs below site-packages. A portable build can
     // be started from a deeply nested directory (for example a source checkout),

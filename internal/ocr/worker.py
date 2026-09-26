@@ -12,6 +12,11 @@ def parse_args():
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--model-cache", required=True)
     parser.add_argument("--device", required=True, choices=("cpu", "gpu:0"))
+    # Model tier (2026-09-26): Accurate scans keep Medium; Balanced/Fast use
+    # Small (2.8x cheaper per image on field hardware, dialogue-equivalent —
+    # A/B 2026-09-26). Defaults preserve the old single-tier behavior.
+    parser.add_argument("--det-model", default="PP-OCRv6_medium_det")
+    parser.add_argument("--rec-model", default="PP-OCRv6_medium_rec")
     return parser.parse_args()
 
 
@@ -501,12 +506,14 @@ class SplitOCREngine:
     MAX_ENTRIES = 32
     MAX_BYTES = 8 * 1024 * 1024
 
-    def __init__(self):
+    def __init__(self, det_model=None, rec_model=None):
         from paddleocr import TextDetection, TextRecognition
         from paddlex.inference.pipelines.components import CropByPolys, SortQuadBoxes, convert_points_to_boxes
 
-        self.detector = TextDetection(model_name=DETECTION_MODEL, device=ARGS.device)
-        self.recognizer = TextRecognition(model_name=RECOGNITION_MODEL, device=ARGS.device)
+        det_name = det_model or DETECTION_MODEL
+        rec_name = rec_model or RECOGNITION_MODEL
+        self.detector = TextDetection(model_name=det_name, device=ARGS.device)
+        self.recognizer = TextRecognition(model_name=rec_name, device=ARGS.device)
         self.crop = CropByPolys(det_box_type="quad")
         self.sort = SortQuadBoxes()
         self.boxes = convert_points_to_boxes
@@ -689,14 +696,16 @@ class BasePredictionCache:
 
 def main():
     cuda_available = validate_device()
-    engine = SplitOCREngine()
+    engine = SplitOCREngine(ARGS.det_model, ARGS.rec_model)
     base_predictions = BasePredictionCache(engine)
     emit({
         "type": "ready",
         "engine": ENGINE_NAME,
         "paddleocr": "3.7.0",
         "paddle": str(paddle.__version__),
-        "models": [DETECTION_MODEL, RECOGNITION_MODEL],
+        "models": [ARGS.det_model, ARGS.rec_model],
+        "det_model": ARGS.det_model,
+        "rec_model": ARGS.rec_model,
         "device": ARGS.device,
         "cuda_available": cuda_available,
     })

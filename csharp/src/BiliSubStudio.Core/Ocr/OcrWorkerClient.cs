@@ -16,6 +16,8 @@ internal sealed class OcrWorkerClient : IAsyncDisposable
         Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
     };
     private readonly OcrRuntime _runtime;
+    private readonly string _detModel;
+    private readonly string _recModel;
     private readonly SemaphoreSlim _requestGate = new(1, 1);
     private Process? _process;
     private StreamWriter? _input;
@@ -28,12 +30,25 @@ internal sealed class OcrWorkerClient : IAsyncDisposable
     // recycle chủ động chống suy giảm theo giờ + pháp y treo (biết worker chết lúc bao nhiêu tuổi).
     private long _imagesServed;
 
-    public OcrWorkerClient(OcrRuntime runtime) => _runtime = runtime;
+    // Single-arg construction keeps the historical Medium default (test-frame
+    // path and pool tests rely on it); tier-aware callers pass explicit models.
+    public OcrWorkerClient(OcrRuntime runtime) : this(runtime, null, null)
+    {
+    }
+
+    public OcrWorkerClient(OcrRuntime runtime, string? detModel = null, string? recModel = null)
+    {
+        _runtime = runtime;
+        _detModel = string.IsNullOrWhiteSpace(detModel) ? OcrInstaller.DetectionModel : detModel.Trim();
+        _recModel = string.IsNullOrWhiteSpace(recModel) ? OcrInstaller.RecognitionModel : recModel.Trim();
+    }
     public bool IsAlive => _process is { HasExited: false };
     internal long ImagesServed => Interlocked.Read(ref _imagesServed);
     internal void ResetAge() => Interlocked.Exchange(ref _imagesServed, 0);
     public string Kind => _runtime.Kind;
     internal OcrRuntime Runtime => _runtime;
+    internal string DetModel => _detModel;
+    internal string RecognitionModel => _recModel;
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
@@ -56,6 +71,10 @@ internal sealed class OcrWorkerClient : IAsyncDisposable
         start.ArgumentList.Add(_runtime.Models);
         start.ArgumentList.Add("--device");
         start.ArgumentList.Add(_runtime.Device);
+        start.ArgumentList.Add("--det-model");
+        start.ArgumentList.Add(_detModel);
+        start.ArgumentList.Add("--rec-model");
+        start.ArgumentList.Add(_recModel);
         start.Environment["PADDLE_PDX_CACHE_HOME"] = _runtime.Models;
         start.Environment["PYTHONUTF8"] = "1";
         start.Environment["PYTHONIOENCODING"] = "utf-8";
@@ -448,8 +467,16 @@ internal sealed class OcrWorkerClient : IAsyncDisposable
         if (root.TryGetProperty("error", out var error) && !string.IsNullOrWhiteSpace(error.GetString())) throw new InvalidOperationException(error.GetString());
         var models = root.TryGetProperty("models", out var modelsNode)
             ? modelsNode.EnumerateArray().Select(x => x.GetString()).ToArray() : [];
-        if (!models.Contains(OcrInstaller.DetectionModel) || !models.Contains(OcrInstaller.RecognitionModel))
-            throw new InvalidDataException($"OCR worker không xác nhận đúng {OcrInstaller.DetectionModel} + {OcrInstaller.RecognitionModel}.");
+        // Tier-aware (2026-09-26): the worker must confirm the exact models
+        // this client was started with — Medium for Accurate, Small for
+        // Balanced/Fast. A drift here (stale cache, arg mismatch) must fail
+        // fast, never silently mix tiers inside one scan.
+        var detEcho = root.TryGetProperty("det_model", out var detNode) ? detNode.GetString() ?? string.Empty : string.Empty;
+        var recEcho = root.TryGetProperty("rec_model", out var recNode) ? recNode.GetString() ?? string.Empty : string.Empty;
+        if (!string.Equals(detEcho, _detModel, StringComparison.Ordinal)
+            || !string.Equals(recEcho, _recModel, StringComparison.Ordinal)
+            || !models.Contains(_detModel) || !models.Contains(_recModel))
+            throw new InvalidDataException($"OCR worker không xác nhận đúng {_detModel} + {_recModel}.");
         var device = root.TryGetProperty("device", out var deviceNode) ? deviceNode.GetString() ?? string.Empty : string.Empty;
         if (!device.StartsWith(_runtime.Kind, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("OCR worker chạy sai thiết bị yêu cầu.");
     }

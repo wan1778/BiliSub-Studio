@@ -189,6 +189,15 @@ public sealed class OcrScanner
                  && !string.Equals(_ocr.Status.ActiveMode, "hybrid", StringComparison.OrdinalIgnoreCase))
             job.Warn(_ocr.Status.Error ?? "Hybrid không sẵn sàng; lượt này đã chuyển sang GPU.");
 
+        // Model tier theo chế độ quét (2026-09-26): Accurate = Medium,
+        // Balanced/Fast = Small (nhanh 2.8x/ảnh). Dựng pool đúng tier trước
+        // khi khóa topology; checkpoint key ăn tên model nên resume không lẫn.
+        var tierDet = OcrModelTier.DetectionModel(request.Mode);
+        var tierRec = OcrModelTier.RecognitionModel(request.Mode);
+        await _ocr.EnsureModelTierAsync(tierDet, tierRec, token);
+        if (!string.Equals(OcrModelTier.TierName(request.Mode), "medium", StringComparison.Ordinal))
+            job.Log($"OCR dùng model nhẹ {tierDet} + {tierRec} cho chế độ {request.Mode}.");
+
         var ffmpeg = await _tools.EnsureFfmpegAsync(token);
         var mode = OcrCheckpointStore.ModeFor(request.Mode, request.Sensitivity);
 

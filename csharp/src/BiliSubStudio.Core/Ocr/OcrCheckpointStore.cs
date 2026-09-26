@@ -426,7 +426,7 @@ internal sealed class OcrCheckpointStore
                 schema, path, file.Length, modUnixNano,
                 region, request.Mode.Trim().ToLowerInvariant(), mode.Fps, mode.Guard, mode.ActiveGuard, mode.DiffTrigger,
                 mode.AdaptiveTiming, mode.ExhaustiveRecognition,
-                OcrInstaller.DetectionModel, OcrInstaller.RecognitionModel, 1280, 320)
+                OcrModelTier.DetectionModel(request.Mode), OcrModelTier.RecognitionModel(request.Mode), 1280, 320)
             : new LegacyCheckpointIdentity(
                 schema, path, file.Length, modUnixNano,
                 region, request.Mode.Trim().ToLowerInvariant(), mode.Fps, mode.Guard, mode.ActiveGuard, mode.DiffTrigger,
