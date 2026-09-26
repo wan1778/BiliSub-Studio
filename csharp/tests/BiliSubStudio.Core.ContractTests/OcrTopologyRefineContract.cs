@@ -57,6 +57,7 @@ internal static class OcrTopologyRefineContract
         await KeepsCeilingWhenMiddleFailsAsync();
         await SkipsRefinementBelowCeilingAsync();
         await DegenerateLadderSkipsAsync();
+        SmallTierTargetAndGate();
     }
 
     // Ladder passes everything, 12 passes, 14 fails → 12 with restore(12).
@@ -99,6 +100,33 @@ internal static class OcrTopologyRefineContract
         var best = await Select([1, 2], script);
         Check(best == 2, $"degenerate ladder must lock 2 (got {best})");
         Check(script.Probed.Count == 2, $"degenerate ladder must not refine (got {script.Probed.Count} probes)");
+    }
+
+    // Small-tier worker target + VRAM grow gate (pure, không cần GPU):
+    // cap 4 mọi lane>=4, floor 1; chỉ grow khi telemetry có + free>=1GB +
+    // chưa đủ worker.
+    private static void SmallTierTargetAndGate()
+    {
+        var target = Benchmark.GetMethod("SmallTierWorkerTarget", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing SmallTierWorkerTarget");
+        int Target(int lanes) => (int)target.Invoke(null, [lanes])!;
+        Check(Target(1) == 1, "1 lane phải 1 worker");
+        Check(Target(2) == 2, "2 lane phải 2 worker");
+        Check(Target(8) == 4, "8 lane small-tier phải 4 worker");
+        Check(Target(16) == 4, "16 lane small-tier vẫn cap 4");
+        Check(Target(0) == 1, "lane 0 phải floor 1");
+        Check(Target(99) == 4, "lane lớn vẫn cap 4");
+        var gate = Benchmark.GetMethod("ShouldGrowSmallTier", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing ShouldGrowSmallTier");
+        bool Grow(bool telemetry, long freeBytes, int current, int lanes) =>
+            (bool)gate.Invoke(null, [telemetry, freeBytes, current, lanes])!;
+        const long gb = 1024L * 1024 * 1024;
+        Check(!Grow(false, 8 * gb, 2, 8), "không telemetry không được grow mù");
+        Check(!Grow(true, 512 * 1024 * 1024L, 2, 8), "dưới 1GB không được grow");
+        Check(Grow(true, gb, 2, 8), "đủ 1GB phải grow");
+        Check(Grow(true, 2 * gb, 2, 16), "dư VRAM phải grow");
+        Check(!Grow(true, 2 * gb, 4, 8), "đủ worker rồi không grow thừa");
+        Check(!Grow(true, 2 * gb, 2, 2), "2 lane đủ 2 worker rồi");
     }
 
     private static void Check(bool valid, string message)

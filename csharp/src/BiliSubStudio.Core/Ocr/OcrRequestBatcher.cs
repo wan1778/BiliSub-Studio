@@ -66,6 +66,8 @@ public sealed class OcrRequestBatcher : IAsyncDisposable
 
     private readonly int _cap;
     private readonly Func<IReadOnlyList<Pending>, CancellationToken, Task> _dispatch;
+    private readonly Func<int>? _workerCountProvider;
+    private readonly TimeSpan _holdWindow;
     private readonly Channel<Pending> _pending = Channel.CreateUnbounded<Pending>(new UnboundedChannelOptions
     {
         SingleReader = true,
@@ -76,18 +78,31 @@ public sealed class OcrRequestBatcher : IAsyncDisposable
     private readonly object _trackedSync = new();
     private readonly List<Task> _tracked = [];
 
+    // Busy-coalesce hold (26/09): mỗi lượt gọi tốn ~380ms overhead cố định
+    // trong khi compute chỉ ~40-140ms — batch đầy 4 rẻ gấp ~3x mỗi ảnh. Giữ
+    // luật rảnh-chạy-ngay: chỉ hold khi mọi worker đều đang bận (không worker
+    // nào rảnh thì chờ thêm cũng không mất gì). workerCountProvider null nghĩa
+    // là không biết pool (đường cũ/test cũ): hành vi y hệt zero-wait trước đây.
+    internal static readonly TimeSpan CoalesceHold = TimeSpan.FromMilliseconds(15);
+
     // dispatch: nhận 1 batch (1..cap, cùng cờ, đúng thứ tự) và PHẢI hoàn thành
     // (result/exception/canceled) mọi member khi xong. Ném lỗi -> batcher tự
     // gán lỗi cho member còn treo (lưới an toàn, không treo lane).
     public OcrRequestBatcher(
         Func<IReadOnlyList<Pending>, CancellationToken, Task> dispatch,
-        int cap = WorkerBatchLimit)
+        int cap = WorkerBatchLimit,
+        Func<int>? workerCountProvider = null,
+        TimeSpan holdWindow = default)
     {
         ArgumentNullException.ThrowIfNull(dispatch);
         ArgumentOutOfRangeException.ThrowIfLessThan(cap, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(cap, WorkerBatchLimit);
+        if (holdWindow < TimeSpan.Zero || holdWindow > TimeSpan.FromSeconds(1))
+            throw new ArgumentOutOfRangeException(nameof(holdWindow), "Coalesce hold phải trong 0..1s.");
         _dispatch = dispatch;
         _cap = cap;
+        _workerCountProvider = workerCountProvider;
+        _holdWindow = holdWindow == default ? CoalesceHold : holdWindow;
         _loop = Task.Run(LoopAsync);
     }
 
@@ -124,9 +139,22 @@ public sealed class OcrRequestBatcher : IAsyncDisposable
                     Track(DispatchSafeAsync(TakeSpillBatch()));
                     continue;
                 }
-                // Zero-wait: chỉ block khi KHÔNG có gì chờ. Có là vét ngay, không đợi mate.
+                // Zero-wait khi rảnh: chỉ block khi KHÔNG có gì chờ. Có là vét
+                // ngay, không đợi mate — trừ khi mọi worker đều bận (lúc đó
+                // chờ thêm tối đa hold window để gom batch đầy, không mất gì).
                 if (!await _pending.Reader.WaitToReadAsync(_stop.Token)) break;
                 if (!_pending.Reader.TryRead(out var head) || head is null) continue;
+                if (HoldApplies())
+                {
+                    try { await Task.Delay(_holdWindow, _stop.Token); }
+                    catch (OperationCanceledException)
+                    {
+                        // Head đã lấy ra khỏi channel mà chưa dispatch: settle
+                        // ngay như Dispose làm với leftovers, không treo lane.
+                        head.TrySetCanceled();
+                        break;
+                    }
+                }
                 var batch = new List<Pending>(_cap) { head };
                 while (batch.Count < _cap && _pending.Reader.TryRead(out var next) && next is not null)
                 {
@@ -142,6 +170,24 @@ public sealed class OcrRequestBatcher : IAsyncDisposable
     private static bool Compatible(Pending candidate, Pending head) =>
         candidate.RecoverShortBlank == head.RecoverShortBlank
         && string.Equals(candidate.ActiveShortText, head.ActiveShortText, StringComparison.Ordinal);
+
+    // Mọi worker đều đang giữ 1 dispatch chưa xong thì hold thêm mate là miễn
+    // phí (không worker rảnh nào bị bắt đợi). Ngược lại chạy ngay như cũ.
+    // Provider lỗi/trả <= 0 là fail-open về zero-wait (không bao giờ hold mù).
+    private bool HoldApplies()
+    {
+        var provider = _workerCountProvider;
+        if (provider is null) return false;
+        int workers;
+        try { workers = provider(); }
+        catch { return false; }
+        if (workers <= 0) return false;
+        lock (_trackedSync)
+        {
+            _tracked.RemoveAll(task => task.IsCompleted);
+            return _tracked.Count >= workers;
+        }
+    }
 
     // Lấy batch từ spill: head = item tồn lâu nhất + mate cùng cờ (giữ thứ tự).
     // Không tương thích thì ở lại spill chờ vòng sau — nhưng vòng nào cũng xả spill

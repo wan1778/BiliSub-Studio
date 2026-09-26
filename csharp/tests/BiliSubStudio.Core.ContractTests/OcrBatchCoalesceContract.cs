@@ -27,6 +27,8 @@ internal static class OcrBatchCoalesceContract
         await SubmitAfterDisposeFailsAsync();
         await OnPerfPassthroughAsync();
         await CheckCtorGuardsAsync();
+        await BusyHoldsForMatesAsync();
+        await IdleIgnoresHoldAsync();
     }
 
     private sealed class FakeDispatch
@@ -260,6 +262,49 @@ internal static class OcrBatchCoalesceContract
             throw new InvalidOperationException("ảnh rỗng vẫn lọt");
         }
         catch (ArgumentException) { }
+    }
+
+    private static async Task BusyHoldsForMatesAsync()
+    {
+        // Worker duy nhất đang bận (dispatch đầu block trên Gate): 3 mate nộp
+        // dồn phải gộp thành đúng 1 batch sau hold — không wall-clock assert,
+        // chỉ assert cấu trúc batch (deterministic).
+        var fake = new FakeDispatch();
+        await using var batcher = new OcrRequestBatcher(
+            fake.DispatchAsync, 4, () => 1, TimeSpan.FromMilliseconds(100));
+        var first = batcher.SubmitAsync("h1", CancellationToken.None);
+        await WaitForAsync(() =>
+        {
+            lock (fake.Batches) return fake.Batches.Count == 1;
+        }, "dispatch đầu chưa chạy");
+        var rest = Enumerable.Range(2, 3)
+            .Select(index => batcher.SubmitAsync("h" + index, CancellationToken.None))
+            .ToArray();
+        await WaitForAsync(() =>
+        {
+            lock (fake.Batches) return fake.Batches.Count == 2;
+        }, "hold không gom batch khi busy");
+        List<IReadOnlyList<OcrRequestBatcher.Pending>> batches;
+        lock (fake.Batches) batches = fake.Batches.ToList();
+        Check(batches[1].Count == 3, $"busy-hold gom sai (got {batches[1].Count}, want 3)");
+        Check(batches.SelectMany(batch => batch).Count() == 4, "mất member khi hold");
+        fake.Gate.TrySetResult();
+        await Task.WhenAll(new[] { first }.Concat(rest)).WaitAsync(TimeSpan.FromSeconds(10));
+    }
+
+    private static async Task IdleIgnoresHoldAsync()
+    {
+        // Worker rảnh (dispatch xong ngay): submit phải xong tức thì, không được
+        // chờ hết hold window. Hold 1000ms, margin 800ms: đúng thì ~ms, sai thì >=1000ms.
+        var fake = new FakeDispatch();
+        fake.Gate.TrySetResult();
+        await using var batcher = new OcrRequestBatcher(
+            fake.DispatchAsync, 4, () => 2, TimeSpan.FromMilliseconds(1000));
+        var watch = Stopwatch.StartNew();
+        var result = await batcher.SubmitAsync("solo", CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+        watch.Stop();
+        Check(result.Text == "t-solo", "idle submit mất kết quả");
+        Check(watch.Elapsed < TimeSpan.FromMilliseconds(800), $"idle mà hold là sai luật rảnh-chạy-ngay ({watch.ElapsedMilliseconds}ms)");
     }
 
     private static async Task WaitForAsync(Func<bool> condition, string message, int timeoutMs = 5000)

@@ -22,6 +22,33 @@ public sealed class OcrManager : IAsyncDisposable
     // Balanced/Fast = Small. Mặc định Medium (hành vi cũ); đổi tier là rebuild.
     private string _activeDetModel = OcrInstaller.DetectionModel;
     private string _activeRecModel = OcrInstaller.RecognitionModel;
+    // OOM backstop cho grow small-tier (26/09): 2 death không kế hoạch liên
+    // tiếp trong pool grown thì ghim, lần quét sau không grow nữa. Không bao
+    // giờ shrink giữa scan (request đang bay giữ worker reference; dispose
+    // giữa chừng sẽ strand chúng) — ghim áp dụng ở lần start sau, scan này
+    // chạy tiếp bằng replacement 1:1 có sẵn.
+    private int _smallTierDeaths;
+    private bool _smallGrowSuppressed;
+
+    private bool IsSmallTierActiveLocked() =>
+        string.Equals(_activeDetModel, OcrInstaller.SmallDetectionModel, StringComparison.Ordinal)
+        && string.Equals(_activeRecModel, OcrInstaller.SmallRecognitionModel, StringComparison.Ordinal);
+
+    // Tier-aware worker cap (26/09): Small được tới 4 (model nhẹ), các tier
+    // khác giữ luật WorkerTarget cũ. Mọi clamp (configure/resume/grow) đi qua
+    // đây để resume không cắt pool 4 về 2 và cold build không vượt cap.
+    private int EffectiveWorkerCapLocked(string mode, int requested) =>
+        IsSmallTierActiveLocked() && !string.Equals(mode, "cpu", StringComparison.OrdinalIgnoreCase)
+            ? Math.Min(OcrTopologyBenchmark.SmallTierMaxWorkers, Math.Max(1, requested))
+            : OcrTopologyBenchmark.WorkerTarget(mode, requested);
+
+    // Snapshot cho scanner validation (tự giữ gate; caller không giữ gate).
+    internal async Task<int> EffectiveWorkerTargetAsync(string mode, int lanes, CancellationToken cancellationToken)
+    {
+        await _gate.WaitAsync(cancellationToken);
+        try { return EffectiveWorkerCapLocked(mode, lanes); }
+        finally { _gate.Release(); }
+    }
     private string _state = "stopped";
     private string? _error;
     private int _committedWorkerTarget = 1;
@@ -177,12 +204,14 @@ public sealed class OcrManager : IAsyncDisposable
         await _gate.WaitAsync(cancellationToken);
         try
         {
-            target = OcrTopologyBenchmark.WorkerTarget(_activeMode, target);
+            target = EffectiveWorkerCapLocked(_activeMode, target);
             var minimum = MinimumWorkerTarget(_activeMode);
             if (target < minimum)
                 throw new ArgumentOutOfRangeException(nameof(target),
                     $"OCR {_activeMode} cần ít nhất {minimum} worker.");
-            if (_workers.Count == target && _workers.All(x => x.IsAlive))
+            if (_workers.Count == target && _workers.All(x => x.IsAlive)
+                && _workers.All(x => string.Equals(x.DetModel, _activeDetModel, StringComparison.Ordinal)
+                    && string.Equals(x.RecognitionModel, _activeRecModel, StringComparison.Ordinal)))
             {
                 _committedWorkerTarget = target;
                 return target;
@@ -259,6 +288,52 @@ public sealed class OcrManager : IAsyncDisposable
         finally { _gate.Release(); }
     }
 
+    // One-shot grow sau topology lock, khi chưa có traffic (scanner gọi trước
+    // vòng lane). Chỉ Small tier (model nhẹ) + VRAM đủ + chưa bị ghim OOM.
+    // Trả về số worker hiện tại (không đổi nếu không đủ điều kiện).
+    public async Task<int> TryGrowSmallTierAsync(int lanes, CancellationToken cancellationToken)
+    {
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            if (!IsSmallTierActiveLocked() || _smallGrowSuppressed
+                || string.Equals(_activeMode, "cpu", StringComparison.OrdinalIgnoreCase))
+                return _workers.Count;
+            var want = OcrTopologyBenchmark.SmallTierWorkerTarget(lanes);
+            if (_workers.Count >= want) return _workers.Count;
+            var live = _hardware.ResourceSnapshot();
+            if (!OcrTopologyBenchmark.ShouldGrowSmallTier(
+                live.VramTelemetryAvailable, live.AvailableVramBytes, _workers.Count, lanes))
+                return _workers.Count;
+            var hardware = _hardware.Snapshot();
+            var desired = DesiredKinds(_activeMode, want);
+            for (var index = _workers.Count; index < desired.Length; index++)
+            {
+                var runtime = await _installer.EnsureAsync(desired[index], hardware, cancellationToken);
+                var worker = new OcrWorkerClient(runtime, _activeDetModel, _activeRecModel);
+                try { await worker.StartAsync(cancellationToken); }
+                catch { await worker.DisposeAsync(); throw; }
+                _workers.Add(worker);
+            }
+            RebuildAvailabilityLocked();
+            return _workers.Count;
+        }
+        finally { _gate.Release(); }
+    }
+
+    // OOM backstop: death không kế hoạch thứ 2 trong pool grown thì ghim —
+    // lần quét sau không grow nữa. Chỉ ghi cờ (không mutate pool ở đây).
+    // Gọi dưới _gate, sau replace thành công.
+    private void NoteSmallTierDeathLocked()
+    {
+        if (!IsSmallTierActiveLocked()
+            || _workers.Count <= OcrTopologyBenchmark.WorkerTarget(_activeMode, _workers.Count))
+            return;
+        _smallTierDeaths++;
+        if (_smallTierDeaths >= 2)
+            _smallGrowSuppressed = true;
+    }
+
     public async Task<OcrResult> RunAsync(string imageBase64, CancellationToken cancellationToken, bool recoverShortBlank = false, string? activeShortText = null, Action<OcrPerfSample>? onPerf = null)
     {
         Interlocked.Increment(ref _ocrBatchCalls);
@@ -302,20 +377,24 @@ public sealed class OcrManager : IAsyncDisposable
     // Contract test ghim == 4.
     public static int BatchCoalesceCap = 4;
 
-    public OcrBatchScope CreateBatchScope(CancellationToken scanToken) => new(this, scanToken);
+    public OcrBatchScope CreateBatchScope(CancellationToken scanToken) => new(this, scanToken, () => _workers.Count);
 
     public sealed class OcrBatchScope : IAsyncDisposable
     {
         private readonly OcrManager _manager;
         private readonly OcrRequestBatcher? _batcher;
 
-        internal OcrBatchScope(OcrManager manager, CancellationToken scanToken)
+        internal OcrBatchScope(OcrManager manager, CancellationToken scanToken, Func<int>? workerCountProvider)
         {
             _manager = manager;
             _ = scanToken;
             // Cap 1: không dựng batcher, SubmitAsync đi đường cũ từng ảnh.
+            // workerCountProvider cho batcher biết pool rộng bao nhiêu để hold
+            // gom mate đúng lúc (busy mới hold, idle chạy ngay như cũ). Đọc
+            // live mỗi lần check (pool có thể rebuild) — lệch chút cũng vô hại
+            // vì đây chỉ là heuristic gom batch, không phải gate đúng/sai.
             if (BatchCoalesceCap > 1)
-                _batcher = new OcrRequestBatcher(manager.DispatchBatchAsync, BatchCoalesceCap);
+                _batcher = new OcrRequestBatcher(manager.DispatchBatchAsync, BatchCoalesceCap, workerCountProvider);
         }
 
         public Task<OcrResult> SubmitAsync(
@@ -577,6 +656,7 @@ public sealed class OcrManager : IAsyncDisposable
                 _workers.Insert(index, replacement);
                 _state = "ready";
                 _error = null;
+                if (!planned) NoteSmallTierDeathLocked();
                 return replacement;
             }
             catch (Exception replacementError)
@@ -611,6 +691,8 @@ public sealed class OcrManager : IAsyncDisposable
             _activeMode = string.Empty;
             _activeDetModel = OcrInstaller.DetectionModel;
             _activeRecModel = OcrInstaller.RecognitionModel;
+            _smallTierDeaths = 0;
+            _smallGrowSuppressed = false;
             _committedWorkerTarget = MinimumWorkerTarget(_deviceMode);
             _error = null;
             retired = _retiredInference.ToArray();
@@ -635,6 +717,8 @@ public sealed class OcrManager : IAsyncDisposable
             _activeMode = string.Empty;
             _activeDetModel = OcrInstaller.DetectionModel;
             _activeRecModel = OcrInstaller.RecognitionModel;
+            _smallTierDeaths = 0;
+            _smallGrowSuppressed = false;
             _committedWorkerTarget = MinimumWorkerTarget(_deviceMode);
             _error = null;
         }
@@ -645,6 +729,8 @@ public sealed class OcrManager : IAsyncDisposable
     {
         target = OcrTopologyBenchmark.WorkerTarget(mode, target);
         await StopWorkersLockedAsync();
+        _smallTierDeaths = 0;
+        _smallGrowSuppressed = false;
         var kinds = DesiredKinds(mode, target);
         try
         {

@@ -5,6 +5,23 @@ internal static class OcrTopologyBenchmark
     internal static int WorkerTarget(string activeMode, int lanes) =>
         string.Equals(activeMode, "cpu", StringComparison.OrdinalIgnoreCase) ? lanes : Math.Min(2, lanes);
 
+    // Small-tier pools run light models (~100MB/worker idle measured on a 4GB
+    // card): headroom for more workers than the Medium cap. Hard cap stays 4
+    // (worker protocol + BatchCoalesceCap parity). Growth is VRAM-gated per
+    // scan (ShouldGrowSmallTier); never assumed from topology alone.
+    internal const int SmallTierMaxWorkers = 4;
+    // VRAM free còn lại sau pool small ấm mới được grow (đo thật +100MB/worker
+    // idle, +~380MB lúc inference batch4 — bar 1GB dư biên ~2x).
+    internal const long SmallTierGrowReserveBytes = 1L * 1024 * 1024 * 1024;
+
+    internal static int SmallTierWorkerTarget(int lanes) =>
+        Math.Min(SmallTierMaxWorkers, Math.Max(1, lanes));
+
+    internal static bool ShouldGrowSmallTier(bool telemetryAvailable, long availableBytes, int currentWorkers, int lanes) =>
+        telemetryAvailable
+        && availableBytes >= SmallTierGrowReserveBytes
+        && currentWorkers < SmallTierWorkerTarget(lanes);
+
     internal static IReadOnlyList<int> Levels { get; } = [1, 2, 4, 8, 16];
     internal static IReadOnlyList<int> HybridLevels { get; } = [2, 4, 8, 16];
 

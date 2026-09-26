@@ -236,7 +236,11 @@ public sealed class OcrScanner
         }
         var configuredWorkers = _ocr.Status.Workers;
         var configuredWorkerKinds = _ocr.Status.WorkerKinds;
-        if (configuredWorkers != OcrTopologyBenchmark.WorkerTarget(_ocr.Status.ActiveMode, selected))
+        // Small tier có thể đã grown 2→4 từ session resume trước: chấp nhận
+        // khoảng [base, cap] thay vì bằng tuyệt đối (base = luật cũ).
+        var expectedBase = OcrTopologyBenchmark.WorkerTarget(_ocr.Status.ActiveMode, selected);
+        var expectedCap = await _ocr.EffectiveWorkerTargetAsync(_ocr.Status.ActiveMode, selected, token);
+        if (configuredWorkers < expectedBase || configuredWorkers > expectedCap)
             throw new InvalidDataException($"OCR topology chưa khóa đúng: {selected} FFmpeg lane nhưng có {configuredWorkers} Python worker.");
         var checkpoint = saved ?? (await _checkpoints.NewAsync(keyRequest, selected, token)) with
         {
@@ -246,6 +250,12 @@ public sealed class OcrScanner
         selected = checkpoint.SelectedParallelism;
         if (checkpoint.Lanes.Count != selected)
             throw new InvalidDataException($"OCR checkpoint topology không hợp lệ: {checkpoint.Lanes.Count}/{selected} lane.");
+        // Small-tier scale-up (26/09): VRAM-gated grow 2→4 workers sau khi
+        // topology đã khóa, trước khi lane chạy (chưa có traffic nên rebuild
+        // availability an toàn). Không đủ VRAM/bị ghim OOM thì giữ nguyên.
+        var grownWorkers = await _ocr.TryGrowSmallTierAsync(selected, token);
+        if (grownWorkers != configuredWorkers)
+            job.Log($"OCR Small tier mở rộng worker {configuredWorkers} → {grownWorkers} (VRAM cho phép).");
         // Tự nhận diện kiểu sub (16/09, khỏi gạt tay): chụp khung cách đều, cắt
         // đúng ROI, worker đo vành chữ -> vote mức lọc cho CẢ lượt quét. Mọi lỗi
         // -> "off" (y hệt cũ, không mất chữ). Mỗi lượt GÁN LẠI từ đầu nên không
