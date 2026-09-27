@@ -26,7 +26,11 @@ function Get-Sha256 {
 function Get-SourceIdentity {
     param([Parameter(Mandatory = $true)][string]$RepositoryRoot)
 
-    $excludedSegments = @(".git", ".vs", "bin", "obj", "artifacts", "TestResults")
+    # publish/ and publish-backup/ are build-output copies (old framework
+    # publishes, live portable app data). Mirror validate_csharp_migration.py:
+    # never scan them for the source identity — a running portable app deletes
+    # files inside them mid-scan (checkpoint replace) and kills the gate.
+    $excludedSegments = @(".git", ".vs", "bin", "obj", "artifacts", "TestResults", "publish", "publish-backup")
     $rootFull = [System.IO.Path]::GetFullPath($RepositoryRoot).TrimEnd('\', '/')
     $paths = Get-ChildItem $rootFull -Recurse -File -Force |
         ForEach-Object {
