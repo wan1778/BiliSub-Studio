@@ -798,7 +798,8 @@ for marker in (
     require(marker in asr_installer, f"ASR pinned installer contract missing {marker}")
 for marker in ("SelectRuntimeAsync", "ProbeRealtimeFactor", "asr-probe-gpu", "asr-probe-cpu", "SaveCheckpointAsync", "RunStreamingAsync", "OwnedProcessGroup"):
     require(marker in asr_service, f"ASR benchmark/checkpoint/process contract missing {marker}")
-for marker in ('local_files_only=True', 'language="zh"', "word_timestamps=True", "vad_filter=True", '"event": "segment"'):
+for marker in ('local_files_only=True', 'language="zh"', "word_timestamps=True", "vad_filter=True", '"event": "segment"',
+               "hybrid_plan(audio, args.offset, args.offset", "ASR frontier failed to advance"):
     require(marker in asr_worker, f"ASR worker offline/Chinese/timestamp contract missing {marker}")
 require("WhisperModel(" in asr_worker and "str(model_dir)" in asr_worker,
         "ASR worker must load only the verified local model directory")

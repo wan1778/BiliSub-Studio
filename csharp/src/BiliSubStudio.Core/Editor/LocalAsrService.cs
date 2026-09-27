@@ -239,7 +239,7 @@ internal sealed partial class LocalAsrService : IDisposable
                 job.Set("asr-probe-gpu", 21, $"Đang benchmark Whisper GPU thật ({compute}) trên mẫu {probeSeconds:0}s...");
                 var probe = await ProbeAsync(runtime, audio, probeSeconds, new AsrSelection("cuda", compute, threads, 0, cudaDirectories), processes, job.CancellationToken);
                 if (probe.RealtimeFactor <= 1.5) return probe;
-                job.Warn($"Whisper GPU benchmark chậm {probe.RealtimeFactor:0.00}× thời gian thực; đo CPU trước khi khóa cấu hình.");
+                job.Warn($"Whisper GPU benchmark chậm {probe.RealtimeFactor:0.00}× thời gian thực ({probe.Device}/{probe.ComputeType}); đo CPU trước khi khóa cấu hình.");
             }
             catch (Exception error) when (error is not OperationCanceledException)
             {

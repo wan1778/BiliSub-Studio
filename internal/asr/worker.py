@@ -330,63 +330,58 @@ def main() -> int:
     model.transcribe(warmup, language="zh", beam_size=1, word_timestamps=False)
     emit({"event": "ready", "device": args.device, "compute": args.compute})
     started = time.perf_counter()
-    segments, info = model.transcribe(
-        str(audio),
-        language="zh",
-        task="transcribe",
-        beam_size=max(1, min(args.beam, 8)),
-        temperature=(0.0, 0.2, 0.4, 0.6, 0.8, 1.0),
-        condition_on_previous_text=True,
-        word_timestamps=True,
-        vad_filter=True,
-        vad_parameters={"threshold": 0.3, "min_silence_duration_ms": 500, "speech_pad_ms": 250},
-        no_speech_threshold=0.2,
-        log_prob_threshold=-1.2,
-        compression_ratio_threshold=3.0,
-    )
+    # 27/09 vụ OOM 23:54: faster-whisper STFT cả file một lúc (28 phút audio
+    # = 8.23 GiB numpy) khi single-device chạy từ checkpoint tới hết file.
+    # Chia chunk nối tiếp 60s + nối seam y hệt hybrid (1 thiết bị, không
+    # threadpool): RAM phẳng mọi độ dài, chữ ở biên chunk không mất.
+    chunks, rate, total = hybrid_plan(audio, args.offset, args.offset, args.probe)
+    if not chunks:
+        raise RuntimeError("ASR audio has no samples")
+    results = []
+    info = None
+    for chunk in chunks:
+        with _wave.open(str(audio), "rb") as source:
+            source.setpos(chunk[2])
+            raw = source.readframes(chunk[3] - chunk[2])
+        if len(raw) != (chunk[3] - chunk[2]) * 2:
+            raise RuntimeError("ASR audio chunk is truncated")
+        samples = _np.frombuffer(raw, dtype="<i2").astype(_np.float32) / 32768.0
+        recognized, info = recognition(model, samples, args.beam)
+        result = [segment_payload(segment, args.offset + chunk[2] / rate)
+                  for segment in recognized if str(segment.text).strip()]
+        if any(not segment["words"] for segment in result):
+            raise RuntimeError("ASR cannot reconcile a spoken segment without word timestamps")
+        results.append(result)
     count = 0
     word_count = 0
-    latest = args.offset
-    for segment in segments:
-        text = " ".join(str(segment.text).strip().split())
-        if not text:
-            continue
-        local_start = max(0.0, float(segment.start))
-        local_end = max(local_start + 0.05, float(segment.end))
-        start = args.offset + local_start
-        end = args.offset + local_end
-        words = []
-        for word in segment.words or []:
-            value = str(word.word).strip()
-            if not value or word.start is None or word.end is None:
-                continue
-            word_start = args.offset + max(0.0, float(word.start))
-            word_end = args.offset + max(float(word.start) + 0.01, float(word.end))
-            words.append({
-                "start": word_start,
-                "end": word_end,
-                "text": value,
-                "probability": float(word.probability or 0.0),
-            })
-        emit({
-            "event": "segment",
-            "start": start,
-            "end": end,
-            "text": text,
-            "avg_logprob": float(segment.avg_logprob),
-            "no_speech_prob": float(segment.no_speech_prob),
-            "words": words,
-        })
-        count += 1
-        word_count += len(words)
-        latest = end
+    frontier = args.offset
+    lower: dict = {}
+    for emit_index in range(len(chunks)):
+        current = results[emit_index]
+        first = lower.get(emit_index, next((i for i, word in enumerate(hybrid_words(current))
+            if (word["start"] + word["end"]) / 2 >= frontier), len(hybrid_words(current))))
+        if emit_index + 1 < len(chunks):
+            upper, next_lower, end = hybrid_seam(
+                current, results[emit_index + 1], args.offset + chunks[emit_index][1] / rate, first)
+            lower[emit_index + 1] = next_lower
+        else:
+            upper, end = len(hybrid_words(current)), args.offset + total / rate
+        if end <= frontier:
+            raise RuntimeError("ASR frontier failed to advance")
+        owned = hybrid_project(current, first, upper, frontier, end)
+        for segment in owned:
+            emit(segment)
+            count += 1
+            word_count += len(segment["words"])
+        frontier = end
+    latest = frontier
     emit({
         "event": "complete",
         "segments": count,
         "words": word_count,
         "latest": latest,
-        "language": str(info.language),
-        "language_probability": float(info.language_probability),
+        "language": str(info.language) if info is not None else "zh",
+        "language_probability": float(info.language_probability) if info is not None else 0.0,
         "elapsed_seconds": time.perf_counter() - started,
         "probe": bool(args.probe),
     })
