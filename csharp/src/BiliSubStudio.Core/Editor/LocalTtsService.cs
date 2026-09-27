@@ -140,6 +140,34 @@ internal sealed partial class LocalTtsService : IDisposable
         return value;
     }
 
+    // Cue chật/worker chết đột ngột không được giết cả job (vụ 13:17 27/09:
+    // worker tắt không traceback, C# chỉ thấy exit + stderr trống): mỗi lần
+    // fail giữ hiện trường (failed-runs, tối đa 3) + báo đủ chi tiết (exit,
+    // ready/complete, cue đang làm dở). Luật cứng của user: KHÔNG bỏ cue nào
+    // (không im lặng thay voice) -> tự chạy lại toàn bộ tối đa 1 lần từ cache
+    // (cue xong rồi ăn ngay, cue chết chạy lại; chết tiếp ở cùng chỗ thì lỗi
+    // thẳng có chẩn đoán). Fail ở nạp model (chưa có cue dở) cũng chạy lại 1
+    // lần vì có thể do tranh tài nguyên thoáng qua.
+    private const int MaxAutoRetries = 1;
+
+    private sealed class TtsWorkerFailedException(string message, int lastIndex, int total, string? lastId)
+        : InvalidOperationException(message)
+    {
+        public int LastIndex { get; } = lastIndex;
+        public int Total { get; } = total;
+        public string? LastId { get; } = lastId;
+    }
+
+    internal static string BuildWorkerFailureMessage(
+        int exitCode, bool ready, bool completed, string reportedResult, string resultPath,
+        int lastIndex, int total, string? lastId, string stderrTail) =>
+        $"Voice worker dừng bất thường (exit {exitCode}, ready={ready}, complete={completed}, " +
+        $"result báo '{reportedResult}' vs chờ '{resultPath}'). " +
+        (total > 0
+            ? $"Dừng ở cue {lastIndex}/{total}" + (string.IsNullOrWhiteSpace(lastId) ? string.Empty : $" (id {lastId})") + ". "
+            : "Chết trước khi tổng hợp cue nào (nạp model/worker). ") +
+        "stderr: " + (string.IsNullOrWhiteSpace(stderrTail) ? "(trống — chết ngoài Python, xem failed-runs)" : stderrTail);
+
     private async Task<EditorTtsResult> GenerateCuesAsync(AppJob job, string projectId, double duration, string voice,
         IReadOnlyList<TtsCueManifest> cues, IReadOnlyDictionary<string, EditorCueSpeechTiming> cueTiming)
     {
@@ -149,16 +177,51 @@ internal sealed partial class LocalTtsService : IDisposable
             var runtime = await _installer.PrepareAsync(job, voice, 35);
             var ffmpeg = await _tools.EnsureFfmpegAsync(job.CancellationToken);
             var outputRoot = Path.Combine(_paths.Cache, "Editor", "TTS", projectId);
-            var runId = Guid.NewGuid().ToString("N");
-            var runRoot = Path.Combine(outputRoot, "runs", runId);
-            var inputPath = Path.Combine(runRoot, "input.json");
-            var resultPath = Path.Combine(outputRoot, $"result-{runId}.json");
-            var masterPath = Path.Combine(outputRoot, $"voice-master-{runId}.flac");
-            Directory.CreateDirectory(runRoot);
-            var accepted = false;
-            await using var processes = new OwnedProcessGroup();
-            try
+            TtsWorkerFailedException? lastFailure = null;
+            for (var attempt = 0; attempt <= MaxAutoRetries; attempt++)
             {
+                var runId = Guid.NewGuid().ToString("N");
+                var runRoot = Path.Combine(outputRoot, "runs", runId);
+                var inputPath = Path.Combine(runRoot, "input.json");
+                var resultPath = Path.Combine(outputRoot, $"result-{runId}.json");
+                var masterPath = Path.Combine(outputRoot, $"voice-master-{runId}.flac");
+                Directory.CreateDirectory(runRoot);
+                try
+                {
+                    return await RunWorkerOnceAsync(
+                        job, runtime, ffmpeg, outputRoot, runRoot, inputPath, resultPath, masterPath,
+                        projectId, duration, voice, cues, cueTiming, job.CancellationToken);
+                }
+                catch (TtsWorkerFailedException failure)
+                {
+                    job.CancellationToken.ThrowIfCancellationRequested();
+                    lastFailure = failure;
+                    if (attempt < MaxAutoRetries)
+                    {
+                        job.Warn($"Worker TTS dừng đột ngột lần {attempt + 1}; tự chạy lại toàn bộ 1 lần từ cache " +
+                            $"(cue nào xong rồi ăn ngay, không bỏ cue nào). Chi tiết đã giữ trong failed-runs. {failure.Message}");
+                        continue;
+                    }
+                    throw new InvalidOperationException(failure.Message, failure);
+                }
+            }
+            throw new InvalidOperationException(lastFailure?.Message ?? "Worker TTS thất bại không rõ nguyên nhân.", lastFailure);
+        }
+        finally { _generationGate.Release(); }
+    }
+
+    private async Task<EditorTtsResult> RunWorkerOnceAsync(
+        AppJob job, LocalTtsRuntime runtime, string ffmpeg, string outputRoot, string runRoot,
+        string inputPath, string resultPath, string masterPath, string projectId, double duration, string voice,
+        IReadOnlyList<TtsCueManifest> cues, IReadOnlyDictionary<string, EditorCueSpeechTiming> cueTiming,
+        CancellationToken cancellationToken)
+    {
+        var accepted = false;
+        string? failureMessage = null;
+        string stderrTail = string.Empty;
+        await using var processes = new OwnedProcessGroup();
+        try
+        {
                 var manifest = new TtsInputManifest(ManifestSchema, LocalTtsInstaller.EngineVersion,
                     voice, TimingAlgorithm, duration, cues);
                 await WriteAtomicJsonAsync(inputPath, manifest, job.CancellationToken);
@@ -166,71 +229,109 @@ internal sealed partial class LocalTtsService : IDisposable
                 var ready = false;
                 var completed = false;
                 var reportedResult = string.Empty;
+                var lastAttemptIndex = 0;
+                var lastAttemptTotal = 0;
+                string? lastAttemptId = null;
+                var lastCueIndex = 0;
+                string? lastCueId = null;
+                string? inFlightId = null;
                 var result = await _processes.RunStreamingAsync(runtime.Python,
                     ["-I", "-X", "utf8", runtime.Worker, "--manifest", inputPath,
                      "--model", runtime.Model, "--config", runtime.Config, "--ffmpeg", ffmpeg,
                      "--output-root", outputRoot, "--run-root", runRoot,
                      "--result", resultPath, "--master", masterPath, "--voice", voice],
-                    job.CancellationToken, (line, _) =>
+                    cancellationToken, (line, _) =>
                     {
-                        if (!TryParseEvent(line, out var parsed)) return ValueTask.CompletedTask;
-                        using (parsed)
+                        try
                         {
-                            var root = parsed.RootElement;
-                            var kind = GetString(root, "event");
-                            if (kind == "ready")
-                                ready = GetString(root, "voice_revision") == LocalTtsInstaller.VoiceRevision
-                                    && GetString(root, "voice") == voice && GetInt(root, "model_loads") == 1;
-                            else if (kind == "attempt")
-                            {
-                                var index = GetInt(root, "index");
-                                var total = GetInt(root, "total");
-                                var attempt = GetInt(root, "attempt");
-                                var maximum = GetInt(root, "max_attempts");
-                                if (total == cues.Count && index >= 1 && index <= total && attempt >= 1
-                                    && maximum is >= 1 and <= 12 && attempt <= maximum)
-                                    job.Set("tts-generate", 38 + (index - 1) / (double)total * 53,
-                                        $"Model đang đọc nguyên câu {index}/{total} · lượt {attempt}/{maximum} · ưu tiên nhịp tự nhiên, chỉ tăng khi SRT quá ngắn...");
-                            }
-                            else if (kind == "cue")
-                            {
-                                var index = GetInt(root, "index");
-                                var total = Math.Max(1, GetInt(root, "total"));
-                                job.Set("tts-generate", 38 + index / (double)total * 53,
-                                    $"Đang tạo voice nguyên câu · {index}/{total}...");
-                            }
-                            else if (kind == "fallback")
-                            {
-                                var index = GetInt(root, "index");
-                                var total = Math.Max(1, GetInt(root, "total"));
-                                if (index >= 1 && index <= total)
-                                    job.Set("tts-generate", 38 + (index - 1) / (double)total * 53,
-                                        $"Cue {index}/{total} quá chật · đang giữ nguyên toàn timecode SRT...");
-                            }
-                            else if (kind == "block")
-                            {
-                                var total = Math.Max(1d, root.GetProperty("total").GetDouble());
-                                job.Set("tts-mix", 91 + root.GetProperty("index").GetDouble() / total * 6,
-                                    "Đang ghép nguyên câu voice theo timecode SRT, không cắt đuôi...");
-                            }
-                            else if (kind == "notice")
-                            {
-                                // Worker-side watch lists (mistimed cues, boundary drift,
-                                // per-run rate summary). Informational only: unknown future
-                                // notice codes must keep flowing to the log, never fail.
-                                job.Log($"Voice chú ý: {GetString(root, "message")}");
-                            }
-                            else if (kind == "complete")
-                            {
-                                completed = true;
-                                reportedResult = GetString(root, "result");
-                            }
+                            return HandleWorkerLine(line);
                         }
-                        return ValueTask.CompletedTask;
+                        catch (OperationCanceledException) { throw; }
+                        catch (Exception error)
+                        {
+                            throw new InvalidOperationException(
+                                $"Voice worker event lỗi: {error.Message} (dòng: {line.Trim()[..Math.Min(160, line.Trim().Length)]})", error);
+                        }
+
+                        ValueTask HandleWorkerLine(string eventLine)
+                        {
+                            if (!TryParseEvent(eventLine, out var parsed)) return ValueTask.CompletedTask;
+                            using (parsed)
+                            {
+                                var root = parsed.RootElement;
+                                var kind = GetString(root, "event");
+                                if (kind == "ready")
+                                    ready = GetString(root, "voice_revision") == LocalTtsInstaller.VoiceRevision
+                                        && GetString(root, "voice") == voice && GetInt(root, "model_loads") == 1;
+                                else if (kind == "attempt")
+                                {
+                                    var index = GetInt(root, "index");
+                                    var total = GetInt(root, "total");
+                                    var attempt = GetInt(root, "attempt");
+                                    var maximum = GetInt(root, "max_attempts");
+                                    lastAttemptIndex = index;
+                                    lastAttemptTotal = total;
+                                    lastAttemptId = TryGetString(root, "id");
+                                    inFlightId = lastAttemptId;
+                                    if (total == cues.Count && index >= 1 && index <= total && attempt >= 1
+                                        && maximum is >= 1 and <= 12 && attempt <= maximum)
+                                        job.Set("tts-generate", 38 + (index - 1) / (double)total * 53,
+                                            $"Model đang đọc nguyên câu {index}/{total} · lượt {attempt}/{maximum} · ưu tiên nhịp tự nhiên, chỉ tăng khi SRT quá ngắn...");
+                                }
+                                else if (kind == "cue")
+                                {
+                                    var index = GetInt(root, "index");
+                                    var total = Math.Max(1, GetInt(root, "total"));
+                                    lastCueIndex = index;
+                                    lastCueId = TryGetString(root, "id");
+                                    if (!string.IsNullOrWhiteSpace(lastCueId)
+                                        && string.Equals(lastCueId, inFlightId, StringComparison.Ordinal))
+                                        inFlightId = null;
+                                    job.Set("tts-generate", 38 + index / (double)total * 53,
+                                        $"Đang tạo voice nguyên câu · {index}/{total}...");
+                                }
+                                else if (kind == "fallback")
+                                {
+                                    var index = GetInt(root, "index");
+                                    var total = Math.Max(1, GetInt(root, "total"));
+                                    if (index >= 1 && index <= total)
+                                        job.Set("tts-generate", 38 + (index - 1) / (double)total * 53,
+                                            $"Cue {index}/{total} quá chật · đang giữ nguyên toàn timecode SRT...");
+                                }
+                                else if (kind == "block")
+                                {
+                                    var total = TryGetDouble(root, "total") is { } blockTotal && blockTotal > 0 ? blockTotal : 1d;
+                                    var blockIndex = TryGetDouble(root, "index") ?? 0d;
+                                    job.Set("tts-mix", 91 + blockIndex / total * 6,
+                                        "Đang ghép nguyên câu voice theo timecode SRT, không cắt đuôi...");
+                                }
+                                else if (kind == "notice")
+                                {
+                                    // Worker-side watch lists (mistimed cues, boundary drift,
+                                    // per-run rate summary). Informational only: unknown future
+                                    // notice codes must keep flowing to the log, never fail.
+                                    job.Log($"Voice chú ý: {GetString(root, "message")}");
+                                }
+                                else if (kind == "complete")
+                                {
+                                    completed = true;
+                                    reportedResult = GetString(root, "result");
+                                }
+                            }
+                            return ValueTask.CompletedTask;
+                        }
                     }, runtime.Environment, processes);
                 job.CancellationToken.ThrowIfCancellationRequested();
+                stderrTail = LastLine(result.StandardError);
                 if (result.ExitCode != 0 || !ready || !completed || !SamePath(reportedResult, resultPath))
-                    throw new InvalidOperationException("Không thể tạo voice NGHI: " + LastLine(result.StandardError));
+                {
+                    failureMessage = BuildWorkerFailureMessage(result.ExitCode, ready, completed, reportedResult, resultPath,
+                        lastAttemptIndex > 0 ? lastAttemptIndex : lastCueIndex,
+                        lastAttemptTotal > 0 ? lastAttemptTotal : cues.Count,
+                        inFlightId ?? lastAttemptId ?? lastCueId, stderrTail);
+                    throw new TtsWorkerFailedException(failureMessage,
+                        lastAttemptIndex, lastAttemptTotal, inFlightId ?? lastAttemptId);
+                }
                 var parsedResult = await ReadResultAsync(resultPath, masterPath, duration, runtime.SampleRate, voice, cues, job.CancellationToken);
                 var manifestSha = await HashAsync(resultPath, job.CancellationToken);
                 var cueResults = parsedResult.Cues.Select(cue =>
@@ -256,13 +357,42 @@ internal sealed partial class LocalTtsService : IDisposable
             }
             finally
             {
+                // Giữ hiện trường TRƯỚC khi dọn (vụ 13:17 27/09: cleanup xóa
+                // sạch input/result nên chết không để lại gì để repro).
+                if (!accepted)
+                    QuarantineFailedRun(outputRoot, Path.GetFileName(runRoot), inputPath,
+                        File.Exists(resultPath) ? resultPath : null,
+                        failureMessage ?? "worker fail trước khi có chẩn đoán", stderrTail);
                 // Cleanup is part of completion/cancellation, never swallowed.
                 await processes.StopAsync();
                 await CleanupRunAsync(runRoot);
                 if (!accepted) { File.Delete(resultPath); File.Delete(masterPath); }
             }
+    }
+
+    // Hiện trường fail TTS: input manifest + result dở + chẩn đoán, giữ tối đa
+    // 3 lần gần nhất trong cache project (không phải thư mục xuất). Best-effort
+    // tuyệt đối: lỗi ở đây không được đè lên lỗi gốc của worker.
+    private static void QuarantineFailedRun(
+        string outputRoot, string runId, string inputPath, string? partialResultPath,
+        string diagnostics, string stderrTail)
+    {
+        try
+        {
+            var root = Path.Combine(outputRoot, "failed-runs");
+            Directory.CreateDirectory(root);
+            var dir = Path.Combine(root, runId);
+            Directory.CreateDirectory(dir);
+            if (File.Exists(inputPath)) File.Copy(inputPath, Path.Combine(dir, "input.json"), overwrite: true);
+            if (!string.IsNullOrWhiteSpace(partialResultPath) && File.Exists(partialResultPath))
+                File.Copy(partialResultPath, Path.Combine(dir, "result-partial.json"), overwrite: true);
+            File.WriteAllText(Path.Combine(dir, "diag.txt"), diagnostics + "\n--- stderr tail ---\n" + stderrTail);
+            foreach (var old in new DirectoryInfo(root).GetDirectories()
+                .OrderByDescending(candidate => candidate.CreationTimeUtc).Skip(3))
+                try { old.Delete(recursive: true); }
+                catch { }
         }
-        finally { _generationGate.Release(); }
+        catch { }
     }
 
     private static async Task CleanupRunAsync(string runRoot)
@@ -409,6 +539,8 @@ internal sealed partial class LocalTtsService : IDisposable
     }
     private static string GetString(JsonElement root, string name) => root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() ?? string.Empty : string.Empty;
     private static int GetInt(JsonElement root, string name) => root.TryGetProperty(name, out var value) && value.TryGetInt32(out var result) ? result : 0;
+    private static string? TryGetString(JsonElement root, string name) => root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+    private static double? TryGetDouble(JsonElement root, string name) => root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number && value.TryGetDouble(out var result) && double.IsFinite(result) ? result : null;
     private static string LastLine(string? text) => string.IsNullOrWhiteSpace(text) ? "không có chi tiết lỗi" : text.Trim().Split('\n', StringSplitOptions.RemoveEmptyEntries)[^1].Trim();
     private static async Task<string> HashAsync(string path, CancellationToken cancellationToken)
     {

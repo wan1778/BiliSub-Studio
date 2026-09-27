@@ -4,15 +4,51 @@ namespace BiliSubStudio.Core.Application;
 
 public sealed class StorageUsageReader : IStorageUsageReader
 {
-    public Task<StorageUsage> ReadAsync(AppPaths paths, CancellationToken cancellationToken = default) =>
-        Task.Run(
+    // Đổi thư mục lưu (và mọi Set* settings) đều đợi BuildSnapshotAsync, mà
+    // snapshot nào cũng quét ĐỆ QUY toàn bộ Data/Tools/Ocr/Temp/Cache — gồm
+    // venv Paddle + model hàng chục nghìn file. Ổ bận là UI treo 3-5 phút mới
+    // thấy path đổi (vụ user 27/09). Cache 60s + 1 lần quét chia sẻ: đổi
+    // setting trả ngay số cũ, số dung lượng (thuần hiển thị) refresh nền.
+    // Không đụng Accurate/scan/TTS — chỉ đường settings.
+    private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(60);
+    private readonly object _gate = new();
+    private DateTime _lastRunUtc = DateTime.MinValue;
+    private StorageUsage? _last;
+    private Task<StorageUsage>? _inFlight;
+
+    public Task<StorageUsage> ReadAsync(AppPaths paths, CancellationToken cancellationToken = default)
+    {
+        lock (_gate)
+        {
+            if (_last is not null && DateTime.UtcNow - _lastRunUtc < CacheTtl)
+                return Task.FromResult(_last);
+            if (_inFlight is { } running)
+                return running;
+            _inFlight = ScanAsync(paths);
+            return _inFlight;
+        }
+    }
+
+    private async Task<StorageUsage> ScanAsync(AppPaths paths)
+    {
+        // Quét nền không ăn cancellation của caller: nhiều caller settings xài
+        // chung 1 lần quét, caller hủy không được giết quét của người khác.
+        var usage = await Task.Run(
             () => new StorageUsage(
-                DirectorySize(paths.Data, cancellationToken),
-                DirectorySize(paths.Tools, cancellationToken),
-                DirectorySize(paths.Ocr, cancellationToken),
-                DirectorySize(paths.Temp, cancellationToken),
-                DirectorySize(paths.Cache, cancellationToken)),
-            cancellationToken);
+                DirectorySize(paths.Data, CancellationToken.None),
+                DirectorySize(paths.Tools, CancellationToken.None),
+                DirectorySize(paths.Ocr, CancellationToken.None),
+                DirectorySize(paths.Temp, CancellationToken.None),
+                DirectorySize(paths.Cache, CancellationToken.None)),
+            CancellationToken.None).ConfigureAwait(false);
+        lock (_gate)
+        {
+            _last = usage;
+            _lastRunUtc = DateTime.UtcNow;
+            _inFlight = null;
+        }
+        return usage;
+    }
 
     private static long DirectorySize(string root, CancellationToken cancellationToken)
     {

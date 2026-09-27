@@ -21,6 +21,7 @@ internal static class EditorTtsTimingPropertyContract
         tests.Add(("TTS timing randomized ASR support never changes SRT windows", VerifyRandomizedMappingsAsync));
         tests.Add(("TTS timing rejects malformed SRT and stale cue ownership", VerifyMalformedTimingAsync));
         tests.Add(("Voice planner removes unspeakable artifacts and only proven OCR flicker duplicates", VerifyOcrFlickerPlannerAsync));
+        tests.Add(("TTS worker failure message carries exit code and in-flight cue", VerifyWorkerFailureMessageAsync));
     }
 
     private static Task VerifyBoundaryMatrixAsync()
@@ -300,6 +301,26 @@ internal static class EditorTtsTimingPropertyContract
     {
         if (Math.Abs(expected - actual) > tolerance)
             throw new InvalidOperationException($"{message}: expected {expected:R}, actual {actual:R}");
+    }
+
+    private static Task VerifyWorkerFailureMessageAsync()
+    {
+        // Vụ 13:17 27/09: worker chết không traceback, C# chỉ báo "không có
+        // chi tiết lỗi". Message mới phải mang exit/ready/complete/cue dở để
+        // lần sau biết đường repro thay vì đoán mò.
+        var service = Type.GetType("BiliSubStudio.Core.Editor.LocalTtsService, BiliSubStudio.Core")
+            ?? throw new InvalidOperationException("missing LocalTtsService type");
+        var method = service.GetMethod("BuildWorkerFailureMessage",
+                BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing TTS failure diagnostics");
+        var killed = (string)method.Invoke(null, [1, true, false, "", "C:/w/result.json", 423, 7891, "abc123", string.Empty])!;
+        True(killed.Contains("exit 1"), "thiếu exit code");
+        True(killed.Contains("ready=True") && killed.Contains("complete=False"), "thiếu ready/complete");
+        True(killed.Contains("423/7891") && killed.Contains("abc123"), "thiếu cue đang làm dở");
+        True(killed.Contains("trống"), "stderr trống phải nói rõ");
+        var withStderr = (string)method.Invoke(null, [0, true, true, "C:/w/result.json", "C:/w/result.json", 0, 0, null, "TTS_WORKER_ERROR: boom"])!;
+        True(withStderr.Contains("boom"), "stderr có nội dung phải giữ lại");
+        return Task.CompletedTask;
     }
 
     private static void True(bool condition, string message)

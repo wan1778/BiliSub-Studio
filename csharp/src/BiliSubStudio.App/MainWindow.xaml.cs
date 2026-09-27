@@ -20,6 +20,7 @@ public sealed partial class MainWindow : Window
 {
     private readonly BiliSubApplication _application;
     private readonly ApplicationLog _globalLog;
+    private DiscordPresenceService? _discordPresence;
     private readonly SettingsPage _settingsPage;
     private readonly SupportPage _supportPage;
     private readonly Dictionary<string, UIElement> _pages;
@@ -68,6 +69,13 @@ public sealed partial class MainWindow : Window
 
         _application = new BiliSubApplication(paths);
         _application.Jobs.AttachLog(_globalLog);
+        try
+        {
+            // Discord presence theo job thật (không bắt buộc): Discord tắt hay
+            // lỗi thì service tự lặng lẽ thử lại, không bao giờ chặn khởi động.
+            _discordPresence = new DiscordPresenceService(_application, "1553667078077030430", _globalLog);
+        }
+        catch { }
         try
         {
             // Phiên trước có thể đã bị tắt đột ngột/crash, để lại Python/FFmpeg
@@ -247,6 +255,20 @@ public sealed partial class MainWindow : Window
         // Bỏ qua sự kiện do máy tự trả thanh chọn về (resync): không phải ý user.
         if (_resyncingNavigation) return;
         if (args.SelectedItemContainer?.Tag is not string tag || !_pages.TryGetValue(tag, out var page)) return;
+        try
+        {
+            // Discord presence bám tab: có job chạy thì job thắng, không thì hiện tab.
+            _discordPresence?.SetLocation(tag switch
+            {
+                "video" => "Tải video",
+                "ocr" => "Quét OCR",
+                "editor" => "Edit",
+                "timelinev2" => "Timeline",
+                "settings" => "Cài đặt",
+                _ => string.Empty,
+            });
+        }
+        catch { }
         if (ReferenceEquals(ContentFrame.Content, page) && !_navigating) return;
         // Tab mới nhất thắng; đổi xong mới qua đó, không chen ngang lúc đang dỡ trang.
         _pendingNavigationTag = tag;
@@ -527,10 +549,17 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    // Discord presence: page đẩy tên video/project đang làm (best-effort).
+    public void SetPresenceContext(string? video, string? project)
+    {
+        try { _discordPresence?.SetContext(video, project); } catch { }
+    }
+
     private async void OnClosed(object sender, WindowEventArgs args)
     {
         _jobProgressTimer.Stop();
         _globalLog.EntryAdded -= OnGlobalLogEntry;
+        try { _discordPresence?.Dispose(); } catch { }
         if (_pages["video"] is VideoPage videoPage) videoPage.StopMonitoring();
         await _application.DisposeAsync();
     }

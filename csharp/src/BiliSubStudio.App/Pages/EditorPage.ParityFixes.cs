@@ -13,6 +13,17 @@ public sealed partial class EditorPage
     private CancellationTokenSource? _editorAutoCompositeCancellation;
     private bool _editorAutoCompositeRebuilding;
 
+    private void PublishPresenceContext(string? video, string? project)
+    {
+        try
+        {
+            if (Microsoft.UI.Xaml.Application.Current is BiliSubStudio.App.App app
+                && app.MainWindow is BiliSubStudio.App.MainWindow window)
+                window.SetPresenceContext(video, project);
+        }
+        catch { }
+    }
+
     private async void EditorChooseOutput_Click(object sender, RoutedEventArgs e)
     {
         try

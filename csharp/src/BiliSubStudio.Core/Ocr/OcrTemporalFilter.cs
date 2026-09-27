@@ -127,10 +127,32 @@ public static class OcrTemporalFilter
     }
 
     // Tìm dòng khớp chữ ca (chứa 1 trong 2 chiều sau chuẩn hóa). Không khớp -> null.
+    // Cue NGẮN (≤2 chữ sau chuẩn hóa, vd "哼"/"滚"/"武夫"): CẤM khớp "chứa nhau" —
+    // chữ nền dài chứa đúng chữ đó luôn thắng longest-match rồi đo nhầm vị trí
+    // dòng nền (chạy theo camera) -> drop oan sub đứng yên (cue "哼"/"滚" thật
+    // trong .exclude.json). Nhánh này chỉ chấp nhận KHỚP TUYỆT ĐỐI, hòa thì lấy
+    // tin cao nhất. Đường cue dài (>2 chữ) giữ nguyên từng dòng bên dưới.
     public static OcrLine? FindMatch(IReadOnlyList<OcrLine> lines, string cueText)
     {
         var needle = Normalize(cueText);
         if (needle.Length == 0) return null;
+        if (needle.EnumerateRunes().Count() <= 2)
+        {
+            OcrLine? exact = null;
+            var exactConfidence = double.NegativeInfinity;
+            foreach (var line in lines)
+            {
+                var hay = Normalize(line.Text);
+                if (hay.Length == 0) continue;
+                if (!string.Equals(hay, needle, StringComparison.Ordinal)) continue;
+                if (exact is null || line.Confidence > exactConfidence)
+                {
+                    exact = line;
+                    exactConfidence = line.Confidence;
+                }
+            }
+            return exact;
+        }
         OcrLine? best = null;
         var bestLength = 0;
         foreach (var line in lines)

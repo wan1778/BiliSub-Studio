@@ -64,7 +64,7 @@ require("SplitItemsWithOwnership(" in items and "RightItemIdsByOriginalId" in it
         "G8 subtitle split must retain deterministic right-owner mapping")
 
 for token in (
-    "public const int Schema = 4;",
+    "public const int Schema = 6;",
     "IReadOnlyList<TimelineSubtitleCue> SubtitleCues",
     "IReadOnlyList<TimelineAudioAsset> AudioAssets",
     "IReadOnlyList<TimelineSourceAudioState> SourceAudio",

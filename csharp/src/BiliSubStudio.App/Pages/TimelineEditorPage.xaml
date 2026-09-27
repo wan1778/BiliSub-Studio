@@ -102,6 +102,12 @@
                         <TextBlock FontSize="13" FontWeight="SemiBold" Opacity="0.9" Text="Danh sách clip" />
                         <ListView x:Name="ClipList" SelectionMode="Single" IsItemClickEnabled="False" MaxHeight="180"
                                   SelectionChanged="ClipList_SelectionChanged" />
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Button x:Name="AddVideosButton" Click="AddVideos_Click" Content="Thêm video" />
+                            <Button x:Name="AttachSrtButton" Click="AttachSrt_Click" Content="Gán SRT" />
+                        </StackPanel>
+                        <TextBlock FontSize="12" TextWrapping="Wrap" Opacity="0.72"
+                                   Text="Thêm nhiều video nối tiếp; SRT cùng tên file tự gán. Chọn clip rồi Gán SRT để đổi." />
                     </StackPanel>
                     <StackPanel Spacing="6">
                         <TextBlock FontSize="13" FontWeight="SemiBold" Opacity="0.9" Text="Trim (giây)" />

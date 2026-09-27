@@ -663,6 +663,8 @@ public sealed class BiliSubApplication : IAsyncDisposable
     // Nghe riêng (Whisper-only, 23/09): chỉ chạy tai nghe lấy lời thoại rồi
     // xuất SRT, không đụng đường mắt đọc. Checkpoint ASR có sẵn nên dừng
     // giữa chừng chạy lại tự nối. Mã project "nghe-…" tách khỏi project Edit.
+    // 27/09: tai nghe dùng large-v3-turbo riêng (Edit giữ small); checkpoint
+    // khóa theo revision model nên sổ nghe small cũ không bị đọc nhầm.
     public (string JobId, string ProjectId) StartOcrListen(string videoPath, double duration, string executionMode = "gpu")
     {
         if (string.IsNullOrWhiteSpace(videoPath)) throw new ArgumentException("Chưa chọn video.", nameof(videoPath));
@@ -673,7 +675,7 @@ public sealed class BiliSubApplication : IAsyncDisposable
         var job = Jobs.Create("ocr-listen", cleanupAwareCancel: true);
         _ = RunJobAsync(job, async () =>
         {
-            var result = await _asr.TranscribeAsync(job, new EditorAsrRequest(projectId, Path.GetFullPath(videoPath.Trim()), duration, executionMode));
+            var result = await _asr.TranscribeAsync(job, new EditorAsrRequest(projectId, Path.GetFullPath(videoPath.Trim()), duration, executionMode, LocalAsrInstaller.ListenModelId));
             job.Finish(null, $"Nghe xong: {result.SegmentCount} đoạn / {result.WordCount} từ.", result);
         });
         return (job.Id, projectId);
@@ -691,10 +693,13 @@ public sealed class BiliSubApplication : IAsyncDisposable
         Path.Combine(Paths.Data, "Projects", "ASR", projectId + ".zh.srt");
 
     // Xóa sổ dở + sub đã xuất của lần nghe để "Nghe lại từ đầu" thật sự từ đầu.
+    // 27/09: AsrCheckpointFile.PublishAsync luôn giữ bản trước ở ".bak" và
+    // LoadCheckpointAsync fallback sang ".bak" khi file chính mất. Bản cũ chỉ
+    // xóa file chính -> backend hồi sinh từ .bak, nghe lại vẫn nối điểm cũ.
     public void RemoveOcrListenCheckpoint(string projectId)
     {
         if (string.IsNullOrWhiteSpace(projectId)) return;
-        foreach (var suffix in new[] { ".json", ".hybrid-v1.json", ".zh.srt" })
+        foreach (var suffix in new[] { ".json", ".hybrid-v1.json", ".zh.srt", ".json.bak", ".hybrid-v1.json.bak" })
         {
             try { File.Delete(Path.Combine(Paths.Data, "Projects", "ASR", projectId + suffix)); }
             catch { }

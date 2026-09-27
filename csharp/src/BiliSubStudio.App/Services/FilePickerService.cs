@@ -24,6 +24,62 @@ public sealed class FilePickerService(Func<Window> window) : IFilePickerService
         "Chọn video",
         "Video hỗ trợ\0*.mp4;*.mkv;*.mov;*.m4v;*.webm;*.avi;*.ts;*.m2ts\0\0");
 
+    // P1 multi-video (27/09): WinRT PickMultipleFilesAsync; fallback Win32
+    // OFN_ALLOWMULTISELECT (buffer dir\0file1\0file2...\0\0, 1 file = full path).
+    // Trả rỗng khi user hủy — caller giữ project nguyên, không báo lỗi.
+    // P1.1 (27/09): validate path SAU khi dialog đóng, ngoài try — lỗi path
+    // không được re-prompt dialog Win32 thứ 2 sau khi user đã chọn file.
+    public async Task<IReadOnlyList<string>> PickVideosAsync()
+    {
+        var owner = window();
+        var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(owner);
+        Exception? primaryError = null;
+        IReadOnlyList<string>? rawPaths = null;
+        try
+        {
+            var picker = new FileOpenPicker
+            {
+                ViewMode = PickerViewMode.Thumbnail,
+                SuggestedStartLocation = PickerLocationId.VideosLibrary,
+            };
+            foreach (var extension in VideoExtensions) picker.FileTypeFilter.Add(extension);
+            WinRT.Interop.InitializeWithWindow.Initialize(picker, hwnd);
+            var files = await picker.PickMultipleFilesAsync();
+            if (files is not null && files.Count > 0)
+                rawPaths = files.Select(file => file.Path).ToArray();
+        }
+        catch (OperationCanceledException)
+        {
+            return [];
+        }
+        catch (Exception error)
+        {
+            primaryError = error;
+        }
+
+        if (rawPaths is not null)
+            return rawPaths.Select(file => ValidatePickedPath(file, VideoExtensions)).ToArray();
+
+        IReadOnlyList<string>? fallbackPaths = null;
+        try
+        {
+            fallbackPaths = PickMultipleWithWin32(hwnd, "Chọn video (có thể chọn nhiều file)",
+                "Video hỗ trợ\0*.mp4;*.mkv;*.mov;*.m4v;*.webm;*.avi;*.ts;*.m2ts\0\0");
+        }
+        catch (OperationCanceledException)
+        {
+            return [];
+        }
+        catch (Exception fallbackError)
+        {
+            throw new InvalidOperationException(
+                $"Bộ chọn nhiều video bị lỗi. FileOpenPicker: {primaryError?.Message ?? "không rõ"}. " +
+                $"Fallback Win32 cũng không mở được: {fallbackError.Message}",
+                new AggregateException(primaryError ?? new InvalidOperationException("FileOpenPicker failed"), fallbackError));
+        }
+        return fallbackPaths.Select(file => ValidatePickedPath(file, VideoExtensions)).ToArray();
+    }
+
     public Task<string?> PickSubtitleAsync() => PickAsync(
         PickerViewMode.List,
         PickerLocationId.DocumentsLibrary,
@@ -104,6 +160,39 @@ public sealed class FilePickerService(Func<Window> window) : IFilePickerService
         if (!extensions.Contains(extension, StringComparer.OrdinalIgnoreCase))
             throw new InvalidDataException($"Loại tệp {extension} không được hỗ trợ ở hộp chọn này.");
         return full;
+    }
+
+    private const int OfnAllowMultiselect = 0x00000200;
+
+    private static IReadOnlyList<string> PickMultipleWithWin32(IntPtr hwnd, string title, string filter)
+    {
+        var buffer = new StringBuilder(32_768);
+        var dialog = new OpenFileName
+        {
+            StructSize = Marshal.SizeOf<OpenFileName>(),
+            Owner = hwnd,
+            Filter = filter,
+            FilterIndex = 1,
+            File = buffer,
+            MaxFile = buffer.Capacity,
+            Title = title,
+            Flags = OfnExplorer | OfnFileMustExist | OfnPathMustExist | OfnNoChangeDir | OfnAllowMultiselect,
+        };
+        if (!GetOpenFileNameW(ref dialog))
+        {
+            var extendedError = CommDlgExtendedError();
+            if (extendedError == 0) return []; // user canceled the fallback dialog
+            throw new Win32Exception(unchecked((int)extendedError), $"Common dialog error 0x{extendedError:X8}");
+        }
+        // Multi-select: dir\0file1\0file2...\0\0; single pick = full path + \0\0.
+        // P1.1 (27/09): trả path thô, validate là việc của caller NGOÀI try —
+        // lỗi path không được báo nhầm "fallback không mở được" khi dialog đã
+        // chọn file thành công.
+        var parts = buffer.ToString().Split('\0', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0) return [];
+        return parts.Length == 1
+            ? [parts[0]]
+            : parts.Skip(1).Select(file => Path.Combine(parts[0], file)).ToArray();
     }
 
     private static string? PickWithWin32(IntPtr hwnd, string title, string filter)

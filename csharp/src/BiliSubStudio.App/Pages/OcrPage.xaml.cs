@@ -292,6 +292,7 @@ public sealed partial class OcrPage : Page
             OcrResultText.Text = string.Empty;
             _path = selected;
             PathText.Text = selected;
+            PublishPresenceContext(Path.GetFileName(selected), null);
             StatusText.Text = "Đang đọc video...";
             _media = await _application.Media.ProbeAsync(selected, CancellationToken.None);
             Timeline.Maximum = Math.Max(0.1, _media.Duration);
@@ -1084,6 +1085,17 @@ public sealed partial class OcrPage : Page
             return item.Tag?.ToString() ?? item.Content?.ToString() ?? string.Empty;
         }
         return box.SelectedItem?.ToString() ?? string.Empty;
+    }
+
+    private void PublishPresenceContext(string? video, string? project)
+    {
+        try
+        {
+            if (Microsoft.UI.Xaml.Application.Current is BiliSubStudio.App.App app
+                && app.MainWindow is BiliSubStudio.App.MainWindow window)
+                window.SetPresenceContext(video, project);
+        }
+        catch { }
     }
 
     private async void ChooseAutoSaveFolder_Click(object sender, RoutedEventArgs e)

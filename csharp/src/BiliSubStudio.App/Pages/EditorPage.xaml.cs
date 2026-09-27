@@ -268,7 +268,8 @@ public sealed partial class EditorPage : Page
 
         _path = candidatePath;
         _media = candidateMedia;
-        _project = candidateProject;
+            _project = candidateProject;
+            PublishPresenceContext(_project.FileName, _project.FileName);
         var trim = EditorProjectStore.NormalizeTrim(_project.Trim, candidateMedia.Duration);
         _project = _project with { Trim = trim };
         _document.Reset(_project.Regions);

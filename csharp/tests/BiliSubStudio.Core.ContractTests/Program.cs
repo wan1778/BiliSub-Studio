@@ -29,6 +29,7 @@ internal static class Program
         ("partial legacy JSON preserves defaults", PartialLegacyJsonPreservesDefaultsAsync),
         ("config persists and reopens", ConfigPersistsAndReopensAsync),
         ("application boundary validates settings", ApplicationBoundaryValidatesAsync),
+        ("storage usage caches scans so settings changes return instantly", StorageUsageCachedAsync),
         ("concurrent updates serialize file writes", ConcurrentUpdatesAreSerializedAsync),
         ("invalid JSON boots with in-memory defaults", InvalidJsonUsesDefaultsAsync),
         ("config update before initialize loads first instead of persisting defaults", ConfigUpdateBeforeInitializeLoadsAsync),
@@ -169,6 +170,7 @@ internal static class Program
         ("timeline schema-7 migration is a safe one-clip copy", TimelineMigrationCopyContract.RunAsync),
         ("timeline one-clip parity maps V2 plan onto the classic render pipeline", TimelineParityContract.RunAsync),
         ("timeline multi-clip add reorder trim split delete keep hard cuts with atomic undo", TimelineSequenceOpsContract.RunAsync),
+        ("timeline P1 multi-video append sequential plus per-clip SRT attach", TimelineMultiClipAddContract.RunAsync),
         ("timeline clip-local effects subtitle logo ride split delete without drift", TimelineItemsContract.RunAsync),
         ("timeline generated voice stays linked to subtitle cue identity", TimelineSubtitleVoiceLinkContract.RunAsync),
         ("timeline source voice music audio plan stays sample and microsecond synchronized", TimelineAudioSyncContract.RunAsync),
@@ -406,6 +408,25 @@ internal static class Program
             await ThrowsAsync<ArgumentException>(() => service.SetThemeAsync("system"));
             await ThrowsAsync<ArgumentException>(() => service.SetOutputDirectoryAsync("  "));
             await ThrowsAsync<ArgumentException>(() => service.SetOcrOutputDirectoryAsync("  "));
+        });
+    }
+
+    private static async Task StorageUsageCachedAsync()
+    {
+        // Vụ 27/09: đổi thư mục lưu treo 3-5 phút vì mỗi Set* đợi quét đệ quy
+        // toàn bộ Data/Tools/Ocr/Temp/Cache. Lần đọc 2 trong TTL phải trả cache
+        // (không thấy file mới), đổi setting không bao giờ chờ quét đĩa.
+        await WithTemporaryRootAsync(async root =>
+        {
+            var paths = AppPaths.FromRoot(root);
+            Directory.CreateDirectory(paths.Data);
+            var reader = new StorageUsageReader();
+            await File.WriteAllBytesAsync(Path.Combine(paths.Data, "a.bin"), new byte[100]);
+            var first = await reader.ReadAsync(paths);
+            True(first.Data >= 100, "lần quét đầu phải thấy file");
+            await File.WriteAllBytesAsync(Path.Combine(paths.Data, "b.bin"), new byte[100]);
+            var second = await reader.ReadAsync(paths);
+            True(first.Data == second.Data, "lần đọc trong TTL phải trả cache, không quét lại");
         });
     }
 
@@ -2303,10 +2324,10 @@ internal static class Program
             "faster-whisper wheel hash drift");
         True((Constant(installer, "CTranslate2Wheel")?.ToString() ?? string.Empty).EndsWith("#sha256=49f96e861b57301f0b76a082109bde2cac8204a6b4fedc870883008271e82251", StringComparison.Ordinal),
             "CTranslate2 Windows wheel hash drift");
-        Equal("edaa852ec7e145841d8ffdb056a99866b5f0a478", Constant(installer, "ModelRevision")?.ToString());
+        Equal("536b0662742c02347bc0e980a01041f333bce120", Constant(installer, "ModelRevision")?.ToString());
         var files = (Array?)(installer.GetField("ModelFiles", BindingFlags.Static | BindingFlags.NonPublic)?.GetValue(null))
             ?? throw new InvalidOperationException("missing ASR model file manifest");
-        Equal(5, files.Length);
+        Equal(4, files.Length);
         long total = 0;
         var hashes = new HashSet<string>(StringComparer.Ordinal);
         foreach (var file in files)
@@ -2315,8 +2336,8 @@ internal static class Program
             total += (long)(type.GetProperty("Size")?.GetValue(file) ?? 0L);
             hashes.Add(type.GetProperty("Sha256")?.GetValue(file)?.ToString() ?? string.Empty);
         }
-        Equal(3_090_835_702L, total);
-        True(hashes.Contains("69f74147e3334731bc3a76048724833325d2ec74642fb52620eda87352e3d4f1"), "ASR model.bin SHA-256 drift");
+        Equal(486_212_372L, total);
+        True(hashes.Contains("3e305921506d8872816023e4c273e75d2419fb89b24da97b4fe7bce14170d671"), "ASR model.bin SHA-256 drift");
         Equal(7, EditorProjectStore.CurrentSchema);
         return Task.CompletedTask;
     }

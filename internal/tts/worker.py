@@ -365,6 +365,10 @@ def native_record_valid(record: dict, target_frames: int, natural_sample: bool,
 
 
 def load_clip(path: Path, key: str, cue: dict, minimum_generated_frames: int = 1):
+    # natural_sample dùng ở cả 2 nhánh (silence-fallback lẫn native thường):
+    # khởi tạo trước nhánh để nhánh native không dính UnboundLocalError khi
+    # revalidate cache hit (job editor-tts 08:56 27/09 chết đúng chỗ này).
+    natural_sample = cue.get("timing_source") == "sample"
     try:
         record = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
         if record["key"] != key or record["sha256"] != sha256(path):
@@ -379,7 +383,6 @@ def load_clip(path: Path, key: str, cue: dict, minimum_generated_frames: int = 1
             except wave.Error:
                 return None
             _, target_frames = cue_window(cue)
-            natural_sample = cue["timing_source"] == "sample"
             if (silent_ok and record.get("status") == "review"
                     and record["frames"] == target_frames and record["target_frames"] == target_frames
                     and record["timing_source"] == cue["timing_source"]
@@ -816,8 +819,74 @@ def synthesize_sentence_group(voice, cues: list[dict], texts: list[str], run_roo
     return entries
 
 
+# Rút gọn chữ đọc cho cue chật (user 27/09: cấm đọc nhanh hơn gió).
+# Tầng tích lũy, thuần logic + deterministic (test được không cần model):
+# V1 dọn lặp/khoảng trắng -> V2 bỏ tiếng gọi đầu câu -> V3 bỏ lơi cuối câu
+# -> V4 bỏ từ nhấn mạnh. Mỗi tầng chỉ thêm khi ngắn đi thật và còn chữ đọc
+# được. Không đụng SRT hiển thị; bản đọc được ghi vào spoken_text + cờ review.
+_FILLER_LEAD = ("này", "kia", "à", "ơi", "nào")
+_FILLER_TRAIL = ("nhé", "nha", "nhỉ", "đó", "chứ", "à", "ơi")
+_INTENSIFIERS = ("rất", "quá", "lắm", "hết sức", "quá đỗi")
+_INTENSIFIER_PHRASES = ("vô cùng", "cực kỳ")
+
+
+def _strip_punct(token: str) -> str:
+    return token.strip(",.!?;:\"'\"“”‘’…-")
+
+
+def _drop_intensifiers(tokens: list[str]) -> list[str]:
+    """Bỏ từ nhấn mạnh đơn + cụm 2 chữ (vô cùng, cực kỳ)."""
+    kept: list[str] = []
+    index = 0
+    while index < len(tokens):
+        pair = (_strip_punct(tokens[index]).lower()
+                + " " + _strip_punct(tokens[index + 1]).lower()) \
+            if index + 1 < len(tokens) else ""
+        if pair in _INTENSIFIER_PHRASES:
+            index += 2
+            continue
+        if _strip_punct(tokens[index]).lower() in _INTENSIFIERS:
+            index += 1
+            continue
+        kept.append(tokens[index])
+        index += 1
+    return kept
+
+
+def condense_variants(text: str) -> list[tuple[str, str]]:
+    """Các bản rút gọn (variant, note), ngắn dần, không gồm bản gốc."""
+    out: list[tuple[str, str]] = []
+
+    def push(tokens: list[str], note: str) -> list[str]:
+        variant = " ".join(tokens)
+        if (variant and variant != text
+                and not any(variant == seen for seen, _ in out)
+                and any(character.isalnum() for character in variant)):
+            out.append((variant, note))
+        return variant.split()
+
+    tokens = text.split()
+    if not tokens:
+        return out
+    # V1: dọn từ lặp liên tiếp (giữ 1) + khoảng trắng thừa.
+    deduped = [token for index, token in enumerate(tokens)
+               if index == 0 or token.lower() != tokens[index - 1].lower()]
+    current = push(deduped, "gộp từ lặp")
+    # V2: bỏ tiếng gọi đầu câu khi còn đủ chữ.
+    if len(current) > 3 and _strip_punct(current[0]).lower() in _FILLER_LEAD:
+        current = push(current[1:], "bỏ tiếng gọi đầu câu")
+    # V3: bỏ lơi cuối câu khi còn đủ chữ.
+    if len(current) > 3 and _strip_punct(current[-1]).lower() in _FILLER_TRAIL:
+        current = push(current[:-1], "bỏ lơi cuối câu")
+    # V4: bỏ từ nhấn mạnh (giữ mệnh đề, nhẹ sắc thái).
+    lightened = _drop_intensifiers(current)
+    if len(lightened) != len(current):
+        push(lightened, "bỏ từ nhấn mạnh")
+    return out
+
+
 def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str,
-            timing_source: str, ffmpeg: Path, on_attempt):
+            timing_source: str, ffmpeg: Path, on_attempt, cue_id: str = ""):
     if target_frames <= 0:
         raise ValueError("Source speech duration must contain at least one sample")
     base = float(voice.config.length_scale)
@@ -830,40 +899,100 @@ def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str,
     silence_fitted = run_root / (key + "-silence-fit.wav")
     final_path = run_root / (key + "-fit.wav")
     minimum_generated = minimum_speech_frames(text)
-    for attempt in range(1, MAX_SYNTHESIS_ATTEMPTS + 1):
-        on_attempt(attempt, scale)
-        synthesize_cue(voice, text, candidate, scale)
-        source_frames = len(read_wav(candidate))
-        trimmed_silence = trim_trailing_silence(candidate, silence_fitted, SILENCE_GUARD_FRAMES)
-        frames = source_frames - trimmed_silence
-        fitted_source = silence_fitted if trimmed_silence else candidate
-        if attempt == 1:
-            raw_frames = source_frames
-            native_reference_frames = frames
+    attempt = 0
+
+    def measure(active_text, active_scale):
+        nonlocal attempt
+        attempt += 1
+        on_attempt(attempt, active_scale)
+        synthesize_cue(voice, active_text, candidate, active_scale)
+        measured_source = len(read_wav(candidate))
+        measured_trim = trim_trailing_silence(candidate, silence_fitted, SILENCE_GUARD_FRAMES)
+        measured_frames = measured_source - measured_trim
+        return measured_source, measured_trim, measured_frames, (
+            silence_fitted if measured_trim else candidate)
+
+    def finish(active_text, note, measured, current_scale, raw, native, actual):
+        measured_source, measured_trim, measured_frames, measured_fitted = measured
+        condensed = active_text != text
+        padding = target_frames - measured_frames
+        output_path = measured_fitted
+        if padding:
+            pad_exact_clip(measured_fitted, final_path, target_frames)
+            output_path = final_path
+        output_frames = len(read_wav(output_path))
+        if output_frames != measured_frames + padding:
+            raise RuntimeError("Voice duration did not match the native sample count")
+        record = {"raw_duration": raw / SAMPLE_RATE, "fitted_duration": output_frames / SAMPLE_RATE,
+                  "frames": output_frames, "target_frames": target_frames, "timing_source": timing_source,
+                  "fit_method": FIT_METHOD, "base_length_scale": base, "length_scale": current_scale,
+                  "source_frames": measured_source, "generated_frames": measured_frames,
+                  "trimmed_silence_frames": measured_trim, "padding_frames": padding,
+                  "native_reference_frames": native,
+                  "group_native_frames": 0, "actual_speed_factor": actual,
+                  "synthesis_attempts": attempt,
+                  "status": "review" if (condensed or needs_rate_review(current_scale, base)
+                  or measured_trim or padding > padding_budget(target_frames)) else "fit"}
+        if condensed:
+            record["spoken_text"] = active_text
+            emit({"event": "notice", "code": "condense-fit",
+                  "message": (f"Cue {cue_id} quá chật: rút gọn ({note}) đọc nhịp tự nhiên + cờ review. "
+                              f"SRT hiển thị giữ nguyên.")})
+        return output_path, record
+
+    # Phase 0: probe bản gốc ở nhịp base (attempt 1, đo đạc y hệt vòng lặp cũ).
+    source_frames, trimmed_silence, frames, fitted_source = measure(text, scale)
+    raw_frames, native_reference_frames = source_frames, frames
+    actual_speed = 1.0
+    if frames < minimum_generated:
+        raise RuntimeError(
+            f"NGHI returned only {frames / SAMPLE_RATE:.3f}s of active speech for a non-empty cue")
+    if frames <= target_frames and MIN_ACTUAL_SPEED <= actual_speed <= MAX_ACTUAL_SPEED:
+        return finish(text, None, (source_frames, trimmed_silence, frames, fitted_source),
+                      scale, raw_frames, native_reference_frames, actual_speed)
+    # Phase 1: cue chật -> rút gọn chữ đọc theo tầng (user 27/09: cấm đọc
+    # nhanh hơn gió). Mỗi bản đo thật 1 lần synth ở nhịp base; nhận bản đầu
+    # vừa khít. Tổng synth toàn hàm không quá MAX_SYNTHESIS_ATTEMPTS.
+    short_text, short_note = text, None
+    for variant, note in condense_variants(text):
+        if attempt >= MAX_SYNTHESIS_ATTEMPTS:
+            break
+        try:
+            variant_min = minimum_speech_frames(variant)
+        except ValueError:
+            continue
+        try:
+            measured = measure(variant, base)
+        except ValueError:
+            continue
+        variant_source, variant_trim, variant_frames, variant_fitted = measured
+        if variant_frames < variant_min or variant_frames <= 0:
+            continue
+        short_text, short_note = variant, note
+        if variant_frames <= target_frames:
+            return finish(variant, note, measured, base,
+                          variant_source, variant_frames, 1.0)
+    # Phase 2: không bản nào vừa tự nhiên -> vòng tăng tốc như cũ nhưng chạy
+    # trên bản NGẮN NHẤT (xấu nhất cũng là ngắn-nhanh + review, không bao giờ
+    # là dài-nhanh-cực-đoan), rồi atempo, rồi im lặng như cũ.
+    active_text = short_text
+    active_note = short_note
+    active_min = minimum_speech_frames(active_text)
+    scale = base
+    first_loop = True
+    while attempt < MAX_SYNTHESIS_ATTEMPTS:
+        source_frames, trimmed_silence, frames, fitted_source = measure(active_text, scale)
+        if first_loop:
+            raw_frames, native_reference_frames = source_frames, frames
+            first_loop = False
         actual_speed = native_reference_frames / frames
-        if frames < minimum_generated:
+        if frames < active_min:
             raise RuntimeError(
                 f"NGHI returned only {frames / SAMPLE_RATE:.3f}s of active speech for a non-empty cue")
         if frames <= target_frames and MIN_ACTUAL_SPEED <= actual_speed <= MAX_ACTUAL_SPEED:
-            padding = target_frames - frames
-            output_path = fitted_source
-            if padding:
-                pad_exact_clip(fitted_source, final_path, target_frames)
-                output_path = final_path
-            output_frames = len(read_wav(output_path))
-            if output_frames != frames + padding:
-                raise RuntimeError("Voice duration did not match the native sample count")
-            record = {"raw_duration": raw_frames / SAMPLE_RATE, "fitted_duration": output_frames / SAMPLE_RATE,
-                      "frames": output_frames, "target_frames": target_frames, "timing_source": timing_source,
-                      "fit_method": FIT_METHOD, "base_length_scale": base, "length_scale": scale,
-                      "source_frames": source_frames, "generated_frames": frames,
-                      "trimmed_silence_frames": trimmed_silence, "padding_frames": padding,
-                      "native_reference_frames": native_reference_frames,
-                      "group_native_frames": 0, "actual_speed_factor": actual_speed,
-                      "synthesis_attempts": attempt,
-                      "status": "review" if needs_rate_review(scale, base)
-                      or trimmed_silence or padding > padding_budget(target_frames) else "fit"}
-            return output_path, record
+            return finish(active_text, active_note,
+                          (source_frames, trimmed_silence, frames, fitted_source),
+                          scale, raw_frames, native_reference_frames, actual_speed)
         desired_frames = max(1, math.floor(target_frames * FIT_HEADROOM))
         corrected = next_length_scale(scale, frames, desired_frames, base, None, None)
         if corrected >= scale:
@@ -1143,7 +1272,8 @@ def main() -> int:
             try:
                 final_path, candidate_record = fit_cue(
                     voice, text, candidate_target_frames, run_root, candidate_key,
-                    candidate_cue["timing_source"], Path(options.ffmpeg), on_attempt)
+                    candidate_cue["timing_source"], Path(options.ffmpeg), on_attempt,
+                    cue_id=candidate_cue.get("id", ""))
             except (ValueError, RuntimeError) as error:
                 failures.append(f"{candidate_cue['timing_source']}: {error}")
                 continue

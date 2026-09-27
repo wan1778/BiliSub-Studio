@@ -14,7 +14,7 @@ internal sealed partial class LocalAsrService
         // advances only after all words through a reconciled seam are durable.
         if (!double.IsFinite(checkpoint.Frontier) || checkpoint.Frontier < 0 || checkpoint.Frontier > request.Duration + .1
             || checkpoint.Cues.Any(cue => cue.End > checkpoint.Frontier + .05))
-            checkpoint = AsrCheckpoint.New(checkpoint.Key);
+            checkpoint = AsrCheckpoint.New(checkpoint.Key, checkpoint.ModelRevision);
         checkpoint = checkpoint with { Device = "hybrid", ComputeType = selection.ComputeType };
         var retained = checkpoint.Cues.Count;
         if (checkpoint.Complete && checkpoint.Frontier >= request.Duration - .05) return (checkpoint, retained);

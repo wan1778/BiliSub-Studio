@@ -24,6 +24,8 @@ internal static class OcrTrailingJudgeContract
         await GrabFailParksAsync();
         await TemporalKeepSteadyTextAsync();
         await TemporalDropMovingTextAsync();
+        await TemporalSingleCharIgnoresLongBackgroundDistractorAsync();
+        await TemporalSingleCharMovingStillDroppedAsync();
         await TemporalDropCreditTitleAsync();
         await SpeechVocativeCreditShapedKeptAsync();
         await CreditOverUnrelatedSpeechStillDroppedAsync();
@@ -540,6 +542,68 @@ internal static class OcrTrailingJudgeContract
         await service.DisposeAsync();
         var stats = service.Snapshot();
         Check(stats.Deleted == 1 && stats.Keeps == 0, "chữ di chuyển phải drop");
+        var loaded = OcrVerdictJournal.Load(journal);
+        Check(loaded[0].Decision == "drop" && loaded[0].Reason.Contains("DI CHUYỂN"),
+            "reason phải nói di chuyển");
+    }
+
+    private static OcrLine LineAt(string text, double centerX, double centerY, double confidence = 0.99) =>
+        new(text, confidence,
+            [(int)(centerX * 1920 - 50), (int)(centerY * 1080 - 10),
+             (int)(centerX * 1920 + 50), (int)(centerY * 1080 - 10),
+             (int)(centerX * 1920 + 50), (int)(centerY * 1080 + 10),
+             (int)(centerX * 1920 - 50), (int)(centerY * 1080 + 10)]);
+
+    private static OcrResult FrameWithLines(params OcrLine[] lines) =>
+        new(true, true, string.Concat(lines.Select(line => line.Text)), 0.99, lines, null);
+
+    private static async Task TemporalSingleCharIgnoresLongBackgroundDistractorAsync()
+    {
+        // Cue 1 chữ "哼" đứng yên + chữ nền dài chứa nó ("哼哼唧唧说不停")
+        // DI CHUYỂN (0.4 -> 0.5 -> 0.6): khớp "chứa nhau" + longest-match cũ sẽ
+        // khóa nhầm dòng nền -> drop oan. Khớp tuyệt đối phải khóa đúng chữ
+        // đứng yên -> KEEP.
+        var journal = TempJournal();
+        var calls = 0;
+        Task<IReadOnlyList<OcrResult>> DistractorOcr(
+            IReadOnlyList<byte[]> frames, CancellationToken token)
+        {
+            var call = Interlocked.Increment(ref calls);
+            return Task.FromResult<IReadOnlyList<OcrResult>>([
+                FrameWithLines(
+                    LineAt("哼", 0.5, 0.9),
+                    LineAt("哼哼唧唧说不停", 0.3 + call * 0.1, 0.9, 0.9))]);
+        }
+        await using var service = OcrTrailingJudge.CreateTemporal(
+            (_, _) => Task.FromResult<byte[]?>([7]), DistractorOcr, journal, maxQueue: 16);
+        service.EnqueueCues([Cue(140, "哼")]);
+        await WaitForAsync(() => service.Snapshot().Judged >= 1, "giám khảo không chấm");
+        await service.DisposeAsync();
+        var stats = service.Snapshot();
+        Check(stats.Keeps == 1 && stats.Deleted == 0, "cue 1 chữ đứng yên phải keep dù có chữ nền dài chứa nó");
+    }
+
+    private static async Task TemporalSingleCharMovingStillDroppedAsync()
+    {
+        // Chữ nền 1 chữ DI CHUYỂN thật ("滚" 0.4 -> 0.5 -> 0.6, không dòng
+        // dài nào chứa nó): khớp tuyệt đối vẫn bắt đúng -> DROP như cũ.
+        // Chống sửa lố thành giữ hết chữ ngắn.
+        var journal = TempJournal();
+        var calls = 0;
+        Task<IReadOnlyList<OcrResult>> MovingSingleOcr(
+            IReadOnlyList<byte[]> frames, CancellationToken token)
+        {
+            var call = Interlocked.Increment(ref calls);
+            return Task.FromResult<IReadOnlyList<OcrResult>>([
+                FrameWithLines(LineAt("滚", 0.3 + call * 0.1, 0.9))]);
+        }
+        await using var service = OcrTrailingJudge.CreateTemporal(
+            (_, _) => Task.FromResult<byte[]?>([7]), MovingSingleOcr, journal, maxQueue: 16);
+        service.EnqueueCues([Cue(150, "滚")]);
+        await WaitForAsync(() => service.Snapshot().Judged >= 1, "giám khảo không chấm");
+        await service.DisposeAsync();
+        var stats = service.Snapshot();
+        Check(stats.Deleted == 1 && stats.Keeps == 0, "chữ 1 chữ di chuyển thật vẫn phải drop");
         var loaded = OcrVerdictJournal.Load(journal);
         Check(loaded[0].Decision == "drop" && loaded[0].Reason.Contains("DI CHUYỂN"),
             "reason phải nói di chuyển");

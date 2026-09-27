@@ -33,6 +33,12 @@ public sealed partial class TimelineEditorPage : Page
     private bool _syncingProjectSelection;
     private bool _savingProject;
     private bool _openingProject;
+
+    // P1.1 (27/09): khóa re-entrancy cho cả "Thêm video" lẫn "Gán SRT" — cả
+    // hai đều load+save project store nên chồng nhau là trùng/mất clip. Flag
+    // set TRƯỚC await picker (house-style IMAGE-07: guard trước picker) và
+    // khóa edit guards (RunEdit/RunHistoryEdit/Save) trong suốt thao tác.
+    private bool _addingMedia;
     private readonly DispatcherTimer _timelineAutoScrollTimer = new()
     {
         Interval = TimeSpan.FromMilliseconds(50),
@@ -225,6 +231,7 @@ public sealed partial class TimelineEditorPage : Page
                 .ToArray();
             if (string.IsNullOrWhiteSpace(ShellStatusText.Text))
                 ShellStatusText.Text = $"Có {_v2Projects.Count} project thử nghiệm trong test root tách biệt.";
+            UpdateAddVideosButton();
         }
         catch (Exception error)
         {
@@ -374,7 +381,7 @@ public sealed partial class TimelineEditorPage : Page
 
     private async void SaveProject_Click(object sender, RoutedEventArgs e)
     {
-        if (_savingProject || _openingProject || _timelineClosing)
+        if (_savingProject || _openingProject || _timelineClosing || _addingMedia)
             return;
         try
         {
@@ -396,11 +403,13 @@ public sealed partial class TimelineEditorPage : Page
     {
         try
         {
-            if (_savingProject || _openingProject || _timelineClosing || TimelinePreviewLocked)
+            if (_savingProject || _openingProject || _timelineClosing || _addingMedia || TimelinePreviewLocked)
                 throw new InvalidOperationException(
                     TimelinePreviewLocked
                         ? "Hãy dừng processed preview trước khi chỉnh sửa."
-                        : "Project đang được lưu hoặc mở; hãy đợi thao tác hoàn tất.");
+                        : _addingMedia
+                            ? "Đang thêm video/SRT vào project; hãy đợi thao tác hoàn tất."
+                            : "Project đang được lưu hoặc mở; hãy đợi thao tác hoàn tất.");
             CancelActiveTimelineDrag("Đã hủy thao tác kéo để chạy lệnh khác.");
             operation();
             RefreshClips();
@@ -418,11 +427,13 @@ public sealed partial class TimelineEditorPage : Page
     {
         try
         {
-            if (_savingProject || _openingProject || _timelineClosing || TimelinePreviewLocked)
+            if (_savingProject || _openingProject || _timelineClosing || _addingMedia || TimelinePreviewLocked)
                 throw new InvalidOperationException(
                     TimelinePreviewLocked
                         ? "Hãy dừng processed preview trước khi undo/redo."
-                        : "Project đang được lưu hoặc mở; hãy đợi thao tác hoàn tất.");
+                        : _addingMedia
+                            ? "Đang thêm video/SRT vào project; hãy đợi thao tác hoàn tất."
+                            : "Project đang được lưu hoặc mở; hãy đợi thao tác hoàn tất.");
             CancelActiveTimelineDrag("Đã hủy thao tác kéo để chạy undo/redo.");
             var applied = undo ? _editor.Undo() : _editor.Redo();
             RefreshClips();
@@ -568,6 +579,20 @@ public sealed partial class TimelineEditorPage : Page
             TimelineDragStatusText.Text = message;
     }
 
+    private bool HasClipSubtitle(string clipId)
+    {
+        try
+        {
+            return _editor.Project.Items.Any(item =>
+                item.Kind == TimelineItemKind.Subtitle
+                && string.Equals(item.ClipId, clipId, StringComparison.Ordinal));
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private void RefreshClips()
     {
         _syncingClipSelection = true;
@@ -586,6 +611,7 @@ public sealed partial class TimelineEditorPage : Page
                     $"..{TimelineTime.ToSeconds(clip.TimelineEndUs):0.###}s" +
                     $" src {TimelineTime.ToSeconds(clip.SourceInUs):0.###}s" +
                     $"..{TimelineTime.ToSeconds(clip.SourceOutUs):0.###}s x{clip.PlaybackRate:0.###}" +
+                    (HasClipSubtitle(clip.Id) ? " SRT✓" : string.Empty) +
                     (string.Equals(clip.Id, _editor.SelectedClipId, StringComparison.Ordinal) ? " ●" : string.Empty))
                 .ToArray();
             ClipList.SelectedIndex = _editor.Clips.ToList().FindIndex(clip =>
@@ -1721,6 +1747,7 @@ public sealed partial class TimelineEditorPage : Page
             UpdateTimelineAutosaveText();
         }
         UpdateRelinkMediaButton();
+        UpdateAddVideosButton();
     }
 
     // G19 relink (kiểu Adobe): nguồn video mất khỏi đường dẫn cũ thì báo và
@@ -1805,6 +1832,213 @@ public sealed partial class TimelineEditorPage : Page
         catch
         {
             RelinkMediaButton.IsEnabled = false;
+        }
+    }
+
+    private void UpdateAddVideosButton()
+    {
+        var hasTarget = _editor.HasOpenProject
+            || (ProjectList.SelectedIndex >= 0 && ProjectList.SelectedIndex < _v2Projects.Count);
+        AddVideosButton.IsEnabled = _filePicker is not null && hasTarget
+            && !_savingProject && !_openingProject && !_timelineClosing && !_addingMedia && !TimelinePreviewLocked;
+        AttachSrtButton.IsEnabled = AddVideosButton.IsEnabled && _editor is { HasOpenProject: true, SelectedClipId: not null };
+    }
+
+    private string? SelectedProjectId() =>
+        ProjectList.SelectedIndex >= 0 && ProjectList.SelectedIndex < _v2Projects.Count
+            ? _v2Projects[ProjectList.SelectedIndex].Id
+            : null;
+
+    private bool TimelineEditGuardChanged() =>
+        _savingProject || _openingProject || _timelineClosing || TimelinePreviewLocked;
+
+    // P1 multi-video (27/09): chọn nhiều video 1 lần -> nối tiếp vào project
+    // (đang mở hoặc đang chọn). SRT cùng tên file tự gán theo từng clip.
+    // P1.1 (27/09): guard _addingMedia set TRƯỚC await picker + re-check sau
+    // mỗi await (chọn file/probe có thể đợi lâu, thao tác khác có thể chen
+    // vào giữa chừng); SRT gom hết rồi gán MỘT lần thay vì từng clip.
+    private async void AddVideos_Click(object sender, RoutedEventArgs e)
+    {
+        if (_filePicker is null)
+        {
+            EditStatusText.Text = "Bộ chọn file chưa sẵn sàng.";
+            return;
+        }
+        try
+        {
+            if (_savingProject || _openingProject || _timelineClosing || _addingMedia || TimelinePreviewLocked)
+            {
+                EditStatusText.Text = "Hãy đợi thao tác đang chạy hoàn tất trước khi thêm video.";
+                return;
+            }
+            var projectId = _editor.HasOpenProject ? _editor.Project.Id : SelectedProjectId();
+            if (projectId is null)
+            {
+                EditStatusText.Text = "Hãy tạo project (hoặc chọn 1 project trong danh sách) trước khi thêm video.";
+                return;
+            }
+            _addingMedia = true;
+            UpdateAddVideosButton();
+            var picked = await _filePicker.PickVideosAsync();
+            if (picked.Count == 0)
+            {
+                EditStatusText.Text = "Đã hủy chọn video; project giữ nguyên.";
+                return;
+            }
+            if (TimelineEditGuardChanged())
+            {
+                EditStatusText.Text = "Thao tác khác đã bắt đầu trong lúc chọn video; thêm video bị hủy.";
+                return;
+            }
+            var assets = new List<TimelineMediaAsset>();
+            foreach (var candidate in picked)
+            {
+                var normalized = EditorSourceSelection.NormalizeCandidatePath(candidate);
+                MediaPreviewInfo media;
+                try
+                {
+                    media = await _application.Media.ProbeAsync(normalized, CancellationToken.None);
+                }
+                catch (Exception probeError)
+                {
+                    EditStatusText.Text = $"File không đọc được ({Path.GetFileName(normalized)}): {probeError.Message}";
+                    return;
+                }
+                var info = new FileInfo(normalized);
+                assets.Add(TimelineMediaAsset.Create(
+                    normalized, media.Width, media.Height,
+                    TimelineTime.FromSeconds(media.Duration), media.FrameRate,
+                    await _application.Media.ProbeHasAudioAsync(normalized, CancellationToken.None),
+                    info.Length, info.LastWriteTimeUtc.Ticks));
+            }
+            if (TimelineEditGuardChanged())
+            {
+                EditStatusText.Text = "Thao tác khác đã bắt đầu trong lúc đọc file; thêm video bị hủy.";
+                return;
+            }
+            var added = await _editor.AddStoredClipsAsync(projectId, assets, CancellationToken.None);
+            // SRT cùng tên: parse/validate từng cái trước, gán hết bằng MỘT
+            // lần load+save thay vì N lần.
+            var byAsset = assets.ToDictionary(asset => asset.Id, StringComparer.Ordinal);
+            var assignments = new List<(string ClipId, string SrtPath)>();
+            var warnings = new List<string>();
+            foreach (var clip in added)
+            {
+                if (!byAsset.TryGetValue(clip.AssetId, out var asset)) continue;
+                var sibling = Path.ChangeExtension(asset.Path, ".srt");
+                if (!File.Exists(sibling)) continue;
+                try
+                {
+                    var parsed = await EditorSubtitleDocument.LoadAsync(sibling, CancellationToken.None);
+                    if (parsed.Cues.Count == 0) { warnings.Add($"{Path.GetFileName(sibling)} rỗng"); continue; }
+                    assignments.Add((clip.Id, sibling));
+                }
+                catch (Exception srtError) { warnings.Add($"{Path.GetFileName(sibling)}: {srtError.Message}"); }
+            }
+            var autoSrt = 0;
+            if (assignments.Count > 0)
+            {
+                try
+                {
+                    await _editor.AttachStoredClipSubtitlesAsync(projectId, assignments, CancellationToken.None);
+                    autoSrt = assignments.Count;
+                }
+                catch (Exception srtAttachError)
+                {
+                    warnings.Add("gán SRT: " + srtAttachError.Message);
+                }
+            }
+            var message = $"Đã thêm {added.Count} video nối tiếp" + (autoSrt > 0 ? $" (+{autoSrt} SRT cùng tên tự gán)" : " (chưa có SRT cùng tên)") + ".";
+            if (warnings.Count > 0) message += " Lưu ý: " + string.Join(" · ", warnings.Take(3));
+            if (_editor.HasOpenProject && string.Equals(_editor.Project.Id, projectId, StringComparison.Ordinal))
+                ReportEditState(message);
+            else
+            {
+                await RefreshAsync();
+                RestoreSelectedProject();
+                EditStatusText.Text = message + " Mở project để edit.";
+            }
+        }
+        catch (Exception error)
+        {
+            EditStatusText.Text = "Không thêm được video: " + error.Message;
+        }
+        finally
+        {
+            _addingMedia = false;
+            UpdateAddVideosButton();
+        }
+    }
+
+    // P1 SRT theo clip (27/09): parse-validate trước, gán lại thì thay entry cũ.
+    // P1.1 (27/09): guard _addingMedia set trước await picker; clip + project
+    // kiểm lại sau await (chọn SRT có thể đợi lâu, selection đổi giữa chừng).
+    private async void AttachSrt_Click(object sender, RoutedEventArgs e)
+    {
+        if (_filePicker is null)
+        {
+            EditStatusText.Text = "Bộ chọn file chưa sẵn sàng.";
+            return;
+        }
+        try
+        {
+            if (!_editor.HasOpenProject)
+            {
+                EditStatusText.Text = "Hãy mở project trước khi gán SRT.";
+                return;
+            }
+            var clipId = _editor.SelectedClipId;
+            if (clipId is null)
+            {
+                EditStatusText.Text = "Hãy chọn 1 clip trong danh sách trước khi gán SRT.";
+                return;
+            }
+            if (_savingProject || _openingProject || _timelineClosing || _addingMedia || TimelinePreviewLocked)
+            {
+                EditStatusText.Text = "Hãy đợi thao tác đang chạy hoàn tất trước khi gán SRT.";
+                return;
+            }
+            _addingMedia = true;
+            UpdateAddVideosButton();
+            var picked = await _filePicker.PickSubtitleAsync();
+            if (string.IsNullOrWhiteSpace(picked))
+            {
+                EditStatusText.Text = "Đã hủy chọn SRT; clip giữ nguyên.";
+                return;
+            }
+            if (TimelineEditGuardChanged())
+            {
+                EditStatusText.Text = "Thao tác khác đã bắt đầu trong lúc chọn SRT; gán SRT bị hủy.";
+                return;
+            }
+            var currentClipId = _editor.SelectedClipId;
+            if (currentClipId is null || !string.Equals(currentClipId, clipId, StringComparison.Ordinal))
+            {
+                EditStatusText.Text = "Clip chọn đã đổi trong lúc chọn SRT; gán SRT bị hủy.";
+                return;
+            }
+            var parsed = await EditorSubtitleDocument.LoadAsync(picked, CancellationToken.None);
+            if (parsed.Cues.Count == 0)
+            {
+                EditStatusText.Text = "File SRT không có cue nào.";
+                return;
+            }
+            var projectId = _editor.Project.Id;
+            await _editor.AttachStoredClipSubtitleAsync(projectId, clipId, picked, CancellationToken.None);
+            var clip = _editor.Clips.Single(item => string.Equals(item.Id, clipId, StringComparison.Ordinal));
+            var clipSeconds = TimelineTime.ToSeconds(clip.DurationUs);
+            var outside = parsed.Cues.Count(cue => cue.Start < 0 || cue.End > clipSeconds);
+            ReportEditState($"Đã gán SRT ({parsed.Cues.Count} cue) cho clip." +
+                (outside > 0 ? $" Lưu ý: {outside} cue nằm ngoài độ dài clip." : string.Empty));
+        }
+        catch (Exception error)
+        {
+            EditStatusText.Text = "Không gán được SRT: " + error.Message;
+        }
+        finally
+        {
+            _addingMedia = false;
+            UpdateAddVideosButton();
         }
     }
 

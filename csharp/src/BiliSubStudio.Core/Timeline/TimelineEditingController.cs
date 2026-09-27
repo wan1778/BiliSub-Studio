@@ -424,6 +424,98 @@ public sealed class TimelineEditingController
         _dirty = false;
     }
 
+    // P1 multi-video (27/09): nối tiếp asset đã probe vào project đang lưu
+    // (mở hay chưa mở đều được). Dirty thì từ chối để baseline atomic khớp
+    // file như Relink. Project đang mở cùng ID thì refresh state + reset
+    // history (thao tác cấu trúc, undo tính từ lần mở).
+    // P1.1 (27/09): check revision TRƯỚC SaveAsync — revision đổi giữa chừng
+    // là throw khi CHƯA ghi đĩa (ghi rồi mới throw từng để đĩa có clip mới
+    // trong khi caller nhận "đã hủy", retry tạo bản sao video thứ 2). Sau
+    // SaveAsync không throw nữa: thao tác đã persist đúng.
+    public async Task<IReadOnlyList<TimelineClip>> AddStoredClipsAsync(
+        string projectId,
+        IReadOnlyList<TimelineMediaAsset> assets,
+        CancellationToken cancellationToken)
+    {
+        TimelineProjectV2.ValidateId(projectId);
+        ArgumentNullException.ThrowIfNull(assets);
+        var openId = _project?.Id;
+        var sameOpen = string.Equals(openId, projectId, StringComparison.Ordinal);
+        if (sameOpen && _dirty)
+            throw new InvalidOperationException(
+                "Project Timeline có thay đổi chưa lưu; hãy lưu hoặc bỏ thay đổi trước khi thêm video.");
+        var revision = _revision;
+        var project = await _store.LoadAsync(projectId, cancellationToken).ConfigureAwait(false);
+        var (updated, added) = TimelineClipAdd.AddClips(project, assets);
+        updated = updated with { UpdatedUtc = DateTimeOffset.UtcNow };
+        if (_revision != revision
+            || !string.Equals(_project?.Id, openId, StringComparison.Ordinal))
+            throw new InvalidOperationException(
+                "Project Timeline đã thay đổi trong lúc thêm video; chưa ghi xuống đĩa, hãy thử lại.");
+        await _store.SaveAsync(updated, cancellationToken).ConfigureAwait(false);
+        if (sameOpen)
+        {
+            var state = ToAudioState(updated);
+            _project = updated;
+            _state = state;
+            _savedState = state;
+            _history = new TimelineAudioEditHistory();
+            FixSelection();
+            _revision++;
+            UpdateDirty();
+        }
+        return added;
+    }
+
+    // P1 SRT theo clip (27/09): parse/validate là việc của caller (page đã
+    // đọc qua EditorSubtitleDocument); ở đây chỉ gắn path đã kiểm vào item
+    // clip-local, gán lại thì thay entry cũ.
+    public Task AttachStoredClipSubtitleAsync(
+        string projectId,
+        string clipId,
+        string srtPath,
+        CancellationToken cancellationToken)
+    {
+        return AttachStoredClipSubtitlesAsync(projectId, [(clipId, srtPath)], cancellationToken);
+    }
+
+    // P1.1 (27/09): gán N SRT cho N clip — MỘT lần load+save thay vì N lần
+    // (batch 30-50 video với SRT cùng tên không phải ghi project 30-50 lần).
+    // Check revision trước SaveAsync như AddStoredClipsAsync.
+    public async Task AttachStoredClipSubtitlesAsync(
+        string projectId,
+        IReadOnlyList<(string ClipId, string SrtPath)> assignments,
+        CancellationToken cancellationToken)
+    {
+        TimelineProjectV2.ValidateId(projectId);
+        ArgumentNullException.ThrowIfNull(assignments);
+        var openId = _project?.Id;
+        var sameOpen = string.Equals(openId, projectId, StringComparison.Ordinal);
+        if (sameOpen && _dirty)
+            throw new InvalidOperationException(
+                "Project Timeline có thay đổi chưa lưu; hãy lưu hoặc bỏ thay đổi trước khi gán SRT.");
+        var revision = _revision;
+        var project = await _store.LoadAsync(projectId, cancellationToken).ConfigureAwait(false);
+        var updated = TimelineClipAdd.AttachClipSubtitles(project, assignments)
+            with { UpdatedUtc = DateTimeOffset.UtcNow };
+        if (_revision != revision
+            || !string.Equals(_project?.Id, openId, StringComparison.Ordinal))
+            throw new InvalidOperationException(
+                "Project Timeline đã thay đổi trong lúc gán SRT; chưa ghi xuống đĩa, hãy thử lại.");
+        await _store.SaveAsync(updated, cancellationToken).ConfigureAwait(false);
+        if (sameOpen)
+        {
+            var state = ToAudioState(updated);
+            _project = updated;
+            _state = state;
+            _savedState = state;
+            _history = new TimelineAudioEditHistory();
+            FixSelection();
+            _revision++;
+            UpdateDirty();
+        }
+    }
+
     public IReadOnlyList<TimelineMediaAsset> FindMissingMediaAssets()
     {
         var project = Project;

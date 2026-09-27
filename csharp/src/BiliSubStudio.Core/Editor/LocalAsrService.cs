@@ -10,7 +10,7 @@ using BiliSubStudio.Core.Tools;
 
 namespace BiliSubStudio.Core.Editor;
 
-public sealed record EditorAsrRequest(string ProjectId, string SourcePath, double Duration, string ExecutionMode = "gpu");
+public sealed record EditorAsrRequest(string ProjectId, string SourcePath, double Duration, string ExecutionMode = "gpu", string Model = "small");
 public sealed record EditorAsrResult(
     EditorSubtitleSource Source,
     string AnalysisPath,
@@ -54,9 +54,12 @@ internal sealed partial class LocalAsrService : IDisposable
     public async Task<EditorAsrResult> TranscribeAsync(AppJob job, EditorAsrRequest request)
     {
         ValidateRequest(request);
+        var modelId = LocalAsrInstaller.NormalizeModelId(request.Model);
+        var modelName = LocalAsrInstaller.ModelNameFor(modelId);
+        var modelRevision = LocalAsrInstaller.ModelRevisionFor(modelId);
         var source = new FileInfo(Path.GetFullPath(request.SourcePath));
-        var key = CheckpointKey(source, request.Duration);
-        var runtime = await _installer.PrepareAsync(job, 18);
+        var key = CheckpointKey(source, request.Duration, modelRevision);
+        var runtime = await _installer.PrepareAsync(job, 18, modelId);
         var ffmpeg = await _tools.EnsureFfmpegAsync(job.CancellationToken);
         var operationRoot = Path.Combine(_paths.Temp, "Editor", "ASR", request.ProjectId, Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(operationRoot);
@@ -68,12 +71,12 @@ internal sealed partial class LocalAsrService : IDisposable
             var probeStart = Math.Max(0, Math.Min(Math.Max(0, request.Duration - probeDuration), request.Duration * .35));
             job.Set("asr-probe-audio", 19, "Đang lấy mẫu audio thật để benchmark Whisper timing...");
             await ExtractAudioAsync(ffmpeg, source.FullName, probeAudio, probeStart, probeDuration, processes, job.CancellationToken);
-            var selection = await SelectRuntimeAsync(runtime, probeAudio, probeDuration, processes, job, request.ExecutionMode);
+            var selection = await SelectRuntimeAsync(runtime, probeAudio, probeDuration, processes, job, request.ExecutionMode, modelId);
             job.Log($"Whisper timing benchmark khóa {selection.Device.ToUpperInvariant()}/{selection.ComputeType} · {selection.RealtimeFactor:0.00}× thời gian thực.");
 
             var hybrid = selection.Device == "hybrid";
             var checkpointPath = Path.Combine(_paths.Data, "Projects", "ASR", request.ProjectId + (hybrid ? ".hybrid-v1.json" : ".json"));
-            var checkpoint = await LoadCheckpointAsync(checkpointPath, hybrid ? key + ":hybrid-word-seam-v1" : key, job.CancellationToken, job.Warn);
+            var checkpoint = await LoadCheckpointAsync(checkpointPath, hybrid ? key + ":hybrid-word-seam-v1" : key, modelRevision, job.CancellationToken, job.Warn);
             var restoredRetained = 0;
             if (hybrid)
             {
@@ -166,8 +169,8 @@ internal sealed partial class LocalAsrService : IDisposable
             var analysis = new EditorSpeechAnalysis(
                 EditorSpeechAnalysisDocument.CurrentSchema,
                 key,
-                LocalAsrInstaller.ModelName,
-                LocalAsrInstaller.ModelRevision,
+                modelName,
+                modelRevision,
                 selection.Device,
                 selection.ComputeType,
                 selection.RealtimeFactor,
@@ -177,7 +180,7 @@ internal sealed partial class LocalAsrService : IDisposable
             job.Set("asr-final", 99, $"Whisper timing hoàn tất · {analysis.Segments.Count} đoạn / {wordCount} từ · đã lưu nhịp, khoảng lặng và Nam/Nữ gợi ý.");
             return new EditorAsrResult(loaded, analysisPath, analysisSha, analysis.Segments.Count, wordCount,
                 selection.Device, selection.ComputeType, selection.RealtimeFactor, restoredRetained,
-                LocalAsrInstaller.ModelName, LocalAsrInstaller.ModelRevision);
+                modelName, modelRevision);
         }
         finally
         {
@@ -186,7 +189,7 @@ internal sealed partial class LocalAsrService : IDisposable
         }
     }
 
-    private async Task<AsrSelection> SelectRuntimeAsync(LocalAsrRuntime runtime, string audio, double probeSeconds, OwnedProcessGroup processes, AppJob job, string executionMode)
+    private async Task<AsrSelection> SelectRuntimeAsync(LocalAsrRuntime runtime, string audio, double probeSeconds, OwnedProcessGroup processes, AppJob job, string executionMode, string modelId)
     {
         var hardware = _hardware.ResourceSnapshot();
         var snapshot = _hardware.Snapshot();
@@ -198,10 +201,17 @@ internal sealed partial class LocalAsrService : IDisposable
             job.Warn("VRAM trống dưới 1.500 MB; không tải/khởi động GPU Whisper, chuyển CPU/int8.");
         else
         {
-            // large-v3 needs ~3 GB in float16: cards under 8 GB VRAM must use
-            // int8_float16 (fits 4 GB, still fast on Ampere+), otherwise OOM.
+            // small needs ~0.5 GB in float16 nhưng giữ int8_float16 cho đồng đều
+            // (card 4 GB cõng chung pool OCR): vừa nhẹ VRAM vừa nhanh hơn large-v3
+            // int8 nhiều lần. Card >= 8 GB vẫn dùng float16 như cũ.
+            // 27/09 ép VRAM theo yêu cầu: turbo ăn float16 khi trống >= 2.5 GB
+            // (weights ~1.6 GB + workspace; tensor-core chạy float16 nhanh hơn
+            // int8 mà còn chuẩn hơn 1 nấc). Không đủ chỗ -> int8_float16 như cũ;
+            // small giữ nguyên vì đã nhanh, để chỗ cho display/OCR. Probe OOM thì
+            // rơi về CPU theo lưới cũ (chậm nhưng không crash giữa chừng).
             var vramGb = hardware.VramTelemetryAvailable ? hardware.AvailableVramBytes / 1024d / 1024 / 1024 : 0;
-            var compute = vramGb <= 0 || vramGb >= 8 ? "float16" : "int8_float16";
+            var isTurbo = string.Equals(modelId, LocalAsrInstaller.ListenModelId, StringComparison.Ordinal);
+            var compute = vramGb <= 0 || vramGb >= 8 || (isTurbo && vramGb >= 2.5) ? "float16" : "int8_float16";
             try
             {
                 var cudaDirectories = await _installer.PrepareGpuAsync(job);
@@ -320,7 +330,7 @@ internal sealed partial class LocalAsrService : IDisposable
             throw new InvalidOperationException("Không trích được audio để phân tích timing: " + LastLine(result.StandardError));
     }
 
-    private async Task<AsrCheckpoint> LoadCheckpointAsync(string path, string key, CancellationToken cancellationToken,
+    private async Task<AsrCheckpoint> LoadCheckpointAsync(string path, string key, string expectedModelRevision, CancellationToken cancellationToken,
         Action<string>? warning = null)
     {
         // Primary is authoritative; use the previous committed backup only if
@@ -334,7 +344,7 @@ internal sealed partial class LocalAsrService : IDisposable
                 if (!File.Exists(candidate) || new FileInfo(candidate).Length is <= 0 or > 128L * 1024 * 1024) continue;
                 await using var stream = new FileStream(candidate, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
                 var loaded = await JsonSerializer.DeserializeAsync<AsrCheckpoint>(stream, _json, cancellationToken);
-                if (loaded is null || loaded.Schema != CheckpointSchema || loaded.Key != key || loaded.ModelRevision != LocalAsrInstaller.ModelRevision
+                if (loaded is null || loaded.Schema != CheckpointSchema || loaded.Key != key || loaded.ModelRevision != expectedModelRevision
                     || loaded.Cues is null || loaded.Cues.Count > EditorSubtitleDocument.MaxCues
                     || loaded.Cues.Any(cue => cue is null || cue.Words?.Any(word => word is null) == true)) continue;
                 var valid = loaded.Cues.Where(ValidCue).OrderBy(x => x.Start).ToList();
@@ -351,7 +361,7 @@ internal sealed partial class LocalAsrService : IDisposable
                     + "Giữ nguyên file, kiểm tra bản dự phòng.");
             }
         }
-        return AsrCheckpoint.New(key);
+        return AsrCheckpoint.New(key, expectedModelRevision);
     }
 
     private static bool ValidCue(AsrCue cue) =>
@@ -458,8 +468,8 @@ internal sealed partial class LocalAsrService : IDisposable
     private static double GetDouble(JsonElement root, string name) =>
         root.TryGetProperty(name, out var value) && value.TryGetDouble(out var result) ? result : double.NaN;
 
-    private static string CheckpointKey(FileInfo source, double duration) =>
-        EditorSpeechAnalysisDocument.SourceKey(source.FullName, source.Length, source.LastWriteTimeUtc.Ticks, duration, LocalAsrInstaller.ModelRevision);
+    private static string CheckpointKey(FileInfo source, double duration, string modelRevision) =>
+        EditorSpeechAnalysisDocument.SourceKey(source.FullName, source.Length, source.LastWriteTimeUtc.Ticks, duration, modelRevision);
 
     private static async Task WriteAtomicAsync(string path, string content, CancellationToken cancellationToken)
     {
@@ -476,6 +486,8 @@ internal sealed partial class LocalAsrService : IDisposable
     {
         ArgumentNullException.ThrowIfNull(request);
         if (request.ExecutionMode is not ("cpu" or "gpu" or "hybrid")) throw new InvalidDataException("Chế độ ASR không hợp lệ.");
+        if (request.Model is not (LocalAsrInstaller.EditModelId or LocalAsrInstaller.ListenModelId))
+            throw new InvalidDataException("Model Whisper không hợp lệ.");
         if (request.ProjectId.Length is < 8 or > 64 || request.ProjectId.Any(x => !char.IsAsciiLetterOrDigit(x) && x is not ('-' or '_')))
             throw new InvalidDataException("Project ID Whisper không hợp lệ.");
         var source = new FileInfo(Path.GetFullPath(request.SourcePath));
@@ -510,6 +522,6 @@ internal sealed partial class LocalAsrService : IDisposable
         double MedianPitchHz);
     private sealed record AsrCheckpoint(int Schema, string Key, string ModelRevision, string Device, string ComputeType, double Frontier, bool Complete, List<AsrCue> Cues)
     {
-        public static AsrCheckpoint New(string key) => new(CheckpointSchema, key, LocalAsrInstaller.ModelRevision, string.Empty, string.Empty, 0, false, []);
+        public static AsrCheckpoint New(string key, string modelRevision) => new(CheckpointSchema, key, modelRevision, string.Empty, string.Empty, 0, false, []);
     }
 }

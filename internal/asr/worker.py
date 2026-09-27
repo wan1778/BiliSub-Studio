@@ -57,10 +57,21 @@ def parse_args() -> argparse.Namespace:
 
 
 def recognition(model, audio, beam):
+    # 27/09 fix rớt câu: temperature fallback (mặc định faster-whisper thử
+    # 0.0->1.0 khi đoạn khó; trước đây khóa 1 nhiệt nên đoạn rớt ngưỡng là
+    # drop lặng) + VAD hiền hơn (giữ đầu/đuôi câu, không nuốt câu ngắn).
+    # Bổ sung cho đoạn nhiều nhân vật/giọng cao (loli): hạ ngưỡng
+    # no_speech (giọng lạ hay bị chấm "không phải speech"), nới ngưỡng
+    # logprob/nén để giữ đoạn confidence thấp, VAD nhạy hơn với giọng nhỏ.
+    # Thì thầm/bàn tán (27/09): tín hiệu nhỏ hay chìm dưới ngưỡng -> hạ tiếp
+    # no_speech + VAD threshold. Giá phải trả: nhạc nền dễ bị nghe nhầm
+    # thành câu hơn; nếu rác nhiều thì siết lại thay vì hạ nữa.
     return model.transcribe(
         audio, language="zh", task="transcribe", beam_size=max(1, min(beam, 8)),
-        temperature=0.0, condition_on_previous_text=True, word_timestamps=True,
-        vad_filter=True, vad_parameters={"min_silence_duration_ms": 250, "speech_pad_ms": 120},
+        temperature=(0.0, 0.2, 0.4, 0.6, 0.8, 1.0),
+        condition_on_previous_text=True, word_timestamps=True,
+        vad_filter=True, vad_parameters={"threshold": 0.3, "min_silence_duration_ms": 500, "speech_pad_ms": 250},
+        no_speech_threshold=0.2, log_prob_threshold=-1.2, compression_ratio_threshold=3.0,
     )
 
 
@@ -324,11 +335,14 @@ def main() -> int:
         language="zh",
         task="transcribe",
         beam_size=max(1, min(args.beam, 8)),
-        temperature=0.0,
+        temperature=(0.0, 0.2, 0.4, 0.6, 0.8, 1.0),
         condition_on_previous_text=True,
         word_timestamps=True,
         vad_filter=True,
-        vad_parameters={"min_silence_duration_ms": 250, "speech_pad_ms": 120},
+        vad_parameters={"threshold": 0.3, "min_silence_duration_ms": 500, "speech_pad_ms": 250},
+        no_speech_threshold=0.2,
+        log_prob_threshold=-1.2,
+        compression_ratio_threshold=3.0,
     )
     count = 0
     word_count = 0
