@@ -19,8 +19,8 @@ App.OnLaunched
           -> one JobManager / ToolManager / ProcessRunner / HttpClient
           -> Settings, Auth, Media, Video, Subtitle, Hardware, OCR, Editor, Update, Report owners
       -> JobManager.AttachLog(ApplicationLog)
-      -> five routed native WinUI destinations
-           Tải media / OCR phụ đề / Chỉnh video / Timeline / Cài đặt
+       -> four routed native WinUI destinations
+            Tải media / OCR phụ đề / Chỉnh video / Cài đặt
       -> SettingsPage embeds four internal sections
            Chung / Hiệu năng / Đăng nhập / Cập nhật & hỗ trợ
       -> one shell-owned global diagnostic drawer shared by every routed destination
@@ -512,7 +512,7 @@ verify.ps1
   -> XBF + PRI validation
   -> exact published EXE startup sentinel
 -> routed-page layout smoke at 800x600 / 1000x700 / 1500x900
-        -> Tải media / OCR / Editor / Timeline / Settings
+        -> Tải media / OCR / Editor / Settings
         -> Settings internal Chung / Hiệu năng / Đăng nhập / Cập nhật & hỗ trợ
         -> global log drawer open / closed
 

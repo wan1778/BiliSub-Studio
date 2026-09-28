@@ -1,6 +1,5 @@
 using System.Reflection;
 using BiliSubStudio.Core.Editor;
-using BiliSubStudio.Core.Timeline;
 
 namespace BiliSubStudio.Core.ContractTests;
 
@@ -19,7 +18,6 @@ internal static class EditorCleanEffectContract
         WholeVideoHasNoEnableGuard();
         PreviewSliceMatchesExportGeometry();
         TinyRegionRejectedByCommonLaw();
-        TimelineAcceptsCleanAndLegacyPayloads();
         return Task.CompletedTask;
     }
 
@@ -110,29 +108,6 @@ internal static class EditorCleanEffectContract
             throw new InvalidOperationException("tiny clean region was accepted");
         }
         catch (ArgumentException)
-        {
-        }
-    }
-
-    // Timeline nhận payload clean; id lạ vẫn throw; payload blur/cover cũ vẫn parse.
-    private static void TimelineAcceptsCleanAndLegacyPayloads()
-    {
-        var clean = TimelineEffectSpec.Parse("clean:0.1,0.2,0.3,0.25:0", "item-clean");
-        Equal("clean", clean.Effect);
-        Equal(.1, clean.X);
-        Equal(.25, clean.Height);
-        Equal(0, clean.Strength);
-        var blur = TimelineEffectSpec.Parse("blur:0.1,0.2,0.3,0.25:12", "item-blur");
-        Equal("blur", blur.Effect);
-        Equal(12, blur.Strength);
-        var cover = TimelineEffectSpec.Parse("cover:0.1,0.2,0.3,0.25:0", "item-cover");
-        Equal("cover", cover.Effect);
-        try
-        {
-            _ = TimelineEffectSpec.Parse("wipe:0.1,0.2,0.3,0.25:0", "item-wipe");
-            throw new InvalidOperationException("unknown timeline effect id was accepted");
-        }
-        catch (InvalidOperationException)
         {
         }
     }

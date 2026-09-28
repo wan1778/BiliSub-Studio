@@ -31,7 +31,6 @@ require(nav == [
     ("Tải media", "video"),
     ("OCR phụ đề", "ocr"),
     ("Chỉnh video", "editor"),
-    ("Timeline", "timelinev2"),
     ("Cài đặt", "settings"),
 ], f"production navigation drifted: {nav}")
 for forbidden in ("Hiệu năng", "Đăng nhập", "Cập nhật &amp; hỗ trợ"):

@@ -7,7 +7,6 @@ using BiliSubStudio.App.ViewModels;
 using BiliSubStudio.Core.Application;
 using BiliSubStudio.Core.Configuration;
 using BiliSubStudio.Core.Diagnostics;
-using BiliSubStudio.Core.Timeline;
 using Microsoft.UI;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
@@ -129,20 +128,6 @@ public sealed partial class MainWindow : Window
             ["editor"] = new EditorPage(_application, filePicker),
             ["settings"] = _settingsPage,
         };
-        // G14 (DEC-024, user-approved promotion): the Timeline entry ships in
-        // the normal navigation for every user. The classic pages keep their
-        // order and the default selection stays on video. The internal flag
-        // remains only as an emergency kill-switch hiding the entry again.
-        _pages["timelinev2"] = new TimelineEditorPage(_application, folderPicker, filePicker);
-        if (TimelineFeatureFlags.IsSuppressed)
-        {
-            var timelineItem = Navigation.MenuItems
-                .OfType<NavigationViewItem>()
-                .FirstOrDefault(item => string.Equals(
-                    item.Tag as string, "timelinev2", StringComparison.Ordinal));
-            if (timelineItem is not null)
-                Navigation.MenuItems.Remove(timelineItem);
-        }
         RootGrid.Loaded += OnLoaded;
         Closed += OnClosed;
         AppWindow.Closing += OnAppWindowClosing;
@@ -263,7 +248,6 @@ public sealed partial class MainWindow : Window
                 "video" => "Tải video",
                 "ocr" => "Quét OCR",
                 "editor" => "Edit",
-                "timelinev2" => "Timeline",
                 "settings" => "Cài đặt",
                 _ => string.Empty,
             });
@@ -467,8 +451,6 @@ public sealed partial class MainWindow : Window
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(95));
             if (_pages["editor"] is EditorPage editorPage)
                 await editorPage.FlushForAppCloseAsync(timeout.Token);
-            if (_pages["timelinev2"] is TimelineEditorPage timelinePage)
-                await timelinePage.FlushForAppCloseAsync(timeout.Token);
             await _application.PrepareShutdownAsync(timeout.Token);
             _application.LaunchPendingUpdate();
             _safeToClose = true;
@@ -479,8 +461,6 @@ public sealed partial class MainWindow : Window
         catch (Exception error)
         {
             _closing = false;
-            if (_pages["timelinev2"] is TimelineEditorPage timelinePage)
-                timelinePage.AbortAppClose();
             FooterStatus.Text = "Từ chối đóng để bảo toàn dữ liệu: " + error.Message;
             _globalLog.Error("Ứng dụng", "Từ chối đóng để bảo toàn dữ liệu: " + error.Message);
             // EDIT-CLOSE: chặn im lặng khiến user tưởng app treo. Báo bằng hộp

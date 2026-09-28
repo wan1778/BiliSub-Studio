@@ -122,7 +122,7 @@ internal sealed class DiscordPresenceService : IDisposable
             payload = string.IsNullOrWhiteSpace(location)
                 ? BuildActivityJson("Đang rảnh", "Mở BiliSub Studio", _appStartUnix)
                 : BuildActivityJson("Tab " + location,
-                    string.Equals(location, "Edit", StringComparison.Ordinal) || string.Equals(location, "Timeline", StringComparison.Ordinal)
+                    string.Equals(location, "Edit", StringComparison.Ordinal)
                         ? DiscordPresenceContent.ComposeIdleState(video, project) : "Đang xem",
                     _appStartUnix);
         }

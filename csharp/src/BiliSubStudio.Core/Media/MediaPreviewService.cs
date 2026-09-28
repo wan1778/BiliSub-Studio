@@ -42,8 +42,7 @@ public sealed class MediaPreviewService
     }
 
     // G11 additive probe: reports whether the source carries at least one
-    // audio stream. Existing ProbeAsync semantics are unchanged; the Timeline
-    // promotion flow needs probed audio presence instead of a caller guess.
+    // audio stream. Existing ProbeAsync semantics are unchanged.
     public async Task<bool> ProbeHasAudioAsync(string inputPath, CancellationToken cancellationToken)
     {
         var input = ValidateInput(inputPath);

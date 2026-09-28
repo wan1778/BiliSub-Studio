@@ -66,7 +66,7 @@ Any relevant gate failure blocks that build.
 
 ## UI/UX contract
 
-- Top-level navigation stays focused: Media, OCR, classic Editor, Timeline, Settings.
+- Top-level navigation stays focused: Media, OCR, classic Editor, Settings.
 - Performance, Login and Update/Support live inside Settings rather than becoming extra top-level pages.
 - Logging is application-wide, not one isolated log per feature page.
 - Media layout should use available horizontal space and keep source/content/quality/output/progress hierarchy clear.
