@@ -59,7 +59,7 @@ require("MIN_RATE_SCALE = .30" in worker
         and "MIN_ACTUAL_SPEED = 1.0" in worker
         and "FIT_HEADROOM = .995" in worker
         and "MAX_ACTUAL_SPEED = 100.0" in worker
-        and "MAX_GROUP_GAP_FRAMES = 0" in worker
+        and "MAX_GROUP_GAP_FRAMES = 5512" in worker
         and "minimum_speech_frames" in worker
         and "MAX_GROUP_DURATION_FRAMES = 300 * SAMPLE_RATE" in worker
         and "MAX_GROUP_CUES = 512" in worker,

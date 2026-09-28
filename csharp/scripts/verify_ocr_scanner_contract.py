@@ -110,7 +110,7 @@ def main() -> int:
     require("Math.Min(explicitValue" not in selector and
             "ProbeTopologyLevelAsync(ffmpeg, request, explicitValue" in selector,
             "manual OCR topology is still silently downgraded instead of probing the exact request")
-    require('<ComboBox Grid.Column="2" x:Name="LanesBox" Header="Luồng OCR" SelectedIndex="0"><x:String>auto</x:String><x:String>1</x:String><x:String>2</x:String><x:String>3</x:String><x:String>4</x:String><x:String>5</x:String><x:String>6</x:String><x:String>7</x:String><x:String>8</x:String><x:String>16</x:String></ComboBox>' in page_xaml,
+    require('<ComboBox Grid.Column="3" x:Name="LanesBox" Header="Luồng OCR" SelectedIndex="0"><x:String>auto</x:String><x:String>1</x:String><x:String>2</x:String><x:String>3</x:String><x:String>4</x:String><x:String>5</x:String><x:String>6</x:String><x:String>7</x:String><x:String>8</x:String><x:String>16</x:String></ComboBox>' in page_xaml,
             "manual OCR topology selector does not expose auto, every level 1..8, and 16")
     require("ConfigureWorkerPoolAsync(workerTarget" in probe and "actual != workerTarget" in probe and
             "Enumerable.Range(0, level)" in probe and "CaptureFrameWithFfmpegAsync" in probe and
@@ -124,7 +124,7 @@ def main() -> int:
             "Math.Min(2, lanes)" in topology,
             "scan must validate independent checkpoint worker and decoder topology")
     queue = (MANAGER.parent / "OcrInferenceQueue.cs").read_text(encoding="utf-8")
-    require("BoundedChannelFullMode.Wait" in queue and "Capacity = 4" in queue and
+    require("BoundedChannelFullMode.Wait" in queue and "Capacity = 12" in queue and
             "TaskCompletionSource<T>" in queue and "WriteAsync" in queue and
             "inference.RunAsync" in manager and "RetireInferenceLocked" in manager,
             "all OCR requests must use bounded zero-drop backpressure and per-request completion")
@@ -188,7 +188,7 @@ def main() -> int:
             "running OCR does not publish a bounded live cue snapshot through AppJob.Result")
     live_seed = scanner[scanner.find("var liveCommitted = checkpoint.Lanes"):scanner.find("var liveActive =", scanner.find("var liveCommitted = checkpoint.Lanes"))]
     require("TakeLast(120)" not in live_seed and "liveCommitted.RemoveRange" not in scanner and
-            "TakeLast(120)" in live_publish,
+            "TakeLast(previewCueLimit)" in live_publish and "const int previewCueLimit = 120" in live_publish,
             "future-lane callbacks can evict safe-frontier cues before the bounded live snapshot is built")
     require(".Concat(liveActive.Where(cue => cue is not null).Select(cue => cue!))" in live_publish,
             "live OCR preview hides the tracker-confirmed active cue until a later subtitle commits it")
@@ -208,14 +208,14 @@ def main() -> int:
             "OcrCueReconciler.MergeTouchingIdentical(output.Select(item => item.Cue))" in scanner and
             "OcrCueReconciler.MergeTouchingIdenticalAsync(" in scanner and
             "liveTail.AppendCommitted(owned)" in scanner and
-            "liveTail.CommittedView" in scanner and
-            "IReadOnlyList<OcrCue> committedView" in live_publish,
+            "liveTail.GetTailBelow(frontier, previewCueLimit)" in live_publish and
+            "const int previewCueLimit = 120" in live_publish,
             "identical touching OCR fragments are not reconciled consistently in live history and final SRT")
     require("recoverShortBlank: tracker.Active is not null" in live_lane,
             "active short-caption recovery no longer requests a bounded tighter-box retry")
     require("adaptiveWindow" in live_lane and "NeedsAdaptiveRefinement" in live_lane and
             "ProcessAdaptiveWindowAsync" in live_lane and "RunBatchAsync" in live_lane and
-            "offset += 8" in live_lane and "images += batch.Length" in live_lane and
+            "offset += OcrRequestBatcher.WorkerBatchLimit" in live_lane and "images += batch.Length" in live_lane and
             "TimeSpan.FromMilliseconds(500)" in live_lane,
             "OCR adaptive/exhaustive paths must preserve batching and throttled telemetry")
     require("previousVisualAnchor" in live_lane and "ProbeVisualChangesAsync" in live_lane and
@@ -230,8 +230,8 @@ def main() -> int:
             "adaptive confirmation must include pre-boundary evidence and carry unresolved samples without duplicating the baseline")
     require("mode.Fps >= 4" in live_lane and
             "IsDenseAdaptiveVisualNoise(scores)" in live_lane and
-            "candidateIndexes, adaptiveWindow.Count - 1, maximum: 4" in live_lane and
-            "maximum: mode.Fps >= 4 ? 4 : 8" in live_lane and
+            "CapRefinementIndexes(candidateIndexes, windowLength, maximum: 4)" in live_lane and
+            "CapRefinementIndexes(candidateIndexes, adaptiveWindow.Count - 1, maximum: mode.Fps >= 4 ? 4 : 6)" in live_lane and
             "maximum: mode.Fps >= 4 ? 2 : 5" in live_lane,
             "Accurate must skip dense stable-text animation and cap sparse refinement without changing lower modes")
     require("!string.Equals(previousText, currentText, StringComparison.Ordinal)" in scanner,
@@ -253,10 +253,10 @@ def main() -> int:
     columns = settings.find("ui:Grid.ColumnDefinitions", ns)
     boxes = settings.findall("ui:ComboBox", ns)
     mode_box = next(box for box in boxes if box.get(name) == "ScanModeBox")
-    require(columns is not None and len(columns) == 3 and
+    require(columns is not None and len(columns) == 4 and
             all(column.get("Width", "*") == "*" for column in columns) and
             [(box.get(name), box.get("Grid.Column", "0")) for box in boxes] ==
-            [("DeviceBox", "0"), ("ScanModeBox", "1"), ("LanesBox", "2")] and
+            [("DeviceBox", "0"), ("ScanModeBox", "1"), ("SourceBox", "2"), ("LanesBox", "3")] and
             mode_box.get("SelectedIndex") == "0",
             "OCR settings must expose device/mode/lanes columns with the mode selector defaulting to index 0")
     build_request = page.split("private OcrScanRequest BuildRequest() => new(", 1)[1].split(");", 1)[0]
@@ -269,11 +269,11 @@ def main() -> int:
             "legacy checkpoint mode identities must remain distinct from balanced")
     require('["images_base64"] = imageBase64' in worker_client and
             "resultsNode.EnumerateArray().Select(ParseResult)" in worker_client and
-            "results.Length != imageBase64.Count" in worker_client and
+            "parsed.Length != imageBase64.Count" in worker_client and
             "RunBatchAsync(imageBase64" in manager,
             "C# OCR worker path does not validate and expose the eight-image Paddle batch protocol")
     require('["probe_images_base64"] = imageBase64' in worker_client and
-            "change_scores" in worker_client and "ProbeVisualChangesAsync(imageBase64" in manager,
+            "change_scores" in worker_client and "ProbeVisualChangesExAsync(imageBase64" in manager,
             "C# OCR worker path does not validate and expose the every-frame visual probe protocol")
     require("var authoritative = snapshot.Done" in page and
             "ApplyAuthoritativeCues(result.Cues)" in page and
@@ -298,9 +298,9 @@ def main() -> int:
     # a5829d9: virtualized incremental cue list. The full ordered history is retained in
     # _cues/_visibleCues; rows render incrementally with the same compact start/end format.
     require("TakeLast(120)" not in page and "Take(10)" not in page and
-            'var cues = _cues.OrderBy(cue => cue.Start).ToArray();' in page and
-            'start.ToString(@"hh\\:mm\\:ss\\,fff")' in page and
-            'end.ToString(@"hh\\:mm\\:ss\\,fff")' in page and " → " in page,
+            "OcrExportPipeline.Build(_cues, _displayExclusions, _displayFixes)" in page and
+            "private static string FormatClock(double seconds)" in page and
+            'value.ToString(@"hh\\:mm\\:ss")' in page,
             "OCR page does not retain the complete compact start/end subtitle history")
     # a5829d9: the fixed "10 cues per viewport" window became a continuously scrollable
     # full-history list inside the same 372px compact frame.
@@ -324,7 +324,7 @@ def main() -> int:
             "_ocr.Status.Workers != 0" in application and "_ocrScanner.ActiveProcessCount != 0" in application,
             "OCR Cancel can report completion before Python/FFmpeg ownership reaches zero")
     require("await processes.StopAsync();" in scanner and "await _ocr.StopAsync();" in scanner and
-            scanner.find("await processes.StopAsync();") < scanner.find("await _checkpoints.RemoveAsync(request, CancellationToken.None);"),
+            scanner.find("await processes.StopAsync();") < scanner.find("await _checkpoints.RemoveAsync(keyRequest, CancellationToken.None);"),
             "OCR cancellation does not reap process trees before deleting checkpoint")
     require("class OwnedProcessGroup" in process_group and "Kill(entireProcessTree: true)" in process_group and
             "ActiveCount" in process_group and "owner?.Track(process)" in process_runner,
@@ -346,7 +346,7 @@ def main() -> int:
     require("private const int Schema = 19;" in checkpoint and "schema >= 9" in checkpoint and
             "LegacyCheckpointIdentity" in checkpoint and
             "new[] { 19, 18, 17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3 }" in checkpoint and
-            "OcrInstaller.DetectionModel, OcrInstaller.RecognitionModel" in checkpoint,
+            "OcrModelTier.DetectionModel(request.Mode), OcrModelTier.RecognitionModel(request.Mode)" in checkpoint,
             "adaptive OCR checkpoint identity cannot safely reject and explicitly remove legacy checkpoint files")
     require("Where(x => x.Start <= media + 0.001)" in checkpoint,
             "paused checkpoint cues are not restricted to the contiguous safe frontier")

@@ -30,7 +30,7 @@ require("candidate_record is not None" in worker and "candidate_record, True, 0"
         and '"cache_hit": cache_hit' in worker,
         "worker must report real individual and sentence-group cache hits")
 require("if record is None:" in worker and "fit_cue(" in worker
-        and "synthesize_cue(voice, text, candidate, scale)" in worker,
+        and "synthesize_cue(voice, active_text, candidate, active_scale)" in worker,
         "missing/corrupt clips must run real inference again")
 require("File.Delete(masterPath)" in service and "if (!accepted)" in service,
         "failed restart may remove only its new unaccepted output")

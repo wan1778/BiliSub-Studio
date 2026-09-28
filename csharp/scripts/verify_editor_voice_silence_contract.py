@@ -37,7 +37,7 @@ contracts = read(CONTRACTS)
 
 require("vad_filter=True" in worker,
         "VOICE-05 Whisper worker must keep VAD enabled for stable speech boundaries")
-require('vad_parameters={"min_silence_duration_ms": 250, "speech_pad_ms": 120}' in worker,
+require('vad_parameters={"threshold": 0.3, "min_silence_duration_ms": 500, "speech_pad_ms": 250}' in worker,
         "VOICE-05 Whisper VAD parameters must remain explicit and reviewed")
 
 require("public sealed record EditorPauseTiming(double Start, double End)" in speech,
@@ -56,9 +56,9 @@ require(".SelectMany(segment => segment.Words)" in mapping,
         "VOICE-05 silence must derive from actual mapped Whisper words")
 require(".OrderBy(word => word.Start)" in mapping and ".ThenBy(word => word.End)" in mapping,
         "VOICE-05 word gaps must be evaluated in deterministic chronological order")
-require("var speechStart = words.Length > 0 ? Math.Clamp(words[0].Start, cue.Start, cue.End) : cue.Start;" in mapping,
+require("var speechStart = words.Length > 0 ? Math.Clamp(words[0].Start, ownershipStart, ownershipEnd) : cue.Start;" in mapping,
         "VOICE-05 leading silence must anchor to the first mapped word")
-require("var speechEnd = words.Length > 0 ? Math.Clamp(words[^1].End, speechStart, cue.End) : cue.End;" in mapping,
+require("var speechEnd = words.Length > 0 ? Math.Clamp(words[^1].End, speechStart, ownershipEnd) : cue.End;" in mapping,
         "VOICE-05 trailing envelope must clamp safely even for an edge word inside the ±80 ms cue tolerance")
 require("if (speechEnd <= speechStart + .01) { speechStart = cue.Start; speechEnd = cue.End; }" in mapping,
         "VOICE-05 collapsed edge mappings must fall back to the cue envelope instead of calling Math.Clamp with min > max")

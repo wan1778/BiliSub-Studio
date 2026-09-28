@@ -34,7 +34,7 @@ for owner in (service, hybrid):
             "accepted segment/chunk must keep cleanup-aware durable save and warnings")
 loader = service.split("private async Task<AsrCheckpoint> LoadCheckpointAsync", 1)[1].split("private static bool ValidCue", 1)[0]
 for marker in ('new[] { path, path + ".bak" }', "FileShare.Read | FileShare.Delete", "loaded.Schema != CheckpointSchema",
-               "loaded.Key != key", "loaded.ModelRevision != LocalAsrInstaller.ModelRevision", "ValidHybridCue",
+               "loaded.Key != key", "loaded.ModelRevision != expectedModelRevision", "ValidHybridCue",
                "catch (OperationCanceledException) { throw; }"):
     require(marker in loader, "backup loading lost validation/cancel rule " + marker)
 require("EnumerateFiles" not in loader and "Directory.GetFiles" not in loader,

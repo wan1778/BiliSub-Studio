@@ -16,8 +16,22 @@ WORKER = pathlib.Path(__file__).resolve().parents[2] / "internal" / "ocr" / "wor
 
 def load_definitions():
     tree = ast.parse(WORKER.read_text(encoding="utf-8"))
+
+    # Simple module-level constants (SCENE_*, RED_*...) must ride along with
+    # the function/class definitions: the split det/rec request loop calls
+    # adapt_scene, whose fallback reads SCENE_HIGH_CONTRAST — a definitions-
+    # only namespace raises NameError there. ARGS (parser call at import) and
+    # the ARGS-conditioned If blocks stay excluded.
+    def is_simple_constant(node):
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            return False
+        value = getattr(node, "value", None)
+        return value is not None and not any(
+            isinstance(subnode, ast.Call) for subnode in ast.walk(value))
+
     definitions = ast.Module(body=[node for node in tree.body
-        if isinstance(node, (ast.FunctionDef, ast.ClassDef))], type_ignores=[])
+        if isinstance(node, (ast.FunctionDef, ast.ClassDef)) or is_simple_constant(node)],
+        type_ignores=[])
     namespace = {"hashlib": hashlib, "json": json, "OrderedDict": OrderedDict,
         "np": types.SimpleNamespace(integer=int, floating=float)}
     exec(compile(definitions, str(WORKER), "exec"), namespace)
@@ -43,10 +57,14 @@ class Engine:
     def predict(self, images, **kwargs):
         assert kwargs["text_det_box_thresh"] == .55
         assert kwargs["text_rec_score_thresh"] == .45
-        if "text_det_unclip_ratio" in kwargs:
-            assert kwargs["text_det_unclip_ratio"] == .8
+        if kwargs.get("text_det_unclip_ratio") == .8:
             self.retries += 1
             return [{"rec_texts": ["\u8d70"], "rec_scores": [.85], "rec_boxes": [[1, 1, 8, 8]]}]
+        if "text_det_unclip_ratio" in kwargs:
+            # Scene-adaptive base call (split det/rec): high_contrast keeps the
+            # default params, so the unclip key arrives as None with the thresh.
+            assert kwargs["text_det_unclip_ratio"] is None
+            assert kwargs["text_det_thresh"] == .3
         self.calls += 1
         images = images if isinstance(images, list) else [images]
         self.images += len(images)
@@ -179,8 +197,9 @@ def verify():
         {"id": 7, "image_base64": "a"},
     ]
     output = []
-    worker.update({"validate_device": lambda: False, "SplitOCREngine": lambda: engine,
-        "ARGS": types.SimpleNamespace(device="cpu"), "ENGINE_NAME": "fixture",
+    worker.update({"validate_device": lambda: False, "SplitOCREngine": lambda *args: engine,
+        "ARGS": types.SimpleNamespace(device="cpu", det_model="fixture", rec_model="fixture"),
+        "ENGINE_NAME": "fixture",
         "DETECTION_MODEL": "fixture", "RECOGNITION_MODEL": "fixture",
         "paddle": types.SimpleNamespace(__version__="fixture"),
         "sys": types.SimpleNamespace(stdin=io.StringIO("\n".join(json.dumps(r) for r in requests))),

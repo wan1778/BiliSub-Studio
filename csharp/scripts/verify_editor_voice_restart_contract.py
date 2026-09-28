@@ -106,7 +106,7 @@ require("catch (OperationCanceledException)" in run_job
 
 transcribe = local_asr.split("public async Task<EditorAsrResult> TranscribeAsync(", 1)[1].split(
     "private async Task<AsrSelection> SelectRuntimeAsync", 1)[0]
-require('var checkpoint = await LoadCheckpointAsync(checkpointPath, hybrid ? key + ":hybrid-word-seam-v1" : key, job.CancellationToken, job.Warn);' in transcribe,
+require('var checkpoint = await LoadCheckpointAsync(checkpointPath, hybrid ? key + ":hybrid-word-seam-v1" : key, modelRevision, job.CancellationToken, job.Warn);' in transcribe,
         "VOICE-03 restart must load durable ASR checkpoint before new transcription")
 require("var resumeStart = checkpoint.Cues.Count == 0 ? 0 : Math.Max(0, checkpoint.Cues[^1].End - 1.5);" in transcribe,
         "VOICE-03 checkpoint restart must overlap 1.5 seconds to avoid clipping the resume boundary")
@@ -125,9 +125,9 @@ checkpoint_loader = local_asr.split("private async Task<AsrCheckpoint> LoadCheck
     "private static bool ValidCue", 1)[0]
 require("loaded.Schema != CheckpointSchema" in checkpoint_loader
         and "loaded.Key != key" in checkpoint_loader
-        and "loaded.ModelRevision != LocalAsrInstaller.ModelRevision" in checkpoint_loader,
+        and "loaded.ModelRevision != expectedModelRevision" in checkpoint_loader,
         "VOICE-03 restart must reject stale checkpoint schema/source/model identities")
-require("return AsrCheckpoint.New(key);" in checkpoint_loader,
+require("return AsrCheckpoint.New(key, expectedModelRevision);" in checkpoint_loader,
         "VOICE-03 invalid/stale checkpoints must restart clean instead of poisoning a new run")
 
 require("EditorSpeechAnalysisDocument.SourceKey(" in local_asr

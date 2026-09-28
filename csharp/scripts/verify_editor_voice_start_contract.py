@@ -132,14 +132,14 @@ transcribe = local_asr.split("public async Task<EditorAsrResult> TranscribeAsync
 require("ValidateRequest(request);" in transcribe
         and transcribe.index("ValidateRequest(request);") < transcribe.index("_installer.PrepareAsync"),
         "VOICE-01 ASR request must be validated before runtime/model preparation")
-require("var runtime = await _installer.PrepareAsync(job, 18);" in transcribe,
+require("var runtime = await _installer.PrepareAsync(job, 18, modelId);" in transcribe,
         "VOICE-01 ASR start must prepare the pinned local runtime/model")
 require("var ffmpeg = await _tools.EnsureFfmpegAsync(job.CancellationToken);" in transcribe,
         "VOICE-01 ASR start must resolve local FFmpeg for audio extraction")
 require("await using var processes = new OwnedProcessGroup();" in transcribe,
         "VOICE-01 ASR processes must be owned for cleanup-aware cancellation")
 require('job.Set("asr-probe-audio", 19,' in transcribe
-        and "var selection = await SelectRuntimeAsync(runtime, probeAudio, probeDuration, processes, job, request.ExecutionMode);" in transcribe,
+        and "var selection = await SelectRuntimeAsync(runtime, probeAudio, probeDuration, processes, job, request.ExecutionMode, modelId);" in transcribe,
         "VOICE-01 real audio benchmark must run before full transcription")
 
 validation = local_asr.split("private static void ValidateRequest(EditorAsrRequest request)", 1)[1].split(

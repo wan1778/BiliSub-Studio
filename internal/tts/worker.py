@@ -697,14 +697,24 @@ def synthesize_sentence_group(voice, cues: list[dict], texts: list[str], run_roo
             native_retained_frames = total_retained
         actual_speed = native_retained_frames / total_retained
         last_total_retained = total_retained
+        retained_list = [item["retained"] for item in measurements]
+        tiling = group_windows(cue_starts, cue_ends, retained_list)
         if (total_retained <= group_frames
                 and MIN_ACTUAL_SPEED <= actual_speed <= MAX_ACTUAL_SPEED
-                and group_windows(cue_starts, cue_ends,
-                                  [item["retained"] for item in measurements]) is not None):
+                and tiling is not None):
             selected = (attempt, scale, measurements, actual_speed)
             break
         desired_frames = max(1, math.floor(group_frames * FIT_HEADROOM))
         corrected = next_length_scale(scale, total_retained, desired_frames, base, None, None)
+        # Direction-aware native retry (mirror tempo phase 2026-09-24): tiling
+        # overflow phải co ít nhất theo cascade growth — sizing theo grand
+        # total undershoots, rồi fallback *.9 nhảy 10% thừa (1.41× thay vì
+        # ~1.29× cần thiết). Capped per attempt; loop re-measures every round.
+        if tiling is None:
+            growth = _tiling_growth(cue_starts, cue_ends, retained_list)
+            corrected = min(corrected, next_length_scale(
+                scale, total_retained,
+                max(1, math.floor(total_retained / growth)), base, None, None))
         if corrected >= scale:
             corrected = max(base * MIN_GROUP_RATE_SCALE, scale * .9)
         corrected = max(base * MIN_GROUP_RATE_SCALE, min(base * MAX_RATE_SCALE, corrected))
@@ -942,6 +952,7 @@ def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str,
 
     # Phase 0: probe bản gốc ở nhịp base (attempt 1, đo đạc y hệt vòng lặp cũ).
     source_frames, trimmed_silence, frames, fitted_source = measure(text, scale)
+    base_measured = (source_frames, trimmed_silence, frames, fitted_source)
     raw_frames, native_reference_frames = source_frames, frames
     actual_speed = 1.0
     if frames < minimum_generated:
@@ -954,6 +965,7 @@ def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str,
     # nhanh hơn gió). Mỗi bản đo thật 1 lần synth ở nhịp base; nhận bản đầu
     # vừa khít. Tổng synth toàn hàm không quá MAX_SYNTHESIS_ATTEMPTS.
     short_text, short_note = text, None
+    short_measured = None
     for variant, note in condense_variants(text):
         if attempt >= MAX_SYNTHESIS_ATTEMPTS:
             break
@@ -969,6 +981,7 @@ def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str,
         if variant_frames < variant_min or variant_frames <= 0:
             continue
         short_text, short_note = variant, note
+        short_measured = measured
         if variant_frames <= target_frames:
             return finish(variant, note, measured, base,
                           variant_source, variant_frames, 1.0)
@@ -981,7 +994,16 @@ def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str,
     scale = base
     first_loop = True
     while attempt < MAX_SYNTHESIS_ATTEMPTS:
-        source_frames, trimmed_silence, frames, fitted_source = measure(active_text, scale)
+        if first_loop and scale == base:
+            # Phase 0/1 đã đo đúng (active_text, base) rồi: tái dùng kết quả đó
+            # thay vì synth thừa 1 lần model call cho cue nào cần Phase 2.
+            measured0 = base_measured if active_text == text else short_measured
+            if measured0 is not None:
+                source_frames, trimmed_silence, frames, fitted_source = measured0
+            else:
+                source_frames, trimmed_silence, frames, fitted_source = measure(active_text, scale)
+        else:
+            source_frames, trimmed_silence, frames, fitted_source = measure(active_text, scale)
         if first_loop:
             raw_frames, native_reference_frames = source_frames, frames
             first_loop = False
