@@ -532,7 +532,7 @@ class VoiceDurationContract(unittest.TestCase):
         self.assertNotIn("timing.SpeechEnd", whole)
         self.assertIn('expected.TimingSource == "whisper" && cue.TimingSource == "srt-fallback"', service)
         self.assertIn('cue.TimingSource == "sentence-group"', service)
-        self.assertIn("ValidateSentenceGroupWindows(result.Cues, expectedCues, expectedSampleRate)", service)
+        self.assertIn("ValidateSentenceGroupWindows(result.Cues, expectedCues, expectedSampleRate, IsVieneuVoice(voice))", service)
         self.assertIn('kind == "attempt"', service)
         self.assertIn("(index - 1) / (double)total * 53", service)
         timing = (ROOT / "csharp/src/BiliSubStudio.Core/Editor/LocalTtsService.Timing.cs").read_text(encoding="utf-8")
