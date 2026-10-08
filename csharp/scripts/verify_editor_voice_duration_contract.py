@@ -538,7 +538,7 @@ class VoiceDurationContract(unittest.TestCase):
         timing = (ROOT / "csharp/src/BiliSubStudio.Core/Editor/LocalTtsService.Timing.cs").read_text(encoding="utf-8")
         self.assertIn('const double minimumScale = .30', timing)
         self.assertIn('cue.ActualSpeedFactor > 100', timing)
-        self.assertIn('cue.FitMethod is not ("piper-length-scale" or "piper-atempo")', timing)
+        self.assertIn('cue.FitMethod is not ("piper-length-scale" or "piper-atempo" or "vieneu-natural" or "vieneu-atempo")', timing)
         self.assertIn("cue.TempoInputFrames != cue.SourceFrames - cue.TrimmedSilenceFrames", timing)
         self.assertIn("cue.SynthesisAttempts < 1", timing)
         self.assertIn("cue.ActualSpeedFactor < 1", timing)
