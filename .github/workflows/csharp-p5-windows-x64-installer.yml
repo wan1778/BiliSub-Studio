@@ -10,6 +10,7 @@ on:
       - "internal/ocr/worker.py"
       - "internal/asr/**"
       - "internal/tts/**"
+      - "internal/vieneu/**"
       - "internal/translation/**"
       - "update/release-notes.json"
       - "docs/migration/**"
@@ -24,6 +25,7 @@ on:
       - "internal/ocr/worker.py"
       - "internal/asr/**"
       - "internal/tts/**"
+      - "internal/vieneu/**"
       - "internal/translation/**"
       - "update/release-notes.json"
       - "docs/migration/**"
@@ -72,6 +74,11 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+
+      - name: Install contract-test Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "numpy==2.2.6" "opencv-python-headless==4.11.0.86" "vietnormalizer==0.2.3"
 
       - name: Install exact .NET SDK
         uses: actions/setup-dotnet@v4
@@ -125,6 +132,13 @@ jobs:
 
       - name: Verify root-launcher and tidy installer layout
         run: python csharp/scripts/verify_installer_runtime_layout_contract.py
+
+      - name: Probe toolchain versions
+        run: |
+          dotnet --version
+          dotnet --list-sdks
+          python --version
+          python -m pip list --format=freeze | Select-String -Pattern '^(numpy|opencv|vietnormalizer)'
 
       - name: Verify Windows WinUI build
         id: verify
