@@ -160,7 +160,7 @@ def main() -> int:
     require("Math.Clamp(parallelism, 1, 16)" in checkpoint and "duration / 120" not in checkpoint,
             "checkpoint construction silently reduces the benchmark-selected topology by video duration")
     require("benchmark xong, khóa {selected} pipeline" in scanner and
-            "{selected} FFmpeg lane + {configuredWorkers} Python worker" in scanner,
+            "{selected} FFmpeg lane + {effectiveWorkers} Python worker" in scanner,
             "scanner commit log does not expose the benchmark-selected full topology")
     require("new SubtitleTracker(mode.Fps, mode.LowConfidence, exactFrameTiming: mode.AdaptiveTiming" in scanner,
             "scan mode low-confidence threshold or exact-frame timing policy is not applied to subtitle tracking")
