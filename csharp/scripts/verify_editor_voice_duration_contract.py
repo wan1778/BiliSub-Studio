@@ -520,7 +520,7 @@ class VoiceDurationContract(unittest.TestCase):
         self.assertIn("EditorVoiceCuePlanner.Build(request.Subtitle.Cues)", service)
         self.assertIn("EditorVoiceCuePlanner.RemoveUnspeakable(", service)
         self.assertIn("BuildWholeCue(cue, voice, cueTiming[cue.Id])", service)
-        self.assertIn("cue.Frames != targetFrames", service)
+        self.assertIn("cue.Frames != wantFrames", service)
         self.assertIn("cue.Clipped is not false", service)
         self.assertIn("ReadClipFrames(cue.ClipPath, expectedSampleRate) != cue.Frames", service)
         self.assertIn("await HashAsync(cue.ClipPath, cancellationToken) != cue.ClipSha256", service)
