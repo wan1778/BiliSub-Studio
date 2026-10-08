@@ -101,7 +101,7 @@ require("var voiceSeek = Math.Max(0, sourceStart - voice.Start);" in preview_arg
 require('else arguments.AddRange(["-map", "[aout]", "-c:a", "aac", "-b:a", "192k"]);' in preview_arguments,
         "VOICE-12 Preview must map the Vietnamese/mixed audio output instead of source audio directly")
 
-voice_core = video_editor.split("private static string BuildVoiceAudioFilter", 1)[1].split(
+voice_core = video_editor.split(" static string BuildVoiceAudioFilter", 1)[1].split(
     "public static bool IsActiveAt", 1
 )[0]
 require("[{voiceInputIndex}:a]" in voice_core and "asetpts=PTS-STARTPTS" in voice_core,
