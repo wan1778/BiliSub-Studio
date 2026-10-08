@@ -152,7 +152,7 @@ export_audio = video_editor.split(
 require("=> BuildAudioArgumentsCore(settings, mp4, resetTimestamps: false);" in export_audio,
         "VOICE-14 no-voice Export must delegate to the same source-audio policy core")
 
-voice_core = video_editor.split("private static string BuildVoiceAudioFilter", 1)[1].split(
+voice_core = video_editor.split(" static string BuildVoiceAudioFilter", 1)[1].split(
     "public static bool IsActiveAt", 1
 )[0]
 require("voice.Start - sourceStart" in voice_core

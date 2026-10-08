@@ -139,7 +139,7 @@ require(
 
 # ASS remains Vietnamese-only and preserves cue timing/placement.
 ass_start = video.find("public static string BuildAss(")
-ass_end = video.find("private static string BuildVoiceAudioFilter", ass_start)
+ass_end = video.find(" static string BuildVoiceAudioFilter", ass_start)
 require(ass_start >= 0 and ass_end > ass_start, "EXPORT-12 BuildAss block not found")
 ass_body = video[ass_start:ass_end]
 for token in (
@@ -153,7 +153,7 @@ for token in (
 
 # Voice/audio owner: timing and gain apply to Voice; Duck attenuates source only;
 # Keep mixes source at full level; Mute removes source while keeping Voice.
-voice_start = video.find("private static string BuildVoiceAudioFilter")
+voice_start = video.find(" static string BuildVoiceAudioFilter")
 voice_end = video.find("public static bool IsActiveAt", voice_start)
 require(voice_start >= 0 and voice_end > voice_start, "EXPORT-12 BuildVoiceAudioFilter block not found")
 voice_body = video[voice_start:voice_end]

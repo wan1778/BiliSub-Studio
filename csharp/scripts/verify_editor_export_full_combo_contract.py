@@ -132,7 +132,7 @@ for token in (
 ):
     require(token in arguments_body, f"EXPORT-13 base audio/voice render lost: {token}")
 
-voice_start = video.find("private static string BuildVoiceAudioFilter")
+voice_start = video.find(" static string BuildVoiceAudioFilter")
 voice_end = video.find("public static bool IsActiveAt", voice_start)
 require(voice_start >= 0 and voice_end > voice_start, "EXPORT-13 Voice audio owner missing")
 voice_body = video[voice_start:voice_end]

@@ -84,7 +84,7 @@ require("BuildConfiguredRenderArguments(input, output, graph, audioSettings, tri
 audio_core = SERVICE.split("private static IReadOnlyList<string> BuildAudioArgumentsCore", 1)[1].split(
     "public async Task<byte[]> GetPreviewFrameJpegAsync", 1
 )[0]
-voice_core = SERVICE.split("private static string BuildVoiceAudioFilter", 1)[1].split(
+voice_core = SERVICE.split(" static string BuildVoiceAudioFilter", 1)[1].split(
     "public static bool IsActiveAt", 1
 )[0]
 require('if (audio.SourceMode == "mute") return ["-an"];' in audio_core
