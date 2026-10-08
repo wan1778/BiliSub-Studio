@@ -139,8 +139,8 @@ def main() -> int:
     require("private const int MaxLaneRecoveryAttempts = 2;" in scanner and
             "recoveryAttempts < MaxLaneRecoveryAttempts" in scanner and
             "laneRecoveryGate.WaitAsync(token)" in scanner and
-            "ConfigureWorkerPoolAsync(configuredWorkers, token)" in scanner and
-            "restored != configuredWorkers" in scanner and "SaveRecoverableCheckpointAsync();" in scanner and
+            "ConfigureWorkerPoolAsync(effectiveWorkers, token)" in scanner and
+            "restored != effectiveWorkers" in scanner and "SaveRecoverableCheckpointAsync();" in scanner and
             "khôi phục PASS" in scanner,
             "long OCR lanes do not retry from a safe checkpoint after restoring the exact worker topology")
     require("checkpointSaveGate.WaitAsync(CancellationToken.None)" in scanner and
