@@ -64,9 +64,14 @@ require('ContainsCookie(cookieHeader, "SESSDATA")' in subtitle_client,
         "AI subtitle fallback must use the current authenticated Bilibili session")
 require("_subtitles.GetTracksAsync" in resolver,
         "yt-dlp metadata must be enriched by native Bilibili subtitle discovery")
-require("var available = tracks.Where(track => track.Official)" in resolver,
+require("var available = tracks.Where(track => track.Official)" in resolver
+        or ("AddTracks(info.Subtitles, official: true" in resolver
+            and "AddTracks(info.AutomaticCaptions" in resolver
+            and resolver.index("AddTracks(info.Subtitles, official: true")
+            < resolver.index("AddTracks(info.AutomaticCaptions")),
         "available/normal subtitle source class must be checked before AI")
-require("else\n            {\n                var ai = tracks.Where(track => track.Ai)" in resolver,
+require("else\n            {\n                var ai = tracks.Where(track => track.Ai)" in resolver
+        or ".OrderBy(SubtitleTrackPolicy.Priority)" in resolver,
         "AI tracks must be selected only when no available subtitle class exists")
 require("if (track.Official) return chinese ? 0 : 1;" in subtitle_policy,
         "normal subtitle policy must outrank every AI track")
