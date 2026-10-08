@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using BiliSubStudio.App.Pages;
 using BiliSubStudio.App.Services;
@@ -429,15 +430,32 @@ public sealed partial class MainWindow : Window
     {
         var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
         var windowId = Win32Interop.GetWindowIdFromWindow(hwnd);
-        var workArea = DisplayArea.GetFromWindowId(windowId, DisplayAreaFallback.Primary).WorkArea;
-        var width = Math.Min(1500, workArea.Width);
-        var height = Math.Min(900, workArea.Height);
-        AppWindow.GetFromWindowId(windowId).MoveAndResize(new RectInt32(
-            workArea.X + Math.Max(0, (workArea.Width - width) / 2),
-            workArea.Y + Math.Max(0, (workArea.Height - height) / 2),
-            width,
-            height));
+        // Vụ 07-08/10: máy 2 màn (màn 2 tắt nhưng Windows vẫn giữ) — mở app
+        // là lọt sang màn ma ở x=1529, user không thấy gì. DisplayArea
+        // (Primary/GetFromWindowId/GetFromPoint) đều không tin được lúc khởi
+        // động lạnh (trả màn ma/tọa độ ma thất thường). Dùng GetSystemMetrics
+        // (kích thước màn CHÍNH, không bao giờ race) + kẹp chặt trong màn hình.
+        var primaryWidth = GetSystemMetrics(0);
+        var primaryHeight = GetSystemMetrics(1);
+        if (primaryWidth < 800 || primaryHeight < 600)
+        {
+            var fallback = DisplayArea.GetFromWindowId(windowId, DisplayAreaFallback.Primary).WorkArea;
+            primaryWidth = fallback.Width;
+            primaryHeight = fallback.Height;
+        }
+        var width = Math.Min(1500, primaryWidth);
+        var height = Math.Min(900, primaryHeight);
+        var x = Math.Max(0, (primaryWidth - width) / 2);
+        var y = Math.Max(0, (primaryHeight - height) / 2);
+        AppWindow.GetFromWindowId(windowId).MoveAndResize(new RectInt32(x, y, width, height));
     }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetCursorPos(out PointInt32 point);
+
+    [DllImport("user32.dll")]
+    private static extern int GetSystemMetrics(int index);
 
     private async void OnAppWindowClosing(AppWindow sender, AppWindowClosingEventArgs args)
     {

@@ -61,7 +61,8 @@ public sealed record EditorTtsProject(
     EditorVoiceTrack VoiceTrack,
     int CueCount,
     int ReviewCount,
-    IReadOnlyList<EditorTtsCueWindow>? CueWindows = null);
+    IReadOnlyList<EditorTtsCueWindow>? CueWindows = null,
+    double VoiceGain = 1);
 
 public sealed record EditorSubtitleProject(
     string SourcePath,
@@ -75,7 +76,8 @@ public sealed record EditorSubtitleProject(
     string OutputPath,
     bool Karaoke = true,
     string? TranslationPolicyKey = null,
-    EditorSubtitleStyle? Style = null);
+    EditorSubtitleStyle? Style = null,
+    bool Visible = true);
 
 public sealed record EditorProject(
     int Schema,
@@ -111,7 +113,6 @@ public sealed class EditorProjectStore
 {
     public const int CurrentSchema = 7;
     private const long MaxProjectBytes = 64L * 1024 * 1024;
-    private const string CurrentTtsEngine = "nghi-tts";
     private readonly string _directory;
     private readonly string _ttsCacheDirectory;
     private readonly string _thumbnailCacheDirectory;
@@ -574,6 +575,7 @@ public sealed class EditorProjectStore
             SkillSha256 = subtitle.SkillSha256?.Trim().ToLowerInvariant() ?? string.Empty,
             OutputPath = subtitle.OutputPath?.Trim() ?? string.Empty,
             Style = EditorSubtitleStylePolicy.Normalize(subtitle.Style),
+            Visible = subtitle.Visible,
         };
     }
 
@@ -674,7 +676,14 @@ public sealed class EditorProjectStore
         };
     }
 
-    private static EditorTtsProject? NormalizeTts(EditorTtsProject? tts)
+    // 08/10 (user: thoát project vào lại mất voice, phải chạy lại):
+    // NormalizeTts cũ chỉ chấp nhận tuple engine NGHI (nghi-tts/...) nên mọi
+    // voice VieNeu (vieneu-tts/...) bị lặng lẽ trả null MỖI LẦN LƯU — disk
+    // không bao giờ giữ Tts, mở lại không có gì để nạp. Sửa: chấp nhận cả 2
+    // tuple engine, mỗi tuple kiểm nguyên bộ (engine+version+cặp voice phải
+    // khớp nhau) để không nới lỏng kiểm tra. Mở internal để App dùng lại khi
+    // tự hồi phục voice từ result cache (không duplicate logic kiểm tra).
+    public static EditorTtsProject? NormalizeTts(EditorTtsProject? tts)
     {
         if (tts is null) return null;
         var status = tts.Status?.Trim().ToLowerInvariant();
@@ -687,10 +696,15 @@ public sealed class EditorProjectStore
         var engineVersion = tts.EngineVersion.Trim();
         var maleVoice = tts.MaleVoice.Trim();
         var femaleVoice = tts.FemaleVoice.Trim();
-        if (!string.Equals(engine, CurrentTtsEngine, StringComparison.Ordinal)
-            || !string.Equals(engineVersion, LocalTtsInstaller.EngineVersion, StringComparison.Ordinal)
-            || !string.Equals(maleVoice, LocalTtsInstaller.Voice, StringComparison.Ordinal)
-            || !string.Equals(femaleVoice, LocalTtsInstaller.Voice, StringComparison.Ordinal))
+        var nghiTuple = string.Equals(engine, LocalTtsInstaller.Engine, StringComparison.Ordinal)
+            && string.Equals(engineVersion, LocalTtsInstaller.EngineVersion, StringComparison.Ordinal)
+            && string.Equals(maleVoice, LocalTtsInstaller.Voice, StringComparison.Ordinal)
+            && string.Equals(femaleVoice, LocalTtsInstaller.Voice, StringComparison.Ordinal);
+        var vieneuTuple = string.Equals(engine, LocalTtsInstaller.VieneuEngine, StringComparison.Ordinal)
+            && string.Equals(engineVersion, LocalTtsInstaller.VieneuEngineVersion, StringComparison.Ordinal)
+            && maleVoice.StartsWith("vieneu_", StringComparison.Ordinal)
+            && string.Equals(maleVoice, femaleVoice, StringComparison.Ordinal);
+        if (!nghiTuple && !vieneuTuple)
             return null;
         var manifest = string.IsNullOrWhiteSpace(tts.ManifestPath) ? string.Empty : Path.GetFullPath(tts.ManifestPath.Trim());
         var track = tts.VoiceTrack;
@@ -702,6 +716,8 @@ public sealed class EditorProjectStore
         if (status == "complete" && (manifest.Length == 0 || !File.Exists(manifest) || !FileShaMatches(manifest, tts.ManifestSha256)
             || !File.Exists(trackPath) || new FileInfo(trackPath).Length <= 64
             || cueWindows is null || !TtsManifestMatches(manifest, trackPath, cueWindows))) return null;
+        if (!double.IsFinite(tts.VoiceGain) || tts.VoiceGain is < 0 or > 4)
+            throw new InvalidDataException("Project Editor chứa âm lượng voice không hợp lệ.");
         return tts with
         {
             Status = status,
@@ -713,6 +729,7 @@ public sealed class EditorProjectStore
             ManifestSha256 = tts.ManifestSha256.ToLowerInvariant(),
             VoiceTrack = track with { Path = trackPath, Gain = Math.Clamp(track.Gain, 0, 4) },
             CueWindows = cueWindows,
+            VoiceGain = Math.Clamp(tts.VoiceGain, 0, 4),
         };
     }
 
@@ -754,9 +771,10 @@ public sealed class EditorProjectStore
             using var json = JsonDocument.Parse(File.ReadAllText(manifest));
             var root = json.RootElement;
             var master = root.GetProperty("master");
+            var revision = root.GetProperty("voice_revision").GetString();
             if (root.GetProperty("schema").GetInt32() != 2
                 || root.GetProperty("sample_rate").GetInt32() != 22050
-                || root.GetProperty("voice_revision").GetString() != LocalTtsInstaller.VoiceRevision
+                || (revision != LocalTtsInstaller.VoiceRevision && revision != LocalTtsInstaller.VieneuVoiceRevision)
                 || !string.Equals(Path.GetFullPath(master.GetProperty("path").GetString()!), trackPath, StringComparison.OrdinalIgnoreCase)
                 || !FileShaMatches(trackPath, master.GetProperty("sha256").GetString()!)) return false;
             var cues = root.GetProperty("cues").EnumerateArray().ToArray();

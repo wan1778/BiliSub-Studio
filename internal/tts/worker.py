@@ -360,8 +360,102 @@ def native_record_valid(record: dict, target_frames: int, natural_sample: bool,
         return False
     needs_review = (tempo_fallback or record.get("timing_source") == "sentence-group"
                     or needs_rate_review(scale, base) or trimmed > 0
-                    or padding > padding_budget(target_frames))
+                    or padding > padding_budget(target_frames)
+                    # 28/09 (M11): rút gọn chữ đọc luôn review dù vừa khít tự
+                    # nhiên — không là cache retry tự từ chối + C# lệch status.
+                    or "spoken_text" in record)
     return record["status"] == ("review" if needs_review else "fit")
+
+
+def escalate_truncated_voice(index, cue_id, active_cue, text, target_frames, voice,
+                             base_scale, run_root, clip_root, worker_sha, ffmpeg,
+                             on_attempt):
+    """Cue Việt đọc đơn vẫn không vừa: cắt ngắn dần (binary search tiền tố dài
+    nhất vừa khung ở nhịp tự nhiên) rồi fit chuẩn. Luôn voice + spoken_text là
+    đoạn thực đọc + cờ review. Chỉ raise khi 1 từ cũng không vừa (vật lý)."""
+    words = text.split()
+    if not words:
+        raise RuntimeError("cue rỗng, không có chữ để đọc")
+    trunc_probe = run_root / (cache_identity(active_cue, text, worker_sha) + "-trunc-probe.wav")
+    trunc_trimmed = run_root / (cache_identity(active_cue, text, worker_sha) + "-trunc-trim.wav")
+
+    def _measure(prefix):
+        synthesize_cue(voice, prefix, trunc_probe, base_scale)
+        source = len(read_wav(trunc_probe))
+        trimmed = trim_trailing_silence(trunc_probe, trunc_trimmed, SILENCE_GUARD_FRAMES)
+        return source - trimmed
+
+    found = longest_fitting_prefix(_measure, words, target_frames, minimum_speech_frames)
+    if found is None:
+        raise RuntimeError("1 từ cũng không vừa timecode")
+    prefix, _ = found
+    trunc_key = cache_identity(active_cue, "trunc:" + prefix, worker_sha)
+    trunc_cached = clip_root / (trunc_key + ".wav")
+    trunc_path, trunc_record = fit_cue(
+        voice, prefix, target_frames, run_root, trunc_key,
+        active_cue["timing_source"], ffmpeg, on_attempt, cue_id=cue_id)
+    trunc_record = repair_group_native(trunc_record)
+    if prefix != text:
+        trunc_record.setdefault("spoken_text", prefix)
+        trunc_record["status"] = "review"
+    if not native_record_valid(trunc_record, target_frames,
+                               active_cue["timing_source"] == "sample",
+                               minimum_speech_frames(prefix)):
+        raise RuntimeError("cắt ngắn vẫn không đạt validation")
+    trunc_record.update({"key": trunc_key, "sha256": sha256(trunc_path)})
+    trunc_path.replace(trunc_cached)
+    atomic_json(trunc_cached.with_suffix(".json"), trunc_record)
+    emit({"event": "notice", "code": "truncate-voice",
+          "message": (f"Cue {index + 1} ({cue_id}) quá dài vật lý: đọc {len(prefix.split())}/{len(words)} từ "
+                      f"vừa khung + cờ review. SRT hiển thị giữ nguyên.")})
+    return (active_cue, trunc_key, trunc_cached, trunc_record, False,
+            trunc_record["synthesis_attempts"])
+
+
+def repair_group_native(record: dict) -> dict:
+    """Đọc đơn lại cue nhóm bằng 1 synth duy nhất: tiling nhóm không chẻ
+    speech của nó nên group-native bằng native theo cấu tạo. Pure, test được."""
+    if record.get("timing_source") == "sentence-group":
+        return dict(record, group_native_frames=record["native_reference_frames"])
+    return record
+
+
+def is_vietnamese_speakable(text: str) -> bool:
+    """Cue có chữ Việt (quốc ngữ, Latin — kể cả không dấu) thì BẮT BUỘC có
+    voice, cấm im. Chỉ chữ không Latin (Hán tự sót, ký hiệu/số trơ trụi) hoặc
+    rỗng mới được im. Thà đọc accent còn hơn im."""
+    if not text or not text.strip():
+        return False
+    for character in text:
+        code = ord(character)
+        if ("a" <= character <= "z" or "A" <= character <= "Z"
+                or 0x00C0 <= code <= 0x00FF or 0x0100 <= code <= 0x024F
+                or 0x1E00 <= code <= 0x1EFF):
+            return True
+    return False
+
+
+def longest_fitting_prefix(measure_frames, words: list[str], target_frames: int, minimum_frames):
+    """Binary search tiền tố dài nhất vừa khung (số từ tăng thì frames tăng).
+    measure_frames(prefix) -> frames hoặc None. Trả (prefix, frames) hoặc None.
+    Pure (measure inject được), test được không cần model."""
+    best = None
+    lo, hi = 1, len(words)
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        prefix = " ".join(words[:mid])
+        try:
+            frames = measure_frames(prefix)
+            if frames is None or minimum_frames(prefix) > frames:
+                frames = None
+        except Exception:
+            frames = None
+        if frames is not None and frames <= target_frames:
+            best = (prefix, frames)
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    return best
 
 
 def load_clip(path: Path, key: str, cue: dict, minimum_generated_frames: int = 1):
@@ -803,18 +897,24 @@ def synthesize_sentence_group(voice, cues: list[dict], texts: list[str], run_roo
             padded = run_root / (key + "-group-fit.wav")
             pad_exact_clip(final_path, padded, target_frames)
             final_path = padded
+        # 28/09 vụ 2h xong lỗi 1 cue: cờ atempo là của CẢ NHÓM, nhưng
+        # thành viên không tăng tốc thật (factor ~1, output == input)
+        # mà khai piper-atempo là record dối -> C# từ chối cả 17611
+        # cue. Chỉ thành viên tăng tốc thật mới khai atempo.
+        member_tempo = (tempo_used and measurement.get("tempo_factor", 0) > 1
+                        and measurement.get("tempo_input", 0) > measurement["retained"])
         record = {"raw_duration": raw_frames[len(entries)] / SAMPLE_RATE,
                   "fitted_duration": target_frames / SAMPLE_RATE, "frames": target_frames,
                   "target_frames": target_frames, "timing_source": "sentence-group",
-                  "fit_method": "piper-atempo" if tempo_used else FIT_METHOD,
+                  "fit_method": "piper-atempo" if member_tempo else FIT_METHOD,
                   "base_length_scale": base, "length_scale": scale,
                   "source_frames": measurement["source_frames"], "generated_frames": measurement["retained"],
                   "trimmed_silence_frames": measurement["trimmed"], "padding_frames": padding,
                   "native_reference_frames": native_retained_frames,
                   "group_native_frames": native_retained_frames, "actual_speed_factor": actual_speed,
-                  "tempo_input_frames": measurement.get("tempo_input", 0),
-                  "tempo_factor": measurement.get("tempo_factor", 0),
-                  "tempo_attempts": measurement.get("tempo_attempts", 0),
+                  "tempo_input_frames": measurement.get("tempo_input", 0) if member_tempo else 0,
+                  "tempo_factor": measurement.get("tempo_factor", 0) if member_tempo else 0,
+                  "tempo_attempts": measurement.get("tempo_attempts", 0) if member_tempo else 0,
                   "synthesis_attempts": attempt, "status": "review", "key": key,
                   "sha256": sha256(final_path)}
         final_path.replace(cached_path)
@@ -1256,6 +1356,25 @@ def main() -> int:
     base_scale = float(voice.config.length_scale)
     if not math.isfinite(base_scale) or base_scale <= 0:
         raise ValueError("Invalid length_scale in verified model config")
+    # B1 30/09: phoneme cache — espeak repetitions are pure waste (same text is
+    # synthesized 3-8x per tight cue + repeated lines across cues: 62k wasted
+    # phonemize calls in one 17k-cue run). Cache text -> phoneme sentences;
+    # everything downstream (ids, inference, int16) still runs Piper's own code
+    # so output is byte-identical by construction. Copies on hit: Piper only
+    # reads the lists, but never trust aliasing across 17k cues.
+    _phoneme_cache: dict = {}
+    _base_phonemize = voice.phonemize
+
+    def _cached_phonemize(text: str):
+        hit = _phoneme_cache.get(text)
+        if hit is not None:
+            return [list(sentence) for sentence in hit]
+        result = _base_phonemize(text)
+        if len(_phoneme_cache) < 200000:
+            _phoneme_cache[text] = [list(sentence) for sentence in result]
+        return result
+
+    voice.phonemize = _cached_phonemize  # type: ignore[method-assign]
     emit({"event": "ready", "cues": len(cues), "voice": VOICE_NAME, "model_loads": 1,
           "engine": ENGINE, "sample_rate": SAMPLE_RATE, "voice_revision": VOICE_REVISION})
     texts = [normalize_vietnamese_text(normalizer, cue["text"]) for cue in cues]
@@ -1401,6 +1520,66 @@ def main() -> int:
     for index, (cue, entry) in enumerate(zip(cues, ordered_entries)):
         active_cue, key, cached_path, record, cache_hit, synthesis_calls = entry
         start_sample, target_frames = cue_window(active_cue)
+        # Fail-fast từng cue (28/09, vụ 2h xong lỗi vì 1 record atempo rỗng).
+        # Luật cứng user: cue có chữ Việt thì CẤM IM — đọc đơn lại, không xong
+        # thì cắt ngắn dần tới khi vừa (vẫn voice + spoken_text + cờ review).
+        # Chỉ chữ không phải tiếng Việt (hoặc vật lý bất khả thi) mới im.
+        # native_record_valid mirror y hệt C# nên chỉ chặn đúng thứ C# chặn.
+        try:
+            min_frames = minimum_speech_frames(texts[index])
+        except ValueError:
+            min_frames = None
+        speakable = min_frames is not None and is_vietnamese_speakable(texts[index])
+        if min_frames is not None and not native_record_valid(
+                record, target_frames, active_cue["timing_source"] == "sample", min_frames):
+            if not speakable:
+                emit({"event": "notice", "code": "self-check-silence",
+                      "message": (f"Cue {index + 1} ({cue['id']}) không phải tiếng Việt, "
+                                  f"giữ im lặng đúng timecode, cần nghe lại.")})
+                entry = silence_entry(active_cue, texts[index], base_scale, synthesis_calls,
+                                      run_root, clip_root, worker_sha)
+            else:
+                refit_calls = 0
+
+                def on_refit(attempt, scale, _idx=index):
+                    nonlocal refit_calls
+                    refit_calls += 1
+                    emit_attempt(_idx, cue, attempt, MAX_SYNTHESIS_ATTEMPTS,
+                                 active_cue["timing_source"], scale)
+
+                try:
+                    refit_key = cache_identity(active_cue, texts[index], worker_sha)
+                    refit_cached = clip_root / (refit_key + ".wav")
+                    refit_path, refit_record = fit_cue(
+                        voice, texts[index], target_frames, run_root, refit_key,
+                        active_cue["timing_source"], Path(options.ffmpeg), on_refit,
+                        cue_id=cue["id"])
+                    refit_record = repair_group_native(refit_record)
+                    if not native_record_valid(refit_record, target_frames,
+                                               active_cue["timing_source"] == "sample",
+                                               min_frames):
+                        raise RuntimeError("đọc đơn lại vẫn không đạt validation")
+                    refit_record.update({"key": refit_key, "sha256": sha256(refit_path)})
+                    refit_path.replace(refit_cached)
+                    atomic_json(refit_cached.with_suffix(".json"), refit_record)
+                    entry = (active_cue, refit_key, refit_cached, refit_record, False, refit_calls)
+                    emit({"event": "notice", "code": "refix-voice",
+                          "message": (f"Cue {index + 1} ({cue['id']}) record hỏng ({record.get('fit_method')}); "
+                                      f"đã đọc đơn lại giữ voice + cờ review, cần nghe lại.")})
+                except (ValueError, RuntimeError):
+                    try:
+                        entry = escalate_truncated_voice(
+                            index, cue["id"], active_cue, texts[index], target_frames,
+                            voice, base_scale, run_root, clip_root, worker_sha,
+                            Path(options.ffmpeg), on_refit)
+                    except (ValueError, RuntimeError) as trunc_error:
+                        emit({"event": "notice", "code": "self-check-silence",
+                              "message": (f"Cue {index + 1} ({cue['id']}) vật lý bất khả thi ({trunc_error}); "
+                                          f"giữ im lặng đúng timecode, cần nghe lại.")})
+                        entry = silence_entry(active_cue, texts[index], base_scale, synthesis_calls,
+                                              run_root, clip_root, worker_sha)
+            active_cue, key, cached_path, record, cache_hit, synthesis_calls = entry
+            start_sample, target_frames = cue_window(active_cue)
         # The clip already has the required length. Place ALL its samples;
         # never hide a timing failure by truncating the clip at the SRT boundary.
         end_sample = start_sample + record["frames"]
@@ -1427,6 +1606,7 @@ def main() -> int:
                          "tempo_factor": record.get("tempo_factor", 0),
                         "tempo_input_frames": record.get("tempo_input_frames", 0),
                         "tempo_attempts": record.get("tempo_attempts", 0),
+                        "spoken_text": record.get("spoken_text", ""),
                         "synthesis_calls": synthesis_calls})
         emit({"event": "cue", "index": index + 1, "total": len(cues), "id": cue["id"],
               "status": output_status, "cache_hit": cache_hit,

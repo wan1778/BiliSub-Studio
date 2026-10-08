@@ -2,7 +2,8 @@ using BiliSubStudio.Core.Ocr;
 
 namespace BiliSubStudio.Core.ContractTests;
 
-// Sidecar cạnh video (kiểu Adobe .pek): probe/VAD/pxv tính 1 lần xài nhiều scan.
+// Sidecar trong Data app, cấm cạnh video (28/09, theo lệnh user): probe/VAD/pxv
+// tính 1 lần xài nhiều scan. Alongside chỉ đọc di sản, mọi Save mới vào Data.
 // Quy tắc thép test ở đây: mismatch/hỏng/version lệch => bỏ qua lặng lẽ (null), scan
 // tính lại đường cũ; xóa file không sao; thư mục khóa ghi thì fallback Data.
 internal static class OcrSidecarContract
@@ -66,7 +67,8 @@ internal static class OcrSidecarContract
             var doc = new OcrSidecar.SidecarDocument(identity, OcrSidecar.FromProbe(probe), OcrSidecar.FromTimeline(timeline),
                 new OcrSidecar.PixelSection(OcrSidecar.PixelVersion, [new OcrSidecar.PixelEntry(1, 2, 10, 20, 110, 60, 0)]));
             await store.SaveAsync(video, doc, CancellationToken.None);
-            Check(File.Exists(store.AlongsidePath(video)), "sidecar must land next to video");
+            Check(!File.Exists(store.AlongsidePath(video)), "sidecar must not land next to video");
+            Check(File.Exists(store.FallbackPath(identity)), "sidecar must land in Data");
             var loaded = await store.LoadAsync(video, identity, CancellationToken.None);
             Check(loaded is not null && loaded.Identity.Matches(identity), "sidecar must reload with matching identity");
             Check(OcrSidecar.ToTimeline(loaded!.Vad)!.Flags.SequenceEqual(flags), "reloaded vad must match");

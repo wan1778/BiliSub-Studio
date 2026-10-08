@@ -176,6 +176,10 @@ internal sealed partial class LocalAsrService : IDisposable
                 selection.RealtimeFactor,
                 checkpoint.Cues.Select(ToSpeechSegment).ToArray());
             var analysisSha = await EditorSpeechAnalysisDocument.SaveAsync(analysisPath, analysis, job.CancellationToken);
+            // Bản analysis mới xong là chuẩn cuối (project lưu path mới nhất);
+            // các bản guid cũ cùng projectId không ai trỏ tới nữa — xóa để khỏi
+            // tích rác 6-8MB/lượt (28/09: 1 project ứ 11 bản = toàn rác).
+            PruneSupersededAnalyses(analysisDirectory, request.ProjectId, analysisPath);
             var wordCount = analysis.Segments.Sum(x => x.Words.Count);
             job.Set("asr-final", 99, $"Whisper timing hoàn tất · {analysis.Segments.Count} đoạn / {wordCount} từ · đã lưu nhịp, khoảng lặng và Nam/Nữ gợi ý.");
             return new EditorAsrResult(loaded, analysisPath, analysisSha, analysis.Segments.Count, wordCount,
@@ -505,6 +509,37 @@ internal sealed partial class LocalAsrService : IDisposable
     private static string LastLine(string? text) => string.IsNullOrWhiteSpace(text) ? "không có chi tiết lỗi" : text.Trim().Split('\n', StringSplitOptions.RemoveEmptyEntries)[^1].Trim();
     private static void TryDelete(string path) { try { File.Delete(path); } catch { } }
     private static void TryDeleteDirectory(string path) { try { if (Directory.Exists(path)) Directory.Delete(path, recursive: true); } catch { } }
+
+    // Chỉ giữ bản analysis mới nhất mỗi projectId. File guid cũ không ai trỏ
+    // (path mới nhất mới được trả về + lưu vào project) nên xóa an toàn tuyệt
+    // đối: hỏng là bỏ qua, không bao giờ chặn hoàn tất transcribe.
+    internal static void PruneSupersededAnalyses(string directory, string projectId, string keepPath)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(directory) || string.IsNullOrWhiteSpace(projectId)
+                || string.IsNullOrWhiteSpace(keepPath) || !Directory.Exists(directory)) return;
+            var keepFull = Path.GetFullPath(keepPath);
+            var prefix = projectId + ".";
+            foreach (var file in Directory.EnumerateFiles(directory, projectId + ".*.speech.json"))
+            {
+                try
+                {
+                    var name = Path.GetFileName(file);
+                    // Khớp chặt <projectId>.<guid32hex>.speech.json để không chạm
+                    // project khác chung prefix (id là hash, vẫn phòng).
+                    if (!name.StartsWith(prefix, StringComparison.Ordinal)
+                        || !name.EndsWith(".speech.json", StringComparison.Ordinal)) continue;
+                    var middle = name.Substring(prefix.Length, name.Length - prefix.Length - ".speech.json".Length);
+                    if (middle.Length != 32 || middle.Any(c => !Uri.IsHexDigit(c))) continue;
+                    if (!string.Equals(Path.GetFullPath(file), keepFull, StringComparison.OrdinalIgnoreCase))
+                        File.Delete(file);
+                }
+                catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
+            }
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
+    }
 
     public void Dispose() => _installer.Dispose();
 

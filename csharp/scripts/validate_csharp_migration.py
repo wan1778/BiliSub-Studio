@@ -255,6 +255,21 @@ for marker in ("PrepareShutdownAsync", "PauseJobAsync", "WindowsProcessContainme
 worker_client = read(CSHARP / "src/BiliSubStudio.Core/Ocr/OcrWorkerClient.cs")
 for marker in ('start.ArgumentList.Add("--model-cache")', 'start.ArgumentList.Add("--device")'):
     require(marker in worker_client, f"OCR worker command line lost required argument: {marker}")
+sidecar_store = read(CSHARP / "src/BiliSubStudio.Core/Ocr/OcrSidecarStore.cs")
+journal = read(CSHARP / "src/BiliSubStudio.Core/Ocr/OcrVerdictJournal.cs")
+require("private int _fallbackMode = 1;" in sidecar_store,
+        "OCR sidecar must never be written next to videos (Data app only)")
+require("AppDataPath(string videoPath, string appDataDir)" in journal
+        and "LoadAny(string appDataPath, string alongsidePath)" in journal,
+        "OCR verdict journal must live in Data app, alongside video is legacy-read only")
+ocr_scanner = read(CSHARP / "src/BiliSubStudio.Core/Ocr/OcrScanner.cs")
+require("var effectiveWorkers = grownWorkers;" in ocr_scanner
+        and "ConfigureWorkerPoolAsync(effectiveWorkers" in ocr_scanner
+        and "poolRetreatedToBase" in ocr_scanner,
+        "OCR lane recovery must preserve grown small-tier strength, never rebuild to pre-grow count")
+require("BuildPausedPreviewAsync(liveTail, lanes, source, sharedPixelComparer, liveWindow, frontier, token)" in ocr_scanner
+        and "liveTail.CommittedView.Where(cue => cue.Start <= frontier" in ocr_scanner,
+        "OCR pause preview must drain the live tail and show the merged live view, never raw split lanes")
 
 containment_source = read(CSHARP / "src/BiliSubStudio.Core/Processes/WindowsProcessContainment.cs")
 for marker in ("JobObjectLimitKillOnJobClose", "JobObjectLimitBreakawayOk"):
@@ -270,6 +285,9 @@ for owner, source in (("OCR", ocr), ("Editor", editor)):
         require(marker in source, f"{owner} native playback/fullscreen contract missing {marker}")
 require('AreTransportControlsEnabled="False"' in ocr,
         "OCR must own preview chrome and disable native MediaPlayer transport")
+require('ApplyEyeModeControls()' in ocr and 'RestartButton.Content = "Quét lại từ đầu"' in ocr
+        and 'RestartButton.Visibility = recovery ? Visibility.Visible : Visibility.Collapsed' in ocr,
+        "OCR listen->eye switch must rebuild all eye buttons from one owner (stale Nghe label regression)")
 require('AreTransportControlsEnabled="False"' in editor, "Editor must own preview chrome and disable native MediaPlayer transport")
 for forbidden in (
     "SubtitleModeButton.Click +=", "BlurModeButton.Click +=", "AudioModeButton.Click +=", "ExportModeButton.Click +=",
@@ -836,6 +854,26 @@ tts_installer = read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalTtsInstaller.c
 tts_service = read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalTtsService.cs")
 tts_worker = read(ROOT / "internal/tts/worker.py")
 for marker in (
+    'VieneuEngine = "vieneu-tts"',
+    'VieneuModelRevision = "61b85e3d937fbbacb387714180e8182823512523"',
+    'VieneuTimingAlgorithm = "whole-cue-vieneu-natural-first-v1"',
+    "PrepareVieneuAsync",
+    "worker-vieneu.py",
+    "IsVieneuVoice",
+):
+    require(marker in tts_installer, f"VieNeu pilot installer contract missing {marker}")
+catalog = read(CSHARP / "src/BiliSubStudio.Core/Editor/TtsVoiceCatalog.cs")
+for marker in ('VieneuPrefix', "VoiceOptions", "FoldSlug", "DisplayLabel"):
+    require(marker in catalog, f"VieNeu voice catalog contract missing {marker}")
+for marker in ("EngineFor(", "TimingAlgorithmFor(", "VoiceRevisionFor(",
+               "!(isVieneu && cue.FitMethod == atempoMethod)"):
+    require(marker in tts_service + read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalTtsService.Timing.cs"),
+            f"VieNeu service routing contract missing {marker}")
+vieneu_worker = read(ROOT / "internal/vieneu/worker.py")
+for marker in ("ATEMPO_METHOD", "VieneuVoice", "strip_emotion_tags", "resolve_preset_label",
+               "VIENEU_SAMPLE_RATE", "soxr"):
+    require(marker in vieneu_worker, f"VieNeu pilot worker contract missing {marker}")
+for marker in (
     'EngineVersion = "nghi-tts-1.0.0"',
     'ModelRepository = "nghimestudio/nghitts"',
     'ModelRevision = "2140977786d76d834736c059dacfa553d4931dac2b2c7aaaea438bb2aa9da697"',
@@ -853,7 +891,9 @@ for marker in ("LocalTtsInstaller.TimingAlgorithm", "BuildWholeCue", "GenerateSa
                "SamePath(reportedResult, resultPath)", "await processes.StopAsync()"):
     require(marker in tts_service, f"local TTS ownership contract missing {marker}")
 for marker in ("PiperVoice.load", "voice.synthesize(text, syn_config=syn_config)", "cache_identity", "sha256",
-               "SynthesisConfig(length_scale=length_scale)", "voice-master.flac", '"event": "cue"', '"event": "block"'):
+               "SynthesisConfig(length_scale=length_scale)", "voice-master.flac", '"event": "cue"', '"event": "block"',
+               "member_tempo", '"self-check-silence"', '"spoken_text"', "is_vietnamese_speakable",
+               "longest_fitting_prefix", '"truncate-voice"', "_cached_phonemize"):
     require(marker in tts_worker, f"NGHI worker contract missing {marker}")
 for forbidden in ("asetrate=", "rubberband=", "atrim="):
     require(forbidden not in tts_worker, f"speech-cutting or pitch-shifting filter returned: {forbidden}")

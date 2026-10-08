@@ -123,6 +123,16 @@ public sealed class VideoEditorService
             export, encoder, exportGraph.OutputLabel);
         job.Set("rendering", 1, "Đang chuẩn bị xuất video...");
         job.Log($"Video Editor: {request.Regions.Count} vùng, giữ {trim.Start:0.000}-{trim.End:0.000}s ({trim.Duration:0.000}s), codec={export.Codec}/{encoder.Name}, quality={export.Quality}, size={exportGraph.Dimensions.Width}x{exportGraph.Dimensions.Height}, fps={(export.FrameRate?.ToString("0.###", CultureInfo.InvariantCulture) ?? "source")}, audio={audio.SourceMode}/{audio.SourceGain:0.00}/{export.AudioBitrateKbps}k, voice={(voice is null ? "off" : "local")}, output {output}");
+        // 08/10 vụ fail oan 27 phút render vì câu kiểm tra sau xuất hỏng:
+        // chạy thử công cụ kiểm tra (1 giây trên file nguồn) TRƯỚC khi render
+        // dài — hỏng là fail trong vài giây, không bao giờ mất nửa tiếng nữa.
+        job.Set("rendering", 1, "Đang kiểm tra công cụ xác minh file xuất...");
+        var preflightArgs = BuildAudioPacketDumpArguments(input).ToList();
+        preflightArgs.Insert(preflightArgs.Count - 1, "-read_intervals");
+        preflightArgs.Insert(preflightArgs.Count - 1, "0%1");
+        var preflight = await _processes.RunAsync(await _tools.EnsureFfprobeAsync(token), preflightArgs, token);
+        if (preflight.ExitCode != 0 && !preflight.StandardError.Contains("matches no streams", StringComparison.Ordinal))
+            throw new InvalidDataException("Công cụ kiểm tra file xuất (ffprobe) không chạy được — dừng trước khi render để khỏi mất thời gian: " + preflight.StandardError.Trim());
         var nextDiskCheck = Environment.TickCount64;
         try
         {
@@ -151,8 +161,9 @@ public sealed class VideoEditorService
             if (!File.Exists(temporary) || new FileInfo(temporary).Length <= 0) throw new InvalidDataException("Video đã render rỗng.");
             job.Set("validating", 97, "Đang kiểm tra stream, thời lượng và khả năng giải mã...");
             await ValidateRenderedOutputAsync(
-                temporary, trim.Duration, voice is not null || audio.SourceMode != "mute",
-                exportGraph.Dimensions, export.Codec, export.FrameRate, token);
+                job, temporary, trim.Duration, voice is not null || audio.SourceMode != "mute",
+                exportGraph.Dimensions, export.Codec, export.FrameRate, renderRequest.Subtitle?.Cues,
+                trim.Start, voice?.Path, token);
             job.Set("finalizing", 99, "Đã xác minh file; đang hoàn tất...");
             File.Move(temporary, output);
             return new VideoEditResult(output);
@@ -161,12 +172,16 @@ public sealed class VideoEditorService
     }
 
     private async Task ValidateRenderedOutputAsync(
+        AppJob job,
         string path,
         double expectedDuration,
         bool expectAudio,
         EditorExportDimensions expectedDimensions,
         string expectedCodec,
         double? expectedFrameRate,
+        IReadOnlyList<EditorSubtitleCue>? subtitleCues,
+        double trimStart,
+        string? voiceMasterPath,
         CancellationToken cancellationToken)
     {
         var ffprobe = await _tools.EnsureFfprobeAsync(cancellationToken);
@@ -211,6 +226,189 @@ public sealed class VideoEditorService
             if (videoTail.ExitCode != 0)
                 throw new InvalidDataException("Phần cuối video đầu ra không giải mã được: " + videoTail.StandardError.Trim());
         }
+
+        await VerifyExportVoiceSyncAsync(job, ffmpeg, path, subtitleCues, trimStart, expectedDuration, voiceMasterPath, cancellationToken);
+        await VerifyExportPacketIntegrityAsync(job, path, cancellationToken);
+    }
+
+    // Chốt đồng bộ voice-sub sau xuất (08/10, user: preview khớp mà file xuất
+    // lệch): đo tiếng voice thật trong file xuất tại ~12 mốc giờ rồi so với
+    // giờ sub — trung vị lệch quá 1s (≥5 mốc đo được) là fail job tại chỗ,
+    // không lọt file lỗi; lẻ tẻ thì warn. Không bao giờ fail oan: ngưỡng phát
+    // hiện (0.09 + giữ 0.1s) nằm trên nền nhạc duck, trung vị miễn nhiễm điểm
+    // lỗi, thiếu mốc đo thì bỏ qua. Vài phút trên job xuất nửa tiếng.
+    private async Task VerifyExportVoiceSyncAsync(
+        AppJob job,
+        string ffmpeg,
+        string path,
+        IReadOnlyList<EditorSubtitleCue>? subtitleCues,
+        double trimStart,
+        double trimDuration,
+        string? voiceMasterPath,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(voiceMasterPath) || subtitleCues is null || subtitleCues.Count == 0) return;
+        var points = new List<double>();
+        var stride = Math.Max(1, subtitleCues.Count / 12);
+        for (var index = 0; index < subtitleCues.Count && points.Count < 12; index += stride)
+        {
+            var start = subtitleCues[index].Start;
+            var end = subtitleCues[index].End;
+            if (!double.IsFinite(start) || !double.IsFinite(end) || end <= start
+                || start < trimStart || start > trimStart + trimDuration - 0.5)
+                continue;
+            points.Add(start);
+        }
+        if (points.Count == 0) return;
+        job.Set("validating", 97.5, $"Đang xác minh voice khớp sub tại {points.Count} mốc giờ...");
+        const int sampleRate = 22050;
+        const int threshold = 2949;
+        const int sustain = 2205;
+        var offsets = new List<(double At, double Offset)>();
+        var missingVoice = new List<string>();
+        foreach (var cueStart in points)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            byte[] pcm;
+            try
+            {
+                pcm = await _processes.CaptureBytesAsync(ffmpeg,
+                [
+                    "-hide_banner", "-loglevel", "error", "-nostdin",
+                    "-ss", (cueStart - trimStart).ToString("0.000", CultureInfo.InvariantCulture),
+                    "-i", path, "-map", "0:a:0", "-t", "4",
+                    "-c:a", "pcm_s16le", "-ar", sampleRate.ToString(CultureInfo.InvariantCulture),
+                    "-ac", "1", "-f", "s16le", "pipe:1",
+                ], cancellationToken);
+            }
+            catch { continue; }
+            var samples = pcm.Length / 2;
+            var onset = -1;
+            for (var i = 0; i + sustain < samples; i++)
+            {
+                var value = (short)(pcm[2 * i] | (pcm[2 * i + 1] << 8));
+                if (value <= -threshold || value >= threshold)
+                {
+                    var held = false;
+                    for (var j = i; j < i + sustain && j < samples; j++)
+                    {
+                        var follow = (short)(pcm[2 * j] | (pcm[2 * j + 1] << 8));
+                        if (follow <= -threshold || follow >= threshold) { held = true; break; }
+                    }
+                    if (held) { onset = i; break; }
+                    i += sustain;
+                }
+            }
+            if (onset >= 0) offsets.Add((cueStart, onset / (double)sampleRate));
+            // 08/10 vụ 123.mp4: voice mất vài giây cục bộ trong file xuất
+            // (master vẫn có) — onset trung vị không bắt được lỗ thủng hẹp.
+            // So năng lượng xuất vs master tại cùng mốc: master to mà xuất
+            // nhỏ hơn 1/4 thì voice đã rớt khỏi file ở chỗ đó.
+            try
+            {
+                var masterPcm = await _processes.CaptureBytesAsync(ffmpeg,
+                [
+                    "-hide_banner", "-loglevel", "error", "-nostdin",
+                    "-ss", Math.Max(0, cueStart).ToString("0.000", CultureInfo.InvariantCulture),
+                    "-i", voiceMasterPath, "-map", "0:a:0", "-t", "2",
+                    "-c:a", "pcm_s16le", "-ar", sampleRate.ToString(CultureInfo.InvariantCulture),
+                    "-ac", "1", "-f", "s16le", "pipe:1",
+                ], cancellationToken);
+                var exportRms = Rms(pcm, sampleRate * 2);
+                var masterRms = Rms(masterPcm, sampleRate * 2);
+                if (masterRms > 0.05 && exportRms < masterRms * 0.25)
+                    missingVoice.Add($"{cueStart:0.0}s");
+            }
+            catch { }
+        }
+        if (offsets.Count < 5) return;
+        offsets.Sort((left, right) => left.Offset.CompareTo(right.Offset));
+        var median = offsets[offsets.Count / 2].Offset;
+        var bad = new List<string>();
+        foreach (var (at, offset) in offsets)
+            if (Math.Abs(offset) > 0.75)
+                bad.Add($"{at:0.0}s:{offset:+0.00;-0.00}s");
+        if (Math.Abs(median) > 1.0)
+            throw new InvalidDataException(
+                $"Voice trong file xuất lệch giờ sub trung vị {median:+0.00;-0.00}s tại {offsets.Count} mốc đo (không nhận file này): "
+                + string.Join(", ", bad));
+        if (bad.Count > 0)
+            job.Warn($"Voice xuất lệch cục bộ tại {bad.Count} mốc (trung vị {median:+0.00;-0.00}s, vẫn nhận file): " + string.Join(", ", bad));
+        if (missingVoice.Count >= 3)
+            throw new InvalidDataException(
+                $"Voice bị rớt khỏi file xuất tại {missingVoice.Count} mốc đo (master vẫn có tiếng): "
+                + string.Join(", ", missingVoice));
+        else if (missingVoice.Count > 0)
+            job.Warn("Xuất có dấu hiệu rớt voice cục bộ (vẫn nhận file): " + string.Join(", ", missingVoice));
+    }
+
+    private static double Rms(byte[] pcm, int sampleCount)
+    {
+        var count = Math.Min(sampleCount, pcm.Length / 2);
+        if (count <= 0) return 0;
+        double sum = 0;
+        for (var i = 0; i < count; i++)
+        {
+            var value = (short)(pcm[2 * i] | (pcm[2 * i + 1] << 8)) / 32768d;
+            sum += value * value;
+        }
+        return Math.Sqrt(sum / count);
+    }
+
+    // 08/10 vụ fail oan 27 phút render vì cờ ffprobe sai (-nostdin chỉ
+    // ffmpeg mới có): tách builder để contract test khóa lại — cấm lọt cờ
+    // chỉ-ffmpeg vào lệnh ffprobe, thiếu cờ bắt buộc là fail test.
+    public static IReadOnlyList<string> BuildAudioPacketDumpArguments(string path)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        return
+        [
+            "-hide_banner", "-v", "error",
+            "-select_streams", "a:0",
+            "-show_entries", "packet=pts_time,dts_time,duration_time",
+            "-of", "csv", path,
+        ];
+    }
+    private async Task VerifyExportPacketIntegrityAsync(AppJob job, string path, CancellationToken cancellationToken)
+    {
+        var ffprobe = await _tools.EnsureFfprobeAsync(cancellationToken);
+        job.Set("validating", 97.8, "Đang quét toàn bộ packet audio tìm timestamp hỏng...");
+        var dump = await _processes.RunAsync(ffprobe, BuildAudioPacketDumpArguments(path), cancellationToken);
+        if (dump.ExitCode != 0)
+            throw new InvalidDataException("Không quét được packet audio file xuất: " + dump.StandardError.Trim());
+        var (degenerateSpots, backwardSpots) = AnalyzeAudioPacketDump(dump.StandardOutput);
+        job.Set("validating", 98.5, "Đã quét packet audio.");
+        if (backwardSpots.Count > 0)
+            throw new InvalidDataException(
+                "Timeline audio file xuất bị đi ngược (DTS không đơn điệu) — file hỏng, không nhận: "
+                + string.Join(", ", backwardSpots));
+        if (degenerateSpots.Count >= 10)
+            throw new InvalidDataException(
+                $"File xuất có {degenerateSpots.Count} điểm packet audio suy biến (duration ~0) rải khắp timeline — trình xem sẽ vấp, không nhận file này.");
+        if (degenerateSpots.Count > 0)
+            job.Warn($"File xuất có {degenerateSpots.Count} điểm packet audio suy biến (vẫn nhận file): "
+                + string.Join(", ", degenerateSpots.OrderBy(x => x).Take(8).Select(x => x + "s")));
+    }
+
+    public static (HashSet<long> DegenerateSpots, List<string> BackwardSpots) AnalyzeAudioPacketDump(string csv)
+    {
+        var degenerateSpots = new HashSet<long>();
+        var backwardSpots = new List<string>();
+        double previousDts = double.NaN;
+        foreach (var line in csv.Split('\n'))
+        {
+            var fields = line.Split(',');
+            if (fields.Length < 4) continue;
+            if (!double.TryParse(fields[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var pts)
+                || !double.TryParse(fields[2], NumberStyles.Float, CultureInfo.InvariantCulture, out var dts)
+                || !double.TryParse(fields[3], NumberStyles.Float, CultureInfo.InvariantCulture, out var duration))
+                continue;
+            if (pts > 0.5 && duration < 0.005) degenerateSpots.Add((long)Math.Floor(pts));
+            if (!double.IsNaN(previousDts) && dts < previousDts - 0.001 && backwardSpots.Count < 10)
+                backwardSpots.Add($"{previousDts:0.000}s->{dts:0.000}s");
+            previousDts = dts;
+        }
+        return (degenerateSpots, backwardSpots);
     }
 
     private static void ValidateRenderedProbe(string json, double expectedDuration, bool expectAudio)
@@ -909,7 +1107,15 @@ public sealed class VideoEditorService
         return track with { Path = path, Gain = Math.Clamp(track.Gain, 0, 4) };
     }
 
-    private static string BuildVoiceAudioFilter(EditorAudioSettings audio, EditorVoiceTrack voice, int voiceInputIndex, double sourceStart)
+    // 08/10 vụ 123.mp4 (user bắt tìm nguyên nhân, không cần gác cổng):
+    // file nguồn rip sẵn có 654 điểm timestamp audio suy biến (~70s/lần,
+    // quét toàn file nguồn ra đúng 654 điểm y hệt bản xuất) — graph cũ
+    // asetpts+amix kế thừa nguyên si sang file xuất, trình xem vấp mỗi điểm.
+    // Sửa gốc: làm sạch timestamp ngay nhánh nhạc nguồn bằng
+    // aresample=async (bù micro-lệch/gấp khúc thành đơn điệu, không nghe ra);
+    // nhánh voice (FLAC tự sinh, sample-exact) giữ nguyên từng mẫu để khớp giờ
+    // tuyệt đối. Dùng chung preview + export nên hai đường khớp nhau.
+    public static string BuildVoiceAudioFilter(EditorAudioSettings audio, EditorVoiceTrack voice, int voiceInputIndex, double sourceStart)
     {
         var relativeDelay = Math.Max(0, voice.Start - sourceStart);
         var voiceFilters = new List<string> { "asetpts=PTS-STARTPTS" };
@@ -922,7 +1128,11 @@ public sealed class VideoEditorService
             voiceFilters.Add("volume=" + voice.Gain.ToString("0.000", CultureInfo.InvariantCulture));
         var voiceChain = $"[{voiceInputIndex}:a]{string.Join(',', voiceFilters)}[voicea]";
         if (audio.SourceMode == "mute") return voiceChain + ";[voicea]anull[aout]";
-        var sourceFilters = new List<string> { "asetpts=PTS-STARTPTS" };
+        var sourceFilters = new List<string>
+        {
+            "asetpts=PTS-STARTPTS",
+            "aresample=async=1:min_hard_comp=0.100:first_pts=0",
+        };
         if (audio.SourceMode == "duck") sourceFilters.Add("volume=" + audio.SourceGain.ToString("0.000", CultureInfo.InvariantCulture));
         return $"[0:a]{string.Join(',', sourceFilters)}[sourcea];{voiceChain};[sourcea][voicea]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0[aout]";
     }

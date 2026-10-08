@@ -64,21 +64,27 @@ public sealed class SettingsApplicationService(
         return await BuildSnapshotAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task<SettingsSnapshot> BuildSnapshotAsync(CancellationToken cancellationToken)
+    private Task<SettingsSnapshot> BuildSnapshotAsync(CancellationToken cancellationToken)
     {
-        var storage = await storageUsageReader.ReadAsync(paths, cancellationToken).ConfigureAwait(false);
+        // Vụ kẹt nút Tải media 05/10: KHÔNG đợi quét dung lượng (900k file,
+        // hàng chục phút). Trả ngay số cũ (hoặc 0 lần đầu) + quét nền; số
+        // hiển thị ở Cài đặt tự refresh sau. Đường settings không bao giờ
+        // được treo UI vì thống kê.
+        if (!storageUsageReader.TryGetLast(out var storage))
+            storage = new StorageUsage(0, 0, 0, 0, 0);
+        storageUsageReader.RefreshInBackground(paths);
         var drive = Path.GetPathRoot(paths.Root);
         if (string.IsNullOrWhiteSpace(drive))
         {
             drive = paths.Root;
         }
 
-        return new SettingsSnapshot(
+        return Task.FromResult(new SettingsSnapshot(
             paths.Root,
             drive,
             configStore.Snapshot,
             storage,
-            configStore.LastLoadWarning);
+            configStore.LastLoadWarning));
     }
 
     private static async Task<string> ValidateWritableDirectoryAsync(string path, CancellationToken cancellationToken)

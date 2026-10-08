@@ -862,6 +862,7 @@ public sealed class BiliSubApplication : IAsyncDisposable
     }
 
     public Task<OcrCheckpointInfo> InspectOcrCheckpointAsync(OcrScanRequest request, CancellationToken cancellationToken) => _ocrScanner.InspectCheckpointAsync(request, cancellationToken);
+    public IReadOnlyList<OcrCheckpointVideoInfo> FindOcrVideoCheckpoints(string videoPath) => _ocrScanner.FindVideoCheckpoints(videoPath);
     public Task RemoveOcrCheckpointAsync(OcrScanRequest request, CancellationToken cancellationToken) => _ocrScanner.RemoveCheckpointAsync(request, cancellationToken);
     public Task<IReadOnlyList<OcrCueExclusion>> LoadOcrExclusionsAsync(OcrScanRequest request, CancellationToken cancellationToken) => _ocrScanner.LoadExclusionsAsync(request, cancellationToken);
     public Task<int> AppendOcrExclusionsAsync(OcrScanRequest request, IReadOnlyList<OcrCueExclusion> additions, CancellationToken cancellationToken) => _ocrScanner.SaveExclusionsAsync(request, additions, cancellationToken);

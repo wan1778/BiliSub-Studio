@@ -308,12 +308,34 @@ public sealed partial class OcrPage : Page
             var checkpointRequest = BuildRequest();
             StatusText.Text = "Đang kiểm tra checkpoint OCR; chưa thể bắt đầu quét mới...";
             var checkpoint = await _application.InspectOcrCheckpointAsync(checkpointRequest, CancellationToken.None);
+            var restoredNote = string.Empty;
+            if (!checkpoint.Exists)
+            {
+                // Vụ 06/10: ROI/mode mặc định sau khởi động lệch với lúc quét
+                // nên inspect miss dù checkpoint còn. Tra hồ sơ cùng video,
+                // khôi phục đúng ROI/mode đã quét rồi inspect lại bằng key
+                // chuẩn — resume lại chạy, user không phải vẽ tay.
+                var sameVideo = _application.FindOcrVideoCheckpoints(selected);
+                var newest = sameVideo.FirstOrDefault();
+                if (newest is not null)
+                {
+                    _region = newest.Region;
+                    SelectValue(ScanModeBox, newest.Mode);
+                    SelectValue(DeviceBox, newest.Device);
+                    SelectValue(LanesBox, newest.Parallelism);
+                    ApplyRegionVisual();
+                    checkpointRequest = BuildRequest();
+                    checkpoint = await _application.InspectOcrCheckpointAsync(checkpointRequest, CancellationToken.None);
+                    if (checkpoint.Exists)
+                        restoredNote = $"Đã khôi phục khung quét + chế độ của lần quét {newest.SavedUtc:dd/MM HH:mm} (chế độ {newest.Mode}). ";
+                }
+            }
             if (checkpoint.Exists)
             {
                 _checkpointRequest = checkpointRequest;
                 ApplyRecoverableCheckpointCues(checkpoint);
                 ApplyCheckpointUi();
-                StatusText.Text = $"Có checkpoint schema {checkpoint.Schema}: {checkpoint.ProgressPercent:0.0}% · {checkpoint.CueCount} câu; có thể Tiếp tục hoặc Xuất SRT phục hồi.";
+                StatusText.Text = restoredNote + $"Có checkpoint schema {checkpoint.Schema}: {checkpoint.ProgressPercent:0.0}% · {checkpoint.CueCount} câu; có thể Tiếp tục hoặc Xuất SRT phục hồi.";
             }
             else
             {
@@ -703,6 +725,27 @@ public sealed partial class OcrPage : Page
         await Task.CompletedTask;
     }
 
+    // Một nguồn sự thật cho nút chế độ mắt (27/09: vụ nghe->mắt kẹt nút
+    // "Nghe lại từ đầu" vì nhánh về mắt chỉ dựng ScanButton, quên Restart/
+    // Cancel/telemetry — nhãn một đằng hành động một nẻo, bấm là quét OCR
+    // trong khi nhãn ghi Nghe). Mọi đường về mắt idle đều qua đây.
+    private void ApplyEyeModeControls()
+    {
+        RestoreIdleControls();
+        RefreshRegionActions();
+        var recovery = _checkpointRequest is not null;
+        ScanButton.IsEnabled = true;
+        ScanButton.Content = recovery ? "Tiếp tục" : (_cues.Count > 0 ? "Quét lại từ đầu" : "Quét / Tiếp tục");
+        RestartButton.Content = "Quét lại từ đầu";
+        RestartButton.Visibility = recovery ? Visibility.Visible : Visibility.Collapsed;
+        RestartButton.IsEnabled = true;
+        CancelButton.Content = recovery ? "Hủy và xóa" : "Hủy";
+        CancelButton.IsEnabled = recovery;
+        TelemetryText.Text = recovery
+            ? "Có checkpoint OCR; có thể Tiếp tục hoặc Quét lại từ đầu."
+            : (_cues.Count > 0 ? $"{_cues.Count} câu; bấm Quét lại từ đầu để quét mới." : "Chưa có telemetry.");
+    }
+
     private void SourceBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         // Sự kiện nổ ngay trong lúc trang đang dựng (SelectedIndex mặc định):
@@ -711,10 +754,9 @@ public sealed partial class OcrPage : Page
         if (_jobId is not null) return;
         if (!string.Equals(Selected(SourceBox), "listen", StringComparison.Ordinal))
         {
-            // Về mắt đọc: dựng lại nút bấm theo trạng thái OCR hiện tại.
-            RestoreIdleControls();
-            RefreshRegionActions();
-            ScanButton.Content = _checkpointRequest is not null ? "Tiếp tục" : (_cues.Count > 0 ? "Quét lại từ đầu" : "Quét / Tiếp tục");
+            // Về mắt đọc: dựng lại TOÀN BỘ nút theo trạng thái OCR hiện tại
+            // (không chỉ ScanButton — bài học vụ kẹt nhãn Nghe ở chế độ Mắt).
+            ApplyEyeModeControls();
             return;
         }
         DeviceBox.IsEnabled = false;
@@ -1022,6 +1064,7 @@ public sealed partial class OcrPage : Page
         ScanButton.Content = "Tiếp tục";
         CancelButton.Content = "Hủy và xóa";
         CancelButton.IsEnabled = true;
+        RestartButton.Content = "Quét lại từ đầu";
         RestartButton.Visibility = Visibility.Visible;
         RestartButton.IsEnabled = true;
         ScanButton.IsEnabled = true;
@@ -1085,6 +1128,27 @@ public sealed partial class OcrPage : Page
             return item.Tag?.ToString() ?? item.Content?.ToString() ?? string.Empty;
         }
         return box.SelectedItem?.ToString() ?? string.Empty;
+    }
+
+    private static void SelectValue(ComboBox box, string value)
+    {
+        for (var index = 0; index < box.Items.Count; index++)
+        {
+            if (box.Items[index] is ComboBoxItem item)
+            {
+                if (string.Equals(item.Tag?.ToString(), value, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(item.Content?.ToString(), value, StringComparison.OrdinalIgnoreCase))
+                {
+                    box.SelectedIndex = index;
+                    return;
+                }
+            }
+            else if (string.Equals(box.Items[index]?.ToString(), value, StringComparison.OrdinalIgnoreCase))
+            {
+                box.SelectedIndex = index;
+                return;
+            }
+        }
     }
 
     private void PublishPresenceContext(string? video, string? project)
@@ -1229,7 +1293,8 @@ public sealed partial class OcrPage : Page
                 return;
             }
             var journalPath = OcrVerdictJournal.JournalPath(_path, _application.Paths.Data);
-            var map = OcrJudgeBadge.BuildMap(OcrVerdictJournal.Load(journalPath));
+            var map = OcrJudgeBadge.BuildMap(OcrVerdictJournal.LoadAny(
+                OcrVerdictJournal.AppDataPath(_path, _application.Paths.Data), journalPath));
             if (map.Count == _judgeMarks.Count) return;
             _judgeMarks = map;
             _visibleCues = [];

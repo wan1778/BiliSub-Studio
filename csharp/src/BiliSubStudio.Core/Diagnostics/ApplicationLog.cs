@@ -38,7 +38,7 @@ public sealed class ApplicationLog : IDisposable
         var directory = Path.Combine(Path.GetFullPath(dataDirectory), "Logs");
         Directory.CreateDirectory(directory);
         FilePath = Path.Combine(directory, "application.log");
-        RotateIfNeeded();
+        RotateOnStartup();
         _writerLoop = Task.Run(WriterLoopAsync);
         AppDomain.CurrentDomain.ProcessExit += OnProcessExit;
     }
@@ -164,6 +164,20 @@ public sealed class ApplicationLog : IDisposable
         try
         {
             if (!File.Exists(FilePath) || new FileInfo(FilePath).Length <= MaxLogBytes) return;
+            RotateOnStartup();
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+    }
+
+    // 30/09 (user chốt): mỗi lần mở app là một file log mới sạch, dễ đọc.
+    // Phiên cũ dồn sang application.log.1..5 (giữ tối đa 5 đời để còn
+    // truy vết crash xuyên lần mở), không bao giờ mất hẳn.
+    private void RotateOnStartup()
+    {
+        try
+        {
+            if (!File.Exists(FilePath)) return;
             var oldest = FilePath + "." + MaxGenerations;
             if (File.Exists(oldest)) File.Delete(oldest);
             for (var generation = MaxGenerations - 1; generation >= 1; generation--)

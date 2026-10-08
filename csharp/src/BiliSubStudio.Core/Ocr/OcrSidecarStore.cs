@@ -3,13 +3,14 @@ using System.Text;
 
 namespace BiliSubStudio.Core.Ocr;
 
-// IO cho sidecar cạnh video: resolve cạnh-video-trước/Data-sau, đọc validate, ghi nguyên tử.
+// IO cho sidecar: 28/09 (user cấm file cạnh video) LUÔN ghi Data app;
+// AlongsidePath chỉ còn để ĐỌC di sản (file cũ còn sót vẫn cho cache hit).
 // Mọi lỗi (quyền, đĩa, corrupt) đều nuốt lặng + tiếp tục KHÔNG sidecar — scan không bao giờ
 // fail vì file đệm. Hủy (cancel) thì vẫn ném để tôn trọng caller.
 public sealed class OcrSidecarStore
 {
     private readonly string _appDataDir;
-    private int _fallbackMode;
+    private int _fallbackMode = 1;
 
     public OcrSidecarStore(string appDataDir) => _appDataDir = appDataDir;
 

@@ -205,8 +205,9 @@ public sealed partial class EditorPage
             Style = (Style)Application.Current.Resources["SecondaryButtonStyle"],
         };
         ToolTipService.SetToolTip(_voiceSampleButton, "Nghe thử không cần video hay SRT");
-        AutomationProperties.SetName(_voiceSampleButton, "Nghe thử giọng Ngọc Huyền local");
+        AutomationProperties.SetName(_voiceSampleButton, "Nghe thử giọng local đã chọn");
         _voiceSampleButton.Click += VoiceSample_Click;
+        EnsureVoiceModelItems();
 
         _voiceRequirementsText = new TextBlock
         {
@@ -232,6 +233,39 @@ public sealed partial class EditorPage
             VoiceInspectorPanel.Children.Insert(generateIndex + 1, _voiceRequirementsText);
         }
         Unloaded += (_, _) => CleanupVoiceSample();
+    }
+
+    private bool _voiceModelItemsFilled;
+
+    // Dropdown giọng: NGHI mặc định + 25 preset VieNeu (1 nguồn sự thật từ
+    // TtsVoiceCatalog). Giữ SelectedIndex 0 để smoke test default không đổi.
+    private void EnsureVoiceModelItems()
+    {
+        if (_voiceModelItemsFilled || VoiceModelBox is null) return;
+        _voiceModelItemsFilled = true;
+        foreach (var (tag, content) in BiliSubStudio.Core.Editor.TtsVoiceCatalog.VoiceOptions.Skip(1))
+            VoiceModelBox.Items.Add(new ComboBoxItem { Tag = tag, Content = content });
+        if (VoiceModelBox.SelectedIndex < 0) VoiceModelBox.SelectedIndex = 0;
+        RefreshVoiceEngineChips();
+    }
+
+    private void VoiceModelBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        // SelectionChanged nổ ngay trong lúc XAML parse (SelectedIndex=0) khi
+        // các chip chưa tồn tại — bỏ qua, EnsureVoiceModelItems dựng lại sau.
+        if (sender is not ComboBox box || VoiceEngineChipText is null || VoiceRuntimeChipText is null) return;
+        var tag = (box.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? string.Empty;
+        var vieneu = BiliSubStudio.Core.Editor.TtsVoiceCatalog.IsVieneuVoice(tag);
+        VoiceEngineChipText.Text = vieneu ? "VieNeu-TTS" : "NGHI-TTS";
+        VoiceRuntimeChipText.Text = vieneu ? "GPU" : "ONNX";
+    }
+
+    private void RefreshVoiceEngineChips()
+    {
+        if (VoiceEngineChipText is null || VoiceRuntimeChipText is null) return;
+        var vieneu = BiliSubStudio.Core.Editor.TtsVoiceCatalog.IsVieneuVoice(SelectedVoiceModel());
+        VoiceEngineChipText.Text = vieneu ? "VieNeu-TTS" : "NGHI-TTS";
+        VoiceRuntimeChipText.Text = vieneu ? "GPU" : "ONNX";
     }
 
     async void VoiceSample_Click(object sender, RoutedEventArgs e)
@@ -278,7 +312,7 @@ public sealed partial class EditorPage
                         };
                         _voiceSamplePlayer.Play();
                         VoiceProgress.Value = 100;
-                        VoiceStatusText.Text = "Đang phát mẫu Ngọc Huyền local. Đây là đúng engine/model dùng khi tạo voice toàn bộ.";
+                        VoiceStatusText.Text = $"Đang phát mẫu {selectedVoice} local. Đây là đúng engine/model dùng khi tạo voice toàn bộ.";
                     }
                     else if (!string.IsNullOrWhiteSpace(snapshot.Error)) VoiceStatusText.Text = snapshot.Error;
                     _ttsJobId = null;

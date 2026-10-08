@@ -50,6 +50,23 @@ public sealed record OcrScanRequest(
     double Duration,
     double ScanStartOffset = 0);
 
+// Hồ sơ nhận diện checkpoint OCR theo video (06/10): <key>.info.json cạnh
+// checkpoint, ghi video + đúng settings đã sinh key để pick-video miss vẫn
+// khôi phục ROI/mode rồi resume chuẩn. Public để App dùng.
+public sealed record OcrCheckpointVideoInfo(
+    string Key,
+    string VideoPath,
+    long Size,
+    long ModUnixNano,
+    OcrRegion Region,
+    string Mode,
+    string Device,
+    string Parallelism,
+    double Sensitivity,
+    double Duration,
+    double ScanStartOffset,
+    DateTimeOffset SavedUtc);
+
 // Ném khi checkpoint thiếu provenance pixel (cũ/hỏng) nên không đủ điều kiện replay.
 // Không bao giờ reconstruct/fabricate bbox/PTS từ Start/End.
 public sealed class CheckpointNotEligibleForReplayException : InvalidOperationException

@@ -103,8 +103,9 @@ internal static class OcrTopologyRefineContract
     }
 
     // Small-tier worker target + VRAM grow gate (pure, không cần GPU):
-    // cap 4 mọi lane>=4, floor 1; chỉ grow khi telemetry có + free>=1GB +
-    // chưa đủ worker.
+    // cap 4 mọi lane>=4, floor 1; chỉ grow khi telemetry có + free>=3GB +
+    // chưa đủ worker. (28/09: bar 1GB->3GB vì 16 lane NVDEC + 4 worker OOM
+    // trên card 4GB — small-tier không grow trên card nhỏ, về behaviour ổn định.)
     private static void SmallTierTargetAndGate()
     {
         var target = Benchmark.GetMethod("SmallTierWorkerTarget", BindingFlags.Static | BindingFlags.NonPublic)
@@ -122,9 +123,9 @@ internal static class OcrTopologyRefineContract
             (bool)gate.Invoke(null, [telemetry, freeBytes, current, lanes])!;
         const long gb = 1024L * 1024 * 1024;
         Check(!Grow(false, 8 * gb, 2, 8), "không telemetry không được grow mù");
-        Check(!Grow(true, 512 * 1024 * 1024L, 2, 8), "dưới 1GB không được grow");
-        Check(Grow(true, gb, 2, 8), "đủ 1GB phải grow");
-        Check(Grow(true, 2 * gb, 2, 16), "dư VRAM phải grow");
+        Check(!Grow(true, 2 * gb, 2, 8), "dưới 3GB không được grow");
+        Check(Grow(true, 3 * gb, 2, 8), "đủ 3GB phải grow");
+        Check(!Grow(true, 8 * gb, 2, 16), "16 lane không grow (NVDEC VRAM)");
         Check(!Grow(true, 2 * gb, 4, 8), "đủ worker rồi không grow thừa");
         Check(!Grow(true, 2 * gb, 2, 2), "2 lane đủ 2 worker rồi");
     }

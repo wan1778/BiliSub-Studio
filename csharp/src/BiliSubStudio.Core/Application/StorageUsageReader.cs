@@ -29,6 +29,51 @@ public sealed class StorageUsageReader : IStorageUsageReader
         }
     }
 
+    public bool TryGetLast(out StorageUsage usage)
+    {
+        lock (_gate)
+        {
+            if (_last is not null)
+            {
+                usage = _last;
+                return true;
+            }
+        }
+        usage = new StorageUsage(0, 0, 0, 0, 0);
+        return false;
+    }
+
+    public void RefreshInBackground(AppPaths paths)
+    {
+        Task<StorageUsage>? scan;
+        lock (_gate)
+        {
+            if (_inFlight is not null)
+                return;
+            if (_last is not null && DateTime.UtcNow - _lastRunUtc < CacheTtl)
+                return;
+            _inFlight = scan = ScanAsync(paths);
+        }
+        // Không await: caller (đường settings/UI) trả ngay. Quét lỗi thì
+        // nhả _inFlight để lần sau quét lại, không kẹt vĩnh viễn.
+        _ = scan.ContinueWith(
+            static (completed, state) =>
+            {
+                if (completed.IsFaulted && state is StorageUsageReader self)
+                {
+                    lock (self._gate)
+                    {
+                        if (ReferenceEquals(self._inFlight, completed))
+                            self._inFlight = null;
+                    }
+                }
+            },
+            this,
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+    }
+
     private async Task<StorageUsage> ScanAsync(AppPaths paths)
     {
         // Quét nền không ăn cancellation của caller: nhiều caller settings xài

@@ -74,15 +74,95 @@ internal sealed class OcrCheckpointStore
 
     private static async Task<OcrParallelCheckpoint?> TryLoadAsync(string path, string key, double duration, double offset, CancellationToken cancellationToken)
     {
+        var checkpoint = await ParseFileAsync(path, cancellationToken);
+        if (checkpoint is null || checkpoint.Schema != Schema || checkpoint.Key != key || !IsValidCheckpoint(checkpoint, duration, offset))
+            return null;
+        return checkpoint;
+    }
+
+    internal static async Task<OcrParallelCheckpoint?> ParseFileAsync(string path, CancellationToken cancellationToken)
+    {
         if (!File.Exists(path)) return null;
         try
         {
-            var checkpoint = JsonSerializer.Deserialize<OcrParallelCheckpoint>(await File.ReadAllTextAsync(path, cancellationToken), JsonOptions);
-            if (checkpoint is null || checkpoint.Schema != Schema || checkpoint.Key != key || !IsValidCheckpoint(checkpoint, duration, offset))
-                return null;
-            return checkpoint;
+            return JsonSerializer.Deserialize<OcrParallelCheckpoint>(await File.ReadAllTextAsync(path, cancellationToken), JsonOptions);
         }
         catch (Exception error) when (error is JsonException or IOException or UnauthorizedAccessException) { return null; }
+    }
+
+    // Đọc ứng viên resume mà KHÔNG validate end-match (06/10, vụ padding
+    // container): caller (scanner, có tools probe stream truth) tự quyết
+    // có nhận span ngắn hơn duration không. Schema/key sai là bỏ ngay.
+    internal async Task<OcrParallelCheckpoint?> ParseCandidateAsync(OcrScanRequest request, CancellationToken cancellationToken)
+    {
+        string key;
+        try
+        {
+            key = await KeyAsync(request, Schema, cancellationToken);
+        }
+        catch
+        {
+            return null;
+        }
+        foreach (var suffix in new[] { ".json", ".json.bak" })
+        {
+            var checkpoint = await ParseFileAsync(Path.Combine(DirectoryPath, key + suffix), cancellationToken);
+            if (checkpoint is null || checkpoint.Schema != Schema || checkpoint.Key != key)
+                continue;
+            return checkpoint;
+        }
+        return null;
+    }
+
+    // Chẩn đoán resume-miss 06/10 (pause xong bấm Tiếp tục báo mất
+    // checkpoint): tách từng mắt xích (file có không? đọc được không?
+    // schema/key/validity cái nào rớt?) để log nói rõ thay vì đoán.
+    // Chỉ dùng khi resume lỗi, không đụng đường nóng.
+    internal sealed record CheckpointResumeDiagnosis(
+        string Key,
+        bool MainExists,
+        bool BackupExists,
+        bool Parsed,
+        int Schema,
+        bool SchemaMatch,
+        bool KeyMatch,
+        bool Valid,
+        int Lanes,
+        int Workers,
+        string WorkerMode,
+        int SelectedParallelism);
+
+    internal async Task<CheckpointResumeDiagnosis> DiagnoseResumeAsync(
+        OcrScanRequest request, CancellationToken cancellationToken)
+    {
+        var key = await KeyAsync(request, Schema, cancellationToken);
+        var path = Path.Combine(DirectoryPath, key + ".json");
+        var bakPath = path + ".bak";
+        var mainExists = File.Exists(path);
+        var bakExists = File.Exists(bakPath);
+        var parsedPath = mainExists ? path : bakExists ? bakPath : null;
+        OcrParallelCheckpoint? checkpoint = null;
+        if (parsedPath is not null)
+        {
+            try
+            {
+                checkpoint = JsonSerializer.Deserialize<OcrParallelCheckpoint>(
+                    await File.ReadAllTextAsync(parsedPath, cancellationToken), JsonOptions);
+            }
+            catch (Exception error) when (error is JsonException or IOException or UnauthorizedAccessException)
+            {
+                checkpoint = null;
+            }
+        }
+        var schemaMatch = checkpoint is not null && checkpoint.Schema == Schema;
+        var keyMatch = checkpoint is not null && checkpoint.Key == key;
+        var valid = checkpoint is not null
+            && IsValidCheckpoint(checkpoint, request.Duration, request.ScanStartOffset);
+        return new CheckpointResumeDiagnosis(
+            key, mainExists, bakExists, checkpoint is not null,
+            checkpoint?.Schema ?? -1, schemaMatch, keyMatch, valid,
+            checkpoint?.Lanes?.Count ?? -1, checkpoint?.Workers ?? -1,
+            checkpoint?.WorkerMode ?? "?", checkpoint?.SelectedParallelism ?? -1);
     }
 
     public async Task SaveAsync(OcrScanRequest request, OcrParallelCheckpoint checkpoint, CancellationToken cancellationToken)
@@ -112,14 +192,105 @@ internal sealed class OcrCheckpointStore
             }
             catch { }
             File.Move(temporary, path, overwrite: true);
+            WriteInfo(request, key);
         }
         finally { TryDelete(temporary); }
+    }
+
+    // Hồ sơ nhận diện checkpoint theo video (06/10, vụ pause-then-resume
+    // báo mất checkpoint vì ROI/mode mặc định sau khởi động lệch với lúc
+    // quét): <key>.info.json ghi video + đúng settings đã sinh key. Pick
+    // video miss thì tra info cùng video, khôi phục ROI/mode rồi inspect
+    // lại bằng key chuẩn — resume lại chạy, không đoán mò. Best-effort:
+    // không bao giờ làm fail save/load/remove.
+    // (Kiểu public ở OcrModels để App dùng; store chỉ đọc/ghi.)
+
+    private void WriteInfo(OcrScanRequest request, string key)
+    {
+        try
+        {
+            var fullPath = Path.GetFullPath(request.Path.Trim());
+            var file = new FileInfo(fullPath);
+            var info = new OcrCheckpointVideoInfo(
+                key,
+                fullPath,
+                file.Exists ? file.Length : 0,
+                file.Exists ? (file.LastWriteTimeUtc - DateTime.UnixEpoch).Ticks * 100 : 0,
+                request.Region,
+                request.Mode,
+                request.Device,
+                request.Parallelism,
+                request.Sensitivity,
+                request.Duration,
+                request.ScanStartOffset,
+                DateTimeOffset.UtcNow);
+            // Thư mục con riêng: contract "đúng 1 file checkpoint" quét
+            // top-level *.json — info nằm ngoài để không phá vỡ invariant
+            // sạch của thư mục checkpoint.
+            var indexDir = Path.Combine(DirectoryPath, "index");
+            Directory.CreateDirectory(indexDir);
+            File.WriteAllBytes(
+                Path.Combine(indexDir, key + ".info.json"),
+                JsonSerializer.SerializeToUtf8Bytes(info, JsonOptions));
+        }
+        catch { }
+    }
+
+    internal IReadOnlyList<OcrCheckpointVideoInfo> FindByVideo(string videoPath)
+    {
+        var found = new List<OcrCheckpointVideoInfo>();
+        string fullPath;
+        long size;
+        long modUnixNano;
+        try
+        {
+            fullPath = Path.GetFullPath(videoPath.Trim());
+            var file = new FileInfo(fullPath);
+            if (!file.Exists || file.Length <= 0) return found;
+            size = file.Length;
+            modUnixNano = (file.LastWriteTimeUtc - DateTime.UnixEpoch).Ticks * 100;
+        }
+        catch { return found; }
+        string[] candidates;
+        try
+        {
+            var indexDir = Path.Combine(DirectoryPath, "index");
+            if (!Directory.Exists(indexDir)) return found;
+            candidates = Directory.GetFiles(indexDir, "*.info.json");
+        }
+        catch { return found; }
+        foreach (var candidate in candidates)
+        {
+            OcrCheckpointVideoInfo? info;
+            try
+            {
+                info = JsonSerializer.Deserialize<OcrCheckpointVideoInfo>(
+                    File.ReadAllBytes(candidate), JsonOptions);
+            }
+            catch { continue; }
+            if (info is null || info.Key.Length != 64) continue;
+            if (!string.Equals(info.VideoPath, fullPath, StringComparison.OrdinalIgnoreCase)
+                || info.Size != size || info.ModUnixNano != modUnixNano)
+                continue;
+            if (!File.Exists(Path.Combine(DirectoryPath, info.Key + ".json"))
+                && !File.Exists(Path.Combine(DirectoryPath, info.Key + ".json.bak")))
+                continue;
+            found.Add(info);
+        }
+        found.Sort((left, right) => right.SavedUtc.CompareTo(left.SavedUtc));
+        return found;
     }
 
     public async Task<OcrCheckpointInfo> InspectAsync(OcrScanRequest request, CancellationToken cancellationToken)
     {
         var checkpoint = await LoadAsync(request, cancellationToken);
         if (checkpoint is null) return new OcrCheckpointInfo(false, 0, 0, 0, 0, 0, 0, 0, [], []);
+        return await AssembleInfoAsync(checkpoint, request, cancellationToken);
+    }
+
+    internal async Task<OcrCheckpointInfo> AssembleInfoAsync(
+        OcrParallelCheckpoint checkpoint, OcrScanRequest request, CancellationToken cancellationToken)
+    {
         var completed = checkpoint.Lanes.Count(x => x.Completed);
         var media = ContiguousFrontier(checkpoint.Lanes);
         // Recovery export must contain only tracker-committed, lane-owned cues.
@@ -340,6 +511,7 @@ internal sealed class OcrCheckpointStore
             TryDelete(path);
             TryDelete(path + ".bak");
             TryDelete(path + ".tmp");
+            TryDelete(Path.Combine(DirectoryPath, "index", key + ".info.json"));
             if (File.Exists(path) || File.Exists(path + ".bak") || File.Exists(path + ".tmp"))
                 throw new IOException($"Không thể xóa checkpoint OCR schema {schema}: {path}");
         }
@@ -475,7 +647,7 @@ internal sealed class OcrCheckpointStore
         return frontier;
     }
 
-    private static bool IsValidCheckpoint(OcrParallelCheckpoint checkpoint, double duration, double offset = 0)
+    internal static bool IsValidCheckpoint(OcrParallelCheckpoint checkpoint, double duration, double offset = 0)
     {
         if (checkpoint.Workers is < 1 or > 16 ||
             checkpoint.WorkerMode is not ("gpu" or "cpu" or "hybrid") ||

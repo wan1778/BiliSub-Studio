@@ -141,6 +141,25 @@ internal static class OcrFragmentContract
         var store = assembly.GetType("BiliSubStudio.Core.Ocr.OcrCheckpointStore")!;
         Check((int)store.GetField("Schema", BindingFlags.Static | BindingFlags.NonPublic)!.GetRawConstantValue()! == 19,
             "standalone-branding checkpoint is still resume-compatible");
+        // Pause-preview drain vòng tail rồi lấy đúng view live đã gộp pixel
+        // (28/09, vụ ấn Dừng là cue rã ra): 2 cue chạm y hệt được gộp 1 sau
+        // drain, khớp thứ live hiển thị. FakePixelComparer Same nên không FFmpeg.
+        var tail = new OcrLiveTailReconciler();
+        try
+        {
+            tail.ResetCommitted([Prov(10, 12, "你好", .9)]);
+            tail.AppendCommitted([Prov(12, 14, "你好", .9)]);
+            tail.Start("v.mp4", new FakePixelComparer(PixelCheckResult.Same), 3.0 / 30);
+            var drainDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(15);
+            while (tail.AppliedRevision < tail.Revision && DateTime.UtcNow < drainDeadline)
+                await Task.Delay(50);
+            Check(tail.AppliedRevision >= tail.Revision, "pause drain did not finish the live tail loop");
+            await tail.StopAsync();
+            var drained = tail.CommittedView;
+            Check(drained.Count == 1 && drained[0].Text == "你好" && drained[0].Start == 10 && drained[0].End == 14,
+                "drained pause view split touching identical cues that live had merged");
+        }
+        finally { tail.Dispose(); }
     }
 
     private static void Check(bool valid, string message)

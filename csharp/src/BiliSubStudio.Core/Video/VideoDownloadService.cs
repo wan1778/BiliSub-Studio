@@ -86,6 +86,7 @@ public sealed class VideoDownloadService
         {
             job.Log($"Video format {selection.Video.FormatId} · {selection.Video.Height}p · {selection.Video.Size} bytes");
             job.Log($"Video CDN {Host(selection.Video)} · endpoint {selection.Video.EndpointIndex + 1}/{EndpointCount(selection.Video)}");
+            WarnIfSessionCappedQuality(job, request, selection.Video.Height);
         }
         if (selection.Audio is not null)
         {
@@ -519,6 +520,21 @@ public sealed class VideoDownloadService
         const string guidance = "Bilibili chặn (mã 412): thường do hết phiên đăng nhập — hãy đăng nhập lại tài khoản Bilibili trong app rồi tải lại (phần đã tải được giữ lại để resume).";
         if (message.Contains("đăng nhập lại", StringComparison.Ordinal)) return message;
         return message + " · " + guidance;
+    }
+
+    // 01/10 (vụ 720p về 480p): Bilibili khóa bản cao khi phiên hết hạn, còn
+    // downloader vẫn chạy "đúng" (best trong những gì thấy được) nên user chỉ
+    // phát hiện sau khi tải xong. Báo ngay khi xin best/cao mà chỉ được tối
+    // đa 480p; tải vẫn tiếp tục.
+    private static void WarnIfSessionCappedQuality(AppJob job, VideoDownloadRequest request, int selectedHeight)
+    {
+        if (selectedHeight <= 0 || selectedHeight > 480) return;
+        var text = (request.Quality ?? string.Empty).Trim().ToLowerInvariant();
+        var requested = text is "" or "best" ? 0 : int.TryParse(text.TrimEnd('p'), out var value) ? value : 0;
+        if (requested > 0 && requested <= selectedHeight) return;
+        job.Warn($"Bilibili chỉ cho tối đa {selectedHeight}p dù video gốc có thể có bản cao hơn — thường do phiên đăng nhập hết hạn" +
+            (string.IsNullOrWhiteSpace(request.CookieFile) ? " hoặc chưa đăng nhập" : string.Empty) +
+            ". Đăng nhập lại ở trang Đăng nhập (QR) rồi tải lại để lấy 720p+; video giới hạn VIP thì đây đã là mức tối đa.");
     }
 
     // Field 2026-09-06: output fallback hoàn chỉnh cũ (audio_fallback.m4a

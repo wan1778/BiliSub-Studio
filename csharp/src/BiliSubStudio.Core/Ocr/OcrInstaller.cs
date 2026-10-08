@@ -27,6 +27,11 @@ public const string DetectionModel = "PP-OCRv6_medium_det";
     // scraps the tracker filters downstream). Accurate keeps Medium.
     public const string SmallDetectionModel = "PP-OCRv6_small_det";
     public const string SmallRecognitionModel = "PP-OCRv6_small_rec";
+    // Tier siêu nhỏ cho Balanced/Fast (28/09, theo lệnh user: nhanh/vừa dùng
+    // nhỏ nhất; Accurate giữ Medium, không đụng). PP-OCRv5_mobile đã verify
+    // tải được từ BOS + instantiate OK, cùng API TextDetection/TextRecognition.
+    public const string MobileDetectionModel = "PP-OCRv5_mobile_det";
+    public const string MobileRecognitionModel = "PP-OCRv5_mobile_rec";
 
     private const string UvArchive = "uv-x86_64-pc-windows-msvc.zip";
     private const string UvUrl = "https://github.com/astral-sh/uv/releases/download/0.12.0/uv-x86_64-pc-windows-msvc.zip";

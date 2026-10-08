@@ -10,7 +10,14 @@
   </PropertyGroup>
   <ItemGroup>
     <!-- Giải mã JPEG trong-process cho đo luminance/hash (Windows-only, app win-x64).
-         Không dùng Bitmap vẽ vời — chỉ LockBits đọc pixel, using nghiêm + test rò handle. -->
+         Không dùng Bitmap với vùng — chỉ LockBits đọc pixel, using nghiêm + test rõ handle. -->
     <PackageReference Include="System.Drawing.Common" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- ContractTests kiểm trực tiếp API nội bộ (planner/validator nội bộ):
+         mở internals cho assembly test, không nới public API. -->
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>BiliSubStudio.Core.ContractTests</_Parameter1>
+    </AssemblyAttribute>
   </ItemGroup>
 </Project>

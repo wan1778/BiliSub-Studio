@@ -40,6 +40,12 @@ public sealed partial class EditorPage : Page
     private string? _jobId;
     private string? _asrJobId;
     private string? _ttsJobId;
+    // 08/10 (user): nút Tạm dừng dừng job TTS nhưng giữ toàn bộ câu đã đọc
+    // (clip cache theo hash trong Cache/Editor/TTS) nên bấm Tạo voice sẽ chạy
+    // tiếp từ chỗ dừng thay vì làm lại từ đầu. Cờ này để poll job giữ lại
+    // hướng dẫn chạy tiếp khi job dừng mà không ra result.
+    private bool _ttsPausedByUser;
+    private const string TtsPausedResumeHint = "Đã tạm dừng tạo voice. Các câu đọc xong được giữ lại; bấm «Tạo voice» để chạy tiếp từ chỗ dừng.";
     // EDIT-CANCEL-OWNERSHIP: id còn "sống" (đang cancel/dọn dẹp) nhưng đã tách khỏi
     // poll UI sau watchdog. Busy-state vẫn phải giữ cho tới khi job terminal thật.
     private readonly HashSet<string> _cleanupDetachedJobIds = new(StringComparer.Ordinal);
@@ -53,6 +59,9 @@ public sealed partial class EditorPage : Page
     private bool _syncingAudio;
     private bool _syncingVoice;
     private bool _syncingSubtitleStyle;
+    private bool _syncingSubtitleVisibility;
+    private double _voiceGain = 1;
+    private bool _subtitleVisible = true;
     private bool _trimRangeValid = true;
     private InspectorMode _inspectorMode = InspectorMode.Subtitle;
     private Point? _dragStartNormalized;
@@ -495,6 +504,8 @@ public sealed partial class EditorPage : Page
             _subtitlePlacement = saved.Placement ?? EditorSubtitlePlacement.Default;
             _subtitleStyle = EditorSubtitleStylePolicy.Normalize(saved.Style);
             ApplySubtitleStyleToUi(_subtitleStyle);
+            _subtitleVisible = saved.Visible;
+            ApplySubtitleVisibilityToUi();
             _syncingVoice = true;
             try { KaraokeToggle.IsOn = saved.Karaoke; } finally { _syncingVoice = false; }
             SrtPathText.Text = saved.SourcePath;
@@ -537,13 +548,15 @@ public sealed partial class EditorPage : Page
         if (_project.Tts is { Status: "complete" } tts && File.Exists(tts.VoiceTrack.Path))
         {
             _voiceTrack = tts.VoiceTrack;
+            _voiceGain = Math.Clamp(tts.VoiceGain, 0, 4);
+            ApplyVoiceGainToUi();
             _voiceCueWindows = (tts.CueWindows ?? [])
                 .ToDictionary(window => window.Id, StringComparer.Ordinal);
             VoiceStatusText.Text = tts.ReviewCount == 0
                 ? $"Voice Việt local đã sẵn sàng · {tts.CueCount} câu · Preview/Export dùng cùng track."
                 : $"Voice Việt local đã sẵn sàng · {tts.CueCount} câu · {tts.ReviewCount} câu cần xem lại.";
         }
-        else
+        else if (!await TryAdoptCachedVoiceAsync())
         {
             VoiceStatusText.Text = "Đã có nhịp thoại. Vietsub đầy đủ rồi bấm Tạo voice Việt local.";
         }
@@ -611,6 +624,7 @@ public sealed partial class EditorPage : Page
         {
             // SUB-03 / PROJECT-06: a new SRT invalidates TTS and cue-keyed voice overrides from the old SRT.
             ClearVoiceTrackState();
+            if (_project.Tts is not null) WriteVoiceRevokedMarker("srt-switch");
             _project = _project with
             {
                 Tts = null,
@@ -651,7 +665,8 @@ public sealed partial class EditorPage : Page
                 outputPath,
                 KaraokeToggle.IsOn,
                 translationPolicyKey,
-                _subtitleStyle),
+                _subtitleStyle,
+                _subtitleVisible),
         };
     }
 
@@ -866,6 +881,7 @@ public sealed partial class EditorPage : Page
                         && snapshot.Result is EditorAsrResult result && _project is not null)
                     {
                         ClearVoiceTrackState();
+                        if (_project.Tts is not null) WriteVoiceRevokedMarker("asr-redo");
                         _project = _project with
                         {
                             Asr = null,
@@ -964,6 +980,7 @@ public sealed partial class EditorPage : Page
                 speech.AnalysisPath,
                 speech.AnalysisSha256,
                 selectedVoice));
+            _ttsPausedByUser = false;
             VoiceProgress.Value = 0;
             VoiceStatusText.Text = $"Đang chuẩn bị voice {selectedVoice} local; model tự canh nhịp đọc nguyên câu theo thoại gốc...";
             RefreshEditorActions();
@@ -989,7 +1006,15 @@ public sealed partial class EditorPage : Page
             try { snapshot = _application.Jobs.GetSnapshot(jobId); }
             catch
             {
-                if (string.Equals(_ttsJobId, jobId, StringComparison.Ordinal)) _ttsJobId = null;
+                if (string.Equals(_ttsJobId, jobId, StringComparison.Ordinal))
+                {
+                    _ttsJobId = null;
+                    if (_ttsPausedByUser)
+                    {
+                        _ttsPausedByUser = false;
+                        VoiceStatusText.Text = TtsPausedResumeHint;
+                    }
+                }
                 RefreshEditorActions();
                 break;
             }
@@ -998,6 +1023,7 @@ public sealed partial class EditorPage : Page
             if (snapshot.Done)
             {
                 // EDIT-SWITCH: xem chú thích try/finally ở PollAsrJobAsync.
+                var applied = false;
                 try
                 {
                     if (sourceRevision == _editorSourceRevision
@@ -1005,7 +1031,7 @@ public sealed partial class EditorPage : Page
                         && snapshot.Result is EditorTtsResult result && _project is not null)
                     {
                         EnsureCurrentSubtitleFingerprint();
-                        _voiceTrack = result.VoiceTrack;
+                        _voiceTrack = result.VoiceTrack with { Gain = _voiceGain };
                         _voiceCueWindows = result.CueWindows.ToDictionary(window => window.Id, StringComparer.Ordinal);
                         _project = _project with
                         {
@@ -1017,10 +1043,11 @@ public sealed partial class EditorPage : Page
                                 result.Voice,
                                 result.ManifestPath,
                                 result.ManifestSha256,
-                                result.VoiceTrack,
+                                _voiceTrack,
                                 result.Cues.Count,
                                 result.ReviewCount,
-                                result.CueWindows),
+                                result.CueWindows,
+                                _voiceGain),
                         };
                         VoiceStatusText.Text = result.ReviewCount == 0
                             ? $"Voice Việt hoàn tất · {result.Cues.Count} câu khớp thời lượng thoại gốc · đã vào Xem bản chỉnh."
@@ -1028,11 +1055,20 @@ public sealed partial class EditorPage : Page
                         await SaveProjectNowAsync();
                         if (sourceRevision == _editorSourceRevision
                             && string.Equals(_ttsJobId, jobId, StringComparison.Ordinal)) QueuePreviewRefresh();
+                        applied = true;
                     }
                 }
                 finally
                 {
-                    if (string.Equals(_ttsJobId, jobId, StringComparison.Ordinal)) _ttsJobId = null;
+                    if (string.Equals(_ttsJobId, jobId, StringComparison.Ordinal))
+                    {
+                        _ttsJobId = null;
+                        if (!applied && _ttsPausedByUser)
+                        {
+                            _ttsPausedByUser = false;
+                            VoiceStatusText.Text = TtsPausedResumeHint;
+                        }
+                    }
                     RefreshEditorActions();
                 }
                 break;
@@ -1048,6 +1084,15 @@ public sealed partial class EditorPage : Page
             })) break;
             await Task.Delay(350);
         }
+    }
+
+    private void PauseVoice_Click(object sender, RoutedEventArgs e)
+    {
+        var job = _ttsJobId;
+        if (job is null) return;
+        _ttsPausedByUser = true;
+        _application.CancelJob(job);
+        VoiceStatusText.Text = "Đang tạm dừng tạo voice và giữ các câu đã đọc xong...";
     }
 
     private void CancelVoice_Click(object sender, RoutedEventArgs e)
@@ -1170,6 +1215,44 @@ public sealed partial class EditorPage : Page
         QueueProjectSave();
         if (!_playback.IsPreviewMode) QueuePreviewRefresh();
         NotifyEditorCompositeChanged();
+    }
+
+    private void VoiceGain_ValueChanged(object sender, Microsoft.UI.Xaml.Controls.Primitives.RangeBaseValueChangedEventArgs e)
+    {
+        if (!IsLoaded || _syncingVoice) return;
+        _voiceGain = Math.Clamp(VoiceGainSlider.Value / 100, 0, 4);
+        VoiceGainValueText.Text = $"{_voiceGain * 100:0}%";
+        if (_voiceTrack is not null)
+            _voiceTrack = _voiceTrack with { Gain = _voiceGain };
+        QueueProjectSave();
+        NotifyEditorCompositeChanged();
+    }
+
+    private void ApplyVoiceGainToUi()
+    {
+        _syncingVoice = true;
+        try
+        {
+            VoiceGainSlider.Value = _voiceGain * 100;
+            VoiceGainValueText.Text = $"{_voiceGain * 100:0}%";
+        }
+        finally { _syncingVoice = false; }
+    }
+
+    private void SubtitleVisibility_Toggled(object sender, RoutedEventArgs e)
+    {
+        if (!IsLoaded || _syncingSubtitleVisibility) return;
+        _subtitleVisible = SubtitleVisibilityToggle.IsOn;
+        QueueProjectSave();
+        if (!_playback.IsPreviewMode) QueuePreviewRefresh();
+        NotifyEditorCompositeChanged();
+    }
+
+    private void ApplySubtitleVisibilityToUi()
+    {
+        _syncingSubtitleVisibility = true;
+        try { SubtitleVisibilityToggle.IsOn = _subtitleVisible; }
+        finally { _syncingSubtitleVisibility = false; }
     }
 
     private async void SaveKaraokeAss_Click(object sender, RoutedEventArgs e)
@@ -1672,12 +1755,13 @@ public sealed partial class EditorPage : Page
     }
 
     private EditorSubtitleBurn? CompletedSubtitleBurn() =>
-        _subtitleSource is not null && _subtitleSource.Cues.All(x => !string.IsNullOrWhiteSpace(x.VietnameseText))
+        _subtitleVisible && _subtitleSource is not null && _subtitleSource.Cues.All(x => !string.IsNullOrWhiteSpace(x.VietnameseText))
             ? new EditorSubtitleBurn(_subtitleSource.Cues, _subtitlePlacement, _cueSpeechTiming, KaraokeToggle.IsOn, _subtitleStyle)
             : null;
 
     private EditorSubtitleBurn? PreviewSubtitleBurn()
     {
+        if (!_subtitleVisible) return null;
         var source = _subtitleSource;
         if (source is null) return null;
         var cues = source.Cues.Select(cue => cue with
@@ -1689,6 +1773,7 @@ public sealed partial class EditorPage : Page
 
     private EditorSubtitleBurn? CurrentFrameSubtitleBurn()
     {
+        if (!_subtitleVisible) return null;
         var source = _subtitleSource;
         if (source is null) return null;
         var seconds = Timeline.Value;
@@ -2487,10 +2572,20 @@ public sealed partial class EditorPage : Page
         GenerateTtsButton.IsEnabled = voiceBlockReason is null;
         if (idle && voiceBlockReason is not null) VoiceStatusText.Text = voiceBlockReason;
         CancelVoiceButton.IsEnabled = _asrJobId is not null || _ttsJobId is not null;
-        // Compact: swap button in same slot, show progress only when busy
+        // 08/10 (user): lúc đầu 1 nút Tạo voice; đang chạy hiện 2 nút Tạm dừng
+        // + Hủy; xong về lại nút Tạo voice lại từ đầu. Tạm dừng chỉ hiện khi
+        // job TTS đang chạy (ASR không có clip-resume nên chỉ có Hủy).
         var voiceBusy = _asrJobId is not null || _ttsJobId is not null;
         GenerateTtsButton.Visibility = voiceBusy ? Visibility.Collapsed : Visibility.Visible;
-        CancelVoiceButton.Visibility = voiceBusy ? Visibility.Visible : Visibility.Collapsed;
+        VoiceBusyButtons.Visibility = voiceBusy ? Visibility.Visible : Visibility.Collapsed;
+        if (!voiceBusy)
+            GenerateTtsButton.Content = _voiceTrack is null
+                ? "✦  Tạo voice và tự canh timecode"
+                : "↻  Tạo voice lại từ đầu";
+        var ttsRunning = _ttsJobId is not null;
+        PauseVoiceButton.Visibility = ttsRunning ? Visibility.Visible : Visibility.Collapsed;
+        PauseVoiceButton.IsEnabled = ttsRunning;
+        Grid.SetColumnSpan(CancelVoiceButton, ttsRunning ? 1 : 2);
         if (VoiceProgressContainer is not null) VoiceProgressContainer.Visibility = Visibility.Visible;
         if (_voiceSampleButton is not null) _voiceSampleButton.IsEnabled = idle && !_playback.IsPreviewMode;
         KaraokeToggle.IsEnabled = idle && !_playback.IsPreviewMode && _subtitleSource is not null;

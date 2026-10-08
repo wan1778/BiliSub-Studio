@@ -12,8 +12,25 @@ internal sealed partial class LocalTtsService
     private const long MaxSentenceGroupGapFrames = 5512;
     private const long MaxSentenceGroupOverlapFrames = 5512;
     private const long MaxSentenceGroupDurationFrames = 6615000;
+    // Luật pace (01/10 + micro-band 02/10 2.0x, user 07/10 nghe thử mở
+    // 2.5x, chỉ VieNeu): tăng tốc không vượt 1.5x mọi đường, NGOẠI TRỪ
+    // cue micro (khung <1.1s) được 2.5x; cue rộng stretch tối đa 1.4x
+    // thời lượng (pace không dưới 1/1.4). Trần record nới 0.01
+    // (1.51 / micro 2.51) để trừ FIT_HEADROOM + margin retry của worker.
+    // Mirror y hệt worker theo window, comment lý do.
+    private const double VieneuMaxTempoFactor = 1.51;
+    private const double VieneuMicroMaxTempoFactor = 2.51;
+    private const long VieneuMicroWindowFrames = 24255; // 1.1s @22050 Hz
+    // Overflow tran khung (user duyet cho cue don qua dai: doc nguyen cau toi
+    // tran window-cap, de len 1-2 cue sau, khong doi timeline). Mirror worker
+    // OVERFLOW_MAX_FRAMES; validation chi mo khi worker khai OverflowFrames.
+    private const long OverflowBudgetFrames = 66150; // 3.0s @22050 Hz
+    private const double VieneuMinTempoFactor = 1.0 / 1.4;
 
-    private static bool ValidateNativeSynthesis(TtsWorkerCue cue, long targetFrames, bool naturalSample, int sampleRate)
+    private static double VieneuMaxFactorFor(long targetFrames) =>
+        targetFrames is > 0 and < VieneuMicroWindowFrames ? VieneuMicroMaxTempoFactor : VieneuMaxTempoFactor;
+
+    private static bool ValidateNativeSynthesis(TtsWorkerCue cue, long targetFrames, bool naturalSample, int sampleRate, bool isVieneu)
     {
         // Silence quarantine: no speech could be synthesized for this cue (garbage text or an
         // unfillable window). The timeline stays intact because every sample is real silence of
@@ -32,9 +49,10 @@ internal sealed partial class LocalTtsService
         var precisionPaddingBudget = Math.Max(1L, Math.Min((long)Math.Round(.04 * sampleRate), targetFrames / 50));
         var relativeScale = cue.LengthScale / cue.BaseLengthScale;
         var sentenceGroup = cue.TimingSource == "sentence-group";
-        var tempoFallback = cue.FitMethod == "piper-atempo";
+        var atempoMethod = isVieneu ? "vieneu-atempo" : "piper-atempo";
+        var tempoFallback = cue.FitMethod == atempoMethod;
         const double minimumScale = .30;
-        if (cue.FitMethod is not ("piper-length-scale" or "piper-atempo")
+        if (cue.FitMethod is not ("piper-length-scale" or "piper-atempo" or "vieneu-natural" or "vieneu-atempo")
             || !double.IsFinite(cue.BaseLengthScale) || cue.BaseLengthScale <= 0
             || !double.IsFinite(cue.LengthScale) || !double.IsFinite(relativeScale) || relativeScale < minimumScale || relativeScale > 1.20
             || cue.SourceFrames <= 0 || cue.GeneratedFrames <= 0 || cue.GeneratedFrames > cue.Frames
@@ -46,7 +64,9 @@ internal sealed partial class LocalTtsService
             || (naturalSample && cue.TimingSource != "sample"))
             throw new InvalidDataException("Voice không có metadata nhịp đọc Piper hợp lệ; không nhận master này.");
         if (cue.NativeReferenceFrames <= 0 || !double.IsFinite(cue.ActualSpeedFactor)
-            || cue.ActualSpeedFactor < 1 || cue.ActualSpeedFactor > 100
+            || (isVieneu
+                ? cue.ActualSpeedFactor < VieneuMinTempoFactor - 1e-9 || cue.ActualSpeedFactor > VieneuMaxFactorFor(targetFrames)
+                : cue.ActualSpeedFactor < 1 || cue.ActualSpeedFactor > 100)
             || (sentenceGroup
                 ? cue.GroupNativeFrames != cue.NativeReferenceFrames
                 : cue.GroupNativeFrames != 0
@@ -55,12 +75,21 @@ internal sealed partial class LocalTtsService
         if (cue.SynthesisAttempts == 1
             && (cue.LengthScale != cue.BaseLengthScale
                 || Math.Abs(cue.RawDuration - cue.SourceFrames / (double)sampleRate) > 1e-9
-                || (!sentenceGroup && cue.NativeReferenceFrames != cue.GeneratedFrames)))
+                // 30/09 (vụ cue5 VieNeu im oan): atempo ngay lượt 1 chỉ xảy ra
+                // khi không có vòng scale (VieNeu) — native != generated ở record
+                // tempo là trung thực. Miễn CHỈ cho vieneu-atempo; Piper giữ
+                // nghiêm byte-for-byte như cũ (với Piper là unreachable).
+                || (!sentenceGroup && !(isVieneu && cue.FitMethod == atempoMethod) && cue.NativeReferenceFrames != cue.GeneratedFrames)))
             throw new InvalidDataException("Voice lượt tự nhiên không có metadata Piper gốc hợp lệ.");
         if (tempoFallback
             ? cue.TempoInputFrames != cue.SourceFrames - cue.TrimmedSilenceFrames
-                || cue.TempoInputFrames <= cue.GeneratedFrames || !double.IsFinite(cue.TempoFactor)
-                || cue.TempoFactor <= 1
+                || (isVieneu
+                    ? cue.TempoInputFrames <= 0
+                    : cue.TempoInputFrames <= cue.GeneratedFrames)
+                || !double.IsFinite(cue.TempoFactor)
+                || (isVieneu
+                    ? cue.TempoFactor < VieneuMinTempoFactor - 1e-9 || cue.TempoFactor > VieneuMaxFactorFor(targetFrames)
+                    : cue.TempoFactor <= 1)
                 || Math.Abs(cue.TempoInputFrames / (double)cue.GeneratedFrames - cue.TempoFactor) > 1e-9
                 || cue.TempoAttempts is < 1 or > 6
             : cue.TempoFactor != 0 || cue.TempoInputFrames != 0 || cue.TempoAttempts != 0
@@ -73,7 +102,8 @@ internal sealed partial class LocalTtsService
     private static void ValidateSentenceGroupWindows(
         IReadOnlyList<TtsWorkerCue> actual,
         IReadOnlyList<TtsCueManifest> expected,
-        int sampleRate)
+        int sampleRate,
+        bool isVieneu)
     {
         for (var first = 0; first < actual.Count;)
         {
@@ -117,8 +147,10 @@ internal sealed partial class LocalTtsService
                 generatedFrames = checked(generatedFrames + actual[item].GeneratedFrames);
             }
             var measuredSpeed = actual[first].GroupNativeFrames / (double)generatedFrames;
+            var speedLow = isVieneu ? VieneuMinTempoFactor - 1e-9 : 1.0;
+            var speedHigh = isVieneu ? VieneuMaxFactorFor(groupEnd - groupStart) : 100.0;
             if (Math.Abs(measuredSpeed - actual[first].ActualSpeedFactor) > 1e-9
-                || measuredSpeed < 1 || measuredSpeed > 100)
+                || measuredSpeed < speedLow || measuredSpeed > speedHigh)
                 throw new InvalidDataException("Nhóm câu TTS vượt giới hạn tốc độ đọc rõ.");
             first = last + 1;
         }

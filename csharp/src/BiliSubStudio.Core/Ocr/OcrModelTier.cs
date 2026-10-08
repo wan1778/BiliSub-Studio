@@ -1,21 +1,19 @@
 namespace BiliSubStudio.Core.Ocr;
 
-// Model tier per scan mode (2026-09-26): Accurate keeps Medium for maximum
-// fidelity; Balanced/Fast run Small (2.8x cheaper per image on field
-// hardware, dialogue-equivalent output — A/B 2026-09-26 on 30 real frames:
-// identical on every real dialogue line, diffs only on noise scraps the
-// tracker filters downstream). Aliases mirror OcrCheckpointStore.ModeFor so
-// tier and sampling policy never disagree; unknown modes fall to Small like
-// ModeFor falls to Balanced.
+// Model tier per scan mode: Accurate keeps Medium for maximum fidelity,
+// untouched; Balanced/Fast run Mobile (nhỏ nhất, theo lệnh user 28/09).
+// Aliases mirror OcrCheckpointStore.ModeFor so tier and sampling policy never
+// disagree; unknown modes fall to Mobile like ModeFor falls to Balanced.
+// Checkpoint key ăn tên model nên đổi tier là checkpoint cũ vô hiệu (quét mới).
 internal static class OcrModelTier
 {
     public static string DetectionModel(string scanMode) =>
-        IsAccurate(scanMode) ? OcrInstaller.DetectionModel : OcrInstaller.SmallDetectionModel;
+        IsAccurate(scanMode) ? OcrInstaller.DetectionModel : OcrInstaller.MobileDetectionModel;
 
     public static string RecognitionModel(string scanMode) =>
-        IsAccurate(scanMode) ? OcrInstaller.RecognitionModel : OcrInstaller.SmallRecognitionModel;
+        IsAccurate(scanMode) ? OcrInstaller.RecognitionModel : OcrInstaller.MobileRecognitionModel;
 
-    public static string TierName(string scanMode) => IsAccurate(scanMode) ? "medium" : "small";
+    public static string TierName(string scanMode) => IsAccurate(scanMode) ? "medium" : "mobile";
 
     private static bool IsAccurate(string? scanMode)
     {

@@ -256,9 +256,19 @@ public sealed partial class VideoPage : Page
 
         try
         {
-            var snapshot = await _application.Settings.SetOutputDirectoryAsync(outputDirectory);
+            // Vụ kẹt nút Tải media 05/10: kiểm tra thư mục không được treo
+            // quá 30 giây (kẹt là nhả nút + báo rõ, cấm kẹt câm khóa nút).
+            StatusText.Text = "Đang kiểm tra thư mục lưu...";
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            var snapshot = await _application.Settings.SetOutputDirectoryAsync(outputDirectory, timeout.Token);
             outputDirectory = snapshot.Config.OutputDirectory;
             OutputPathBox.Text = outputDirectory;
+        }
+        catch (OperationCanceledException)
+        {
+            StatusText.Text = "Kiểm tra thư mục lưu quá 30 giây, đã hủy để không kẹt nút. Hãy thử lại.";
+            _log.Warning("Media", "Kiểm tra thư mục lưu quá thời gian 30 giây, đã hủy submit.");
+            return;
         }
         catch (Exception error)
         {

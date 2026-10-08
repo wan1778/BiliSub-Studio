@@ -27,8 +27,22 @@ internal sealed class LocalTtsInstaller : IDisposable
     internal const string ConfigSha256 = "971f57f8d504223fee5b40d664f503cf769baf7db21f7d2ae0554a75d07de2f8";
     internal const string TimingAlgorithm = "whole-cue-piper-natural-first-v17";
     internal const string VoiceRevision = ModelRevision + ":" + ConfigSha256 + ":" + TimingAlgorithm;
-    internal static readonly IReadOnlyList<string> AvailableVoices = Array.AsReadOnly(new[] { Voice });
+    internal static readonly IReadOnlyList<string> AvailableVoices = Array.AsReadOnly(
+        TtsVoiceCatalog.VoiceOptions.Select(option => option.Tag).ToArray());
     internal static string CanonicalVoiceId(string voice) => voice.Trim().ToLowerInvariant().Replace('-', '_');
+
+    // VieNeu v3 Turbo pilot (engine thứ 2, chạy song song NGHI): GPU bắt buộc,
+    // 25 preset. C# giữ label gốc có dấu; worker khớp không phân biệt hoa/thường.
+    internal const string VieneuEngine = "vieneu-tts";
+    internal const string VieneuEngineVersion = "vieneu-v3-turbo-1";
+    internal const string VieneuModelRevision = "61b85e3d937fbbacb387714180e8182823512523";
+    internal const string VieneuTimingAlgorithm = "whole-cue-vieneu-natural-first-v1";
+    internal const string VieneuVoiceRevision = VieneuModelRevision + ":" + VieneuTimingAlgorithm;
+    internal const string VieneuPackages = "torch==2.8.0+cu128;torchaudio==2.8.0+cu128;transformers==4.57.6;vieneu==3.8.3;soxr==1.1.0;numpy==2.2.6;vietnormalizer==0.2.3";
+    internal const string VieneuCudaIndex = "https://download.pytorch.org/whl/cu128";
+    // Preset labels/merchandising live in TtsVoiceCatalog (single source for
+    // UI + installer + worker); installer only adds canonical matching.
+    internal static bool IsVieneuVoice(string voice) => TtsVoiceCatalog.IsVieneuVoice(voice);
     internal static readonly IReadOnlyList<TtsModelFile> ModelFiles = Array.AsReadOnly(new[]
     {
         new TtsModelFile("ngoc_huyen.onnx", 63_516_050, ModelRevision, "12HNgJmBY3GiNCcFBRpHxYFv-qbE-jEv7"),
@@ -57,6 +71,13 @@ internal sealed class LocalTtsInstaller : IDisposable
     private string Worker => Path.Combine(Root, "worker.py");
     private string BundledWorker => Path.Combine(AppContext.BaseDirectory, "Assets", "TTS", "worker.py");
     private string ModelRoot => Path.Combine(Root, "Models", "nghi-vi-" + ModelRevision[..12]);
+    private string VieneuRuntimeRoot => Path.Combine(Root, "runtime-vieneu");
+    private string VieneuVenvRoot => Path.Combine(VieneuRuntimeRoot, "venv");
+    private string VieneuPython => Path.Combine(VieneuVenvRoot, "Scripts", "python.exe");
+    private string VieneuRuntimeManifest => Path.Combine(VieneuRuntimeRoot, "install-vieneu.json");
+    private string VieneuWorker => Path.Combine(Root, "worker-vieneu.py");
+    private string VieneuBundledWorker => Path.Combine(AppContext.BaseDirectory, "Assets", "TTS", "worker-vieneu.py");
+    private string VieneuModelRoot => Path.Combine(Root, "vieneu-models");
 
     public LocalTtsStatus Status
     {
@@ -77,7 +98,8 @@ internal sealed class LocalTtsInstaller : IDisposable
     {
         voice = CanonicalVoiceId(string.IsNullOrWhiteSpace(voice) ? Voice : voice);
         if (!AvailableVoices.Contains(voice, StringComparer.Ordinal))
-            throw new InvalidDataException($"Giọng {voice} chưa có model NGHI được xác minh.");
+            throw new InvalidDataException($"Giọng {voice} chưa có model được xác minh.");
+        if (IsVieneuVoice(voice)) return await PrepareVieneuAsync(job, voice, progressCeiling);
         progressCeiling = Math.Clamp(progressCeiling, 1, 98);
         double Progress(double value) => Math.Clamp(value, 0, 100) / 100d * progressCeiling;
         await _gate.WaitAsync(job.CancellationToken);
@@ -123,6 +145,46 @@ internal sealed class LocalTtsInstaller : IDisposable
         finally { _gate.Release(); }
     }
 
+    // VieNeu pilot: venv torch-cu128 + SDK + models HF (rev đã pin) riêng biệt,
+    // không đụng runtime Piper. GPU bắt buộc (worker fail-fast nếu không CUDA).
+    public async Task<LocalTtsRuntime> PrepareVieneuAsync(AppJob job, string voice, double progressCeiling = 98)
+    {
+        voice = CanonicalVoiceId(voice);
+        if (!IsVieneuVoice(voice)) throw new InvalidDataException($"Giọng {voice} không phải preset VieNeu.");
+        progressCeiling = Math.Clamp(progressCeiling, 1, 98);
+        double Progress(double value) => Math.Clamp(value, 0, 100) / 100d * progressCeiling;
+        await _gate.WaitAsync(job.CancellationToken);
+        try
+        {
+            _lastError = null;
+            Directory.CreateDirectory(Root);
+            var worker = await EnsureWorkerVieneuAsync(job.CancellationToken);
+            if (!VieneuRuntimeMatches())
+            {
+                job.Set("tts-python", Progress(2), "Đang kiểm tra runtime VieNeu local (torch CUDA + SDK)...");
+                Directory.CreateDirectory(VieneuRuntimeRoot);
+                var managed = await _pythonBootstrap.EnsurePrivatePythonAsync(VieneuVenvRoot, job.CancellationToken);
+                var arguments = new List<string> { "pip", "install", "--python", managed.Python, "--no-python-downloads", "--no-config",
+                    "--extra-index-url", VieneuCudaIndex };
+                arguments.AddRange(VieneuPackages.Split(';'));
+                var install = await _processes.RunAsync(managed.Uv, arguments, job.CancellationToken, managed.Environment);
+                if (install.ExitCode != 0) throw new InvalidOperationException("Cài runtime VieNeu: " + install.StandardError.Trim());
+                var verify = await _processes.RunAsync(managed.Python,
+                    ["-I", "-X", "utf8", "-c", "import importlib.metadata as m,torch;from vieneu import Vieneu;import soxr,numpy;from vietnormalizer import VietnameseNormalizer;assert torch.cuda.is_available(),'no CUDA';assert m.version('torch')=='2.8.0+cu128';assert m.version('torchaudio')=='2.8.0+cu128';assert m.version('transformers')=='4.57.6';assert m.version('vieneu')=='3.8.3';assert m.version('soxr')=='1.1.0';assert m.version('numpy')=='2.2.6';assert m.version('vietnormalizer')=='0.2.3';print('vieneu-ok')"],
+                    job.CancellationToken, managed.Environment);
+                if (verify.ExitCode != 0) throw new InvalidOperationException("Runtime VieNeu không vượt kiểm tra: " + verify.StandardError.Trim());
+            }
+            if (!VieneuRuntimeMatches()) await WriteVieneuManifestAsync(worker, job.CancellationToken);
+            await EnsureVieneuModelsAsync(voice, job, Progress);
+            if (!VieneuStatusReady()) throw new InvalidOperationException(VieneuLastError() ?? "Voice VieNeu chưa hoàn chỉnh sau khi cài.");
+            job.Set("tts-ready", Progress(99), $"Preset VieNeu {voice} đã xác minh, sẵn sàng tạo speech local (GPU).");
+            return new LocalTtsRuntime(VieneuPython, worker, VieneuModelRoot, VieneuBackboneConfig(),
+                new Dictionary<string, string?> { ["HF_HOME"] = VieneuModelRoot, ["HF_HUB_OFFLINE"] = "1", ["TRANSFORMERS_OFFLINE"] = "1" }, 22050);
+        }
+        catch (Exception error) when (error is not OperationCanceledException) { _lastError = error.Message; throw; }
+        finally { _gate.Release(); }
+    }
+
     private async Task<string> EnsureWorkerAsync(CancellationToken cancellationToken)
     {
         if (!File.Exists(BundledWorker)) throw new FileNotFoundException("Thiếu worker NGHI-TTS đã đóng gói.", BundledWorker);
@@ -135,6 +197,131 @@ internal sealed class LocalTtsInstaller : IDisposable
         }
         return Worker;
     }
+
+    private async Task<string> EnsureWorkerVieneuAsync(CancellationToken cancellationToken)
+    {
+        if (!File.Exists(VieneuBundledWorker)) throw new FileNotFoundException("Thiếu worker VieNeu đã đóng gói.", VieneuBundledWorker);
+        var sourceHash = await HashAsync(VieneuBundledWorker, cancellationToken);
+        if (!File.Exists(VieneuWorker) || await HashAsync(VieneuWorker, cancellationToken) != sourceHash)
+        {
+            var temporary = VieneuWorker + ".tmp-" + Guid.NewGuid().ToString("N");
+            try { File.Copy(VieneuBundledWorker, temporary); File.Move(temporary, VieneuWorker, overwrite: true); }
+            finally { TryDelete(temporary); }
+        }
+        return VieneuWorker;
+    }
+
+    private bool VieneuRuntimeMatches()
+    {
+        try
+        {
+            if (!VieneuRuntimeEnvironmentMatches() || !File.Exists(VieneuWorker) || !File.Exists(VieneuBundledWorker)) return false;
+            var manifest = JsonSerializer.Deserialize<RuntimeInstallManifest>(File.ReadAllText(VieneuRuntimeManifest), Json);
+            return manifest is not null && manifest.WorkerSha256 == HashFile(VieneuWorker)
+                && manifest.WorkerSha256 == HashFile(VieneuBundledWorker);
+        }
+        catch { return false; }
+    }
+
+    private bool VieneuRuntimeEnvironmentMatches()
+    {
+        try
+        {
+            if (!File.Exists(VieneuPython) || !File.Exists(VieneuRuntimeManifest)) return false;
+            var manifest = JsonSerializer.Deserialize<RuntimeInstallManifest>(File.ReadAllText(VieneuRuntimeManifest), Json);
+            return manifest is not null && manifest.Schema == 3 && manifest.Python == OcrInstaller.PythonVersion
+                && manifest.Packages == VieneuPackages && manifest.EngineVersion == VieneuEngineVersion;
+        }
+        catch { return false; }
+    }
+
+    private async Task WriteVieneuManifestAsync(string worker, CancellationToken cancellationToken)
+    {
+        var manifest = new RuntimeInstallManifest(3, OcrInstaller.PythonVersion, VieneuEngineVersion, VieneuPackages, await HashAsync(worker, cancellationToken));
+        var temporary = VieneuRuntimeManifest + ".tmp-" + Guid.NewGuid().ToString("N");
+        try
+        {
+            await File.WriteAllTextAsync(temporary, JsonSerializer.Serialize(manifest, Json) + "\n", new UTF8Encoding(false), cancellationToken);
+            File.Move(temporary, VieneuRuntimeManifest, overwrite: true);
+        }
+        finally { TryDelete(temporary); }
+    }
+
+    private string VieneuBackboneConfig() => Path.Combine(VieneuModelRoot, "hub",
+        "models--pnnbao-ump--VieNeu-TTS-v3-Turbo", "snapshots", VieneuModelRevision, "update", "config.json");
+
+    private string VieneuBackboneWeights() => Path.Combine(VieneuModelRoot, "hub",
+        "models--pnnbao-ump--VieNeu-TTS-v3-Turbo", "snapshots", VieneuModelRevision, "update", "model.safetensors");
+
+    // Cache HF dùng symlink: FileInfo.Length chỉ đọc metadata của link (luôn 0).
+    // Mở handle đọc mới ra size thật của blob đích.
+    private static long EffectiveFileLength(string path)
+    {
+        try { using var stream = File.OpenRead(path); return stream.Length; }
+        catch { return -1; }
+    }
+
+    // Model HF (rev đã pin B0/B1: tải được không token). SDK tự resolve cache;
+    // installer chỉ verify backbone + 1 synth smoke test giọng yêu cầu (đồng
+    // thời prefetch file giọng đó nếu thiếu). Thiếu -> throw rõ, không chạy mù.
+    private async Task EnsureVieneuModelsAsync(string voice, AppJob job, Func<double, double> progress)
+    {
+        Directory.CreateDirectory(VieneuModelRoot);
+        var weights = VieneuBackboneWeights();
+        if (!File.Exists(weights) || EffectiveFileLength(weights) < 100_000_000)
+        {
+            job.Set("tts-model", progress(35), "Đang tải backbone VieNeu v3 Turbo (~250MB)...");
+            var fetch = await _processes.RunAsync(VieneuPython,
+                ["-I", "-X", "utf8", "-c", "from vieneu import Vieneu; v=Vieneu(); print(len(v.list_preset_voices()))"],
+                job.CancellationToken,
+                new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase) { ["HF_HOME"] = VieneuModelRoot });
+            if (fetch.ExitCode != 0) throw new IOException("Tải model VieNeu: " + fetch.StandardError.Trim());
+        }
+        if (!File.Exists(weights) || EffectiveFileLength(weights) < 100_000_000
+            || !File.Exists(VieneuBackboneConfig()))
+            throw new InvalidDataException("Backbone VieNeu chưa đầy đủ sau khi tải.");
+        // 30/09 (vụ file 0 byte): cache HF toàn symlink; FileInfo.Length KHÔNG
+        // đi qua link nên luôn đọc 0 -> EffectiveFileLength mở handle đọc size thật.
+        // Hỏng file nào báo đúng tên file đó.
+        foreach (var small in new[] { "config.json", "tokenizer.json", "tokenizer_config.json", "special_tokens_map.json" })
+        {
+            var path = Path.Combine(Path.GetDirectoryName(VieneuBackboneConfig())!, small);
+            if (!File.Exists(path) || EffectiveFileLength(path) <= 0)
+                throw new InvalidDataException($"Model VieNeu thiếu nội dung: {small} (0 byte); xóa cache HF của file đó rồi thử lại.");
+        }
+        job.Set("tts-model", progress(60), $"Đang kiểm tra preset giọng {voice} trên GPU...");
+        var smoke = await _processes.RunAsync(VieneuPython,
+            ["-I", "-X", "utf8", "-c",
+             "import sys,unicodedata\n" +
+             "from vieneu import Vieneu\n" +
+             "v=Vieneu()\n" +
+             "def fold(s):\n" +
+             " o=[]\n" +
+             " for ch in (s or '').strip().replace('Đ','D').replace('đ','d'):\n" +
+             "  d=unicodedata.normalize('NFD',ch)\n" +
+             "  for p in d:\n" +
+             "   o.append('' if unicodedata.category(p)=='Mn' else ('_' if p in (' ','-') else p.lower()))\n" +
+             " return ''.join(o)\n" +
+             "want=sys.argv[1].strip()\n" +
+             "slug=want[7:] if want.lower().startswith('vieneu_') else want\n" +
+             "voices=list(v.list_preset_voices())\n" +
+             "label=next((l for _,l in voices if fold(l)==fold(slug)),None)\n" +
+             "assert label,'unknown preset: '+want\n" +
+             "a=v.infer('Xin chào.',voice=label,apply_watermark=False)\n" +
+             "assert len(a)>1000\n" +
+             "print('voice-ok')", voice],
+            job.CancellationToken,
+            new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase) { ["HF_HOME"] = VieneuModelRoot });
+        if (smoke.ExitCode != 0) throw new InvalidDataException($"Preset VieNeu {voice} không chạy được trên GPU: " + smoke.StandardError.Trim());
+    }
+
+    private bool VieneuStatusReady()
+    {
+        try { return VieneuRuntimeMatches() && File.Exists(VieneuBackboneWeights()); }
+        catch { return false; }
+    }
+
+    private string? VieneuLastError() => _lastError;
 
     private bool RuntimeMatches()
     {

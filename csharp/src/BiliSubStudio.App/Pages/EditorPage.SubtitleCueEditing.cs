@@ -172,6 +172,7 @@ public sealed partial class EditorPage
     {
         ClearVoiceTrackState();
         if (_project is null) return;
+        if (_project.Tts is not null) WriteVoiceRevokedMarker("cue-edit");
         _project = _project with
         {
             Tts = null,

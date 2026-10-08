@@ -3,10 +3,11 @@ using BiliSubStudio.Core.Ocr;
 
 namespace BiliSubStudio.Core.ContractTests;
 
-// Scan-mode to model-tier mapping (2026-09-26): only Accurate-family modes
-// run Medium; everything else (Balanced default, Fast, unknown) runs Small.
-// Aliases must mirror OcrCheckpointStore.ModeFor so sampling policy and model
-// tier never disagree about which mode is which.
+// Scan-mode to model-tier mapping: only Accurate-family modes run Medium
+// (untouched); everything else (Balanced default, Fast, unknown) runs Mobile
+// nhỏ nhất (28/09, theo lệnh user). Aliases must mirror
+// OcrCheckpointStore.ModeFor so sampling policy and model tier never disagree
+// about which mode is which.
 internal static class OcrModelTierContract
 {
     public static Task RunAsync()
@@ -32,9 +33,9 @@ internal static class OcrModelTierContract
         }
         foreach (var mode in new[] { "balanced", "fast", "nhanh", "BALANCED", "unknown-mode", "", "   " })
         {
-            Check(Det(mode) == "PP-OCRv6_small_det", $"sparse mode lost Small det: '{mode}'");
-            Check(Rec(mode) == "PP-OCRv6_small_rec", $"sparse mode lost Small rec: '{mode}'");
-            Check(Tier(mode) == "small", $"sparse tier name drifted: '{mode}'");
+            Check(Det(mode) == "PP-OCRv5_mobile_det", $"sparse mode lost Mobile det: '{mode}'");
+            Check(Rec(mode) == "PP-OCRv5_mobile_rec", $"sparse mode lost Mobile rec: '{mode}'");
+            Check(Tier(mode) == "mobile", $"sparse tier name drifted: '{mode}'");
         }
         return Task.CompletedTask;
     }

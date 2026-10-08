@@ -15,6 +15,7 @@ internal static class OcrTextCleanupContract
         KeepRealShortDialogue();
         EmptyStaysEmpty();
         DropPhantomFlashCue();
+        KeepTightSingleCharDialogue();
         KeepFlickerPiecesForMerge();
         KeepIsolatedShortDialogue();
         KeepOneSidedShortDialogue();
@@ -113,6 +114,21 @@ internal static class OcrTextCleanupContract
         Check(result.Cues[0].Text.StartsWith("患有", StringComparison.Ordinal)
             && result.Cues[1].Text.StartsWith("龙王", StringComparison.Ordinal),
             "2 cue thật phải còn nguyên");
+    }
+
+    private static void KeepTightSingleCharDialogue()
+    {
+        // 27/09 (vụ lọc mất 1 chữ): thoại 1 chữ chen nhanh ("嗯", kẹp 2 bên
+        // gap 0.05s, khác chữ, tin 0.5) KHÔNG phải flash — flash thật (cue 55)
+        // nhồi ~30 chữ vào 0.43s (bất khả thi vật lý), còn đây 1 chữ/0.3s là
+        // mật độ thoại bình thường -> giữ.
+        var result = OcrTextCleanup.Cleanup([
+            Cue(10.0, 11.0, "今天天气不错"),
+            Cue(11.05, 11.35, "嗯"),
+            Cue(11.40, 12.40, "我们走吧"),
+        ]);
+        Check(result.Cues.Count == 3, "thoại 1 chữ kẹp sát phải giữ");
+        Check(result.PhantomsDropped == 0, "không được nuốt thoại 1 chữ mật độ thường");
     }
 
     private static void KeepFlickerPiecesForMerge()

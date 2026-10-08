@@ -1241,12 +1241,12 @@ internal static class Program
 
     private static Task EditorVoiceMixContractAsync()
     {
-        var method = typeof(VideoEditorService).GetMethod("BuildVoiceAudioFilter", BindingFlags.Static | BindingFlags.NonPublic)
+        var method = typeof(VideoEditorService).GetMethod("BuildVoiceAudioFilter", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public)
             ?? throw new InvalidOperationException("missing unified voice audio graph");
         var track = new EditorVoiceTrack("voice.flac", 0, 60, .9);
         string Graph(EditorAudioSettings audio) => (string)method.Invoke(null, [audio, track, 1, 0d])!;
         var keep = Graph(new EditorAudioSettings("keep", 1));
-        True(keep.Contains("[0:a]asetpts=PTS-STARTPTS[sourcea]", StringComparison.Ordinal), "keep+voice lost source audio");
+        True(keep.Contains("[0:a]asetpts=PTS-STARTPTS,aresample=async=1:min_hard_comp=0.100:first_pts=0[sourcea]", StringComparison.Ordinal), "keep+voice lost source audio or timestamp sanitizer");
         True(keep.Contains("[sourcea][voicea]amix=inputs=2", StringComparison.Ordinal), "keep+voice did not mix source and TTS");
         var duck = Graph(new EditorAudioSettings("duck", .35));
         True(duck.Contains("volume=0.350", StringComparison.Ordinal) && duck.Contains("amix=inputs=2", StringComparison.Ordinal), "duck+voice graph drift");

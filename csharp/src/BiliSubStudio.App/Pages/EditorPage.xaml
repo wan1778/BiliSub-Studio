@@ -335,6 +335,11 @@
 
                                 <Border Style="{StaticResource CardBorderStyle}" Padding="12">
                                     <StackPanel Spacing="8">
+                                        <Grid ColumnSpacing="8" VerticalAlignment="Center">
+                                            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                            <TextBlock Text="Hiện phụ đề" FontSize="11" FontWeight="SemiBold" Foreground="{ThemeResource PrimaryTextBrush}" VerticalAlignment="Center" ToolTipService.ToolTip="Bật/tắt hiển thị phụ đề trên Preview và video xuất"/>
+                                            <ToggleSwitch x:Name="SubtitleVisibilityToggle" Grid.Column="1" IsOn="True" Toggled="SubtitleVisibility_Toggled" OffContent="" OnContent="" MinWidth="0" VerticalAlignment="Center" HorizontalAlignment="Right"/>
+                                        </Grid>
                                         <TextBlock Text="SRT VIỆT" FontSize="10" FontWeight="SemiBold" Foreground="{ThemeResource MutedTextBrush}"/>
                                         <TextBlock Text="Nạp SRT Việt để tạo voice hoặc xuất video. Giữ nguyên số thứ tự và timecode; không cần SRT Trung hay AI dịch." Style="{StaticResource MutedTextStyle}" FontSize="10" Foreground="{ThemeResource MutedTextBrush}" TextWrapping="Wrap" LineHeight="14"/>
                                         <Button x:Name="ImportSrtButton" Click="ImportSubtitle_Click" Content="📄  Thêm SRT Việt" HorizontalAlignment="Stretch" MinHeight="38" FontWeight="SemiBold" Background="{ThemeResource AccentPrimaryBrush}" Foreground="White" BorderThickness="0" CornerRadius="8"/>
@@ -583,7 +588,7 @@
                                         <!-- Giọng đọc compact -->
                                         <Grid ColumnSpacing="6" VerticalAlignment="Center">
                                             <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                                            <ComboBox x:Name="VoiceModelBox" MinHeight="36" Height="36" Padding="8,0" SelectedIndex="0" VerticalAlignment="Center">
+                                            <ComboBox x:Name="VoiceModelBox" MinHeight="36" Height="36" Padding="8,0" SelectedIndex="0" VerticalAlignment="Center" SelectionChanged="VoiceModelBox_SelectionChanged">
                                                 <ComboBoxItem Tag="ngoc_huyen" Content="Ngọc Huyền · NGHI local"/>
                                             </ComboBox>
                                             <StackPanel x:Name="VoiceSampleSlot" Grid.Column="1" VerticalAlignment="Center" Orientation="Horizontal" Spacing="0"/>
@@ -591,15 +596,19 @@
                                         <!-- metadata chips single row -->
                                         <StackPanel Orientation="Horizontal" Spacing="4">
                                             <Border Padding="5,2" CornerRadius="5" Background="{ThemeResource StrongSurfaceBrush}" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="1"><TextBlock Text="Local" FontSize="9" Foreground="{ThemeResource SecondaryTextBrush}"/></Border>
-                                            <Border Padding="5,2" CornerRadius="5" Background="{ThemeResource StrongSurfaceBrush}" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="1"><TextBlock Text="NGHI-TTS" FontSize="9" Foreground="{ThemeResource SecondaryTextBrush}"/></Border>
-                                            <Border Padding="5,2" CornerRadius="5" Background="{ThemeResource StrongSurfaceBrush}" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="1"><TextBlock Text="ONNX" FontSize="9" Foreground="{ThemeResource SecondaryTextBrush}"/></Border>
+                                            <Border Padding="5,2" CornerRadius="5" Background="{ThemeResource StrongSurfaceBrush}" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="1"><TextBlock x:Name="VoiceEngineChipText" Text="NGHI-TTS" FontSize="9" Foreground="{ThemeResource SecondaryTextBrush}"/></Border>
+                                            <Border Padding="5,2" CornerRadius="5" Background="{ThemeResource StrongSurfaceBrush}" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="1"><TextBlock x:Name="VoiceRuntimeChipText" Text="ONNX" FontSize="9" Foreground="{ThemeResource SecondaryTextBrush}"/></Border>
                                             <Border x:Name="VoiceSampleRateChip" Padding="5,2" CornerRadius="5" Background="{ThemeResource StrongSurfaceBrush}" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="1"><TextBlock x:Name="VoiceSampleRateText" Text="22050 Hz" FontSize="9" Foreground="{ThemeResource SecondaryTextBrush}"/></Border>
                                             <TextBlock Text="Nguyên câu" FontSize="9" Foreground="{ThemeResource AccentPrimaryBrush}" VerticalAlignment="Center" Margin="4,0,0,0" ToolTipService.ToolTip="Model ưu tiên đọc lại nguyên cue theo nhịp nguồn; cue quá chật sẽ nén nhịp có giữ cao độ, không cắt chữ cuối hay chia theo khoảng nghỉ"/>
                                         </StackPanel>
-                                        <!-- main action button: Tạo voice / Hủy -->
+                                        <!-- main action button: Tạo voice / (Tạm dừng + Hủy khi đang chạy) -->
                                         <Grid>
                                             <Button x:Name="GenerateTtsButton" Click="GenerateTts_Click" Content="✦  Tạo voice và tự canh timecode" IsEnabled="False" HorizontalAlignment="Stretch" MinHeight="36" Height="36" CornerRadius="8" FontWeight="SemiBold" Background="{ThemeResource AccentPrimaryBrush}" Foreground="White" BorderThickness="0"/>
-                                            <Button x:Name="CancelVoiceButton" Click="CancelVoice_Click" Content="Hủy tạo voice" HorizontalAlignment="Stretch" MinHeight="36" Height="36" CornerRadius="8" Visibility="Collapsed" Style="{StaticResource DangerButtonStyle}"/>
+                                            <Grid x:Name="VoiceBusyButtons" Visibility="Collapsed" ColumnSpacing="8">
+                                                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                                <Button x:Name="PauseVoiceButton" Click="PauseVoice_Click" Content="Tạm dừng" HorizontalAlignment="Stretch" MinHeight="36" Height="36" CornerRadius="8" Style="{StaticResource SecondaryButtonStyle}"/>
+                                                <Button x:Name="CancelVoiceButton" Grid.Column="1" Click="CancelVoice_Click" Content="Hủy" HorizontalAlignment="Stretch" MinHeight="36" Height="36" CornerRadius="8" Style="{StaticResource DangerButtonStyle}"/>
+                                            </Grid>
                                         </Grid>
                                         <!-- The percentage mirrors the current ASR/TTS job's progress. -->
                                         <StackPanel x:Name="VoiceProgressContainer" Spacing="5" Visibility="Collapsed">
@@ -610,6 +619,20 @@
                                             </Grid>
                                             <TextBlock x:Name="VoiceStatusText" Style="{StaticResource MutedTextStyle}" Text="Chọn giọng rồi tạo voice." TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" FontSize="10" Foreground="{ThemeResource SecondaryTextBrush}"/>
                                         </StackPanel>
+                                        <Rectangle Height="1" Fill="{ThemeResource BorderBrush}" Opacity="0.5"/>
+                                        <!-- voice gain compact -->
+                                        <Grid ColumnSpacing="8" VerticalAlignment="Center">
+                                            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                            <TextBlock Text="Âm lượng voice" FontSize="11" FontWeight="SemiBold" Foreground="{ThemeResource PrimaryTextBrush}" VerticalAlignment="Center" ToolTipService.ToolTip="Tăng/giảm âm lượng track voice — áp dụng cho Preview/Export"/>
+                                            <TextBlock x:Name="VoiceGainValueText" Grid.Column="1" Text="100%" FontSize="11" FontWeight="SemiBold" Foreground="{ThemeResource AccentPrimaryBrush}" VerticalAlignment="Center" MinWidth="42" TextAlignment="Right"/>
+                                        </Grid>
+                                        <Slider x:Name="VoiceGainSlider" Minimum="0" Maximum="200" Value="100" StepFrequency="1" TickFrequency="25" SnapsTo="StepValues" ValueChanged="VoiceGain_ValueChanged"/>
+                                        <Grid ColumnSpacing="6">
+                                            <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
+                                            <TextBlock Text="0% · Tắt" FontSize="9" Foreground="{ThemeResource MutedTextBrush}"/>
+                                            <TextBlock Grid.Column="1" Text="100% · Gốc" FontSize="9" Foreground="{ThemeResource MutedTextBrush}" HorizontalAlignment="Center"/>
+                                            <TextBlock Grid.Column="2" Text="200% · Tăng" FontSize="9" Foreground="{ThemeResource MutedTextBrush}" HorizontalAlignment="Right"/>
+                                        </Grid>
                                         <Rectangle Height="1" Fill="{ThemeResource BorderBrush}" Opacity="0.5"/>
                                         <!-- caption compact -->
                                         <Grid ColumnSpacing="8" VerticalAlignment="Center">

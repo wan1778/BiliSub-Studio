@@ -33,6 +33,11 @@ public static class OcrTextCleanup
     // Miễn phantom hẹp (18/09): cue đọc RẤT chắc thì không phải chớp-nháy —
     // bảo vệ thoại ngắn thật ("ừm", "hả", "ĐI"). Ngưỡng cũ giữ nguyên cho
     // cue mờ (rác flicker thường tin thấp).
+    // Miễn phantom theo mật độ đọc (27/09, vụ lọc mất 1 chữ): flash artifact
+    // nhồi chục chữ vào <0.5s (cue 55: ~30 chữ/0.43s = bất khả thi vật lý);
+    // thoại ngắn thật ("嗯" 1 chữ/0.3s, sub nhanh ~10 chữ/s) mật độ bình
+    // thường -> giữ. Chỉ cue mật độ bất khả thi mới đáng gọi chớp-nháy.
+    public const double PhantomMinDensityRunesPerSecond = 12.0;
 
     public sealed record CleanupResult(
         IReadOnlyList<OcrCue> Cues, int Merged, int FragmentsDropped, int PhantomsDropped);
@@ -46,6 +51,9 @@ public static class OcrTextCleanup
         if (cue is null || cue.Text is null) return false;
         if (cue.Confidence >= PhantomExemptConfidence) return false;
         if (!(cue.End - cue.Start < PhantomMaxDuration)) return false;
+        var runes = OcrTemporalFilter.Normalize(cue.Text).EnumerateRunes().Count();
+        var duration = Math.Max(cue.End - cue.Start, 0.001);
+        if (runes <= 0 || runes / duration < PhantomMinDensityRunesPerSecond) return false;
         var gapBefore = prev is null ? double.PositiveInfinity : cue.Start - prev.End;
         var gapAfter = next is null ? double.PositiveInfinity : next.Start - cue.End;
         // KẸP CẢ 2 BÊN mới là chớp-nháy (18/09: sửa && thành || — cũ xóa oan

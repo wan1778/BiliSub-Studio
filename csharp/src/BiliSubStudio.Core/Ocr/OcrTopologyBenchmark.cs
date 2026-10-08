@@ -12,13 +12,25 @@ internal static class OcrTopologyBenchmark
     internal const int SmallTierMaxWorkers = 4;
     // VRAM free còn lại sau pool small ấm mới được grow (đo thật +100MB/worker
     // idle, +~380MB lúc inference batch4 — bar 1GB dư biên ~2x).
-    internal const long SmallTierGrowReserveBytes = 1L * 1024 * 1024 * 1024;
+    // 28/09 KHẨN: 16 lane NVDEC (~1.2GB) + 4 worker OOM trên card 4GB (storm
+    // 16:18, kẹt 0.01×, VRAM còn 61MB) — nâng bar lên 3GB để small-tier KHÔNG
+    // bao giờ grow trên card 4GB: về behaviour 2 worker ổn định đã chạy xong
+    // 11222 cue. Tính toán ngân sách VRAM theo lane (NVDEC/lane) làm sau khi
+    // máy ổn định, không mổ benchmark lúc này.
+    internal const long SmallTierGrowReserveBytes = 3L * 1024 * 1024 * 1024;
 
     internal static int SmallTierWorkerTarget(int lanes) =>
         Math.Min(SmallTierMaxWorkers, Math.Max(1, lanes));
 
+    // Chỉ grow khi lane <= 8 (28/09: 16 lane NVDEC ~1.2GB VRAM + 4 worker là
+    // tràn card 4GB dù lúc commit còn trống — storm 16:18, kẹt 0.01×. Tổng việc
+    // OCR không tăng theo lane (lane chia đoạn, worker mới là nút cổ chai) nên
+    // 16 lane + 2 worker vẫn xong như 8 lane, chỉ chậm hơn grow; đổi lại sống.)
+    internal const int SmallTierMaxGrowLanes = 8;
+
     internal static bool ShouldGrowSmallTier(bool telemetryAvailable, long availableBytes, int currentWorkers, int lanes) =>
         telemetryAvailable
+        && lanes <= SmallTierMaxGrowLanes
         && availableBytes >= SmallTierGrowReserveBytes
         && currentWorkers < SmallTierWorkerTarget(lanes);
 

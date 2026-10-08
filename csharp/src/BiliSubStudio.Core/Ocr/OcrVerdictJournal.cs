@@ -4,8 +4,9 @@ using System.Text;
 namespace BiliSubStudio.Core.Ocr;
 
 // Nhật ký verdict giám khảo VLM (spec khóa 16/09): 1 entry/ca đã chấm.
-// Nằm CẠNH video (<video>.ocr-verdicts.json), fallback Data/Verdicts/<sha>.json
-// khi không ghi được cạnh video. Không thuộc checkpoint (key/resume không đụng).
+// 28/09 (user cấm file cạnh video): verdict ghi vào Data/Verdicts/<sha>.json,
+// KHÔNG bao giờ cạnh video nữa. Alongside chỉ còn để ĐỌC di sản (migration),
+// Save luôn appdata. Không thuộc checkpoint (key/resume không đụng).
 // Câu đổi chữ/giờ thì entry cũ khớp hụt (vô hại) — verdict hết hiệu lực tự nhiên.
 // Xóa file là quên hết verdict (làm lại).
 public sealed record OcrCueVerdict(
@@ -36,6 +37,24 @@ public static class OcrVerdictJournal
                 SHA256.HashData(Encoding.UTF8.GetBytes(videoPath))).ToLowerInvariant();
             return Path.Combine(appDataDir, "Verdicts", digest[..16] + ".temporal-verdicts.json");
         }
+    }
+
+    // Vị trí chuẩn mới: Data app, đặt tên theo digest video (không bao giờ cạnh
+    // video). Mọi Save sau 28/09 dùng đường này.
+    public static string AppDataPath(string videoPath, string appDataDir)
+    {
+        var digest = Convert.ToHexStringLower(
+            SHA256.HashData(Encoding.UTF8.GetBytes(videoPath))).ToLowerInvariant();
+        var root = string.IsNullOrWhiteSpace(appDataDir) ? "Verdicts" : appDataDir;
+        return Path.Combine(root, "Verdicts", digest[..16] + ".temporal-verdicts.json");
+    }
+
+    // Đọc di sản: appdata trước (sự thật mới), cạnh video sau (file cũ còn sót
+    // vẫn cho cache hit, tới lần Save sau thì nằm appdata).
+    public static IReadOnlyList<OcrCueVerdict> LoadAny(string appDataPath, string alongsidePath)
+    {
+        var entries = Load(appDataPath);
+        return entries.Count > 0 ? entries : Load(alongsidePath);
     }
 
     public static IReadOnlyList<OcrCueVerdict> Load(string path)

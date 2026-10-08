@@ -18,8 +18,10 @@ public sealed class OcrManager : IAsyncDisposable
     private readonly List<Task> _retiredInference = [];
     private string _deviceMode = "auto";
     private string _activeMode = string.Empty;
-    // Model tier đang chạy trong pool (2026-09-26): Accurate = Medium,
-    // Balanced/Fast = Small. Mặc định Medium (hành vi cũ); đổi tier là rebuild.
+    // Model tier đang chạy trong pool: Accurate = Medium, Balanced/Fast =
+    // Mobile (28/09; trước đó Small). Mặc định Medium (hành vi cũ); đổi tier
+    // là rebuild. Mobile nhẹ hơn Small nên mọi luật small-tier (grow cap 4,
+    // OOM backstop) áp dụng nguyên.
     private string _activeDetModel = OcrInstaller.DetectionModel;
     private string _activeRecModel = OcrInstaller.RecognitionModel;
     // OOM backstop cho grow small-tier (26/09): 2 death không kế hoạch liên
@@ -31,8 +33,10 @@ public sealed class OcrManager : IAsyncDisposable
     private bool _smallGrowSuppressed;
 
     private bool IsSmallTierActiveLocked() =>
-        string.Equals(_activeDetModel, OcrInstaller.SmallDetectionModel, StringComparison.Ordinal)
-        && string.Equals(_activeRecModel, OcrInstaller.SmallRecognitionModel, StringComparison.Ordinal);
+        (string.Equals(_activeDetModel, OcrInstaller.SmallDetectionModel, StringComparison.Ordinal)
+        && string.Equals(_activeRecModel, OcrInstaller.SmallRecognitionModel, StringComparison.Ordinal))
+        || (string.Equals(_activeDetModel, OcrInstaller.MobileDetectionModel, StringComparison.Ordinal)
+        && string.Equals(_activeRecModel, OcrInstaller.MobileRecognitionModel, StringComparison.Ordinal));
 
     // Tier-aware worker cap (26/09): Small được tới 4 (model nhẹ), các tier
     // khác giữ luật WorkerTarget cũ. Mọi clamp (configure/resume/grow) đi qua

@@ -6,8 +6,8 @@ namespace BiliSubStudio.Core.ContractTests;
 
 // Vá cửa sổ voice (23/09): mảnh timecode hẹp (<0.15s) không giọng nào đọc vừa
 // nên worker giữ im lặng oan. Chỉ gộp mảnh trùng Y HỆT vào câu lành kề và nới
-// mảnh hẹp vào khoảng im kề; không đụng chữ, không lấn câu khác, không đổi
-// thứ tự, không sửa danh sách gốc.
+// mảnh hẹp vào khoảng im PHẢI (07/10: cấm lùi Start sớm hơn giờ sub); không
+// đụng chữ, không lấn câu khác, không đổi thứ tự, không sửa danh sách gốc.
 internal static class VoiceWindowRepairContract
 {
     [ModuleInitializer]
@@ -125,15 +125,16 @@ internal static class VoiceWindowRepairContract
         Check(repaired[0].End == 102.1, "nới phải chừa khoảng im, tối đa +2s");
     }
 
-    // Mảnh hở với câu trước thì nới lùi vào khoảng im (không lấn câu trước).
+    // Mảnh hở với câu trước thì GIỮ NGUYÊN Start (07/10: cấm nới lùi sớm
+    // hơn giờ sub) — chỉ nới phải khi có khe sau, không thì worker xử lý.
     private static void BackwardExtended()
     {
         var repaired = Repair([
             Cue("prev", 50.0, 51.0, "Câu trước."),
             Cue("sliver", 51.5, 51.6, "Ừ."),
         ]);
-        Check(repaired.Count == 2, "nới lùi không được gộp/ném câu");
-        Check(repaired[1].Start == 51.05 && repaired[1].End == 51.6, "mảnh phải nới lùi tới sát câu trước");
+        Check(repaired.Count == 2, "không nới lùi không được gộp/ném câu");
+        Check(repaired[1].Start == 51.5 && repaired[1].End == 51.6, "mảnh phải giữ nguyên Start giờ sub, worker xử lý");
         Check(repaired[0].Start == 50.0 && repaired[0].End == 51.0, "câu trước không được đụng");
     }
 
