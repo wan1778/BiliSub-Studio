@@ -524,7 +524,7 @@ class VoiceDurationContract(unittest.TestCase):
         self.assertIn("cue.Clipped is not false", service)
         self.assertIn("ReadClipFrames(cue.ClipPath, expectedSampleRate) != cue.Frames", service)
         self.assertIn("await HashAsync(cue.ClipPath, cancellationToken) != cue.ClipSha256", service)
-        self.assertIn("ValidateNativeSynthesis(cue, targetFrames, naturalSample, expectedSampleRate)", service)
+        self.assertIn("ValidateNativeSynthesis(cue, targetFrames, naturalSample, expectedSampleRate, IsVieneuVoice(voice))", service)
         self.assertIn('cue.Start, cue.End, "srt-fallback"', service)
         whole = service.split("internal static TtsCueManifest BuildWholeCue", 1)[1].split(
             "private static string ResolveVoice", 1)[0]
