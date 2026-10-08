@@ -73,19 +73,21 @@ require("before.Length != expectedSize" in subtitle_fingerprint
         "VOICE-15 canonical SRT fingerprint must validate size/timestamp/SHA before restore")
 
 speech = project_store.split("private static EditorSpeechProject? NormalizeSpeech(", 1)[1].split(
-    "private static EditorTtsProject? NormalizeTts", 1
+    " static EditorTtsProject? NormalizeTts", 1
 )[0]
 require("!File.Exists(analysisPath)" in speech
         and "!FileShaMatches(analysisPath, speech.AnalysisSha256)" in speech,
         "VOICE-15 Whisper reopen validity must include analysis existence and SHA")
 
-tts = project_store.split("private static EditorTtsProject? NormalizeTts(", 1)[1].split(
+tts = project_store.split(" static EditorTtsProject? NormalizeTts(", 1)[1].split(
     "private static IReadOnlyDictionary<string, string> NormalizeVoiceOverrides", 1
 )[0]
 for token in (
-    "CurrentTtsEngine",
+    "LocalTtsInstaller.Engine",
     "LocalTtsInstaller.EngineVersion",
     "LocalTtsInstaller.Voice",
+    "LocalTtsInstaller.VieneuEngine",
+    "LocalTtsInstaller.VieneuEngineVersion",
 ):
     require(token in tts, f"VOICE-15 TTS reopen lost pinned runtime/profile check: {token}")
 require("!File.Exists(manifest)" in tts
