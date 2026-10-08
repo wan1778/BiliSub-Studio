@@ -98,11 +98,13 @@ require('Jobs.Create("editor-tts", cleanupAwareCancel: true)' in application,
         "TTS jobs must wait for cleanup")
 require('"-I", "-X", "utf8", runtime.Worker' in service, "isolated Python requires explicit UTF-8")
 for marker in ("SamePath(reportedResult, resultPath)", "SamePath(result.Master.Path, expectedMaster)",
-               "result.Cues.Count != expectedCues.Count", "result.VoiceRevision != LocalTtsInstaller.VoiceRevision",
+               "result.Cues.Count != expectedCues.Count", "result.VoiceRevision != VoiceRevisionFor(voice)",
                "await HashAsync(expectedMaster, cancellationToken) != result.Master.Sha256",
                'GetInt(audioStreams[0], "channels") != 1', "Math.Abs(actualDuration - duration) > .05"):
     require(marker in service, "result validation missing " + marker)
-require("_voiceTrack = result.VoiceTrack;" in editor and "QueuePreviewRefresh();" in editor,
+require(("_voiceTrack = result.VoiceTrack;" in editor
+        or "_voiceTrack = result.VoiceTrack with { Gain = _voiceGain };" in editor)
+        and "QueuePreviewRefresh();" in editor,
         "validated master must reach processed preview")
 progress_panel = xaml.split('x:Name="VoiceProgressContainer"', 1)[1].split("</StackPanel>", 1)[0]
 progress_row = re.search(r'<Grid ColumnSpacing="8">.*?</Grid>', progress_panel, re.S)
