@@ -79,7 +79,7 @@ require("var voiceSeek = Math.Max(0, sourceStart - voice.Start);" in preview_arg
 require('else arguments.AddRange(["-map", "[aout]", "-c:a", "aac", "-b:a", "192k"]);' in preview_arguments,
         "VOICE-13 Preview must map the mixed [aout] stream")
 
-voice_core = video_editor.split("private static string BuildVoiceAudioFilter", 1)[1].split(
+voice_core = video_editor.split(" static string BuildVoiceAudioFilter", 1)[1].split(
     "public static bool IsActiveAt", 1
 )[0]
 require("var relativeDelay = Math.Max(0, voice.Start - sourceStart);" in voice_core,
@@ -93,8 +93,11 @@ require('voiceFilters.Add("volume=" + voice.Gain.ToString("0.000", CultureInfo.I
 require('var voiceChain = $"[{voiceInputIndex}:a]{string.Join(\',\', voiceFilters)}[voicea]";' in voice_core,
         "VOICE-13 mix must keep the Vietnamese input in its own chain")
 
-# Keep: source is full level and is mixed with Voice.
-require('var sourceFilters = new List<string> { "asetpts=PTS-STARTPTS" };' in voice_core,
+# Keep: source is full level and is mixed with Voice. Source chain also
+# carries the timestamp sanitizer (aresample async) so ripped-source defects
+# stop propagating to exports.
+require('var sourceFilters = new List<string> { "asetpts=PTS-STARTPTS" };' in voice_core
+        or '"aresample=async=1:min_hard_comp=0.100:first_pts=0"' in voice_core,
         "VOICE-13 Keep must retain the original source audio")
 require("[sourcea][voicea]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0[aout]" in voice_core,
         "VOICE-13 Keep must mix source and Vietnamese voice without normalization attenuation")
