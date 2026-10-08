@@ -42,7 +42,8 @@ tts_poll = editor.split("private async Task PollTtsJobAsync()", 1)[1].split(
 )[0]
 require("snapshot.Result is EditorTtsResult result" in tts_poll,
         "VOICE-12 Preview may only promote a successful TTS result")
-require("_voiceTrack = result.VoiceTrack;" in tts_poll,
+require("_voiceTrack = result.VoiceTrack;" in tts_poll
+        or "_voiceTrack = result.VoiceTrack with { Gain = _voiceGain };" in tts_poll,
         "VOICE-12 completed Vietnamese master must become the Preview owner")
 require("Tts = new EditorTtsProject(" in tts_poll
         and "await SaveProjectNowAsync();" in tts_poll,
