@@ -284,7 +284,7 @@ def main() -> int:
             "OCR checkpoint cannot be exported as an explicitly partial recovery SRT")
     require("AutoSaveDirectoryBox" in page_xaml and "ChooseAutoSaveFolder_Click" in page_xaml and
             "OCR hoàn tất sẽ tự lưu SRT" in page_xaml and "IFolderPickerService" in page and
-            "SetOcrOutputDirectoryAsync" in page and "ExportCurrentSrtAsync(autoSaveDirectory, recovery: false)" in page and
+            "SetOcrOutputDirectoryAsync" in page and "ExportCurrentSrtAsync(autoSaveDirectory, recovery: false, exportRequest: request)" in page and
             "Đã quét xong và tự lưu SRT" in page,
             "OCR page does not expose and persist a dedicated auto-save folder or export final SRT automatically")
     require('path + ".tmp-" + Guid.NewGuid().ToString("N")' in application and
