@@ -173,6 +173,48 @@
                                 <TextBlock FontSize="10" Foreground="{ThemeResource MutedTextBrush}" Text="OCR hoàn tất sẽ tự lưu SRT vào thư mục đã chọn." TextWrapping="Wrap" />
                             </StackPanel>
                         </Border>
+                        <Border Style="{StaticResource CardBorderStyle}">
+                            <StackPanel Spacing="8">
+                                <Grid>
+                                    <TextBlock Style="{StaticResource CardTitleStyle}" Text="Hàng chờ OCR" />
+                                    <Border HorizontalAlignment="Right" Padding="8,3" Background="{ThemeResource AccentSoftBrush}" CornerRadius="9"><TextBlock x:Name="QueueCountText" FontSize="10" Foreground="{ThemeResource AccentPrimaryBrush}" Text="Trống" /></Border>
+                                </Grid>
+                                <TextBlock Style="{StaticResource MutedTextStyle}" Text="Chọn video + chỉnh ROI/chế độ từng video rồi bấm Thêm. Chạy hàng chờ sẽ quét nối tiếp, lỗi bỏ qua chạy tiếp, xong tự lưu SRT từng video." TextWrapping="Wrap" />
+                                <StackPanel Orientation="Horizontal" Spacing="7">
+                                    <Button x:Name="QueueAddButton" Click="QueueAdd_Click" Content="Thêm video đang chọn" Style="{StaticResource SecondaryButtonStyle}" />
+                                    <Button x:Name="QueueRunButton" Click="QueueRun_Click" Content="Chạy hàng chờ" />
+                                    <Button x:Name="QueueStopButton" Click="QueueStop_Click" Content="Dừng sau mục này" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />
+                                    <Button x:Name="QueueClearButton" Click="QueueClear_Click" Content="Dọn mục xong" Style="{StaticResource SecondaryButtonStyle}" />
+                                </StackPanel>
+                                <ListView
+                                    x:Name="QueueList"
+                                    MaxHeight="220"
+                                    ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                    ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                    AutomationProperties.Name="Danh sách hàng chờ OCR">
+                                    <ListView.ItemTemplate>
+                                        <DataTemplate>
+                                            <StackPanel Spacing="2" Padding="0,4">
+                                                <TextBlock Style="{StaticResource BodyTextStyle}" Text="{Binding DisplayName}" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{Binding VideoPath}" />
+                                                <TextBlock FontSize="10" Foreground="{ThemeResource MutedTextBrush}" Text="{Binding SetupSummary}" />
+                                                <Grid ColumnSpacing="8">
+                                                    <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                                                    <TextBlock FontSize="10" Foreground="{ThemeResource AccentPrimaryBrush}" Text="{Binding StatusText}" VerticalAlignment="Center" />
+                                                    <ProgressBar Grid.Column="1" Minimum="0" Maximum="100" Value="{Binding Progress}" VerticalAlignment="Center" />
+                                                </Grid>
+                                                <TextBlock FontSize="10" Foreground="{ThemeResource MutedTextBrush}" Text="{Binding Message}" TextWrapping="Wrap" />
+                                            </StackPanel>
+                                        </DataTemplate>
+                                    </ListView.ItemTemplate>
+                                </ListView>
+                                <StackPanel Orientation="Horizontal" Spacing="7">
+                                    <Button x:Name="QueueUpButton" Click="QueueUp_Click" Content="Lên" Style="{StaticResource SecondaryButtonStyle}" />
+                                    <Button x:Name="QueueDownButton" Click="QueueDown_Click" Content="Xuống" Style="{StaticResource SecondaryButtonStyle}" />
+                                    <Button x:Name="QueueRemoveButton" Click="QueueRemove_Click" Content="Xóa mục" Style="{StaticResource DangerButtonStyle}" />
+                                    <TextBlock x:Name="QueueStatusText" VerticalAlignment="Center" FontSize="10" Foreground="{ThemeResource MutedTextBrush}" Text="Mỗi video giữ ROI/chế độ riêng lúc thêm." />
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
                     </StackPanel>
                 </ScrollViewer>
             </Grid>

@@ -119,6 +119,7 @@ internal static class Program
         ("OCR sparse-mode steady refinement stays bounded with edges kept", OcrSparseRefinementContract.RunAsync),
         ("OCR auto benchmark refines ceiling into free 12/14-class lanes", OcrTopologyRefineContract.RunAsync),
         ("OCR checkpoint resume tolerates segment float drift", OcrCheckpointResumeContract.RunAsync),
+        ("OCR scan queue runs videos FIFO with per-video setup and skip-on-fail", OcrScanQueueContract.RunAsync),
         ("concurrent OCR worker crashes preserve diagnostics and recover both requests", OcrWorkerRecoveryContract.RunAsync),
         ("terminal lane death never poisons the shared worker pool channel for siblings", OcrWorkerPoolPoisonContract.RunAsync),
         ("lane recovery skips rebuild while pool usable and reuse stays off", OcrPoolUsableContract.RunAsync),

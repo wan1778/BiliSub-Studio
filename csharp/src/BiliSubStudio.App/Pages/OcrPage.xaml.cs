@@ -8,6 +8,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
+using System.Collections.ObjectModel;
 using Windows.Foundation;
 using Windows.Media.Core;
 using Windows.Media.Playback;
@@ -29,6 +30,11 @@ public sealed partial class OcrPage : Page
     private OcrScanRequest? _activeRequest;
     private bool _cancelInProgress;
     private bool _listening;
+    // Hàng chờ OCR (09/10): quét nhiều video nối tiếp, mỗi video giữ setup
+    // riêng lúc thêm, lỗi bỏ qua chạy tiếp, chỉ sống trong phiên app.
+    private readonly OcrScanQueue _ocrQueue = new();
+    private readonly ObservableCollection<OcrQueueItem> _ocrQueueView = [];
+    private bool _queueRunning;
     private string? _listenProjectId;
     private IReadOnlyList<OcrCue> _cues = [];
     // Dòng đang hiển thị = dòng pipeline chung (OcrExportRow: Start/End/Text
@@ -83,6 +89,8 @@ public sealed partial class OcrPage : Page
             Services.StartupDiagnostics.Write("ocr-unloaded", $"cues={_cues.Count} player={_player is not null} job={_jobId is not null}");
             _player?.Pause();
         };
+        _ocrQueue.Changed += SyncQueueView;
+        QueueList.ItemsSource = _ocrQueueView;
         var judgeTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
         judgeTimer.Tick += (_, _) =>
         {
@@ -345,7 +353,7 @@ public sealed partial class OcrPage : Page
 
     private async void PickVideo_Click(object sender, RoutedEventArgs e)
     {
-        if (_jobId is not null)
+        if (_jobId is not null || _queueRunning)
         {
             StatusText.Text = "Đang quét OCR; hãy Tạm dừng hoặc Hủy trước khi đổi video.";
             return;
@@ -549,6 +557,11 @@ public sealed partial class OcrPage : Page
     private async void Scan_Click(object sender, RoutedEventArgs e)
     {
         if (_path is null || _media is null) return;
+        if (_queueRunning)
+        {
+            StatusText.Text = "Hàng chờ đang chạy; dùng nút Tạm dừng/Hủy hoặc Dừng sau mục này.";
+            return;
+        }
         if (string.Equals(Selected(SourceBox), "listen", StringComparison.Ordinal))
         {
             await StartListenAsync();
@@ -568,7 +581,239 @@ public sealed partial class OcrPage : Page
                 StatusText.Text = "Tiếp tục với ROI mới sửa: phần đã quét giữ nguyên, phần còn lại đọc theo khung mới.";
             }
         }
-        await StartScanAsync(request, startMode, regionOverride);
+        _ = await StartScanAsync(request, startMode, regionOverride);
+    }
+
+    // ---- Hàng chờ OCR (09/10): quét nhiều video nối tiếp, mỗi video giữ
+    // setup riêng lúc thêm (đường dẫn + ROI + chế độ + thiết bị + luồng).
+    // Lỗi bỏ qua chạy tiếp, chỉ sống trong phiên app, chỉ quét OCR.
+    private void SyncQueueView()
+    {
+        var selectedId = (QueueList.SelectedItem as OcrQueueItem)?.Id;
+        var same = _ocrQueueView.Count == _ocrQueue.Items.Count;
+        if (same)
+        {
+            for (var index = 0; index < _ocrQueueView.Count; index++)
+            {
+                if (!ReferenceEquals(_ocrQueueView[index], _ocrQueue.Items[index])) { same = false; break; }
+            }
+        }
+        if (!same)
+        {
+            _ocrQueueView.Clear();
+            foreach (var item in _ocrQueue.Items) _ocrQueueView.Add(item);
+            if (selectedId is { } id)
+            {
+                foreach (var item in _ocrQueueView)
+                {
+                    if (item.Id == id) { QueueList.SelectedItem = item; break; }
+                }
+            }
+        }
+        var waiting = _ocrQueue.WaitingCount;
+        var active = _ocrQueue.ActiveItem;
+        QueueCountText.Text = _ocrQueue.Items.Count == 0 ? "Trống"
+            : active is not null ? $"Đang quét · chờ {waiting}"
+            : waiting > 0 ? $"{waiting} đang chờ" : "Hết việc";
+        QueueRunButton.IsEnabled = !_queueRunning && waiting > 0;
+        QueueStopButton.IsEnabled = _queueRunning;
+    }
+
+    private OcrQueueItem? SelectedQueueItem() => QueueList.SelectedItem as OcrQueueItem;
+
+    private void QueueAdd_Click(object sender, RoutedEventArgs e)
+    {
+        if (_queueRunning)
+        {
+            StatusText.Text = "Hàng chờ đang chạy; không thêm lúc này để khỏi nhầm video đang quét.";
+            return;
+        }
+        if (_jobId is not null)
+        {
+            StatusText.Text = "Đang quét OCR; hãy Tạm dừng hoặc Hủy trước khi thêm vào hàng.";
+            return;
+        }
+        if (string.Equals(Selected(SourceBox), "listen", StringComparison.OrdinalIgnoreCase))
+        {
+            StatusText.Text = "Hàng chờ chỉ nhận quét OCR (mắt đọc), không nhận chế độ Nghe.";
+            return;
+        }
+        if (_path is null || _media is null)
+        {
+            StatusText.Text = "Chọn video + chỉnh ROI/chế độ trước, rồi bấm Thêm video đang chọn.";
+            return;
+        }
+        var item = _ocrQueue.Enqueue(
+            _path, ReadRegion(), Selected(ScanModeBox), Selected(DeviceBox), Selected(LanesBox), _media.Duration);
+        StatusText.Text = $"Đã thêm vào hàng chờ ({_ocrQueue.WaitingCount} chờ): {item.DisplayName} · {item.SetupSummary}.";
+    }
+
+    private async void QueueRun_Click(object sender, RoutedEventArgs e)
+    {
+        if (_queueRunning) return;
+        if (_jobId is not null)
+        {
+            StatusText.Text = "Đang quét dở; Tạm dừng/Hủy mục hiện tại trước khi chạy hàng chờ.";
+            return;
+        }
+        if (_ocrQueue.WaitingCount == 0 && _ocrQueue.ActiveItem is null)
+        {
+            StatusText.Text = "Hàng chờ trống; thêm video rồi bấm Chạy hàng chờ.";
+            return;
+        }
+        _queueRunning = true;
+        ScanButton.IsEnabled = false;
+        PickVideoButton.IsEnabled = false;
+        QueueAddButton.IsEnabled = false;
+        try
+        {
+            await RunQueueAsync();
+        }
+        catch (Exception error)
+        {
+            StatusText.Text = "Hàng chờ lỗi: " + error.Message;
+        }
+        finally
+        {
+            _queueRunning = false;
+            PickVideoButton.IsEnabled = true;
+            QueueAddButton.IsEnabled = true;
+            if (_jobId is null) RestoreIdleControls();
+            SyncQueueView();
+        }
+    }
+
+    private void QueueStop_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_queueRunning)
+        {
+            QueueStatusText.Text = "Hàng chờ không chạy.";
+            return;
+        }
+        _queueRunning = false;
+        QueueStatusText.Text = "Sẽ dừng sau khi mục đang chạy xong (Tạm dừng/Hủy để dừng ngay).";
+    }
+
+    private void QueueClear_Click(object sender, RoutedEventArgs e)
+    {
+        var removed = _ocrQueue.ClearFinished();
+        QueueStatusText.Text = removed > 0 ? $"Đã dọn {removed} mục xong/lỗi/hủy." : "Không có mục xong để dọn.";
+    }
+
+    private void QueueRemove_Click(object sender, RoutedEventArgs e)
+    {
+        var item = SelectedQueueItem();
+        if (item is null)
+        {
+            QueueStatusText.Text = "Chọn 1 mục trong hàng chờ rồi bấm Xóa.";
+            return;
+        }
+        if (!_ocrQueue.Remove(item.Id))
+            QueueStatusText.Text = "Không xóa được mục đang quét (dùng Hủy để dừng nó).";
+    }
+
+    private void QueueUp_Click(object sender, RoutedEventArgs e)
+    {
+        var item = SelectedQueueItem();
+        if (item is null || !_ocrQueue.MoveUp(item.Id))
+            QueueStatusText.Text = "Chỉ dời được mục đang chờ.";
+    }
+
+    private void QueueDown_Click(object sender, RoutedEventArgs e)
+    {
+        var item = SelectedQueueItem();
+        if (item is null || !_ocrQueue.MoveDown(item.Id))
+            QueueStatusText.Text = "Chỉ dời được mục đang chờ.";
+    }
+
+    private async Task RunQueueAsync()
+    {
+        while (_queueRunning)
+        {
+            var item = _ocrQueue.TakeNext();
+            if (item is null) break;
+            var position = 0;
+            var total = _ocrQueue.Items.Count;
+            foreach (var done in _ocrQueue.Items)
+            {
+                if (done.Status is OcrQueueItemStatus.Done
+                    or OcrQueueItemStatus.Failed
+                    or OcrQueueItemStatus.Cancelled) position++;
+            }
+            position++;
+            QueueStatusText.Text = $"Đang quét ({position}/{total}): {item.DisplayName}.";
+            MediaPreviewInfo media;
+            try
+            {
+                media = await _application.Media.ProbeAsync(item.VideoPath, CancellationToken.None);
+            }
+            catch (Exception error)
+            {
+                _ocrQueue.MarkFailed(item.Id, "Không đọc được video: " + error.Message);
+                continue;
+            }
+            item.Duration = media.Duration;
+            _path = item.VideoPath;
+            PathText.Text = _path;
+            _media = media;
+            _region = item.Region;
+            Timeline.Maximum = Math.Max(0.1, media.Duration);
+            Timeline.Value = 0;
+            try
+            {
+                await PreparePlayerAsync(_path, media.DirectCompatible);
+                MediaText.Text = $"{media.Width}×{media.Height} · {media.Duration:0.0}s · {media.Codec}";
+                await UpdateFrameAsync();
+                ApplyRegionVisual();
+            }
+            catch (Exception error)
+            {
+                item.Message = "Preview lỗi (vẫn quét): " + error.Message;
+            }
+            Timeline.IsEnabled = true;
+            var request = item.ToRequest();
+            var startMode = OcrScanStartMode.Fresh;
+            try
+            {
+                var checkpoint = await _application.InspectOcrCheckpointAsync(request, CancellationToken.None);
+                if (checkpoint.Exists) startMode = OcrScanStartMode.Resume;
+            }
+            catch { }
+            if (!_queueRunning)
+            {
+                item.Status = OcrQueueItemStatus.Waiting;
+                break;
+            }
+            var (end, exportedPath, detail) = await StartScanAsync(request, startMode, null, item);
+            switch (end)
+            {
+                case QueueScanEnd.Done:
+                    _ocrQueue.MarkDone(item.Id, exportedPath, string.IsNullOrWhiteSpace(detail) ? "Xong." : detail);
+                    break;
+                case QueueScanEnd.Failed:
+                    _ocrQueue.MarkFailed(item.Id, string.IsNullOrWhiteSpace(detail) ? "Quét lỗi (đã bỏ qua, chạy tiếp)." : detail);
+                    break;
+                case QueueScanEnd.Cancelled:
+                    _ocrQueue.MarkCancelled(item.Id, "Đã hủy.");
+                    _queueRunning = false;
+                    break;
+                default:
+                    _ocrQueue.MarkPaused(item.Id);
+                    item.Message = "Tạm dừng, checkpoint còn; bấm Chạy hàng chờ để tiếp tục.";
+                    _queueRunning = false;
+                    break;
+            }
+        }
+        var doneCount = 0;
+        var failedCount = 0;
+        foreach (var done in _ocrQueue.Items)
+        {
+            if (done.Status == OcrQueueItemStatus.Done) doneCount++;
+            else if (done.Status == OcrQueueItemStatus.Failed) failedCount++;
+        }
+        QueueStatusText.Text = $"Hàng chờ xong: {doneCount} video xong"
+            + (failedCount > 0 ? $" · {failedCount} lỗi đã bỏ qua" : "") + ".";
+        StatusText.Text = QueueStatusText.Text;
     }
 
     // Nghe riêng (Whisper-only): hiện trực tiếp % + giờ + chữ từ checkpoint,
@@ -864,7 +1109,7 @@ public sealed partial class OcrPage : Page
 
     private async void Restart_Click(object sender, RoutedEventArgs e)
     {
-        if (_path is null || _media is null || _jobId is not null) return;
+        if (_path is null || _media is null || _jobId is not null || _queueRunning) return;
         if (string.Equals(Selected(SourceBox), "listen", StringComparison.Ordinal))
         {
             // Nghe lại từ đầu: xóa sổ nghe + sub đã lưu, nghe lại thật sự mới.
@@ -893,7 +1138,7 @@ public sealed partial class OcrPage : Page
             var checkpoint = await _application.InspectOcrCheckpointAsync(request, CancellationToken.None);
             if (checkpoint.Exists) throw new IOException("Checkpoint OCR vẫn còn; chưa thể Quét lại từ đầu.");
             _checkpointRequest = null;
-            await StartScanAsync(BuildRequest(), OcrScanStartMode.Fresh);
+            _ = await StartScanAsync(BuildRequest(), OcrScanStartMode.Fresh);
         }
         catch (Exception error)
         {
@@ -903,7 +1148,17 @@ public sealed partial class OcrPage : Page
         }
     }
 
-    private async Task StartScanAsync(OcrScanRequest request, OcrScanStartMode startMode, OcrRegion? regionOverride = null)
+    // Kết thúc 1 lượt quét (dùng cho cả quét đơn và driver hàng chờ).
+    private enum QueueScanEnd
+    {
+        Done,
+        Failed,
+        Cancelled,
+        Paused,
+    }
+
+    private async Task<(QueueScanEnd End, string? ExportedPath, string? Detail)> StartScanAsync(
+        OcrScanRequest request, OcrScanStartMode startMode, OcrRegion? regionOverride = null, OcrQueueItem? queueItem = null)
     {
         var autoSaveDirectory = _ocrOutputDirectory;
         var resuming = startMode == OcrScanStartMode.Resume;
@@ -958,6 +1213,11 @@ public sealed partial class OcrPage : Page
             var snapshot = _application.Jobs.GetSnapshot(runningId);
             Progress.Value = snapshot.Progress;
             StatusText.Text = snapshot.Message;
+            if (queueItem is not null)
+            {
+                queueItem.Progress = snapshot.Progress;
+                queueItem.Message = snapshot.Message;
+            }
             if (snapshot.Result is OcrScanResult result)
             {
                 var safeProgress = SafeFrontierProgress(request, result.SafeFrontierSeconds, snapshot.Done);
@@ -1004,10 +1264,21 @@ public sealed partial class OcrPage : Page
                 _activeRequest = null;
                 _jobId = null;
                 RestoreIdleControls();
+                var end = QueueScanEnd.Failed;
+                string? exportedPath = null;
+                string? detail = snapshot.Error ?? snapshot.Message;
                 if (cancelled)
-                    ResetFreshUi("Đã hủy sạch: 0 Python worker · 0 FFmpeg/process tree · checkpoint đã xóa.");
+                {
+                    end = QueueScanEnd.Cancelled;
+                    detail = "Đã hủy sạch: 0 Python worker · 0 FFmpeg/process tree · checkpoint đã xóa.";
+                    ResetFreshUi(detail);
+                }
                 else if (paused)
+                {
+                    end = QueueScanEnd.Paused;
+                    detail = null;
                     ApplyCheckpointUi();
+                }
                 else if (failed)
                 {
                     var checkpoint = await _application.InspectOcrCheckpointAsync(request, CancellationToken.None);
@@ -1034,20 +1305,31 @@ public sealed partial class OcrPage : Page
                     try
                     {
                         var exported = await ExportCurrentSrtAsync(autoSaveDirectory, recovery: false);
+                        exportedPath = exported.Path;
                         var message = "Đã quét xong và tự lưu SRT: " + exported.Path;
                         if (exported.Warnings.Count > 0)
                             message += " · lưu ý: " + string.Join(" · ", exported.Warnings.Take(3));
                         StatusText.Text = message;
+                        detail = message;
+                        end = QueueScanEnd.Done;
                     }
                     catch (Exception error)
                     {
                         StatusText.Text = "OCR đã hoàn tất nhưng tự lưu SRT lỗi: " + error.Message;
+                        detail = StatusText.Text;
+                        end = QueueScanEnd.Done;
                     }
                 }
-                break;
+                if (queueItem is not null)
+                {
+                    queueItem.Progress = end == QueueScanEnd.Done ? 100 : queueItem.Progress;
+                    if (!string.IsNullOrWhiteSpace(detail)) queueItem.Message = detail;
+                }
+                return (end, exportedPath, detail);
             }
             await Task.Delay(400);
         }
+        return (QueueScanEnd.Cancelled, null, "Vòng quét kết thúc ngoài dự kiến.");
     }
 
     private static double SafeFrontierProgress(OcrScanRequest request, double frontierSeconds, bool done)
