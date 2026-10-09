@@ -82,6 +82,12 @@ for token in (
 # export must follow the scanned item (not whatever is on screen now).
 require("if (_jobId is not null && !_queueRunning)" in page,
         "QUEUE-01 PickVideo must stay available while the queue runs")
+require("OcrQueueItem? queueItem = null, bool queueMode = false" in page
+        and "queueMode: true" in page,
+        "QUEUE-01 queue scans must skip the single-scan control lockdown")
+require("PickVideoButton.IsEnabled = queueMode;" in page
+        and "ScanButton.IsEnabled = queueMode;" in page,
+        "QUEUE-01 setup controls must stay unlocked for queue scans")
 require("private OcrScanRequest? _queueActiveRequest;" in page
         and "_activeRequest ?? _checkpointRequest ?? _queueActiveRequest" in page,
         "QUEUE-01 cancel must target the running queue item")

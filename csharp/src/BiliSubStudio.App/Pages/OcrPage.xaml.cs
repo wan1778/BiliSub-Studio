@@ -565,6 +565,13 @@ public sealed partial class OcrPage : Page
         if (_path is null || _media is null) return;
         if (string.Equals(Selected(SourceBox), "listen", StringComparison.Ordinal))
         {
+            // Hàng chờ chỉ nhận quét OCR: đang queue mà gạt sang Nghe thì chặn
+            // để khỏi chồng job Nghe lên job quét.
+            if (_queueRunning)
+            {
+                StatusText.Text = "Hàng chờ chỉ quét OCR; gạt Nguồn chữ về Mắt đọc để cho video tiếp vào hàng.";
+                return;
+            }
             await StartListenAsync();
             return;
         }
@@ -762,7 +769,7 @@ public sealed partial class OcrPage : Page
                 item.Status = OcrQueueItemStatus.Waiting;
                 break;
             }
-            var (end, exportedPath, detail) = await StartScanAsync(request, startMode, null, item);
+            var (end, exportedPath, detail) = await StartScanAsync(request, startMode, null, item, queueMode: true);
             switch (end)
             {
                 case QueueScanEnd.Done:
@@ -1135,7 +1142,7 @@ public sealed partial class OcrPage : Page
     }
 
     private async Task<(QueueScanEnd End, string? ExportedPath, string? Detail)> StartScanAsync(
-        OcrScanRequest request, OcrScanStartMode startMode, OcrRegion? regionOverride = null, OcrQueueItem? queueItem = null)
+        OcrScanRequest request, OcrScanStartMode startMode, OcrRegion? regionOverride = null, OcrQueueItem? queueItem = null, bool queueMode = false)
     {
         var autoSaveDirectory = _ocrOutputDirectory;
         var resuming = startMode == OcrScanStartMode.Resume;
@@ -1171,17 +1178,20 @@ public sealed partial class OcrPage : Page
         var runningId = _application.StartOcrScan(request, startMode, regionOverride);
         _jobId = runningId;
         OcrScanResult? latestResult = null;
-        PickVideoButton.IsEnabled = false;
-        DeviceBox.IsEnabled = false;
-        ScanModeBox.IsEnabled = false;
+        // 09/10 vụ nút Chọn video xám khi hàng chạy: quét trong hàng thì KHÔNG
+        // khóa control setup (user setup video tiếp theo giữa chừng); quét đơn
+        // giữ nguyên khóa chặt như cũ. Chỉ khóa thứ nguy hiểm thật.
+        PickVideoButton.IsEnabled = queueMode;
+        DeviceBox.IsEnabled = queueMode;
+        ScanModeBox.IsEnabled = queueMode;
         SourceBox.IsEnabled = false;
-        LanesBox.IsEnabled = false;
+        LanesBox.IsEnabled = queueMode;
         PrepareOcrButton.IsEnabled = false;
-        ScanButton.IsEnabled = false;
+        ScanButton.IsEnabled = queueMode;
         RestartButton.Visibility = Visibility.Collapsed;
-        TestFrameButton.IsEnabled = false;
+        TestFrameButton.IsEnabled = queueMode;
         SelectRegionButton.IsOn = false;
-        SelectRegionButton.IsEnabled = false;
+        SelectRegionButton.IsEnabled = queueMode;
         PauseButton.IsEnabled = false;
         CancelButton.IsEnabled = true;
         CancelButton.Content = "Hủy";
