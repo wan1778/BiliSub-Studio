@@ -179,13 +179,7 @@
                                     <TextBlock Style="{StaticResource CardTitleStyle}" Text="Hàng chờ OCR" />
                                     <Border HorizontalAlignment="Right" Padding="8,3" Background="{ThemeResource AccentSoftBrush}" CornerRadius="9"><TextBlock x:Name="QueueCountText" FontSize="10" Foreground="{ThemeResource AccentPrimaryBrush}" Text="Trống" /></Border>
                                 </Grid>
-                                <TextBlock Style="{StaticResource MutedTextStyle}" Text="Chọn video + chỉnh ROI/chế độ từng video rồi bấm Thêm. Chạy hàng chờ sẽ quét nối tiếp, lỗi bỏ qua chạy tiếp, xong tự lưu SRT từng video." TextWrapping="Wrap" />
-                                <StackPanel Orientation="Horizontal" Spacing="7">
-                                    <Button x:Name="QueueAddButton" Click="QueueAdd_Click" Content="Thêm video đang chọn" Style="{StaticResource SecondaryButtonStyle}" />
-                                    <Button x:Name="QueueRunButton" Click="QueueRun_Click" Content="Chạy hàng chờ" />
-                                    <Button x:Name="QueueStopButton" Click="QueueStop_Click" Content="Dừng sau mục này" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" />
-                                    <Button x:Name="QueueClearButton" Click="QueueClear_Click" Content="Dọn mục xong" Style="{StaticResource SecondaryButtonStyle}" />
-                                </StackPanel>
+                                <TextBlock Style="{StaticResource MutedTextStyle}" Text="Setup video (chọn video + ROI + chế độ) rồi bấm Quét ở trên: video tự xuống đây và chạy nối tiếp. Đang quét vẫn chọn video khác setup tiếp, bấm Quét là nối vào hàng. Lỗi bỏ qua chạy tiếp, xong tự lưu SRT từng video." TextWrapping="Wrap" />
                                 <ListView
                                     x:Name="QueueList"
                                     MaxHeight="220"
@@ -211,7 +205,8 @@
                                     <Button x:Name="QueueUpButton" Click="QueueUp_Click" Content="Lên" Style="{StaticResource SecondaryButtonStyle}" />
                                     <Button x:Name="QueueDownButton" Click="QueueDown_Click" Content="Xuống" Style="{StaticResource SecondaryButtonStyle}" />
                                     <Button x:Name="QueueRemoveButton" Click="QueueRemove_Click" Content="Xóa mục" Style="{StaticResource DangerButtonStyle}" />
-                                    <TextBlock x:Name="QueueStatusText" VerticalAlignment="Center" FontSize="10" Foreground="{ThemeResource MutedTextBrush}" Text="Mỗi video giữ ROI/chế độ riêng lúc thêm." />
+                                    <Button x:Name="QueueClearButton" Click="QueueClear_Click" Content="Dọn mục xong" Style="{StaticResource SecondaryButtonStyle}" />
+                                    <TextBlock x:Name="QueueStatusText" VerticalAlignment="Center" FontSize="10" Foreground="{ThemeResource MutedTextBrush}" Text="Mỗi video giữ ROI/chế độ riêng lúc bấm Quét." />
                                 </StackPanel>
                             </StackPanel>
                         </Border>

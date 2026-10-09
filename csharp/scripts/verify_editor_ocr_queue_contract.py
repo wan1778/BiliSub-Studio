@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""OCR scan queue contract (09/10): multiple videos scan sequentially.
+"""OCR scan queue contract (09/10): one Scan button does everything.
 
-Gates the queue feature the user asked for: each video keeps its own setup
-(path + ROI + mode + device + lanes) captured at enqueue time, failure skips
-to the next video, queue lives only in the app session, scan mode only.
+User model (must stay simple): set up a video, press Quet, it drops into the
+queue below and processes sequentially. While it runs, picking another video,
+setting it up and pressing Quet appends it to the queue. Failure skips to the
+next video, session-only, scan mode only. No separate Add/Run/Stop buttons.
 """
 from __future__ import annotations
 
@@ -50,43 +51,49 @@ for token in (
 require("Status == OcrQueueItemStatus.Paused" in queue,
         "QUEUE-01 TakeNext must resume paused items before new waiting items")
 
-# Page driver: enqueue from current single-video state, sequential runner,
-# stop/pause/cancel semantics, per-item progress feed.
+# One-button model: Scan enqueues the current setup and ensures the driver.
 for token in (
-    "private readonly OcrScanQueue _ocrQueue = new();",
-    "private void SyncQueueView()",
-    "private void QueueAdd_Click",
-    "private async void QueueRun_Click",
     "private async Task RunQueueAsync()",
-    "private void QueueStop_Click",
-    "private void QueueClear_Click",
-    "private void QueueRemove_Click",
-    "private void QueueUp_Click",
-    "private void QueueDown_Click",
     "_ocrQueue.TakeNext()",
     "_ocrQueue.MarkFailed(item.Id,",
     "OcrQueueItem? queueItem = null",
+    "Tiếp tục mục tạm dừng",
+    "Đã cho vào hàng chờ",
+    "Video này đã có trong hàng chờ rồi",
+    "Video này đang quét trong hàng rồi.",
 ):
-    require(token in page, f"QUEUE-01 page driver lost: {token}")
+    require(token in page, f"QUEUE-01 one-button queue flow lost: {token}")
+
+# No separate Add/Run/Stop buttons may exist (user: too complicated).
+for token in (
+    "QueueAddButton",
+    "QueueRunButton",
+    "QueueStopButton",
+    "QueueAdd_Click",
+    "QueueRun_Click",
+    "QueueStop_Click",
+):
+    require(token not in page and token not in xaml,
+            f"QUEUE-01 separate queue button came back: {token}")
+
+# Setup-during-run: picking another video mid-queue must be allowed, and the
+# export must follow the scanned item (not whatever is on screen now).
+require("if (_jobId is not null && !_queueRunning)" in page,
+        "QUEUE-01 PickVideo must stay available while the queue runs")
+require("private OcrScanRequest? _queueActiveRequest;" in page
+        and "_activeRequest ?? _checkpointRequest ?? _queueActiveRequest" in page,
+        "QUEUE-01 cancel must target the running queue item")
+require("OcrScanRequest? exportRequest = null" in page
+        and "exportRequest: request" in page,
+        "QUEUE-01 auto-export must follow the scanned request")
 
 # Scan loop must report its ending so the driver can advance or stop.
 require("private enum QueueScanEnd" in page
         and "Task<(QueueScanEnd End, string? ExportedPath, string? Detail)> StartScanAsync(" in page,
         "QUEUE-01 StartScanAsync must return its ending for the queue driver")
 
-# Single-scan entry points must yield to a running queue (page state is shared).
+# Queue UI: list + reorder/remove/clear only.
 for token in (
-    "if (_jobId is not null || _queueRunning)",
-    'if (_path is null || _media is null || _jobId is not null || _queueRunning) return;',
-    'if (_queueRunning)\n        {\n            StatusText.Text = "Hàng chờ đang chạy;',
-):
-    require(token in page, f"QUEUE-01 single-scan guard lost: {token[:60]}")
-
-# Queue UI exists and binds per-item state.
-for token in (
-    'x:Name="QueueAddButton"',
-    'x:Name="QueueRunButton"',
-    'x:Name="QueueStopButton"',
     'x:Name="QueueClearButton"',
     'x:Name="QueueList"',
     'x:Name="QueueUpButton"',
