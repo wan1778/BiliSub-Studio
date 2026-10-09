@@ -78,9 +78,20 @@ public sealed partial class OcrPage : Page
         ApplyConfiguration();
         CueList.Loaded += (_, _) => AttachCueListScroll();
         Unloaded += (_, _) => DetachCueListScroll();
-        Unloaded += (_, _) => _player?.Pause();
+        Unloaded += (_, _) =>
+        {
+            Services.StartupDiagnostics.Write("ocr-unloaded", $"cues={_cues.Count} player={_player is not null} job={_jobId is not null}");
+            _player?.Pause();
+        };
         var judgeTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
-        judgeTimer.Tick += (_, _) => RefreshJudgeMarks();
+        judgeTimer.Tick += (_, _) =>
+        {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            RefreshJudgeMarks();
+            sw.Stop();
+            if (sw.ElapsedMilliseconds >= 1000)
+                Services.StartupDiagnostics.Write("judge-slow-tick", $"ms={sw.ElapsedMilliseconds:0} cues={_cues.Count}");
+        };
         judgeTimer.Start();
     }
 
@@ -151,6 +162,79 @@ public sealed partial class OcrPage : Page
         }
         await System.IO.File.WriteAllTextAsync(resultPath, string.Join(Environment.NewLine, report) + Environment.NewLine);
     }
+
+    // Test-only soak (chỉ chạy với flag --ocr-soak-video/--ocr-soak-out):
+    // dựng đúng trạng thái "OCR xong" như PickVideo + resume checkpoint mới nhất
+    // (player thật, cues authoritative, journal, timer) nhưng KHÔNG quét.
+    internal async Task<string> LoadSoakStateAsync(string videoPath)
+    {
+        try
+        {
+            _checkpointRequest = null;
+            _activeRequest = null;
+            _cues = [];
+            _visibleCues = [];
+            _authoritative = false;
+            _liveCues.Clear();
+            _nextCueRenderAt = default;
+            _userAtEnd = true;
+            CueList.Items.Clear();
+            CueCountText.Text = "0 câu";
+            CancelButton.IsEnabled = false;
+            ResetManualEdits();
+            _path = videoPath;
+            PathText.Text = videoPath;
+            _media = await _application.Media.ProbeAsync(videoPath, CancellationToken.None);
+            Timeline.Maximum = Math.Max(0.1, _media.Duration);
+            Timeline.Value = 0;
+            await PreparePlayerAsync(videoPath, _media.DirectCompatible);
+            MediaText.Text = $"{_media.Width}×{_media.Height} · {_media.Duration:0.0}s · {_media.Codec}";
+            await UpdateFrameAsync();
+            ApplyRegionVisual();
+            Timeline.IsEnabled = true;
+            var sameVideo = _application.FindOcrVideoCheckpoints(videoPath);
+            var newest = sameVideo.FirstOrDefault();
+            if (newest is null) return "SOAK-LOAD: no-checkpoint";
+            _region = newest.Region;
+            SelectValue(ScanModeBox, newest.Mode);
+            SelectValue(DeviceBox, newest.Device);
+            SelectValue(LanesBox, newest.Parallelism);
+            ApplyRegionVisual();
+            var checkpointRequest = BuildRequest();
+            var checkpoint = await _application.InspectOcrCheckpointAsync(checkpointRequest, CancellationToken.None);
+            if (!checkpoint.Exists) return "SOAK-LOAD: inspect-miss";
+            _checkpointRequest = checkpointRequest;
+            ApplyRecoverableCheckpointCues(checkpoint);
+            ApplyCheckpointUi();
+            await Task.Delay(3000);
+            var summary = $"SOAK-LOAD: cues={_cues.Count} authoritative={_authoritative} progress={checkpoint.ProgressPercent:0.0}";
+            var altPlayer = Services.StartupDiagnostics.SoakPlayerPath;
+            if (!string.IsNullOrWhiteSpace(altPlayer) && System.IO.File.Exists(altPlayer))
+            {
+                await PreparePlayerAsync(altPlayer, directCompatible: true);
+                summary += " +altplayer";
+            }
+            return summary;
+        }
+        catch (Exception error)
+        {
+            return "SOAK-LOAD-FAIL: " + error.Message + " | arglen=" + videoPath.Length
+                + " | exists=" + System.IO.File.Exists(videoPath)
+                + " | arg=" + videoPath;
+        }
+    }
+
+    // Test-only: quét Fresh thật trên video soak đã load (chế độ nhanh/cpu/4 lane
+    // cho xong trong vài phút). Trả Task để harness đảo tab giữa chừng.
+    internal Task StartSoakScanAsync()
+    {
+        SelectValue(ScanModeBox, "fast");
+        SelectValue(DeviceBox, "cpu");
+        SelectValue(LanesBox, "4");
+        return StartScanAsync(BuildRequest(), OcrScanStartMode.Fresh);
+    }
+
+    internal string LastSoakStatus() => StatusText.Text;
 
     private void AppendStressCues(int add)
     {

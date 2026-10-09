@@ -7,6 +7,8 @@ internal static class StartupDiagnostics
 {
     private const string SmokePrefix = "--startup-smoke-test=";
     private const string ListStressPrefix = "--ocr-list-stress=";
+    private const string SoakVideoPrefix = "--ocr-soak-video=";
+    private const string SoakOutPrefix = "--ocr-soak-out=";
     private static readonly object Sync = new();
     private static string? _logPath;
 
@@ -127,6 +129,34 @@ internal static class StartupDiagnostics
     }
 
     public static (int Count, string Path)? ListStressRequest { get; } = ResolveListStress(Environment.GetCommandLineArgs());
+
+    // Test-only soak: dựng đúng trạng thái "OCR xong" (player + checkpoint cues +
+    // journal + timer) rồi đảo tab để bắt crash chuyển tab. Chỉ chạy khi có cả 2 flag.
+    public static string? SoakVideoPath { get; } = ResolveFlagValue(Environment.GetCommandLineArgs(), SoakVideoPrefix);
+
+    public static string? SoakOutPath { get; } = ResolveFlagValue(Environment.GetCommandLineArgs(), SoakOutPrefix);
+
+    // Soak file-mất: player giữ file này, harness xóa trước khi đảo tab.
+    public static string? SoakPlayerPath { get; } = ResolveFlagValue(Environment.GetCommandLineArgs(), "--ocr-soak-player=");
+
+    public static bool SoakDeletePlayer { get; } =
+        string.Equals(ResolveFlagValue(Environment.GetCommandLineArgs(), "--ocr-soak-delete="), "1", StringComparison.OrdinalIgnoreCase);
+
+    // Soak quét-thật: chạy scan Fresh trên video soak (nhanh/cpu/4 lane) để bắt
+    // crash lúc đang quét + lúc Done/teardown.
+    public static bool SoakScan { get; } =
+        string.Equals(ResolveFlagValue(Environment.GetCommandLineArgs(), "--ocr-soak-scan="), "1", StringComparison.OrdinalIgnoreCase);
+
+    private static string? ResolveFlagValue(IEnumerable<string> args, string prefix)
+    {
+        foreach (var arg in args)
+        {
+            if (!arg.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue;
+            var value = arg[prefix.Length..].Trim().Trim('"');
+            return string.IsNullOrWhiteSpace(value) ? null : value;
+        }
+        return null;
+    }
 
     private static (int Count, string Path)? ResolveListStress(IEnumerable<string> args)
     {

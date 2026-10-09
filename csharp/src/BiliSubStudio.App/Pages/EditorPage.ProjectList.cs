@@ -83,6 +83,7 @@ public sealed partial class EditorPage
             _editorProjects.Clear();
             foreach (var summary in summaries) _editorProjects.Add(new EditorProjectListItem(summary));
             UpdateProjectListState();
+            Services.StartupDiagnostics.Write("editor-projects", $"n={_editorProjects.Count}");
             _ = LoadProjectThumbnailsAsync(_editorProjects.ToArray(), cancellation.Token);
         }
         catch (OperationCanceledException) { }
@@ -98,6 +99,7 @@ public sealed partial class EditorPage
 
     private async Task LoadProjectThumbnailsAsync(IReadOnlyList<EditorProjectListItem> projects, CancellationToken cancellationToken)
     {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         foreach (var item in projects)
         {
             if (!item.Summary.SourceExists) continue;
@@ -126,6 +128,8 @@ public sealed partial class EditorPage
                 // A missing/corrupt thumbnail falls back to the card's video icon.
             }
         }
+        sw.Stop();
+        Services.StartupDiagnostics.Write("editor-thumbs", $"n={projects.Count} ms={sw.ElapsedMilliseconds}");
     }
 
     private string ProjectThumbnailPath(EditorProjectListItem item) => Path.Combine(

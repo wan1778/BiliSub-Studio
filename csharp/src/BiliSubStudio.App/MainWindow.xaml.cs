@@ -150,6 +150,68 @@ public sealed partial class MainWindow : Window
             await ocrPage.RunCueListStressAsync(count, resultPath);
     }
 
+    internal async Task RunOcrSoakAsync(string videoPath, string reportPath)
+    {
+        var report = new List<string>();
+        ContentFrame.Content = _pages["ocr"];
+        await Task.Delay(500);
+        if (_pages["ocr"] is Pages.OcrPage ocrPage)
+        {
+            report.Add(await ocrPage.LoadSoakStateAsync(videoPath));
+            if (Services.StartupDiagnostics.SoakDeletePlayer
+                && Services.StartupDiagnostics.SoakPlayerPath is { } doomed
+                && System.IO.File.Exists(doomed))
+            {
+                System.IO.File.Delete(doomed);
+                report.Add("soak-player-deleted");
+                await Task.Delay(1500);
+            }
+            // Đảo tab đúng kiểu user: OCR -> các tab khác -> về OCR, lặp 3 vòng.
+            var order = new[] { "video", "editor", "settings", "ocr" };
+            async Task CycleTabsAsync(int rounds, string tag)
+            {
+                for (var round = 0; round < rounds; round++)
+                {
+                    foreach (var page in order)
+                    {
+                        ContentFrame.Content = _pages[page];
+                        await Task.Delay(800);
+                    }
+                    report.Add($"tabs-{tag}-{round + 1}-done");
+                }
+            }
+            if (Services.StartupDiagnostics.SoakScan)
+            {
+                var scanTask = ocrPage.StartSoakScanAsync();
+                var rounds = 0;
+                while (!scanTask.IsCompleted && rounds < 120)
+                {
+                    foreach (var tag in order)
+                    {
+                        ContentFrame.Content = _pages[tag];
+                        await Task.Delay(800);
+                        if (scanTask.IsCompleted) break;
+                    }
+                    rounds++;
+                }
+                report.Add($"scan-cycling-rounds={rounds} completed={scanTask.IsCompleted}");
+                await scanTask;
+                report.Add("scan-status=" + ocrPage.LastSoakStatus().Replace("\r", " ").Replace("\n", " "));
+                await CycleTabsAsync(2, "postdone");
+            }
+            else
+            {
+                await CycleTabsAsync(3, "round");
+            }
+            report.Add("RESULT=PASS");
+        }
+        else
+        {
+            report.Add("RESULT=FAIL no-ocr-page");
+        }
+        await System.IO.File.WriteAllTextAsync(reportPath, string.Join(Environment.NewLine, report) + Environment.NewLine);
+    }
+
     internal async Task RunLayoutSmokeAsync()
     {
         StartupDiagnostics.Write("layout-smoke-start");
@@ -258,6 +320,7 @@ public sealed partial class MainWindow : Window
         // Tab mới nhất thắng; đổi xong mới qua đó, không chen ngang lúc đang dỡ trang.
         _pendingNavigationTag = tag;
         _navigationRetries = 0;
+        StartupDiagnostics.Write("nav-select", tag);
         if (_navigating) return;
         _navigating = true;
         // Đổi trang sau 1 nhịp để khung hình cũ dỡ xong hẳn rồi mới lắp trang mới;
@@ -280,7 +343,9 @@ public sealed partial class MainWindow : Window
         }
         try
         {
+            StartupDiagnostics.Write("nav-swap", tag);
             ContentFrame.Content = page;
+            StartupDiagnostics.Write("nav-done", tag);
         }
         catch (Exception error)
         {

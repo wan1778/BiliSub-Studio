@@ -22,6 +22,7 @@ public sealed partial class EditorPage
         try
         {
             if (!IsLoaded) return;
+            Services.StartupDiagnostics.Write("editor-loaded-enter", null);
             if (!_editorCoreInitialized)
             {
                 BindStaticUiShell();
@@ -71,6 +72,7 @@ public sealed partial class EditorPage
             RefreshImageControls();
             RefreshEditorParityControls();
             SyncShellPlayerControls();
+            Services.StartupDiagnostics.Write("editor-loaded-exit", null);
         }
         finally
         {

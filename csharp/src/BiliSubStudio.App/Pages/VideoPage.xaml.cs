@@ -31,6 +31,7 @@ public sealed partial class VideoPage : Page
         _log = log;
         InitializeComponent();
         QueueList.ItemsSource = _queueItems;
+        Loaded += (_, _) => Services.StartupDiagnostics.Write("video-loaded", $"queue={_queueItems.Count}");
     }
 
     public void ApplyConfiguration()

@@ -57,6 +57,14 @@ public partial class App : Microsoft.UI.Xaml.Application
                 Exit();
                 return;
             }
+            if (StartupDiagnostics.SoakVideoPath is { } soakVideo
+                && StartupDiagnostics.SoakOutPath is { } soakOut)
+            {
+                await MainWindow.Initialization.WaitAsync(TimeSpan.FromSeconds(20));
+                await MainWindow.RunOcrSoakAsync(soakVideo, soakOut);
+                Exit();
+                return;
+            }
         }
         catch (Exception error)
         {
