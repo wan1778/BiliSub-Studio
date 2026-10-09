@@ -8,6 +8,9 @@ namespace BiliSubStudio.Core.ContractTests;
 // graph xuất cũ kế thừa nguyên si sang file xuất. Hợp đồng: nhánh nhạc nguồn
 // trong graph ghép voice luôn có aresample=async (làm sạch timestamp), nhánh
 // voice giữ nguyên từng mẫu (không resample, khớp giờ tuyệt đối).
+// 09/10 vụ voice chỗ to chỗ nhỏ: nhánh voice thêm loudnorm (bám target EBU
+// theo thời gian, không đụng timing) + alimiter chốt trần; gain user đứng
+// sau norm nên núm Âm lượng voice vẫn có tác dụng mà không gây rè.
 internal static class EditorExportAudioGraphContract
 {
     [ModuleInitializer]
@@ -32,6 +35,8 @@ internal static class EditorExportAudioGraphContract
             Check(voiceChain.StartsWith("[1:a]", StringComparison.Ordinal), $"không tìm thấy nhánh voice ({mode})");
             Check(!voiceChain.Contains("aresample", StringComparison.OrdinalIgnoreCase), $"nhánh voice bị resample, mất khớp giờ tuyệt đối ({mode})");
             Check(graph.Contains("aresample=async=1", StringComparison.Ordinal), $"nhánh nhạc nguồn thiếu làm sạch timestamp ({mode})");
+            Check(voiceChain.Contains("loudnorm=I=-18:TP=-1.5:LRA=7", StringComparison.Ordinal), $"nhánh voice thiếu cân loudness ({mode})");
+            Check(voiceChain.Contains("alimiter=limit=0.95:level=disabled", StringComparison.Ordinal), $"nhánh voice thiếu chốt trần ({mode})");
         }
         var muted = VideoEditorService.BuildVoiceAudioFilter(
             new EditorAudioSettings("mute", 1),

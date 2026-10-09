@@ -1115,6 +1115,19 @@ public sealed class VideoEditorService
     // aresample=async (bù micro-lệch/gấp khúc thành đơn điệu, không nghe ra);
     // nhánh voice (FLAC tự sinh, sample-exact) giữ nguyên từng mẫu để khớp giờ
     // tuyệt đối. Dùng chung preview + export nên hai đường khớp nhau.
+    // 09/10 vụ voice chỗ to chỗ nhỏ (user báo trong-cue và giữa-các-cue):
+    // đo trên voice-master thật (6266 cue): swing trong-cue trung vị 9.2dB
+    // (p95 35.2dB), spread giữa-cue p5-p95 5.5dB, 3 cue peak >= -1dBFS — mà cả
+    // pipeline (synth -> pace -> ráp master -> mix) không có khâu cân nào.
+    // Thử AB trên lát cắt 70s thật: dynaudnorm LÀM TỆ HƠN (san peak nhưng
+    // banh RMS spread 5.0->7.4dB, 6 cue dí trần) nên loại; loudnorm thắng:
+    // spread 5.0->4.1dB, về đúng target I=-18, không peak mới, LRA 7.4->7.1.
+    // Sửa tại render: loudnorm single-pass bám target EBU theo thời gian
+    // (hằng số 400ms/3s tự nhiên, không pump như dynaudnorm); khoảng lặng số
+    // bị gate loại khỏi đo nên an toàn. volume=G của user giữ nguyên sau
+    // norm, alimiter chốt trần để vặn 200% cũng không rè. Nhánh voice FLAC
+    // sample-exact vẫn giữ nguyên từng mẫu giờ giấc — chỉ mức loudness đổi,
+    // timestamp không đụng (không ảnh hưởng vụ aresample 08/10).
     public static string BuildVoiceAudioFilter(EditorAudioSettings audio, EditorVoiceTrack voice, int voiceInputIndex, double sourceStart)
     {
         var relativeDelay = Math.Max(0, voice.Start - sourceStart);
@@ -1124,8 +1137,10 @@ public sealed class VideoEditorService
             var milliseconds = (int)Math.Round(relativeDelay * 1000);
             voiceFilters.Add($"adelay={milliseconds}:all=1");
         }
+        voiceFilters.Add("loudnorm=I=-18:TP=-1.5:LRA=7");
         if (Math.Abs(voice.Gain - 1) > .0005)
             voiceFilters.Add("volume=" + voice.Gain.ToString("0.000", CultureInfo.InvariantCulture));
+        voiceFilters.Add("alimiter=limit=0.95:level=disabled");
         var voiceChain = $"[{voiceInputIndex}:a]{string.Join(',', voiceFilters)}[voicea]";
         if (audio.SourceMode == "mute") return voiceChain + ";[voicea]anull[aout]";
         var sourceFilters = new List<string>
