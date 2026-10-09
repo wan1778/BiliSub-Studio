@@ -90,6 +90,10 @@ require('voiceFilters.Add($"adelay={milliseconds}:all=1");' in voice_core,
         "VOICE-13 mix must apply the validated voice start offset")
 require('voiceFilters.Add("volume=" + voice.Gain.ToString("0.000", CultureInfo.InvariantCulture));' in voice_core,
         "VOICE-13 mix must preserve the Vietnamese track gain")
+require('voiceFilters.Add("loudnorm=I=-18:TP=-1.5:LRA=7");' in voice_core,
+        "VOICE-13 mix must level Vietnamese loudness swings (09/10 uneven-voice fix)")
+require('voiceFilters.Add("alimiter=limit=0.95:level=disabled");' in voice_core,
+        "VOICE-13 mix must cap Vietnamese peaks so user gain cannot clip")
 require('var voiceChain = $"[{voiceInputIndex}:a]{string.Join(\',\', voiceFilters)}[voicea]";' in voice_core,
         "VOICE-13 mix must keep the Vietnamese input in its own chain")
 

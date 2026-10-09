@@ -163,7 +163,7 @@ for token in (
     'voiceFilters.Add($"adelay={milliseconds}:all=1");',
     'voiceFilters.Add("volume=" + voice.Gain.ToString("0.000", CultureInfo.InvariantCulture));',
     'if (audio.SourceMode == "mute") return voiceChain + ";[voicea]anull[aout]";',
-    'var sourceFilters = new List<string> { "asetpts=PTS-STARTPTS" };',
+    'var sourceFilters = new List<string>\n        {\n            "asetpts=PTS-STARTPTS",\n            "aresample=async=1:min_hard_comp=0.100:first_pts=0",',
     'if (audio.SourceMode == "duck") sourceFilters.Add("volume=" + audio.SourceGain.ToString("0.000", CultureInfo.InvariantCulture));',
     "[sourcea][voicea]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0[aout]",
 ):
@@ -172,7 +172,7 @@ for token in (
 # Final output lifecycle remains validated temp -> promotion.
 for token in (
     'var temporary = output + ".rendering" + Path.GetExtension(output);',
-    'await ValidateRenderedOutputAsync(\n                temporary, trim.Duration, voice is not null || audio.SourceMode != "mute",',
+    'await ValidateRenderedOutputAsync(\n                job, temporary, trim.Duration, voice is not null || audio.SourceMode != "mute",',
     "File.Move(temporary, output);",
 ):
     require(token in run_body, f"EXPORT-12 final output lifecycle lost: {token}")
@@ -208,12 +208,14 @@ def voice_mix(audio_mode: str, source_gain: float, voice_start: float, voice_gai
     voice_filters = ["asetpts=PTS-STARTPTS"]
     if voice_start > 0.0005:
         voice_filters.append(f"adelay={round(voice_start * 1000)}:all=1")
+    voice_filters.append("loudnorm=I=-18:TP=-1.5:LRA=7")
     if abs(voice_gain - 1.0) > 0.0005:
         voice_filters.append(f"volume={voice_gain:.3f}")
+    voice_filters.append("alimiter=limit=0.95:level=disabled")
     voice_chain = f"[1:a]{','.join(voice_filters)}[voicea]"
     if mode == "mute":
         return voice_chain + ";[voicea]anull[aout]"
-    source_filters = ["asetpts=PTS-STARTPTS"]
+    source_filters = ["asetpts=PTS-STARTPTS", "aresample=async=1:min_hard_comp=0.100:first_pts=0"]
     if mode == "duck":
         source_filters.append(f"volume={gain:.3f}")
     return (
@@ -237,13 +239,19 @@ require(visual == "[0:v]ass=filename='caption.ass'[vout]", "EXPORT-12 subtitle v
 keep = visual + ";" + voice_mix("keep", 1.0, 2.75, 1.25)
 require("ass=filename='caption.ass'[vout]" in keep, "EXPORT-12 Keep lost subtitle")
 require("adelay=2750:all=1" in keep and "volume=1.250" in keep, "EXPORT-12 Keep lost Voice timing/gain")
-require("[0:a]asetpts=PTS-STARTPTS[sourcea]" in keep, "EXPORT-12 Keep lost source audio")
+require("loudnorm=I=-18:TP=-1.5:LRA=7" in keep
+        and "alimiter=limit=0.95:level=disabled" in keep
+        and keep.index("loudnorm=") < keep.index("volume=1.250") < keep.index("alimiter="),
+        "EXPORT-12 Keep must level Voice before user gain and cap peaks after")
+require("[0:a]asetpts=PTS-STARTPTS[sourcea]" not in keep, "EXPORT-12 Keep source chain must carry the timestamp sanitizer")
+require("[0:a]asetpts=PTS-STARTPTS,aresample=async=1:min_hard_comp=0.100:first_pts=0[sourcea]" in keep, "EXPORT-12 Keep lost source audio")
 require("[sourcea][voicea]amix=" in keep, "EXPORT-12 Keep must mix source + Voice")
 
 duck = visual + ";" + voice_mix("duck", 0.35, 0.0, 1.0)
 require("ass=filename='caption.ass'[vout]" in duck, "EXPORT-12 Duck lost subtitle")
-require("[0:a]asetpts=PTS-STARTPTS,volume=0.350[sourcea]" in duck, "EXPORT-12 Duck must attenuate source")
-require("[1:a]asetpts=PTS-STARTPTS[voicea]" in duck, "EXPORT-12 Duck must not attenuate Voice")
+require("[0:a]asetpts=PTS-STARTPTS,aresample=async=1:min_hard_comp=0.100:first_pts=0,volume=0.350[sourcea]" in duck, "EXPORT-12 Duck must attenuate source")
+require("[1:a]asetpts=PTS-STARTPTS,loudnorm=I=-18:TP=-1.5:LRA=7,alimiter=limit=0.95:level=disabled[voicea]" in duck,
+        "EXPORT-12 Duck must level Voice without user gain attenuation")
 
 mute = visual + ";" + voice_mix("mute", 0.35, 0.0, 1.0)
 require("ass=filename='caption.ass'[vout]" in mute, "EXPORT-12 Mute lost subtitle")

@@ -123,7 +123,7 @@ for token in (
 # Keep mixes source+voice, Duck attenuates source only, Mute leaves Voice audible.
 for token in (
     'if (audio.SourceMode == "mute") return voiceChain + ";[voicea]anull[aout]";',
-    'var sourceFilters = new List<string> { "asetpts=PTS-STARTPTS" };',
+    'var sourceFilters = new List<string>\n        {\n            "asetpts=PTS-STARTPTS",\n            "aresample=async=1:min_hard_comp=0.100:first_pts=0",',
     'if (audio.SourceMode == "duck") sourceFilters.Add("volume=" + audio.SourceGain.ToString("0.000", CultureInfo.InvariantCulture));',
     "[sourcea][voicea]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0[aout]",
 ):
@@ -132,7 +132,7 @@ for token in (
 # Standard safe finalization still owns Voice-only output.
 for token in (
     'var temporary = output + ".rendering" + Path.GetExtension(output);',
-    'await ValidateRenderedOutputAsync(\n                temporary, trim.Duration, voice is not null || audio.SourceMode != "mute",',
+    'await ValidateRenderedOutputAsync(\n                job, temporary, trim.Duration, voice is not null || audio.SourceMode != "mute",',
     "File.Move(temporary, output);",
 ):
     require(token in video, f"EXPORT-09 final output lifecycle lost: {token}")
@@ -163,12 +163,14 @@ def voice_mix(audio_mode: str, source_gain: float, voice_start: float, source_st
     voice_filters = ["asetpts=PTS-STARTPTS"]
     if delay > 0.0005:
         voice_filters.append(f"adelay={round(delay * 1000)}:all=1")
+    voice_filters.append("loudnorm=I=-18:TP=-1.5:LRA=7")
     if abs(voice_gain - 1.0) > 0.0005:
         voice_filters.append(f"volume={voice_gain:.3f}")
+    voice_filters.append("alimiter=limit=0.95:level=disabled")
     voice_chain = f"[1:a]{','.join(voice_filters)}[voicea]"
     if audio_mode == "mute":
         return voice_chain + ";[voicea]anull[aout]"
-    source_filters = ["asetpts=PTS-STARTPTS"]
+    source_filters = ["asetpts=PTS-STARTPTS", "aresample=async=1:min_hard_comp=0.100:first_pts=0"]
     if audio_mode == "duck":
         source_filters.append(f"volume={source_gain:.3f}")
     return (
@@ -186,12 +188,17 @@ require(not has_edit(), "EXPORT-09 empty request must not count as edit")
 keep_graph = voice_mix("keep", 1.0, 2.75, 0.0, 1.25)
 require("adelay=2750:all=1" in keep_graph, "EXPORT-09 Voice start delay fixture failed")
 require("volume=1.250" in keep_graph, "EXPORT-09 Voice gain fixture failed")
-require("[0:a]asetpts=PTS-STARTPTS[sourcea]" in keep_graph, "EXPORT-09 Keep must include source audio")
+require("loudnorm=I=-18:TP=-1.5:LRA=7" in keep_graph
+        and "alimiter=limit=0.95:level=disabled" in keep_graph
+        and keep_graph.index("loudnorm=") < keep_graph.index("volume=1.250") < keep_graph.index("alimiter="),
+        "EXPORT-09 Keep must level Voice before user gain and cap peaks after")
+require("[0:a]asetpts=PTS-STARTPTS,aresample=async=1:min_hard_comp=0.100:first_pts=0[sourcea]" in keep_graph, "EXPORT-09 Keep must include source audio")
 require("[sourcea][voicea]amix=" in keep_graph, "EXPORT-09 Keep must mix source and Voice")
 
 duck_graph = voice_mix("duck", 0.35, 0.0, 0.0, 1.0)
-require("[0:a]asetpts=PTS-STARTPTS,volume=0.350[sourcea]" in duck_graph, "EXPORT-09 Duck must attenuate source only")
-require("[1:a]asetpts=PTS-STARTPTS[voicea]" in duck_graph, "EXPORT-09 Duck must not attenuate Voice")
+require("[0:a]asetpts=PTS-STARTPTS,aresample=async=1:min_hard_comp=0.100:first_pts=0,volume=0.350[sourcea]" in duck_graph, "EXPORT-09 Duck must attenuate source only")
+require("[1:a]asetpts=PTS-STARTPTS,loudnorm=I=-18:TP=-1.5:LRA=7,alimiter=limit=0.95:level=disabled[voicea]" in duck_graph,
+        "EXPORT-09 Duck must level Voice without user gain attenuation")
 
 mute_graph = voice_mix("mute", 0.35, 0.0, 0.0, 1.0)
 require("[0:a]" not in mute_graph, "EXPORT-09 Mute must not reference source audio")

@@ -176,7 +176,7 @@ for token in (
 # Safe output lifecycle in both stages.
 for token in (
     'var temporary = output + ".rendering" + Path.GetExtension(output);',
-    'await ValidateRenderedOutputAsync(\n                temporary, trim.Duration, voice is not null || audio.SourceMode != "mute",',
+    'await ValidateRenderedOutputAsync(\n                job, temporary, trim.Duration, voice is not null || audio.SourceMode != "mute",',
     "File.Move(temporary, output);",
 ):
     require(token in run_body, f"EXPORT-13 base output safety lost: {token}")
@@ -234,12 +234,14 @@ def voice_audio_graph(mode: str, source_gain: float, voice_start: float, voice_g
     voice_filters = ["asetpts=PTS-STARTPTS"]
     if voice_start > 0.0005:
         voice_filters.append(f"adelay={round(voice_start * 1000)}:all=1")
+    voice_filters.append("loudnorm=I=-18:TP=-1.5:LRA=7")
     if abs(voice_gain - 1) > 0.0005:
         voice_filters.append(f"volume={voice_gain:.3f}")
+    voice_filters.append("alimiter=limit=0.95:level=disabled")
     voice_chain = f"[1:a]{','.join(voice_filters)}[voicea]"
     if mode == "mute":
         return voice_chain + ";[voicea]anull[aout]"
-    source_filters = ["asetpts=PTS-STARTPTS"]
+    source_filters = ["asetpts=PTS-STARTPTS", "aresample=async=1:min_hard_comp=0.100:first_pts=0"]
     if mode == "duck":
         source_filters.append(f"volume={source_gain:.3f}")
     return (
@@ -274,13 +276,18 @@ require(visual.endswith("[vout]"), "EXPORT-13 base visual graph must end at [vou
 keep_audio = voice_audio_graph("keep", 1.0, 2.75, 1.25)
 require("adelay=2750:all=1" in keep_audio and "volume=1.250" in keep_audio,
         "EXPORT-13 Keep fixture lost Voice timing/gain")
+require("loudnorm=I=-18:TP=-1.5:LRA=7" in keep_audio
+        and "alimiter=limit=0.95:level=disabled" in keep_audio
+        and keep_audio.index("loudnorm=") < keep_audio.index("volume=1.250") < keep_audio.index("alimiter="),
+        "EXPORT-13 Keep must level Voice before user gain and cap peaks after")
 require("[sourcea][voicea]amix=" in keep_audio, "EXPORT-13 Keep must mix source + Voice")
+require("aresample=async=1:min_hard_comp=0.100:first_pts=0" in keep_audio, "EXPORT-13 Keep source chain must carry the timestamp sanitizer")
 
 duck_audio = voice_audio_graph("duck", 0.35, 0.0, 1.0)
-require("[0:a]asetpts=PTS-STARTPTS,volume=0.350[sourcea]" in duck_audio,
+require("[0:a]asetpts=PTS-STARTPTS,aresample=async=1:min_hard_comp=0.100:first_pts=0,volume=0.350[sourcea]" in duck_audio,
         "EXPORT-13 Duck must attenuate source once")
-require("[1:a]asetpts=PTS-STARTPTS[voicea]" in duck_audio,
-        "EXPORT-13 Duck must not attenuate Voice")
+require("[1:a]asetpts=PTS-STARTPTS,loudnorm=I=-18:TP=-1.5:LRA=7,alimiter=limit=0.95:level=disabled[voicea]" in duck_audio,
+        "EXPORT-13 Duck must level Voice without user gain attenuation")
 
 mute_audio = voice_audio_graph("mute", 0.35, 0.0, 1.0)
 require("[0:a]" not in mute_audio and "[voicea]anull[aout]" in mute_audio,
