@@ -344,6 +344,18 @@ public sealed partial class MainWindow : Window
         try
         {
             StartupDiagnostics.Write("nav-swap", tag);
+            // 09/10 vụ xác trang cũ đè trang mới: dỡ 2 nhịp — nhịp 1 gỡ trang
+            // cũ cho cây hình dỡ hẳn (kèm gỡ surface player OCR đang ngậm
+            // video), nhịp sau mới lắp trang mới. Lắp ngay trong nhịp bấm
+            // chính là chỗ hay bị thư viện màn hình hủy (E_ABORT).
+            if (ContentFrame.Content is Pages.OcrPage outgoing)
+                outgoing.PrepareForTabSwitch();
+            if (ContentFrame.Content is not null)
+            {
+                ContentFrame.Content = null;
+                DispatcherQueue.TryEnqueue(ProcessPendingNavigation);
+                return;
+            }
             ContentFrame.Content = page;
             StartupDiagnostics.Write("nav-done", tag);
         }

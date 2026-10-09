@@ -83,6 +83,7 @@ public sealed partial class OcrPage : Page
 
         ApplyConfiguration();
         CueList.Loaded += (_, _) => AttachCueListScroll();
+        Loaded += OcrPage_Loaded;
         Unloaded += (_, _) => DetachCueListScroll();
         Unloaded += (_, _) =>
         {
@@ -2088,11 +2089,46 @@ public sealed partial class OcrPage : Page
             : new Rect(0, (PreviewCanvas.ActualHeight - PreviewCanvas.ActualWidth / source) / 2, PreviewCanvas.ActualWidth, PreviewCanvas.ActualWidth / source);
     }
 
+    // 09/10 vụ xác trang OCR đè tab khác: frame gỡ trang cũ ra khi cây hình
+    // còn nặng (ListView nghìn cue + ảnh frame + player ngậm video) thì swap
+    // dở dang — trang mới đã vào mà xác cũ không rớt. Chuẩn bị TRƯỚC khi gỡ:
+    // gỡ surface player + trả về frame tĩnh để cây cũ nhẹ, dỡ sạch trong 1 nhịp.
+    // Không dispose player (giữ video/preview), quay lại tab là gắn lại.
+    internal void PrepareForTabSwitch()
+    {
+        try
+        {
+            if (_player is not null) _player.Pause();
+            _playerMode = false;
+            PreviewPlayer.SetMediaPlayer(null);
+            PreviewPlayer.Visibility = Visibility.Collapsed;
+            PreviewImage.Visibility = Visibility.Visible;
+            PlaybackButton.Content = "Phát video";
+        }
+        catch { }
+    }
+
+    private void OcrPage_Loaded(object sender, RoutedEventArgs e)
+    {
+        // Quay lại tab: gắn lại player đã gỡ lúc đi.
+        try
+        {
+            if (_player is not null) PreviewPlayer.SetMediaPlayer(_player);
+        }
+        catch { }
+    }
+
     private async Task PreparePlayerAsync(string path, bool directCompatible)
     {
         if (_player is not null)
         {
+            // 09/10 vụ phát đen hình: dispose player cũ mà không gỡ khỏi
+            // element (như tab Biên tập vẫn làm) thì surface xác còn ngậm —
+            // gán player mới đè lên dễ đen (có tiếng, không lỗi).
             _player.PlaybackSession.PositionChanged -= PlayerPositionChanged;
+            _player.Pause();
+            _player.Source = null;
+            PreviewPlayer.SetMediaPlayer(null);
             _player.Dispose();
             _player = null;
         }
@@ -2111,6 +2147,12 @@ public sealed partial class OcrPage : Page
         var player = new MediaPlayer { AutoPlay = false };
         player.Source = MediaSource.CreateFromStorageFile(file);
         player.PlaybackSession.PositionChanged += PlayerPositionChanged;
+        player.MediaOpened += (_, _) => DispatcherQueue.TryEnqueue(() =>
+        {
+            // Mở được nhưng không có track hình đọc được thì báo rõ thay vì đen im lặng.
+            if (ReferenceEquals(player, _player) && player.PlaybackSession.NaturalVideoHeight == 0)
+                StatusText.Text = "Video mở được nhưng không có track hình đọc được; dùng frame FFmpeg bên dưới.";
+        });
         player.MediaFailed += (_, args) => DispatcherQueue.TryEnqueue(() =>
             StatusText.Text = "Player native lỗi; vẫn có thể dùng frame FFmpeg: " + args.ErrorMessage);
         _player = player;
@@ -2133,6 +2175,8 @@ public sealed partial class OcrPage : Page
         if (_player is null) return;
         if (enabled)
         {
+            // Khẳng định lại binding (trị surface xác sau đổi video/chuyển tab).
+            PreviewPlayer.SetMediaPlayer(_player);
             _player.PlaybackSession.Position = TimeSpan.FromSeconds(Math.Max(0, Timeline.Value));
             if (play) _player.Play();
         }
