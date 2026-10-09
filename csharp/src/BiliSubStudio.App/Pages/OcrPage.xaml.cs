@@ -612,10 +612,14 @@ public sealed partial class OcrPage : Page
         }
         var waiting = _ocrQueue.WaitingCount;
         var active = _ocrQueue.ActiveItem;
+        var pausedCount = 0;
+        foreach (var item in _ocrQueue.Items)
+            if (item.Status == OcrQueueItemStatus.Paused) pausedCount++;
         QueueCountText.Text = _ocrQueue.Items.Count == 0 ? "Trống"
             : active is not null ? $"Đang quét · chờ {waiting}"
-            : waiting > 0 ? $"{waiting} đang chờ" : "Hết việc";
-        QueueRunButton.IsEnabled = !_queueRunning && waiting > 0;
+            : waiting > 0 ? $"{waiting} đang chờ"
+            : pausedCount > 0 ? $"{pausedCount} tạm dừng" : "Hết việc";
+        QueueRunButton.IsEnabled = !_queueRunning && (waiting > 0 || pausedCount > 0);
         QueueStopButton.IsEnabled = _queueRunning;
     }
 
@@ -656,7 +660,12 @@ public sealed partial class OcrPage : Page
             StatusText.Text = "Đang quét dở; Tạm dừng/Hủy mục hiện tại trước khi chạy hàng chờ.";
             return;
         }
-        if (_ocrQueue.WaitingCount == 0 && _ocrQueue.ActiveItem is null)
+        var hasPaused = false;
+        foreach (var existing in _ocrQueue.Items)
+        {
+            if (existing.Status == OcrQueueItemStatus.Paused) { hasPaused = true; break; }
+        }
+        if (_ocrQueue.WaitingCount == 0 && !hasPaused)
         {
             StatusText.Text = "Hàng chờ trống; thêm video rồi bấm Chạy hàng chờ.";
             return;
@@ -678,7 +687,11 @@ public sealed partial class OcrPage : Page
             _queueRunning = false;
             PickVideoButton.IsEnabled = true;
             QueueAddButton.IsEnabled = true;
-            if (_jobId is null) RestoreIdleControls();
+            if (_jobId is null)
+            {
+                RestoreIdleControls();
+                ScanButton.IsEnabled = _path is not null && _media is not null;
+            }
             SyncQueueView();
         }
     }
