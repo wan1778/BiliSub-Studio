@@ -14,12 +14,14 @@ internal static class OcrScanQueueContract
         var regionA = new OcrRegion(0.05, 0.65, 0.90, 0.29);
         var regionB = new OcrRegion(0.10, 0.70, 0.80, 0.25);
 
-        // 1. FIFO đúng thứ tự thêm.
+        // 1. FIFO đúng thứ tự thêm + số thứ tự 1..N.
         var queue = new OcrScanQueue();
         var first = queue.Enqueue("a.mp4", regionA, "accurate", "gpu", "8", 100);
         var second = queue.Enqueue("b.mp4", regionB, "fast", "cpu", "4", 200);
         var third = queue.Enqueue("c.mp4", regionA, "balanced", "auto", "auto", 300);
         Check(queue.WaitingCount == 3, "enqueue 3 must report 3 waiting");
+        Check(first.QueueNumber == 1 && second.QueueNumber == 2 && third.QueueNumber == 3,
+            "enqueue must number items 1..N in order");
         Check(ReferenceEquals(queue.TakeNext(), first), "TakeNext must return first Waiting (FIFO)");
         Check(first.Status == OcrQueueItemStatus.Scanning, "taken item must be Scanning");
 
@@ -27,9 +29,10 @@ internal static class OcrScanQueueContract
         Check(queue.TakeNext() is null, "TakeNext must refuse while one item is Scanning");
         Check(second.Status == OcrQueueItemStatus.Waiting, "second item must stay Waiting");
 
-        // 3. Done xong mới lấy tiếp; Failed không chặn hàng.
+        // 3. Xong là rời hàng ngay, số còn lại dồn lên; Failed không chặn hàng.
         queue.MarkDone(first.Id, "a_Chinese.srt", "xong");
-        Check(first.Status == OcrQueueItemStatus.Done && first.Progress == 100, "done item must be Done at 100%");
+        Check(queue.Items.Count == 2, "done item must leave the queue immediately");
+        Check(second.QueueNumber == 1 && third.QueueNumber == 2, "remaining items must renumber after one leaves");
         Check(ReferenceEquals(queue.TakeNext(), second), "after Done, TakeNext must advance to second");
         queue.MarkFailed(second.Id, "probe hỏng");
         Check(second.Status == OcrQueueItemStatus.Failed, "failed item must be Failed");
@@ -62,9 +65,10 @@ internal static class OcrScanQueueContract
         Check(!queue2.Remove(w1.Id), "must not remove the Scanning item");
         Check(queue2.Remove(w2.Id), "must remove a Waiting item");
 
-        // 7. ClearFinished chỉ dọn Done/Failed/Cancelled.
-        Check(queue.ClearFinished() == 3, "ClearFinished must remove 3 finished items");
-        Check(queue.WaitingCount == 1 && ReferenceEquals(queue.Items[0], fourth), "only the Waiting item must remain");
+        // 7. ClearFinished chỉ dọn Failed/Cancelled (Done đã tự rời), số reset.
+        Check(queue.ClearFinished() == 2, "ClearFinished must remove 2 failed/cancelled items");
+        Check(queue.WaitingCount == 1 && ReferenceEquals(queue.Items[0], fourth)
+            && fourth.QueueNumber == 1, "only the Waiting item must remain, renumbered to 1");
 
         return Task.CompletedTask;
     }

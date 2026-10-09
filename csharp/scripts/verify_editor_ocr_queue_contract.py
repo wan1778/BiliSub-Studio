@@ -50,6 +50,8 @@ for token in (
     require(token in queue, f"QUEUE-01 queue state machine lost: {token}")
 require("Status == OcrQueueItemStatus.Paused" in queue,
         "QUEUE-01 TakeNext must resume paused items before new waiting items")
+require("public int QueueNumber" in queue and "NumberedName" in queue,
+        "QUEUE-01 items must carry auto-compacting 1-based numbers")
 
 # One-button model: Scan enqueues the current setup and ensures the driver.
 for token in (
@@ -101,7 +103,7 @@ for token in (
     'x:Name="QueueRemoveButton"',
     'x:Name="QueueCountText"',
     'x:Name="QueueStatusText"',
-    "{Binding DisplayName}",
+    "{Binding NumberedName}",
     "{Binding StatusText}",
     "{Binding SetupSummary}",
     "Value=\"{Binding Progress}\"",

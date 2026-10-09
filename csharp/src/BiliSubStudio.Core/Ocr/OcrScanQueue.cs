@@ -46,6 +46,22 @@ public sealed class OcrQueueItem : INotifyPropertyChanged
         }
     }
 
+    // Số thứ tự trong hàng (1-based), hàng tự dồn/rereset mỗi khi có video
+    // vào/ra — user nhìn là biết vị trí xử lý. Chỉ OcrScanQueue được gán.
+    private int _queueNumber;
+
+    public int QueueNumber
+    {
+        get => _queueNumber;
+        internal set
+        {
+            if (_queueNumber == value) return;
+            _queueNumber = value;
+            OnPropertyChanged(nameof(QueueNumber));
+            OnPropertyChanged(nameof(NumberedName));
+        }
+    }
+
     private double _progress;
 
     public double Progress
@@ -108,6 +124,8 @@ public sealed class OcrQueueItem : INotifyPropertyChanged
 
     public string DisplayName => Path.GetFileName(VideoPath);
 
+    public string NumberedName => $"{QueueNumber}. {DisplayName}";
+
     public string StatusText => Status switch
     {
         OcrQueueItemStatus.Waiting => "Đang chờ",
@@ -169,6 +187,7 @@ public sealed class OcrScanQueue
     {
         var item = new OcrQueueItem(videoPath, region, mode, device, parallelism, duration);
         _items.Add(item);
+        Renumber();
         Changed?.Invoke();
         return item;
     }
@@ -179,6 +198,7 @@ public sealed class OcrScanQueue
         if (index < 0) return false;
         if (_items[index].Status == OcrQueueItemStatus.Scanning) return false;
         _items.RemoveAt(index);
+        Renumber();
         Changed?.Invoke();
         return true;
     }
@@ -196,6 +216,7 @@ public sealed class OcrScanQueue
         if (_items[index].Status != OcrQueueItemStatus.Waiting
             || _items[other].Status != OcrQueueItemStatus.Waiting) return false;
         (_items[index], _items[other]) = (_items[other], _items[index]);
+        Renumber();
         Changed?.Invoke();
         return true;
     }
@@ -223,14 +244,15 @@ public sealed class OcrScanQueue
         return null;
     }
 
+    // Video xong là rời khỏi hàng ngay (user: xong thì mất, số còn lại dồn
+    // lên, hết hàng là reset từ 1). Driver giữ path/message từ kết quả quét
+    // để báo cáo, không cần mục ở lại.
     public void MarkDone(Guid id, string? outputSrtPath, string message)
     {
-        var item = Find(id);
-        if (item is null || item.Status != OcrQueueItemStatus.Scanning) return;
-        item.OutputSrtPath = outputSrtPath;
-        item.Progress = 100;
-        item.Message = message;
-        item.Status = OcrQueueItemStatus.Done;
+        var index = _items.FindIndex(item => item.Id == id);
+        if (index < 0 || _items[index].Status != OcrQueueItemStatus.Scanning) return;
+        _items.RemoveAt(index);
+        Renumber();
         Changed?.Invoke();
     }
 
@@ -262,12 +284,23 @@ public sealed class OcrScanQueue
 
     public int ClearFinished()
     {
+        // Done đã tự rời hàng ở MarkDone; đây dọn mục lỗi/hủy còn sót.
         var removed = _items.RemoveAll(item =>
-            item.Status is OcrQueueItemStatus.Done
-                or OcrQueueItemStatus.Failed
+            item.Status is OcrQueueItemStatus.Failed
                 or OcrQueueItemStatus.Cancelled);
-        if (removed > 0) Changed?.Invoke();
+        if (removed > 0)
+        {
+            Renumber();
+            Changed?.Invoke();
+        }
         return removed;
+    }
+
+    // Đánh lại số thứ tự 1..N theo đúng thứ tự hàng hiện tại.
+    private void Renumber()
+    {
+        for (var index = 0; index < _items.Count; index++)
+            _items[index].QueueNumber = index + 1;
     }
 
     private OcrQueueItem? Find(Guid id)

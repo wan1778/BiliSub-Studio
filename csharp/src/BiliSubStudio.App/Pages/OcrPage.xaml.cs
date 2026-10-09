@@ -602,7 +602,7 @@ public sealed partial class OcrPage : Page
             }
             var item = _ocrQueue.Enqueue(
                 _path, ReadRegion(), Selected(ScanModeBox), Selected(DeviceBox), Selected(LanesBox), _media.Duration);
-            StatusText.Text = $"Đã cho vào hàng chờ ({_ocrQueue.WaitingCount} chờ): {item.DisplayName} · {item.SetupSummary}.";
+            StatusText.Text = $"Đã cho vào hàng chờ số {item.QueueNumber}: {item.DisplayName} · {item.SetupSummary}.";
         }
         else
         {
@@ -678,7 +678,7 @@ public sealed partial class OcrPage : Page
     private void QueueClear_Click(object sender, RoutedEventArgs e)
     {
         var removed = _ocrQueue.ClearFinished();
-        QueueStatusText.Text = removed > 0 ? $"Đã dọn {removed} mục xong/lỗi/hủy." : "Không có mục xong để dọn.";
+        QueueStatusText.Text = removed > 0 ? $"Đã dọn {removed} mục lỗi/hủy." : "Không có mục lỗi/hủy để dọn (video xong tự rời hàng).";
     }
 
     private void QueueRemove_Click(object sender, RoutedEventArgs e)
@@ -709,20 +709,16 @@ public sealed partial class OcrPage : Page
 
     private async Task RunQueueAsync()
     {
+        var doneCount = 0;
+        var failedCount = 0;
         while (_queueRunning)
         {
             var item = _ocrQueue.TakeNext();
             if (item is null) break;
-            var position = 0;
-            var total = _ocrQueue.Items.Count;
-            foreach (var done in _ocrQueue.Items)
-            {
-                if (done.Status is OcrQueueItemStatus.Done
-                    or OcrQueueItemStatus.Failed
-                    or OcrQueueItemStatus.Cancelled) position++;
-            }
-            position++;
-            QueueStatusText.Text = $"Đang quét ({position}/{total}): {item.DisplayName}.";
+            // Số thứ tự hiển thị = thứ tự xử lý thực tế đợt chạy này (video
+            // xong tự rời hàng nên không đếm lại trong list được).
+            var position = doneCount + failedCount + 1;
+            QueueStatusText.Text = $"Đang quét video thứ {position} (còn {_ocrQueue.WaitingCount} chờ): {item.DisplayName}.";
             MediaPreviewInfo media;
             try
             {
@@ -771,9 +767,12 @@ public sealed partial class OcrPage : Page
             {
                 case QueueScanEnd.Done:
                     _ocrQueue.MarkDone(item.Id, exportedPath, string.IsNullOrWhiteSpace(detail) ? "Xong." : detail);
+                    doneCount++;
+                    QueueStatusText.Text = $"Xong video thứ {position}: {item.DisplayName} → {exportedPath ?? "SRT"}.";
                     break;
                 case QueueScanEnd.Failed:
                     _ocrQueue.MarkFailed(item.Id, string.IsNullOrWhiteSpace(detail) ? "Quét lỗi (đã bỏ qua, chạy tiếp)." : detail);
+                    failedCount++;
                     break;
                 case QueueScanEnd.Cancelled:
                     _ocrQueue.MarkCancelled(item.Id, "Đã hủy.");
@@ -788,13 +787,6 @@ public sealed partial class OcrPage : Page
             _queueActiveRequest = null;
             // Mở lại nút Quét để setup video tiếp theo ngay khi mục này xong.
             if (_jobId is null) RefreshRegionActions();
-        }
-        var doneCount = 0;
-        var failedCount = 0;
-        foreach (var done in _ocrQueue.Items)
-        {
-            if (done.Status == OcrQueueItemStatus.Done) doneCount++;
-            else if (done.Status == OcrQueueItemStatus.Failed) failedCount++;
         }
         QueueStatusText.Text = $"Hàng chờ xong: {doneCount} video xong"
             + (failedCount > 0 ? $" · {failedCount} lỗi đã bỏ qua" : "") + ".";

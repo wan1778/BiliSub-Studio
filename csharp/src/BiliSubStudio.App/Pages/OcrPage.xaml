@@ -189,7 +189,7 @@
                                     <ListView.ItemTemplate>
                                         <DataTemplate>
                                             <StackPanel Spacing="2" Padding="0,4">
-                                                <TextBlock Style="{StaticResource BodyTextStyle}" Text="{Binding DisplayName}" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{Binding VideoPath}" />
+                                                <TextBlock Style="{StaticResource BodyTextStyle}" Text="{Binding NumberedName}" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{Binding VideoPath}" />
                                                 <TextBlock FontSize="10" Foreground="{ThemeResource MutedTextBrush}" Text="{Binding SetupSummary}" />
                                                 <Grid ColumnSpacing="8">
                                                     <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
