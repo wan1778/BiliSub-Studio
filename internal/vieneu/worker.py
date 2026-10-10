@@ -917,6 +917,65 @@ def synthesize_cue_batch(voice, jobs: list, batch_size: int = BATCH_SYNTH_SIZE) 
                 output.writeframes(pcm.tobytes())
 
 
+def preload_probes(voice, cues, texts, run_root: Path, clip_root: Path,
+                   worker_sha: str, emit, items: list,
+                   batch_size: int = BATCH_SYNTH_SIZE) -> dict:
+    """Batch probe tự nhiên cho cue chưa cache (30/09, cứng 10/10).
+
+    items: [(global_index, cue, text)]. Chỉ probe candidate chính của đọc
+    đơn, bỏ qua cue đã có sidecar+wav trong clip cache (retry nóng tốn 0
+    synth). Trả {str(candidate run path): True} để fit_cue tái dùng đúng 1
+    lần probe đầu; chunk nào lỗi (OOM/text lạ) thì CHỈ chunk đó rớt về đọc
+    đơn — các chunk khác giữ nguyên (trước đây 1 chunk lỗi là cả pre-pass
+    hàng nghìn cue về đơn hết mà không để lại dấu vết).
+    Bucket theo độ dài chữ (ngắn đi chung) để câu ngắn khỏi chờ câu dài
+    trong cùng batch (batch-and-wait) và giảm đỉnh VRAM. Mỗi chunk xong bắn
+    event attempt để thanh tiến trình chạy trong lúc pre-pass (không là UI
+    đứng yên dễ tưởng treo). Module-level để unit-test được (không còn là
+    closure trong main).
+    """
+    jobs = []
+    seen: dict = {}
+    total = len(cues)
+    for position, cue, text in items:
+        try:
+            key = cache_identity(cue, text, worker_sha)
+        except (KeyError, TypeError, ValueError):
+            continue
+        if key in seen:
+            seen[key].append(position)
+            continue
+        seen[key] = [position]
+        if (clip_root / (key + ".wav")).is_file() and (clip_root / (key + ".json")).is_file():
+            continue
+        jobs.append((position, text, run_root / (key + "-native.wav")))
+    if not jobs:
+        return {}
+    # Bucket ổn định theo độ dài (và vị trí gốc để thứ tự batch lặp lại
+    # nào cũng giống nhau): chunk đồng đều -> ít padding phí + đỉnh VRAM
+    # thấp hơn chunk trộn dài-ngắn.
+    jobs.sort(key=lambda job: (len(job[1]), job[0]))
+    preloaded: dict = {}
+    size = max(1, int(batch_size))
+    for start in range(0, len(jobs), size):
+        chunk = jobs[start:start + size]
+        try:
+            synthesize_cue_batch(voice, [(text, path) for _, text, path in chunk], size)
+        except Exception as error:
+            # Chỉ chunk này đọc đơn lại; wav dở của chunk lỗi không vào
+            # dict nên fit_cue ghi đè sạch, không bao giờ tái dùng nhầm.
+            emit({"event": "notice", "code": "batch-probe-chunk-fallback",
+                  "message": (f"Pre-batch {start // size + 1} ({len(chunk)} cue) lỗi "
+                              f"({str(error)[:120]}); các cue này đọc đơn, chunk khác không ảnh hưởng.")})
+            continue
+        for position, _, path in chunk:
+            preloaded[str(path)] = True
+            emit({"event": "attempt", "index": position + 1, "total": total,
+                  "id": cues[position]["id"], "attempt": 1, "max_attempts": 1,
+                  "timing_source": "batch-probe", "length_scale": 1.0})
+    return preloaded
+
+
 def next_length_scale(scale: float, frames: int, aim_frames: int, base: float,
                       lower: float | None, upper: float | None) -> float:
     if (not math.isfinite(scale) or scale <= 0 or not math.isfinite(base) or base <= 0
@@ -2403,48 +2462,11 @@ def main() -> int:
                 f"Cue {index + 1} ({cue['id']}) bất khả thi: {' | '.join(failures)}; "
                 f"truncate cũng bó tay ({error})") from error
 
-    def preload_probes(items: list) -> dict:
-        """Batch probe tự nhiên cho cue chưa cache (30/09).
-
-        items: [(global_index, cue, text)]. Chỉ probe candidate chính của đọc
-        đơn, bỏ qua cue đã có sidecar+wav trong clip cache (retry nóng tốn 0
-        synth). Trả {str(candidate run path): True} để fit_cue tái dùng đúng 1
-        lần probe đầu; batch lỗi bất kỳ -> {} (đọc đơn như cũ, không chết job).
-        Mỗi chunk xong bắn event attempt để thanh tiến trình chạy trong lúc
-        pre-pass (không là UI đứng yên dễ tưởng treo).
-        """
-        jobs = []
-        seen: dict = {}
-        total = len(cues)
-        for position, cue, text in items:
-            try:
-                key = cache_identity(cue, text, worker_sha)
-            except (KeyError, TypeError, ValueError):
-                continue
-            if key in seen:
-                seen[key].append(position)
-                continue
-            seen[key] = [position]
-            if (clip_root / (key + ".wav")).is_file() and (clip_root / (key + ".json")).is_file():
-                continue
-            jobs.append((position, text, run_root / (key + "-native.wav")))
-        if not jobs:
-            return {}
-        preloaded: dict = {}
-        size = max(1, int(BATCH_SYNTH_SIZE))
-        try:
-            for start in range(0, len(jobs), size):
-                chunk = jobs[start:start + size]
-                synthesize_cue_batch(voice, [(text, path) for _, text, path in chunk], size)
-                for position, _, path in chunk:
-                    preloaded[str(path)] = True
-                    emit({"event": "attempt", "index": position + 1, "total": total,
-                          "id": cues[position]["id"], "attempt": 1, "max_attempts": 1,
-                          "timing_source": "batch-probe", "length_scale": 1.0})
-        except Exception:
-            return {}
-        return preloaded
-
+    # Pre-pass toàn cục cho cue đơn (không đường group-plan nên preload luôn
+    # được tiêu thụ; cue cache-hit đã bị bỏ qua bên trong preload_probes).
+    singles_preload = preload_probes(
+        voice, cues, texts, run_root, clip_root, worker_sha, emit,
+        [(indices[0], cues[indices[0]], texts[indices[0]]) for indices in all_groups if len(indices) == 1])
     ordered_entries = []
     # P2 (02/10, cách ly lỗi): cue vật lý bất khả thi không được giết cả job
     # (vụ 169/1095/3407: chết con đầu -> rerun chết con tiếp, vô hạn). Ghi nhận
@@ -2499,8 +2521,10 @@ def main() -> int:
             resolved: list | None = None
             # Nhóm nhiều cue rớt plan-cache: batch probe thành viên rồi mới
             # đọc đơn từng cue (preload chỉ tiêu khi load_clip rớt thật).
-            group_preload = (preload_probes([(group_indices[pos], group_cues[pos], group_texts[pos])
-                                                for pos in range(len(group_indices))])
+            group_preload = (preload_probes(
+                                 voice, cues, texts, run_root, clip_root, worker_sha, emit,
+                                 [(group_indices[pos], group_cues[pos], group_texts[pos])
+                                  for pos in range(len(group_indices))])
                              if len(group_indices) > 1 else singles_preload)
             try:
                 resolved = [resolve_individual(index, cues[index], texts[index], group_preload)

@@ -136,6 +136,7 @@ Invoke-Checked python @("csharp/scripts/verify_editor_voice_preview_export_contr
 Invoke-Checked python @("csharp/scripts/verify_editor_voice_reopen_contract.py")
 Invoke-Checked python @("csharp/scripts/verify_editor_voice_generate_contract.py")
 Invoke-Checked python @("csharp/scripts/verify_editor_voice_duration_contract.py")
+Invoke-Checked python @("internal/vieneu/test_preload_probes.py")
 Invoke-Checked python @("csharp/scripts/verify_editor_tts_cancel_contract.py")
 Invoke-Checked python @("csharp/scripts/verify_editor_tts_restart_contract.py")
 Invoke-Checked python @("csharp/scripts/verify_editor_preview_unload_contract.py")
