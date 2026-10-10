@@ -39,6 +39,22 @@ public static class VietnameseTtsTextNormalizer
     {
         if (string.IsNullOrWhiteSpace(value)) return string.Empty;
         var text = value.Normalize(NormalizationForm.FormC).Trim();
+        // 10/10 vụ voice đánh vần (“P-H-I-M...”): model đọc chuỗi IN HOA như
+        // viết tắt, đánh vần từng chữ. Chỉ gập khi CẢ CUE không có chữ thường
+        // (banner/credit kiểu “PHIM ĐƯỢC THUYẾT MINH...”) — từ viết tắt lẻ trong
+        // câu thường (“Dùng AI để...”) giữ nguyên để vẫn đánh vần đúng.
+        // Chỉ đổi chữ voice đọc; SRT hiển thị giữ nguyên chữ gốc.
+        var hasLetter = false;
+        var hasLower = false;
+        foreach (var rune in text.EnumerateRunes())
+        {
+            if (Rune.IsLetter(rune))
+            {
+                hasLetter = true;
+                if (Rune.IsLower(rune)) { hasLower = true; break; }
+            }
+        }
+        if (hasLetter && !hasLower) text = text.ToLowerInvariant();
         text = DateRegex().Replace(text, match =>
         {
             var day = NumberToWords(Parse(match.Groups["d"].Value));

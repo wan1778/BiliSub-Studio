@@ -1306,6 +1306,13 @@ internal static class Program
             VietnameseTtsTextNormalizer.Normalize("Hôm nay 02/03/2026 lúc 09:05"));
         Equal("ba phẩy hai phần trăm", VietnameseTtsTextNormalizer.Normalize("3,2%"));
         Equal("một trăm hai mươi ba", VietnameseTtsTextNormalizer.Normalize("123"));
+        // 10/10 vụ voice đánh vần chữ IN HOA: cả cue không có chữ thường thì
+        // gập để đọc liền mạch; viết tắt lẻ trong câu thường thì giữ nguyên.
+        Equal("phim được thuyết minh bởi trang phây-búc mê tu tiên",
+            VietnameseTtsTextNormalizer.Normalize("PHIM ĐƯỢC THUYẾT MINH BỞI\r\nTRANG PHÂY-BÚC MÊ TU TIÊN"));
+        Equal("a!", VietnameseTtsTextNormalizer.Normalize("A!"));
+        Equal("Dùng AI để làm việc", VietnameseTtsTextNormalizer.Normalize("Dùng AI để làm việc"));
+        Equal("tập mười hai", VietnameseTtsTextNormalizer.Normalize("TẬP 12"));
         foreach (var text in new[] { "Xin chào", "123", "你好", "sư phu\u0323", "１２３", "Ⅻ", "🔥 có lời" })
             True(VietnameseTtsTextNormalizer.HasSpeakableUnits(text), $"speakable text was rejected: {text}");
         foreach (var text in new string?[] { null, "", "   ", ".", "...", "##", "?!", "🔥", "👨‍👩‍👧", "\u200B", "\u0301" })
