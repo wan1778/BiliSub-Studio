@@ -45,6 +45,8 @@ public sealed partial class EditorPage : Page
     // tiếp từ chỗ dừng thay vì làm lại từ đầu. Cờ này để poll job giữ lại
     // hướng dẫn chạy tiếp khi job dừng mà không ra result.
     private bool _ttsPausedByUser;
+    private bool _asrPausedByUser;
+    private const string AsrPausedResumeHint = "Đã tạm dừng phân tích nhịp. Nhịp đã xong được giữ lại; bấm «Phân tích nhịp» hoặc «Tạo voice» để chạy tiếp từ chỗ dừng.";
     private const string TtsPausedResumeHint = "Đã tạm dừng tạo voice. Các câu đọc xong được giữ lại; bấm «Tạo voice» để chạy tiếp từ chỗ dừng.";
     // EDIT-CANCEL-OWNERSHIP: id còn "sống" (đang cancel/dọn dẹp) nhưng đã tách khỏi
     // poll UI sau watchdog. Busy-state vẫn phải giữ cho tới khi job terminal thật.
@@ -831,6 +833,7 @@ public sealed partial class EditorPage : Page
         {
             var executionMode = (AsrExecutionModeBox.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "gpu";
             _asrJobId = _application.StartEditorAsr(new EditorAsrRequest(_project.Id, _path, _media.Duration, executionMode));
+            _asrPausedByUser = false;
             var jobId = _asrJobId;
             VoiceProgress.Value = 0;
             const string status = "Đang tự lấy word timing và khoảng lặng để canh voice...";
@@ -862,7 +865,15 @@ public sealed partial class EditorPage : Page
             try { snapshot = _application.Jobs.GetSnapshot(jobId); }
             catch
             {
-                if (string.Equals(_asrJobId, jobId, StringComparison.Ordinal)) _asrJobId = null;
+                if (string.Equals(_asrJobId, jobId, StringComparison.Ordinal))
+                {
+                    _asrJobId = null;
+                    if (_asrPausedByUser)
+                    {
+                        _asrPausedByUser = false;
+                        AsrStatusText.Text = VoiceStatusText.Text = AsrPausedResumeHint;
+                    }
+                }
                 RefreshEditorActions();
                 break;
             }
@@ -874,6 +885,7 @@ public sealed partial class EditorPage : Page
                 // EDIT-SWITCH: khối xử lý kết quả nằm sau Done nhưng trước khi xóa
                 // id theo dõi. Mọi exception ở đây từng làm cờ busy kẹt vĩnh viễn
                 // (nút Mở video chết, phải restart app), nên bắt buộc try/finally.
+                var applied = false;
                 try
                 {
                     if (sourceRevision == _editorSourceRevision
@@ -908,11 +920,20 @@ public sealed partial class EditorPage : Page
                             : "Đã cập nhật nhịp thoại. Có thể tạo lại voice theo timing mới.";
                         RenderOverlays();
                         await SaveProjectNowAsync();
+                        applied = true;
                     }
                 }
                 finally
                 {
-                    if (string.Equals(_asrJobId, jobId, StringComparison.Ordinal)) _asrJobId = null;
+                    if (string.Equals(_asrJobId, jobId, StringComparison.Ordinal))
+                    {
+                        _asrJobId = null;
+                        if (!applied && _asrPausedByUser)
+                        {
+                            _asrPausedByUser = false;
+                            AsrStatusText.Text = VoiceStatusText.Text = AsrPausedResumeHint;
+                        }
+                    }
                     RefreshEditorActions();
                 }
                 break;
@@ -1088,11 +1109,24 @@ public sealed partial class EditorPage : Page
 
     private void PauseVoice_Click(object sender, RoutedEventArgs e)
     {
-        var job = _ttsJobId;
-        if (job is null) return;
-        _ttsPausedByUser = true;
-        _application.CancelJob(job);
-        VoiceStatusText.Text = "Đang tạm dừng tạo voice và giữ các câu đã đọc xong...";
+        // Tạm dừng kiểu giữ-chỗ (giống TTS): hủy job nhưng giữ checkpoint,
+        // chạy lại tiếp từ frontier. ASR resume được vì TranscribeAsync đọc
+        // checkpoint dở (không phải clip-resume như TTS nhưng cùng pattern).
+        if (_ttsJobId is { } tts)
+        {
+            _ttsPausedByUser = true;
+            _application.CancelJob(tts);
+            VoiceStatusText.Text = "Đang tạm dừng tạo voice và giữ các câu đã đọc xong...";
+            return;
+        }
+        if (_asrJobId is { } asr)
+        {
+            _asrPausedByUser = true;
+            _application.CancelJob(asr);
+            var message = "Đang tạm dừng phân tích nhịp và giữ checkpoint nhịp đã xong...";
+            AsrStatusText.Text = message;
+            VoiceStatusText.Text = message;
+        }
     }
 
     private void CancelVoice_Click(object sender, RoutedEventArgs e)
@@ -2572,9 +2606,10 @@ public sealed partial class EditorPage : Page
         GenerateTtsButton.IsEnabled = voiceBlockReason is null;
         if (idle && voiceBlockReason is not null) VoiceStatusText.Text = voiceBlockReason;
         CancelVoiceButton.IsEnabled = _asrJobId is not null || _ttsJobId is not null;
-        // 08/10 (user): lúc đầu 1 nút Tạo voice; đang chạy hiện 2 nút Tạm dừng
-        // + Hủy; xong về lại nút Tạo voice lại từ đầu. Tạm dừng chỉ hiện khi
-        // job TTS đang chạy (ASR không có clip-resume nên chỉ có Hủy).
+        // 08/10 (user) + 10/10: lúc rảnh 1 nút Tạo voice; lúc bận LUÔN 2 nút
+        // Tạm dừng + Hủy cạnh nhau, không ẩn/hiện, không co/giãn cột giữa chừng
+        // (nhảy layout). Tạm dừng dùng được cho cả TTS (giữ clip) lẫn ASR (giữ
+        // checkpoint frontier, chạy lại tiếp từ chỗ dừng).
         var voiceBusy = _asrJobId is not null || _ttsJobId is not null;
         GenerateTtsButton.Visibility = voiceBusy ? Visibility.Collapsed : Visibility.Visible;
         VoiceBusyButtons.Visibility = voiceBusy ? Visibility.Visible : Visibility.Collapsed;
@@ -2582,10 +2617,8 @@ public sealed partial class EditorPage : Page
             GenerateTtsButton.Content = _voiceTrack is null
                 ? "✦  Tạo voice và tự canh timecode"
                 : "↻  Tạo voice lại từ đầu";
-        var ttsRunning = _ttsJobId is not null;
-        PauseVoiceButton.Visibility = ttsRunning ? Visibility.Visible : Visibility.Collapsed;
-        PauseVoiceButton.IsEnabled = ttsRunning;
-        Grid.SetColumnSpan(CancelVoiceButton, ttsRunning ? 1 : 2);
+        PauseVoiceButton.Visibility = Visibility.Visible;
+        PauseVoiceButton.IsEnabled = voiceBusy;
         if (VoiceProgressContainer is not null) VoiceProgressContainer.Visibility = Visibility.Visible;
         if (_voiceSampleButton is not null) _voiceSampleButton.IsEnabled = idle && !_playback.IsPreviewMode;
         KaraokeToggle.IsEnabled = idle && !_playback.IsPreviewMode && _subtitleSource is not null;
