@@ -593,7 +593,7 @@ internal sealed partial class LocalTtsService : IDisposable
                 || cue.Frames != wantFrames
                 || Math.Abs(cue.FittedDuration - cue.Frames / (double)expectedSampleRate) > 1e-9)
                 throw new InvalidDataException("Voice chưa khớp đủ thời lượng thoại gốc hoặc bị cắt đuôi; không nhận master này.");
-            var needsReview = ValidateNativeSynthesis(cue, targetFrames, naturalSample, expectedSampleRate, IsVieneuVoice(voice))
+            var needsReview = ValidateNativeSynthesis(cue, targetFrames, naturalSample, expectedSampleRate, IsVieneuVoice(voice), index)
                 || cue.TimingSource is "srt-fallback" or "sentence-group"
                 // 28/09: rút gọn chữ đọc luôn review (worker khai spoken_text) —
                 // khớp worker native_record_valid, không lệch status.

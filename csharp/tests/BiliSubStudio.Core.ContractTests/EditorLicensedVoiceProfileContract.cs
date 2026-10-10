@@ -228,20 +228,20 @@ internal static class EditorLicensedVoiceProfileContract
         };
         object Cue(Dictionary<string, object> values) => System.Text.Json.JsonSerializer.Deserialize(
             System.Text.Json.JsonSerializer.Serialize(values), cueType, json)!;
-        Equal(true, validate.Invoke(null, [Cue(fixture), 44100L, false, 22050, false]));
+        Equal(true, validate.Invoke(null, [Cue(fixture), 44100L, false, 22050, false, 0]));
         Equal(true, validate.Invoke(null, [Cue(new(fixture) { ["source_frames"] = 43100L,
             ["generated_frames"] = 43100L, ["padding_frames"] = 1000L,
-            ["native_reference_frames"] = 58185L }), 44100L, false, 22050, false]));
+            ["native_reference_frames"] = 58185L }), 44100L, false, 22050, false, 0]));
         Equal(true, validate.Invoke(null, [Cue(new(fixture) { ["source_frames"] = 45000L,
             ["generated_frames"] = 44100L, ["trimmed_silence_frames"] = 900L, ["padding_frames"] = 0L,
-            ["native_reference_frames"] = 59535L }), 44100L, false, 22050, false]));
+            ["native_reference_frames"] = 59535L }), 44100L, false, 22050, false, 0]));
         Equal(true, validate.Invoke(null, [Cue(new(fixture) { ["timing_source"] = "sentence-group",
              ["length_scale"] = .50d, ["group_native_frames"] = 59130L,
-             ["actual_speed_factor"] = 1.35d }), 44100L, false, 22050, false]));
+             ["actual_speed_factor"] = 1.35d }), 44100L, false, 22050, false, 0]));
         Equal(true, validate.Invoke(null, [Cue(new(fixture) { ["timing_source"] = "sentence-group",
              ["length_scale"] = .60d, ["group_native_frames"] = 59130L,
              ["actual_speed_factor"] = 1.35d, ["synthesis_attempts"] = 12,
-             ["synthesis_calls"] = 12 }), 44100L, false, 22050, false]));
+             ["synthesis_calls"] = 12 }), 44100L, false, 22050, false, 0]));
         var tempo = new Dictionary<string, object>
         {
             ["fit_method"] = "piper-atempo", ["raw_duration"] = 90000d / 22050,
@@ -253,9 +253,12 @@ internal static class EditorLicensedVoiceProfileContract
             ["actual_speed_factor"] = 2d,
             ["cache_hit"] = false, ["status"] = "review", ["timing_source"] = "srt-fallback",
         };
-        Equal(true, validate.Invoke(null, [Cue(tempo), 44100L, false, 22050, false]));
-        Equal(true, validate.Invoke(null, [Cue(new(fixture) { ["synthesis_calls"] = 12 }), 44100L, false, 22050, false]));
-        Equal(true, validate.Invoke(null, [Cue(new(fixture) { ["cache_hit"] = true, ["synthesis_calls"] = 0 }), 44100L, false, 22050, false]));
+        Equal(true, validate.Invoke(null, [Cue(tempo), 44100L, false, 22050, false, 0]));
+        Equal(true, validate.Invoke(null, [Cue(new(fixture) { ["synthesis_calls"] = 12 }), 44100L, false, 22050, false, 0]));
+        // 10/10 vụ cue thật calls 17/attempts 5 rớt master oan: calls là tổng
+        // mọi phase, attempts chỉ phase cuối — bound mới chấp nhận.
+        Equal(true, validate.Invoke(null, [Cue(new(fixture) { ["synthesis_attempts"] = 5, ["synthesis_calls"] = 17 }), 44100L, false, 22050, false, 3996]));
+        Equal(true, validate.Invoke(null, [Cue(new(fixture) { ["cache_hit"] = true, ["synthesis_calls"] = 0 }), 44100L, false, 22050, false, 0]));
         // VieNeu engine methods (30/09): natural + atempo accepted; atempo ngay
         // lượt 1 được miễn điều kiện native==generated (không vòng scale nên
         // native != generated là trung thực — vụ cue5 im oan). Piper giữ nghiêm.
@@ -270,7 +273,7 @@ internal static class EditorLicensedVoiceProfileContract
             ["actual_speed_factor"] = 1d, ["tempo_factor"] = 0d, ["tempo_input_frames"] = 0L,
             ["tempo_attempts"] = 0, ["status"] = "fit", ["timing_source"] = "srt-fallback",
         };
-        Equal(false, validate.Invoke(null, [Cue(vnatural), 55875L, false, 22050, true]));
+        Equal(false, validate.Invoke(null, [Cue(vnatural), 55875L, false, 22050, true, 0]));
         var vtempo1 = new Dictionary<string, object>
         {
             ["fit_method"] = "vieneu-atempo", ["raw_duration"] = 3.5d, ["frames"] = 55875L,
@@ -283,7 +286,7 @@ internal static class EditorLicensedVoiceProfileContract
             ["tempo_factor"] = 1.4d, ["tempo_input_frames"] = 77175L, ["tempo_attempts"] = 1,
             ["status"] = "review", ["timing_source"] = "srt-fallback",
         };
-        Equal(true, validate.Invoke(null, [Cue(vtempo1), 55875L, false, 22050, true]));
+        Equal(true, validate.Invoke(null, [Cue(vtempo1), 55875L, false, 22050, true, 0]));
         // Luật 01/10 (chỉ VieNeu): atempo quá 1.5x bị từ chối (trước đây tới
         // 100x vẫn lọt — vụ 312 cue >2x, max 7.63x). Piper giữ nguyên.
         var vtempoTooFast = new Dictionary<string, object>(vtempo1)
@@ -294,7 +297,7 @@ internal static class EditorLicensedVoiceProfileContract
         };
         try
         {
-            validate.Invoke(null, [Cue(vtempoTooFast), 55875L, false, 22050, true]);
+            validate.Invoke(null, [Cue(vtempoTooFast), 55875L, false, 22050, true, 0]);
             throw new InvalidOperationException("VieNeu tempo over 1.5x was accepted");
         }
         catch (TargetInvocationException error) when (error.InnerException is InvalidDataException) { }
@@ -313,7 +316,7 @@ internal static class EditorLicensedVoiceProfileContract
             ["tempo_factor"] = 1.7d, ["tempo_input_frames"] = 23800L, ["tempo_attempts"] = 1,
             ["status"] = "review", ["timing_source"] = "srt-fallback",
         };
-        Equal(true, validate.Invoke(null, [Cue(vtempoMicro), 14332L, false, 22050, true]));
+        Equal(true, validate.Invoke(null, [Cue(vtempoMicro), 14332L, false, 22050, true, 0]));
         // Khung 1.0s pace 1.7x (lớp cue 0.7-1.1s còn rớt) cũng trong micro-band.
         var vtempoMicroWide = new Dictionary<string, object>(vtempoMicro)
         {
@@ -322,7 +325,7 @@ internal static class EditorLicensedVoiceProfileContract
             ["actual_speed_factor"] = 1.7d, ["tempo_factor"] = 1.7d,
             ["tempo_input_frames"] = 36720L, ["raw_duration"] = 36720d / 22050,
         };
-        Equal(true, validate.Invoke(null, [Cue(vtempoMicroWide), 22050L, false, 22050, true]));
+        Equal(true, validate.Invoke(null, [Cue(vtempoMicroWide), 22050L, false, 22050, true, 0]));
         // Micro 2.4x trong trần 2.5x mới thì nhận + review.
         var vtempoMicroFast = new Dictionary<string, object>(vtempoMicro)
         {
@@ -331,7 +334,7 @@ internal static class EditorLicensedVoiceProfileContract
             ["actual_speed_factor"] = 2.4d, ["tempo_factor"] = 2.4d,
             ["tempo_input_frames"] = 33600L, ["raw_duration"] = 33600d / 22050,
         };
-        Equal(true, validate.Invoke(null, [Cue(vtempoMicroFast), 14332L, false, 22050, true]));
+        Equal(true, validate.Invoke(null, [Cue(vtempoMicroFast), 14332L, false, 22050, true, 0]));
         var vtempoMicroTooFast = new Dictionary<string, object>(vtempoMicro)
         {
             ["source_frames"] = 29250L, ["native_reference_frames"] = 29250L,
@@ -341,7 +344,7 @@ internal static class EditorLicensedVoiceProfileContract
         };
         try
         {
-            validate.Invoke(null, [Cue(vtempoMicroTooFast), 14332L, false, 22050, true]);
+            validate.Invoke(null, [Cue(vtempoMicroTooFast), 14332L, false, 22050, true, 0]);
             throw new InvalidOperationException("VieNeu micro tempo over 2.5x was accepted");
         }
         catch (TargetInvocationException error) when (error.InnerException is InvalidDataException) { }
@@ -354,7 +357,7 @@ internal static class EditorLicensedVoiceProfileContract
         };
         try
         {
-            validate.Invoke(null, [Cue(vtempoLongTooFast), 55875L, false, 22050, true]);
+            validate.Invoke(null, [Cue(vtempoLongTooFast), 55875L, false, 22050, true, 0]);
             throw new InvalidOperationException("VieNeu long-window tempo over 1.5x was accepted");
         }
         catch (TargetInvocationException error) when (error.InnerException is InvalidDataException) { }
@@ -366,7 +369,7 @@ internal static class EditorLicensedVoiceProfileContract
             ["native_reference_frames"] = 44100L, ["actual_speed_factor"] = 0.8d,
             ["tempo_factor"] = 0.8d, ["tempo_input_frames"] = 44100L, ["raw_duration"] = 2d,
         };
-        Equal(true, validate.Invoke(null, [Cue(vtempoSlow), 55875L, false, 22050, true]));
+        Equal(true, validate.Invoke(null, [Cue(vtempoSlow), 55875L, false, 22050, true, 0]));
         var vtempoTooSlow = new Dictionary<string, object>(vtempoSlow)
         {
             ["source_frames"] = 33075L,
@@ -375,7 +378,7 @@ internal static class EditorLicensedVoiceProfileContract
         };
         try
         {
-            validate.Invoke(null, [Cue(vtempoTooSlow), 55875L, false, 22050, true]);
+            validate.Invoke(null, [Cue(vtempoTooSlow), 55875L, false, 22050, true, 0]);
             throw new InvalidOperationException("VieNeu stretch below 1/1.4x was accepted");
         }
         catch (TargetInvocationException error) when (error.InnerException is InvalidDataException) { }
@@ -386,14 +389,14 @@ internal static class EditorLicensedVoiceProfileContract
         };
         try
         {
-            validate.Invoke(null, [Cue(vtempoDegenerate), 88200L, false, 22050, true]);
+            validate.Invoke(null, [Cue(vtempoDegenerate), 88200L, false, 22050, true, 0]);
             throw new InvalidOperationException("Degenerate vieneu tempo was accepted");
         }
         catch (TargetInvocationException error) when (error.InnerException is InvalidDataException) { }
         var piperTempo1 = new Dictionary<string, object>(vtempo1) { ["fit_method"] = "piper-atempo" };
         try
         {
-            validate.Invoke(null, [Cue(piperTempo1), 55875L, false, 22050, false]);
+            validate.Invoke(null, [Cue(piperTempo1), 55875L, false, 22050, false, 0]);
             throw new InvalidOperationException("Piper attempt-1 native mismatch was accepted");
         }
         catch (TargetInvocationException error) when (error.InnerException is InvalidDataException) { }
@@ -418,7 +421,7 @@ internal static class EditorLicensedVoiceProfileContract
         {
             try
             {
-                validate.Invoke(null, [Cue(values), 44100L, false, 22050, false]);
+                validate.Invoke(null, [Cue(values), 44100L, false, 22050, false, 0]);
                 throw new InvalidOperationException("Invalid native synthesis metadata was accepted");
             }
             catch (TargetInvocationException error) when (error.InnerException is InvalidDataException) { }
@@ -433,7 +436,7 @@ internal static class EditorLicensedVoiceProfileContract
         {
             try
             {
-                validate.Invoke(null, [Cue(values), 44100L, false, 22050, false]);
+                validate.Invoke(null, [Cue(values), 44100L, false, 22050, false, 0]);
                 throw new InvalidOperationException("Invalid tempo fallback metadata was accepted");
             }
             catch (TargetInvocationException error) when (error.InnerException is InvalidDataException) { }

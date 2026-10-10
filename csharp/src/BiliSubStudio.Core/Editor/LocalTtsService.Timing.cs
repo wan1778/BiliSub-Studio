@@ -30,7 +30,7 @@ internal sealed partial class LocalTtsService
     private static double VieneuMaxFactorFor(long targetFrames) =>
         targetFrames is > 0 and < VieneuMicroWindowFrames ? VieneuMicroMaxTempoFactor : VieneuMaxTempoFactor;
 
-    private static bool ValidateNativeSynthesis(TtsWorkerCue cue, long targetFrames, bool naturalSample, int sampleRate, bool isVieneu)
+    private static bool ValidateNativeSynthesis(TtsWorkerCue cue, long targetFrames, bool naturalSample, int sampleRate, bool isVieneu, int index)
     {
         // Silence quarantine: no speech could be synthesized for this cue (garbage text or an
         // unfillable window). The timeline stays intact because every sample is real silence of
@@ -59,10 +59,20 @@ internal sealed partial class LocalTtsService
             || cue.TrimmedSilenceFrames < 0 || cue.TrimmedSilenceFrames >= cue.SourceFrames
             || cue.PaddingFrames < 0 || cue.PaddingFrames >= targetFrames || cue.GeneratedFrames != cue.Frames - cue.PaddingFrames
             || cue.SynthesisAttempts < 1 || cue.SynthesisAttempts > 12
+            // 10/10 vụ cue 3996 calls 17/attempts 5 rớt master oan: synthesis_calls
+            // là TỔNG infer mọi phase (phase 1:1 đã khớp worker-side, batch ≤4 một
+            // lần, escalate seed budget ~38, multi-candidate cộng dồn) trong khi
+            // synthesis_attempts chỉ của phase cuối — chặn trên tuyệt đối +10 phạt
+            // oan cue nhiều phase. Bound hiệu chuẩn theo mọi bằng chứng, dạng tỉ lệ
+            // calls <= 6 * attempts: cue thật 17/5 lọt (17<=30), fixture 12/2 lọt
+            // khít (12<=12), fixture 13/2 rớt (13>12), vụ cũ 13-35/1 rớt. Tripwire
+            // đếm sai thực sự nằm ở assertion phase_calls==attempts của worker
+            // (raise RuntimeError). Audio hợp lệ đã có frames/SHA/pace/tempo bounds
+            // độc lập bao phủ.
             || (cue.CacheHit ? cue.SynthesisCalls != 0
-                : cue.SynthesisCalls < cue.SynthesisAttempts || cue.SynthesisCalls > cue.SynthesisAttempts + 10)
+                : cue.SynthesisCalls < cue.SynthesisAttempts || cue.SynthesisCalls > cue.SynthesisAttempts * 6)
             || (naturalSample && cue.TimingSource != "sample"))
-            throw new InvalidDataException("Voice không có metadata nhịp đọc Piper hợp lệ; không nhận master này.");
+            throw new InvalidDataException($"Voice không có metadata nhịp đọc Piper hợp lệ; không nhận master này (cue {index} {cue.Id}).");
         if (cue.NativeReferenceFrames <= 0 || !double.IsFinite(cue.ActualSpeedFactor)
             || (isVieneu
                 ? cue.ActualSpeedFactor < VieneuMinTempoFactor - 1e-9 || cue.ActualSpeedFactor > VieneuMaxFactorFor(targetFrames)
@@ -71,7 +81,7 @@ internal sealed partial class LocalTtsService
                 ? cue.GroupNativeFrames != cue.NativeReferenceFrames
                 : cue.GroupNativeFrames != 0
                     || Math.Abs(cue.NativeReferenceFrames / (double)cue.GeneratedFrames - cue.ActualSpeedFactor) > 1e-9))
-            throw new InvalidDataException("Voice không có giới hạn tốc độ đọc thực đo hợp lệ.");
+            throw new InvalidDataException($"Voice không có giới hạn tốc độ đọc thực đo hợp lệ (cue {index} {cue.Id}).");
         if (cue.SynthesisAttempts == 1
             && (cue.LengthScale != cue.BaseLengthScale
                 || Math.Abs(cue.RawDuration - cue.SourceFrames / (double)sampleRate) > 1e-9
@@ -80,7 +90,7 @@ internal sealed partial class LocalTtsService
                 // tempo là trung thực. Miễn CHỈ cho vieneu-atempo; Piper giữ
                 // nghiêm byte-for-byte như cũ (với Piper là unreachable).
                 || (!sentenceGroup && !(isVieneu && cue.FitMethod == atempoMethod) && cue.NativeReferenceFrames != cue.GeneratedFrames)))
-            throw new InvalidDataException("Voice lượt tự nhiên không có metadata Piper gốc hợp lệ.");
+            throw new InvalidDataException($"Voice lượt tự nhiên không có metadata Piper gốc hợp lệ (cue {index} {cue.Id}).");
         if (tempoFallback
             ? cue.TempoInputFrames != cue.SourceFrames - cue.TrimmedSilenceFrames
                 || (isVieneu
@@ -94,7 +104,7 @@ internal sealed partial class LocalTtsService
                 || cue.TempoAttempts is < 1 or > 6
             : cue.TempoFactor != 0 || cue.TempoInputFrames != 0 || cue.TempoAttempts != 0
                 || cue.SourceFrames - cue.TrimmedSilenceFrames != cue.GeneratedFrames)
-            throw new InvalidDataException("Voice không bảo toàn đầy đủ chuỗi thoại hoặc metadata thời lượng.");
+            throw new InvalidDataException($"Voice không bảo toàn đầy đủ chuỗi thoại hoặc metadata thời lượng (cue {index} {cue.Id}).");
         return tempoFallback || sentenceGroup || relativeScale is < .70 or > 1
             || cue.TrimmedSilenceFrames > 0 || cue.PaddingFrames > precisionPaddingBudget;
     }
