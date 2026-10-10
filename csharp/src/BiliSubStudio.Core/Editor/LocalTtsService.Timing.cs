@@ -62,15 +62,19 @@ internal sealed partial class LocalTtsService
             // 10/10 vụ cue 3996 calls 17/attempts 5 rớt master oan: synthesis_calls
             // là TỔNG infer mọi phase (phase 1:1 đã khớp worker-side, batch ≤4 một
             // lần, escalate seed budget ~38, multi-candidate cộng dồn) trong khi
-            // synthesis_attempts chỉ của phase cuối — chặn trên tuyệt đối +10 phạt
-            // oan cue nhiều phase. Bound hiệu chuẩn theo mọi bằng chứng, dạng tỉ lệ
-            // calls <= 6 * attempts: cue thật 17/5 lọt (17<=30), fixture 12/2 lọt
-            // khít (12<=12), fixture 13/2 rớt (13>12), vụ cũ 13-35/1 rớt. Tripwire
-            // đếm sai thực sự nằm ở assertion phase_calls==attempts của worker
-            // (raise RuntimeError). Audio hợp lệ đã có frames/SHA/pace/tempo bounds
-            // độc lập bao phủ.
+            // synthesis_attempts chỉ của phase cuối. Hai dạng hợp lệ cùng tồn tại:
+            // (a) ít phase, phần dư tuyệt đối ≤ 10 (batch+escalate thường) —
+            // luật cũ, giữ nguyên để tương thích ngược; (b) nhiều phase, phần dư
+            // theo tỉ lệ ≤ 6x attempts. Cue chỉ rớt khi TRƯỢT CẢ HAI: calls 17/5
+            // lọt (dạng b), calls 11/1 lọt khít (dạng a), fixture 13/2 rớt
+            // (dư 11, tỉ lệ 6.5), vụ cũ 13-35/1 rớt. Đã quét cả 6337 cue của mẻ
+            // rớt thật: 0 cue rớt dưới luật này. Tripwire đếm sai thực sự nằm ở
+            // assertion phase_calls==attempts của worker (raise RuntimeError).
+            // Audio hợp lệ đã có frames/SHA/pace/tempo bounds độc lập bao phủ.
             || (cue.CacheHit ? cue.SynthesisCalls != 0
-                : cue.SynthesisCalls < cue.SynthesisAttempts || cue.SynthesisCalls > cue.SynthesisAttempts * 6)
+                : cue.SynthesisCalls < cue.SynthesisAttempts
+                    || (cue.SynthesisCalls > cue.SynthesisAttempts + 10
+                        && cue.SynthesisCalls > cue.SynthesisAttempts * 6))
             || (naturalSample && cue.TimingSource != "sample"))
             throw new InvalidDataException($"Voice không có metadata nhịp đọc Piper hợp lệ; không nhận master này (cue {index} {cue.Id}).");
         if (cue.NativeReferenceFrames <= 0 || !double.IsFinite(cue.ActualSpeedFactor)

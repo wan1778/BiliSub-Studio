@@ -258,6 +258,13 @@ internal static class EditorLicensedVoiceProfileContract
         // 10/10 vụ cue thật calls 17/attempts 5 rớt master oan: calls là tổng
         // mọi phase, attempts chỉ phase cuối — bound mới chấp nhận.
         Equal(true, validate.Invoke(null, [Cue(new(fixture) { ["synthesis_attempts"] = 5, ["synthesis_calls"] = 17 }), 44100L, false, 22050, false, 3996]));
+        // Cue thật thứ hai calls 11/attempts 1: lọt khít dạng dư tuyệt đối.
+        // attempts=1 nên phải giữ metadata lượt tự nhiên nguyên vẹn
+        // (length_scale==base, raw==source/sr, native==generated, speed 1.0).
+        // Trả false = metadata hợp lệ và không cần review (đúng bản chất cue).
+        Equal(false, validate.Invoke(null, [Cue(new(fixture) { ["length_scale"] = 1d, ["raw_duration"] = 43800d / 22050,
+            ["native_reference_frames"] = 43800L, ["actual_speed_factor"] = 1d,
+            ["synthesis_attempts"] = 1, ["synthesis_calls"] = 11 }), 44100L, false, 22050, false, 1274]));
         Equal(true, validate.Invoke(null, [Cue(new(fixture) { ["cache_hit"] = true, ["synthesis_calls"] = 0 }), 44100L, false, 22050, false, 0]));
         // VieNeu engine methods (30/09): natural + atempo accepted; atempo ngay
         // lượt 1 được miễn điều kiện native==generated (không vòng scale nên
