@@ -129,5 +129,43 @@ class PreloadProbesTest(unittest.TestCase):
         self.assertEqual(self.chunks, [])
 
 
+class PreloadWiringTest(unittest.TestCase):
+    """Pin the main() wiring (10/10 crash): exactly one module-level
+    preload_probes, every call site uses the new explicit signature, and
+    all_groups is assigned before the first call (UnboundLocalError)."""
+
+    def test_wiring(self):
+        import ast
+        tree = ast.parse(WORKER.read_text(encoding="utf-8"))
+        defs = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "preload_probes"]
+        self.assertEqual(len(defs), 1)
+        calls = [n for n in ast.walk(tree)
+                 if isinstance(n, ast.Call)
+                 and isinstance(n.func, ast.Name) and n.func.id == "preload_probes"]
+        # 2 call sites: singles pre-pass + per-group probe.
+        self.assertEqual(len(calls), 2)
+        for call in calls:
+            self.assertGreaterEqual(len(call.args), 8)
+        # all_groups assignment must precede the first preload_probes call.
+        mains = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main"]
+        self.assertEqual(len(mains), 1)
+        order = []
+
+        def visit(node):
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, ast.Assign) and any(
+                        isinstance(t, ast.Name) and t.id == "all_groups" for t in child.targets):
+                    order.append(("assign", child.lineno))
+                if isinstance(child, ast.Call) and isinstance(child.func, ast.Name) \
+                        and child.func.id == "preload_probes":
+                    order.append(("call", child.lineno))
+                visit(child)
+        visit(mains[0])
+        first = {kind: line for kind, line in order}
+        self.assertIn("assign", first)
+        self.assertIn("call", first)
+        self.assertLess(first["assign"], first["call"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

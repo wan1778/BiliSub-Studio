@@ -2464,9 +2464,8 @@ def main() -> int:
 
     # Pre-pass toàn cục cho cue đơn (không đường group-plan nên preload luôn
     # được tiêu thụ; cue cache-hit đã bị bỏ qua bên trong preload_probes).
-    singles_preload = preload_probes(
-        voice, cues, texts, run_root, clip_root, worker_sha, emit,
-        [(indices[0], cues[indices[0]], texts[indices[0]]) for indices in all_groups if len(indices) == 1])
+    # NOTE: all_groups phải gán TRƯỚC call này (UnboundLocalError 10/10 khi
+    # refactor đặt call lên trước dòng gán) — test wiring-pin bên dưới.
     ordered_entries = []
     # P2 (02/10, cách ly lỗi): cue vật lý bất khả thi không được giết cả job
     # (vụ 169/1095/3407: chết con đầu -> rerun chết con tiếp, vô hạn). Ghi nhận
@@ -2497,6 +2496,7 @@ def main() -> int:
     # Pre-pass toàn cục cho cue đơn (không đường group-plan nên preload luôn
     # được tiêu thụ; cue cache-hit đã bị bỏ qua bên trong preload_probes).
     singles_preload = preload_probes(
+        voice, cues, texts, run_root, clip_root, worker_sha, emit,
         [(indices[0], cues[indices[0]], texts[indices[0]]) for indices in all_groups if len(indices) == 1])
     for group_indices in all_groups:
         group_cues = [cues[index] for index in group_indices]
