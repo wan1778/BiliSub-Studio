@@ -420,7 +420,7 @@ internal static class EditorLicensedVoiceProfileContract
             new(fixture) { ["timing_source"] = "sentence-group", ["length_scale"] = .60,
                 ["group_native_frames"] = 59130L, ["actual_speed_factor"] = 1.35d,
                 ["synthesis_attempts"] = 13, ["synthesis_calls"] = 13 },
-            new(fixture) { ["synthesis_calls"] = 13 },
+            new(fixture) { ["synthesis_calls"] = 1 },
             new(fixture) { ["synthesis_attempts"] = 1, ["synthesis_calls"] = 1 },
             new(fixture) { ["cache_hit"] = true },
         };

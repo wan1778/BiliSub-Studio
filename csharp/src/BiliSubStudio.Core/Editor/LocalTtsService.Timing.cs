@@ -59,22 +59,22 @@ internal sealed partial class LocalTtsService
             || cue.TrimmedSilenceFrames < 0 || cue.TrimmedSilenceFrames >= cue.SourceFrames
             || cue.PaddingFrames < 0 || cue.PaddingFrames >= targetFrames || cue.GeneratedFrames != cue.Frames - cue.PaddingFrames
             || cue.SynthesisAttempts < 1 || cue.SynthesisAttempts > 12
-            // 10/10 vụ cue 3996 calls 17/attempts 5 rớt master oan: synthesis_calls
-            // là TỔNG infer mọi phase (phase 1:1 đã khớp worker-side, batch ≤4 một
-            // lần, escalate seed budget ~38, multi-candidate cộng dồn) trong khi
-            // synthesis_attempts chỉ của phase cuối. Hai dạng hợp lệ cùng tồn tại:
-            // (a) ít phase, phần dư tuyệt đối ≤ 10 (batch+escalate thường) —
-            // luật cũ, giữ nguyên để tương thích ngược; (b) nhiều phase, phần dư
-            // theo tỉ lệ ≤ 6x attempts. Cue chỉ rớt khi TRƯỢT CẢ HAI: calls 17/5
-            // lọt (dạng b), calls 11/1 lọt khít (dạng a), fixture 13/2 rớt
-            // (dư 11, tỉ lệ 6.5), vụ cũ 13-35/1 rớt. Đã quét cả 6337 cue của mẻ
-            // rớt thật: 0 cue rớt dưới luật này. Tripwire đếm sai thực sự nằm ở
-            // assertion phase_calls==attempts của worker (raise RuntimeError).
-            // Audio hợp lệ đã có frames/SHA/pace/tempo bounds độc lập bao phủ.
-            || (cue.CacheHit ? cue.SynthesisCalls != 0
-                : cue.SynthesisCalls < cue.SynthesisAttempts
-                    || (cue.SynthesisCalls > cue.SynthesisAttempts + 10
-                        && cue.SynthesisCalls > cue.SynthesisAttempts * 6))
+            // 10/10-11/10 vụ rớt master oan (cue 3996 calls 17/5, cue 1274
+            // calls 11/1, cue 5841 calls 13/1): synthesis_calls KHÔNG phải số
+            // infer như tên gọi — nó đếm mọi vòng lặp on_attempt, kể cả vòng
+            // tái dùng batch không tổng hợp mới (Phase-2 condense: batch một
+            // lần rồi loop vẫn đếm từng variant). Mọi bound đặt trên nó (tuyệt
+            // đối +10, tỉ lệ 6x, cả hai dạng) đều là mò mẫm theo từng ca rớt:
+            // ca sau luôn phá bound của ca trước (13/1 lọt mọi bound mà cue
+            // lỗi cũ 13-35/1 cũng lọt). Bỏ chặn trên hẳn, chỉ giữ chặn dưới
+            // (tổng vòng lặp không thể ít hơn attempts phase cuối) + attempts
+            // trong 1..12 + cache-hit thì calls==0. Chống chạy vô hạn thực sự
+            // nằm ở worker (mọi vòng retry đều có trần, assertion
+            // phase_calls==attempts raise RuntimeError khi đếm lệch), còn đúng
+            // sai AUDIO đã có frames/SHA/pace/tempo/speed/review bounds độc lập
+            // bao phủ — chưa từng có ca audio hỏng nào mà chỉ mỗi bound calls
+            // này bắt được.
+            || (cue.CacheHit ? cue.SynthesisCalls != 0 : cue.SynthesisCalls < cue.SynthesisAttempts)
             || (naturalSample && cue.TimingSource != "sample"))
             throw new InvalidDataException($"Voice không có metadata nhịp đọc Piper hợp lệ; không nhận master này (cue {index} {cue.Id}).");
         if (cue.NativeReferenceFrames <= 0 || !double.IsFinite(cue.ActualSpeedFactor)

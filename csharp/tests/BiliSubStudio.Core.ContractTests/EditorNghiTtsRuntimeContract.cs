@@ -166,11 +166,10 @@ internal static class EditorNghiTtsRuntimeContract
                 var speedMetadata = timingSource == "sentence-group"
                     || Math.Abs(nativeReferenceFrames / (double)generated - actualSpeed) <= 1e-9;
                 const int maximumAttempts = 12;
-                // 10/10 vụ cue 3996 calls 17/attempts 5 + cue 1274 calls 11/1:
-                // rớt khi trượt cả hai dạng (dư tuyệt đối > 10 VÀ tỉ lệ > 6x).
+                // 11/10: synthesis_calls đếm cả vòng tái dùng batch (không phải
+                // số infer) nên bỏ chặn trên; chỉ giữ chặn dưới + attempts 1..12.
                 Check(nativeMetadata && speedMetadata
                     && attempts >= 1 && attempts <= maximumAttempts && calls >= attempts
-                    && (calls <= attempts + 10 || calls <= 6 * attempts)
                     && scale >= minimumScale && scale <= 1.20 && sourceFrames > 0 && trimmed >= 0
                     && nativeReferenceFrames > 0 && actualSpeed >= 1 && actualSpeed <= 100
                     && generated > 0 && generated + padding == frames
