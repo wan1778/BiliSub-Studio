@@ -1808,6 +1808,35 @@ def condense_variants(text: str) -> list[tuple[str, str]]:
     return out
 
 
+def punct_swap_variants(text: str) -> list:
+    """Bản text đổi dấu câu cuối để phá vòng lặp attractor của model
+    (kinh nghiệm cộng đồng XTTS: câu kẹt lặp mọi seed thường thoát khi
+    đổi `.`/`。` thành `!`/`！` — chỉ đổi ngữ điệu, không đổi chữ).
+    Trả [] khi không có dấu đổi được. Pure, test được."""
+    stripped = (text or "").rstrip()
+    if not stripped:
+        return []
+    pairs = ((".", "!"), ("。", "！"))
+    for old, new in pairs:
+        if stripped.endswith(old):
+            return [stripped[: -len(old)] + new]
+    return []
+
+
+def final_pick_repeats(fitted_path, text: str = "") -> bool:
+    """Kiểm cuối trước khi ship (11/10): bản định ship có lặp không.
+    Dùng góc ACF-leaning (không gate theo số chữ — gate đó đã chạy trong vòng
+    seed; đây là lưới độc lập bắt ca lọt). Chữ tự lặp thì bỏ qua (audio giống
+    nhau là đúng). Không bao giờ raise (file lạ -> False, fail-open).
+    Pure-ish, test được."""
+    try:
+        if text_self_repeats(text):
+            return False
+        return bool(speech_repeats(fitted_path))
+    except Exception:
+        return False
+
+
 def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str,
             timing_source: str, ffmpeg: Path, on_attempt, cue_id: str = "",
             preloaded: dict | None = None):
@@ -1824,6 +1853,12 @@ def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str,
     minimum_generated = minimum_speech_frames(text)
     attempt = 0
     probe_reused = False
+    # Ca ship nghi lặp mà mọi cách đều lặp (không còn bản sạch để chọn):
+    # vẫn ship để không im lặng (luật L1) nhưng cắm cờ -> spoken_text +
+    # status review để user tìm nghe lại. Chỉ set ở điểm ship Phase-3
+    # (đường natural cần cờ; đường tempo review sẵn). Không set khi chỉ
+    # loại bản vẽ (tránh flood review oan).
+    repeat_suspect = False
 
     def measure(active_text, active_scale):
         nonlocal attempt, probe_reused
@@ -1856,6 +1891,42 @@ def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str,
         return measured_source, measured_trim, measured_frames, (
             own_trim if measured_trim else path)
 
+    def punct_redraw(base_text):
+        """Đọc lại tối đa len(punct_swap_variants) lượt với dấu câu đổi để phá
+        attractor lặp khi mọi seed thường đều lặp (kinh nghiệm cộng đồng: đổi
+        `.`/`。` thành `!`/`！` phá được vòng lặp). Trả (fitted_path, measured,
+        swapped) sạch ĐẦU TIÊN vừa khung, hoặc None. Mọi lượt đều đếm attempt
+        (giữ invariant phase_calls==attempts) và tôn trần MAX — không cháy giờ,
+        không vỡ validator attempts≤12."""
+        nonlocal attempt
+        for swapped in punct_swap_variants(base_text):
+            if attempt >= MAX_SYNTHESIS_ATTEMPTS:
+                break
+            try:
+                import torch
+            except Exception:
+                return None
+            seed = int(hashlib.sha256(f"{key}:punctswap:{swapped}".encode("utf-8")).hexdigest(), 16) % (2 ** 31)
+            punct_path = run_root / (key + "-punct.wav")
+            attempt += 1
+            on_attempt(attempt, scale)
+            try:
+                torch.manual_seed(seed)
+                synthesize_cue(voice, swapped, punct_path, scale)
+                punct_measured = measure_file(punct_path)
+            except Exception:
+                continue
+            p_source, p_trim, p_frames, p_fitted = punct_measured
+            if p_frames < minimum_generated or p_frames <= 0 or p_frames > target_frames:
+                continue
+            if final_pick_repeats(p_fitted, swapped):
+                continue
+            emit({"event": "notice", "code": "punct-reseed",
+                  "message": (f"Cue {cue_id} mọi seed thường đều lặp: đổi dấu câu "
+                              f"phá attractor, bản sạch vừa khung + cờ review.")})
+            return p_fitted, punct_measured, swapped
+        return None
+
     def finish(active_text, note, measured, current_scale, raw, native, actual):
         measured_source, measured_trim, measured_frames, measured_fitted = measured
         condensed = active_text != text
@@ -1876,8 +1947,14 @@ def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str,
                   "group_native_frames": 0, "actual_speed_factor": actual,
                   "synthesis_attempts": attempt,
                   "status": "review" if (condensed or needs_rate_review(current_scale, base)
-                  or measured_trim or padding > padding_budget(target_frames)) else "fit"}
+                  or measured_trim or padding > padding_budget(target_frames)
+                  or repeat_suspect) else "fit"}
         if condensed:
+            record["spoken_text"] = active_text
+        if repeat_suspect and "spoken_text" not in record:
+            # Chữ đọc đúng như hiển thị nhưng audio nghi lặp: cắm chữ để C#
+            # (và native_record_valid) bắt review, user tìm nghe lại được.
+            # SRT hiển thị không dùng field này.
             record["spoken_text"] = active_text
             emit({"event": "notice", "code": "condense-fit",
                   "message": (f"Cue {cue_id} quá chật: rút gọn ({note}) đọc nhịp tự nhiên + cờ review. "
@@ -1936,6 +2013,12 @@ def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str,
     primary_repeats = (short_units <= 8 and not text_self_repeats(text)
                          and speech_repeats(fitted_source, short_units))
     primary_suspect = primary_repeats or too_long_for_text
+    # Kiểm cuối góc ACF-leaning (11/10): primary lọt veto trên nhưng ACF vẫn
+    # thấy lặp (đã chứng minh trên bản ship lặp thật) thì cũng coi là nghi —
+    # dồn về seed loop tìm bản sạch thay vì ship thẳng. Rẻ (~ms), fail-open.
+    if not primary_suspect and not text_self_repeats(text) \
+            and final_pick_repeats(fitted_source, text):
+        primary_suspect = True
     if primary_suspect:
         emit({"event": "notice", "code": "repeat-retry",
               "message": (f"Cue {cue_id} bản đọc nghi nhân đôi/dài bất thường, "
@@ -2055,6 +2138,16 @@ def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str,
                 best_frames, best_source, best_trim, best_fitted, best_pos = cut_best
                 best_cut = True
             if best_frames is not None:
+                # Kiểm cuối (11/10): bản thắng mà vẫn nghi lặp thì thử punct-swap
+                # có trần trước khi ship; vẫn lặp thì ship (tempo luôn review nên
+                # user tìm được, không cần cờ riêng ở nhánh này).
+                if not text_self_repeats(text) and final_pick_repeats(best_fitted, text):
+                    punct = punct_redraw(text)
+                    if punct is not None:
+                        p_fitted, p_measured, _ = punct
+                        p_source, p_trim, p_frames, _ = p_measured
+                        best_fitted, best_frames = p_fitted, p_frames
+                        best_source, best_trim = p_source, p_trim
                 try:
                     tempo_out, tempo_in, gen, factor, tempo_tries, speed = tempo_fit_clip(
                         ffmpeg, best_fitted, final_path, target_frames, best_frames, run_root, key)
@@ -2109,6 +2202,11 @@ def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str,
         if speakable_units(variant) <= 8 and not text_self_repeats(variant) \
                 and speech_repeats(variant_fitted, speakable_units(variant)):
             continue
+        # Kiểm cuối (11/10): veto trên đã lọc lặp rõ; góc ACF-leaning bắt thêm
+        # ca lọt (đã chứng minh trên bản ship lặp thật) — bỏ qua variant này,
+        # còn variant khác thì thử tiếp, hết thì rớt xuống Phase 3 xử lý.
+        if not text_self_repeats(variant) and final_pick_repeats(variant_fitted, variant):
+            continue
         short_text, short_note = variant, note
         short_measured = measured
         if variant_frames <= target_frames:
@@ -2132,6 +2230,27 @@ def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str,
         source_frames, trimmed_silence, frames, fitted_source = measure(active_text, scale)
     raw_frames, native_reference_frames = source_frames, frames
     actual_speed = native_reference_frames / frames
+    # Kiểm cuối Phase-3 (11/10): bản định ship mà nghi lặp (lọt mọi veto trên)
+    # thì thử punct-swap có trần; vẫn lặp thì ship + cờ review (finish() lo),
+    # không bao giờ im, không raise thêm (raise ở đây giết cả job oan).
+    if (not text_self_repeats(active_text) and fitted_source.is_file()
+            and final_pick_repeats(fitted_source, active_text)):
+        punct = punct_redraw(active_text)
+        if punct is not None:
+            p_fitted, p_measured, _ = punct
+            p_source, p_trim, p_frames, _ = p_measured
+            if p_frames >= active_min and p_frames > 0 and p_frames <= target_frames:
+                fitted_source = p_fitted
+                source_frames, trimmed_silence, frames = p_source, p_trim, p_frames
+                raw_frames, native_reference_frames = p_source, p_frames
+                actual_speed = 1.0
+                emit({"event": "notice", "code": "punct-reseed",
+                      "message": (f"Cue {cue_id} bản định ship nghi lặp: đổi dấu câu "
+                                  f"phá attractor được bản sạch vừa khung + cờ review.")})
+            else:
+                repeat_suspect = True
+        else:
+            repeat_suspect = True
     if frames < active_min:
         raise RuntimeError(
             f"VieNeu returned only {frames / SAMPLE_RATE:.3f}s of active speech for a non-empty cue")
