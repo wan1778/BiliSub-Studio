@@ -209,6 +209,7 @@ def voice_mix(audio_mode: str, source_gain: float, voice_start: float, voice_gai
     if voice_start > 0.0005:
         voice_filters.append(f"adelay={round(voice_start * 1000)}:all=1")
     voice_filters.append("loudnorm=I=-18:TP=-1.5:LRA=7")
+    voice_filters.append("acompressor=threshold=-24dB:ratio=3:attack=20:release=200:makeup=6dB")
     if abs(voice_gain - 1.0) > 0.0005:
         voice_filters.append(f"volume={voice_gain:.3f}")
     voice_filters.append("alimiter=limit=0.95:level=disabled")
@@ -240,9 +241,10 @@ keep = visual + ";" + voice_mix("keep", 1.0, 2.75, 1.25)
 require("ass=filename='caption.ass'[vout]" in keep, "EXPORT-12 Keep lost subtitle")
 require("adelay=2750:all=1" in keep and "volume=1.250" in keep, "EXPORT-12 Keep lost Voice timing/gain")
 require("loudnorm=I=-18:TP=-1.5:LRA=7" in keep
+        and "acompressor=threshold=-24dB:ratio=3:attack=20:release=200:makeup=6dB" in keep
         and "alimiter=limit=0.95:level=disabled" in keep
-        and keep.index("loudnorm=") < keep.index("volume=1.250") < keep.index("alimiter="),
-        "EXPORT-12 Keep must level Voice before user gain and cap peaks after")
+        and keep.index("loudnorm=") < keep.index("acompressor=") < keep.index("volume=1.250") < keep.index("alimiter="),
+        "EXPORT-12 Keep must level Voice, glue dynamics, then user gain, and cap peaks after")
 require("[0:a]asetpts=PTS-STARTPTS[sourcea]" not in keep, "EXPORT-12 Keep source chain must carry the timestamp sanitizer")
 require("[0:a]asetpts=PTS-STARTPTS,aresample=async=1:min_hard_comp=0.100:first_pts=0[sourcea]" in keep, "EXPORT-12 Keep lost source audio")
 require("[sourcea][voicea]amix=" in keep, "EXPORT-12 Keep must mix source + Voice")
@@ -250,7 +252,7 @@ require("[sourcea][voicea]amix=" in keep, "EXPORT-12 Keep must mix source + Voic
 duck = visual + ";" + voice_mix("duck", 0.35, 0.0, 1.0)
 require("ass=filename='caption.ass'[vout]" in duck, "EXPORT-12 Duck lost subtitle")
 require("[0:a]asetpts=PTS-STARTPTS,aresample=async=1:min_hard_comp=0.100:first_pts=0,volume=0.350[sourcea]" in duck, "EXPORT-12 Duck must attenuate source")
-require("[1:a]asetpts=PTS-STARTPTS,loudnorm=I=-18:TP=-1.5:LRA=7,alimiter=limit=0.95:level=disabled[voicea]" in duck,
+require("[1:a]asetpts=PTS-STARTPTS,loudnorm=I=-18:TP=-1.5:LRA=7,acompressor=threshold=-24dB:ratio=3:attack=20:release=200:makeup=6dB,alimiter=limit=0.95:level=disabled[voicea]" in duck,
         "EXPORT-12 Duck must level Voice without user gain attenuation")
 
 mute = visual + ";" + voice_mix("mute", 0.35, 0.0, 1.0)

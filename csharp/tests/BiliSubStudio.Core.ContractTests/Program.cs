@@ -1256,15 +1256,18 @@ internal static class Program
         var mute = Graph(new EditorAudioSettings("mute", 0));
         True(!mute.Contains("[0:a]", StringComparison.Ordinal), "mute+voice unexpectedly kept source audio");
         True(mute.Contains("[voicea]anull[aout]", StringComparison.Ordinal), "mute+voice did not route TTS to output");
-        // 09/10 vụ voice chỗ to chỗ nhỏ: nhánh voice luôn đi qua loudnorm
-        // (bám target EBU, đã thắng AB dynaudnorm/acompressor trên lát cắt thật)
-        // + alimiter (chốt trần), gain user đứng sau norm.
+        // 09/10 vụ voice chỗ to chỗ nhỏ + 11/10 vụ kéo gain là phập phù:
+        // nhánh voice: loudnorm (nền -18) -> acompressor nhẹ (ghìm đỉnh,
+        // 11/10 AB: dí trần ở gain 2.0 giảm 147->52, swing p95 tốt nhất)
+        // -> gain user -> alimiter (lưới an toàn). Gain to không còn bơm limiter.
         var voiceChain = keep.Split("[voicea]")[0].Split(";")[^1];
         True(voiceChain.Contains("loudnorm=I=-18:TP=-1.5:LRA=7", StringComparison.Ordinal), "voice leveling (loudnorm) missing from voice chain");
+        True(voiceChain.Contains("acompressor=threshold=-24dB:ratio=3:attack=20:release=200:makeup=6dB", StringComparison.Ordinal), "voice glue compressor missing from voice chain");
         True(voiceChain.Contains("alimiter=limit=0.95:level=disabled", StringComparison.Ordinal), "voice peak limiter missing from voice chain");
-        True(voiceChain.IndexOf("loudnorm=", StringComparison.Ordinal) < voiceChain.IndexOf("volume=", StringComparison.Ordinal)
+        True(voiceChain.IndexOf("loudnorm=", StringComparison.Ordinal) < voiceChain.IndexOf("acompressor=", StringComparison.Ordinal)
+            && voiceChain.IndexOf("acompressor=", StringComparison.Ordinal) < voiceChain.IndexOf("volume=", StringComparison.Ordinal)
             && voiceChain.IndexOf("volume=", StringComparison.Ordinal) < voiceChain.IndexOf("alimiter=", StringComparison.Ordinal),
-            "voice chain order must be loudnorm -> user gain -> limiter");
+            "voice chain order must be loudnorm -> compressor -> user gain -> limiter");
         return Task.CompletedTask;
     }
 

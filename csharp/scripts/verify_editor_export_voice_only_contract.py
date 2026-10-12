@@ -164,6 +164,7 @@ def voice_mix(audio_mode: str, source_gain: float, voice_start: float, source_st
     if delay > 0.0005:
         voice_filters.append(f"adelay={round(delay * 1000)}:all=1")
     voice_filters.append("loudnorm=I=-18:TP=-1.5:LRA=7")
+    voice_filters.append("acompressor=threshold=-24dB:ratio=3:attack=20:release=200:makeup=6dB")
     if abs(voice_gain - 1.0) > 0.0005:
         voice_filters.append(f"volume={voice_gain:.3f}")
     voice_filters.append("alimiter=limit=0.95:level=disabled")
@@ -189,15 +190,16 @@ keep_graph = voice_mix("keep", 1.0, 2.75, 0.0, 1.25)
 require("adelay=2750:all=1" in keep_graph, "EXPORT-09 Voice start delay fixture failed")
 require("volume=1.250" in keep_graph, "EXPORT-09 Voice gain fixture failed")
 require("loudnorm=I=-18:TP=-1.5:LRA=7" in keep_graph
+        and "acompressor=threshold=-24dB:ratio=3:attack=20:release=200:makeup=6dB" in keep_graph
         and "alimiter=limit=0.95:level=disabled" in keep_graph
-        and keep_graph.index("loudnorm=") < keep_graph.index("volume=1.250") < keep_graph.index("alimiter="),
-        "EXPORT-09 Keep must level Voice before user gain and cap peaks after")
+        and keep_graph.index("loudnorm=") < keep_graph.index("acompressor=") < keep_graph.index("volume=1.250") < keep_graph.index("alimiter="),
+        "EXPORT-09 Keep must level Voice, glue dynamics, then user gain, and cap peaks after")
 require("[0:a]asetpts=PTS-STARTPTS,aresample=async=1:min_hard_comp=0.100:first_pts=0[sourcea]" in keep_graph, "EXPORT-09 Keep must include source audio")
 require("[sourcea][voicea]amix=" in keep_graph, "EXPORT-09 Keep must mix source and Voice")
 
 duck_graph = voice_mix("duck", 0.35, 0.0, 0.0, 1.0)
 require("[0:a]asetpts=PTS-STARTPTS,aresample=async=1:min_hard_comp=0.100:first_pts=0,volume=0.350[sourcea]" in duck_graph, "EXPORT-09 Duck must attenuate source only")
-require("[1:a]asetpts=PTS-STARTPTS,loudnorm=I=-18:TP=-1.5:LRA=7,alimiter=limit=0.95:level=disabled[voicea]" in duck_graph,
+require("[1:a]asetpts=PTS-STARTPTS,loudnorm=I=-18:TP=-1.5:LRA=7,acompressor=threshold=-24dB:ratio=3:attack=20:release=200:makeup=6dB,alimiter=limit=0.95:level=disabled[voicea]" in duck_graph,
         "EXPORT-09 Duck must level Voice without user gain attenuation")
 
 mute_graph = voice_mix("mute", 0.35, 0.0, 0.0, 1.0)

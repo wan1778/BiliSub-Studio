@@ -1120,14 +1120,23 @@ public sealed class VideoEditorService
     // (p95 35.2dB), spread giữa-cue p5-p95 5.5dB, 3 cue peak >= -1dBFS — mà cả
     // pipeline (synth -> pace -> ráp master -> mix) không có khâu cân nào.
     // Thử AB trên lát cắt 70s thật: dynaudnorm LÀM TỆ HƠN (san peak nhưng
-    // banh RMS spread 5.0->7.4dB, 6 cue dí trần) nên loại; loudnorm thắng:
-    // spread 5.0->4.1dB, về đúng target I=-18, không peak mới, LRA 7.4->7.1.
-    // Sửa tại render: loudnorm single-pass bám target EBU theo thời gian
-    // (hằng số 400ms/3s tự nhiên, không pump như dynaudnorm); khoảng lặng số
-    // bị gate loại khỏi đo nên an toàn. volume=G của user giữ nguyên sau
-    // norm, alimiter chốt trần để vặn 200% cũng không rè. Nhánh voice FLAC
-    // sample-exact vẫn giữ nguyên từng mẫu giờ giấc — chỉ mức loudness đổi,
-    // timestamp không đụng (không ảnh hưởng vụ aresample 08/10).
+    // banh RMS spread 5.0->7.4dB, 6 cue dí trần) nên loại; loudnorm thắng vòng 1
+    // (spread 5.0->4.1dB, về đúng target I=-18, không peak mới, LRA 7.4->7.1).
+    // 11/10 vụ kéo gain to lên là phập phù/hụt hơi: đo AB cùng lát cắt ở gain
+    // 2.0 — chuỗi cũ limiter đánh liên tục (147 frame dí trần/700 = pumping),
+    // bỏ limiter thì clip thật 4156 mẫu (limiter bắt buộc ở lại). Thêm
+    // acompressor NHẸ trước gain theo đúng sách broadcast (compressor làm đều,
+    // limiter chỉ bắt đỉnh lọt; limiter gánh chính gây flat/breathy): makeup 4dB
+    // banh spread (5.0->5.6, nâng tails + release chạy qua khoảng lặng), makeup
+    // 0dB sạch nhất nhưng baseline -4.5dB. Chốt threshold -24dB + makeup 6dB:
+    // dí trần 147->52, swing p95 22.6->18.7 (tốt nhất), spread 5.1->5.4 (nhích
+    // +0.3dB không đáng kể), 0 clip, tỉ số RMS filtered/raw min 1.79 (biên
+    // validator 0.25 an toàn). Baseline 100% -2.4dB (đã báo user).
+    // Sửa tại render: loudnorm đặt mức nền -18 -> acompressor ghìm đỉnh nhẹ
+    // (threshold -24dB, ratio 3, attack 20ms, release 200ms theo nhịp nói) ->
+    // makeup bù có kiểm soát -> volume=G của user -> alimiter chốt trần.
+    // Nhánh voice FLAC sample-exact giữ nguyên từng mẫu giờ giấc — chỉ mức
+    // loudness đổi, timestamp không đụng (không ảnh hưởng vụ aresample 08/10).
     public static string BuildVoiceAudioFilter(EditorAudioSettings audio, EditorVoiceTrack voice, int voiceInputIndex, double sourceStart)
     {
         var relativeDelay = Math.Max(0, voice.Start - sourceStart);
@@ -1138,6 +1147,7 @@ public sealed class VideoEditorService
             voiceFilters.Add($"adelay={milliseconds}:all=1");
         }
         voiceFilters.Add("loudnorm=I=-18:TP=-1.5:LRA=7");
+        voiceFilters.Add("acompressor=threshold=-24dB:ratio=3:attack=20:release=200:makeup=6dB");
         if (Math.Abs(voice.Gain - 1) > .0005)
             voiceFilters.Add("volume=" + voice.Gain.ToString("0.000", CultureInfo.InvariantCulture));
         voiceFilters.Add("alimiter=limit=0.95:level=disabled");

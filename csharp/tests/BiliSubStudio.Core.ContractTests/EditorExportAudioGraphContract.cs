@@ -11,6 +11,7 @@ namespace BiliSubStudio.Core.ContractTests;
 // 09/10 vụ voice chỗ to chỗ nhỏ: nhánh voice thêm loudnorm (bám target EBU
 // theo thời gian, không đụng timing) + alimiter chốt trần; gain user đứng
 // sau norm nên núm Âm lượng voice vẫn có tác dụng mà không gây rè.
+// 11/10 vụ kéo gain là phập phù: thêm acompressor nhẹ giữa loudnorm và gain.
 internal static class EditorExportAudioGraphContract
 {
     [ModuleInitializer]
@@ -36,6 +37,7 @@ internal static class EditorExportAudioGraphContract
             Check(!voiceChain.Contains("aresample", StringComparison.OrdinalIgnoreCase), $"nhánh voice bị resample, mất khớp giờ tuyệt đối ({mode})");
             Check(graph.Contains("aresample=async=1", StringComparison.Ordinal), $"nhánh nhạc nguồn thiếu làm sạch timestamp ({mode})");
             Check(voiceChain.Contains("loudnorm=I=-18:TP=-1.5:LRA=7", StringComparison.Ordinal), $"nhánh voice thiếu cân loudness ({mode})");
+            Check(voiceChain.Contains("acompressor=threshold=-24dB:ratio=3:attack=20:release=200:makeup=6dB", StringComparison.Ordinal), $"nhánh voice thiếu glue compressor ({mode})");
             Check(voiceChain.Contains("alimiter=limit=0.95:level=disabled", StringComparison.Ordinal), $"nhánh voice thiếu chốt trần ({mode})");
         }
         var muted = VideoEditorService.BuildVoiceAudioFilter(
