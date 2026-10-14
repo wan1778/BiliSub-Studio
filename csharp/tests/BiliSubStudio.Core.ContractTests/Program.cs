@@ -2049,6 +2049,33 @@ internal static class Program
             True(!File.Exists(sidecar), "deleting project kept image sidecar");
             True(!Directory.Exists(ttsDirectory), "deleting project kept TTS cache");
             True(!Directory.Exists(temporaryAsrDirectory), "deleting project kept temporary ASR data");
+
+            // Header-only catalog: a record with a valid header but a corrupt
+            // cue body must still list (full deserialize would drop it), with
+            // exact header fields and filename fallback for a blank name.
+            const string corruptId = "abcdef0123456789abcdef01";
+            await File.WriteAllTextAsync(Path.Combine(projectDirectory, corruptId + ".json"),
+                """{"schema":7,"id":"abcdef0123456789abcdef01","name":"","source":{"path":"C:\\vid\\a.mp4","size":7,"last_write_utc_ticks":8,"width":1280,"height":720,"duration":61.5},"file_name":"a.mp4","regions":[],"subtitle":{"cues":"corrupt-by-design"},"updated_utc":"2026-10-14T00:00:00+00:00"}""");
+            // Schema and id mismatches still hide the record.
+            await File.WriteAllTextAsync(Path.Combine(projectDirectory, "bbbbbb0123456789bbbbbb01.json"),
+                """{"schema":99,"id":"bbbbbb0123456789bbbbbb01","name":"Bad","source":{"path":"C:\\vid\\b.mp4","size":1,"last_write_utc_ticks":1,"width":1,"height":1,"duration":1},"file_name":"b.mp4","updated_utc":"2026-10-14T00:00:00+00:00"}""");
+            listed = await store.ListAsync(CancellationToken.None);
+            Equal(2, listed.Count);
+            var corrupt = listed.Single(project => project.Id == corruptId);
+            Equal("a", corrupt.Name);
+            Equal("C:\\vid\\a.mp4", corrupt.SourcePath);
+            Equal("a.mp4", corrupt.FileName);
+            Equal(1280, corrupt.Width);
+            Equal(720, corrupt.Height);
+            Equal(61.5, corrupt.Duration);
+            Equal(7, corrupt.SourceSize);
+            Equal(8, corrupt.SourceLastWriteUtcTicks);
+            True(corrupt.HasSubtitle, "catalog lost subtitle presence from header");
+            Equal(DateTimeOffset.Parse("2026-10-14T00:00:00+00:00"), corrupt.UpdatedUtc);
+            True(!corrupt.SourceExists, "catalog crashed on missing source file");
+
+            // Unknown id fails fast instead of sweeping the disk for nothing.
+            await ThrowsAsync<FileNotFoundException>(() => store.DeleteAsync("000000000000000000000000", CancellationToken.None));
         });
     }
 

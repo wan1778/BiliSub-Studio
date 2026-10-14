@@ -136,46 +136,111 @@ public sealed class EditorProjectStore
 
     public async Task<IReadOnlyList<EditorProjectSummary>> ListAsync(CancellationToken cancellationToken)
     {
+        if (!Directory.Exists(_directory)) return [];
+        string[] paths;
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (!Directory.Exists(_directory)) return [];
-            var summaries = new List<EditorProjectSummary>();
-            foreach (var path in Directory.EnumerateFiles(_directory, "*.json", SearchOption.TopDirectoryOnly))
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                var id = Path.GetFileNameWithoutExtension(path);
-                if (!IsProjectId(id)) continue;
-                try
-                {
-                    var project = await ReadStoredFileAsync(id, cancellationToken).ConfigureAwait(false);
-                    summaries.Add(new EditorProjectSummary(
-                        project.Id,
-                        string.IsNullOrWhiteSpace(project.Name) ? Path.GetFileNameWithoutExtension(project.Source.Path) : project.Name.Trim(),
-                        project.Source.Path,
-                        project.FileName,
-                        project.Source.Width,
-                        project.Source.Height,
-                        project.Source.Duration,
-                        project.Source.Size,
-                        project.Source.LastWriteUtcTicks,
-                        project.Subtitle is not null,
-                        project.UpdatedUtc,
-                        File.Exists(project.Source.Path)));
-                }
-                catch (OperationCanceledException) { throw; }
-                catch (Exception error) when (IsCatalogReadFailure(error))
-                {
-                    // One unreadable record must not hide the rest of the project catalog.
-                }
-            }
-            return summaries
-                .OrderByDescending(project => project.UpdatedUtc)
-                .ThenBy(project => project.Name, StringComparer.CurrentCultureIgnoreCase)
+            // Snapshot names under the gate; the parse runs outside it so a
+            // bulk delete (tens of thousands of TTS wavs) never blocks the
+            // catalog. All writes are atomic tmp+move, so an unlocked read
+            // sees a pre- or post-write version, never a torn one.
+            paths = Directory.EnumerateFiles(_directory, "*.json", SearchOption.TopDirectoryOnly)
+                .Where(path => IsProjectId(Path.GetFileNameWithoutExtension(path)))
                 .ToArray();
         }
         finally { _gate.Release(); }
+        // Header-only parse, in parallel: project files embed the full cue
+        // list (megabytes) but the catalog needs ~10 header fields. Fully
+        // deserializing every record on each refresh made the list crawl.
+        var summaries = await Task.WhenAll(paths.Select(path =>
+            Task.Run(() => TryReadCatalogSummary(path), cancellationToken))).ConfigureAwait(false);
+        return summaries
+            .Where(summary => summary is not null)
+            .OrderByDescending(project => project!.UpdatedUtc)
+            .ThenBy(project => project!.Name, StringComparer.CurrentCultureIgnoreCase)
+            .ToArray()!;
     }
+
+    private static EditorProjectSummary? TryReadCatalogSummary(string path)
+    {
+        try
+        {
+            var id = Path.GetFileNameWithoutExtension(path);
+            var info = new FileInfo(path);
+            if (!info.Exists || info.Length <= 0 || info.Length > MaxProjectBytes) return null;
+            using var document = JsonDocument.Parse(
+                File.ReadAllBytes(path),
+                new JsonDocumentOptions { MaxDepth = 128, AllowTrailingCommas = true });
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return null;
+            if (TryGetInt(root, "schema", "Schema") is not { } schema || schema is < 1 or > CurrentSchema) return null;
+            if (TryGetString(root, "id", "Id") is { } storedId
+                && !string.Equals(storedId, id, StringComparison.Ordinal)) return null;
+            if (!TryGetObject(root, "source", "Source", out var source)) return null;
+            var sourcePath = TryGetString(source, "path", "Path") ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(sourcePath)) return null;
+            var name = TryGetString(root, "name", "Name");
+            if (string.IsNullOrWhiteSpace(name)) name = Path.GetFileNameWithoutExtension(sourcePath);
+            var hasSubtitle = TryGetProperty(root, "subtitle", "Subtitle", out var subtitle)
+                && subtitle.ValueKind != JsonValueKind.Null;
+            DateTimeOffset updatedUtc;
+            try { updatedUtc = TryGetProperty(root, "updated_utc", "UpdatedUtc", out var updated) ? updated.GetDateTimeOffset() : info.LastWriteTimeUtc; }
+            catch (FormatException) { updatedUtc = info.LastWriteTimeUtc; }
+            return new EditorProjectSummary(
+                id,
+                name!.Trim(),
+                sourcePath,
+                TryGetString(root, "file_name", "FileName") ?? Path.GetFileName(sourcePath) ?? string.Empty,
+                TryGetInt(source, "width", "Width") ?? 0,
+                TryGetInt(source, "height", "Height") ?? 0,
+                TryGetDouble(source, "duration", "Duration") ?? 0,
+                TryGetLong(source, "size", "Size") ?? 0,
+                TryGetLong(source, "last_write_utc_ticks", "LastWriteUtcTicks") ?? 0,
+                hasSubtitle,
+                updatedUtc,
+                File.Exists(sourcePath));
+        }
+        catch (Exception error) when (IsCatalogReadFailure(error)) { return null; }
+    }
+
+    private static bool TryGetProperty(JsonElement root, string snake, string pascal, out JsonElement value)
+    {
+        if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty(snake, out value)) return true;
+        if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty(pascal, out value)) return true;
+        value = default;
+        return false;
+    }
+
+    private static bool TryGetObject(JsonElement root, string snake, string pascal, out JsonElement value)
+    {
+        if (!TryGetProperty(root, snake, pascal, out value) || value.ValueKind != JsonValueKind.Object)
+        {
+            value = default;
+            return false;
+        }
+        return true;
+    }
+
+    private static string? TryGetString(JsonElement root, string snake, string pascal) =>
+        TryGetProperty(root, snake, pascal, out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
+
+    private static int? TryGetInt(JsonElement root, string snake, string pascal) =>
+        TryGetProperty(root, snake, pascal, out var value) && value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var number)
+            ? number
+            : null;
+
+    private static long? TryGetLong(JsonElement root, string snake, string pascal) =>
+        TryGetProperty(root, snake, pascal, out var value) && value.ValueKind == JsonValueKind.Number && value.TryGetInt64(out var number)
+            ? number
+            : null;
+
+    private static double? TryGetDouble(JsonElement root, string snake, string pascal) =>
+        TryGetProperty(root, snake, pascal, out var value) && value.ValueKind == JsonValueKind.Number && value.TryGetDouble(out var number)
+            ? number
+            : null;
 
     public async Task RenameAsync(string id, string name, CancellationToken cancellationToken)
     {
@@ -203,18 +268,29 @@ public sealed class EditorProjectStore
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            await Task.Run(() =>
-            {
-                DeleteFiles(Path.Combine(_directory, "ASR"), id + ".*");
-                DeleteFiles(Path.Combine(_directory, "Speech"), id + ".*");
-                DeleteFiles(Path.Combine(_directory, "Translation"), id + ".*");
-                DeleteFiles(_thumbnailCacheDirectory, id + ".*");
-                DeleteDirectory(Path.Combine(_ttsCacheDirectory, id));
-                DeleteDirectory(Path.Combine(_temporaryAsrDirectory, id));
-                DeleteFile(ImageSidecarPath(id));
-                // Delete the primary record last so a failed cleanup remains visible and retryable.
-                DeleteFile(ProjectPath(id));
-            }, CancellationToken.None).ConfigureAwait(false);
+            // Fail fast when there is nothing to delete. The slow cache sweep
+            // below must not hold the store gate: one TTS cache holds tens of
+            // thousands of wavs, and every save/list/open queued behind it
+            // while it ran — the multi-delete hang.
+            if (!File.Exists(ProjectPath(id)) && !File.Exists(ImageSidecarPath(id)))
+                throw new FileNotFoundException("Project Editor không tồn tại.", ProjectPath(id));
+        }
+        finally { _gate.Release(); }
+        await Task.Run(() =>
+        {
+            DeleteFiles(Path.Combine(_directory, "ASR"), id + ".*");
+            DeleteFiles(Path.Combine(_directory, "Speech"), id + ".*");
+            DeleteFiles(Path.Combine(_directory, "Translation"), id + ".*");
+            DeleteFiles(_thumbnailCacheDirectory, id + ".*");
+            DeleteDirectory(Path.Combine(_ttsCacheDirectory, id));
+            DeleteDirectory(Path.Combine(_temporaryAsrDirectory, id));
+        }, CancellationToken.None).ConfigureAwait(false);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            DeleteFile(ImageSidecarPath(id));
+            // Delete the primary record last so a failed cleanup remains visible and retryable.
+            DeleteFile(ProjectPath(id));
         }
         finally { _gate.Release(); }
     }
