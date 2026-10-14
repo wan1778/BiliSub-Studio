@@ -1114,6 +1114,37 @@ public sealed partial class OcrPage : Page
             return;
         }
         var request = _checkpointRequest ?? BuildRequest();
+        // Chống mất dữ liệu do bấm nhầm "Quét lại từ đầu": checkpoint còn
+        // tiến độ thì hỏi rõ, mặc định giữ + tiếp tục (nút Quét tự resume).
+        try
+        {
+            var existing = await _application.InspectOcrCheckpointAsync(request, CancellationToken.None);
+            if (existing.Exists && (existing.CueCount > 0 || existing.MediaSeconds > 0))
+            {
+                var choice = await new ContentDialog
+                {
+                    XamlRoot = XamlRoot,
+                    Title = $"Video này đã quét được {existing.CueCount} câu ({existing.ProgressPercent:0.0}%) tới {FormatClock(existing.MediaSeconds)}",
+                    Content = "Quét lại từ đầu sẽ XÓA HẾT dữ liệu đã quét. Bấm Tiếp tục quét để giữ và chạy tiếp từ chỗ dừng.",
+                    PrimaryButtonText = "Tiếp tục quét",
+                    SecondaryButtonText = "Xóa, quét lại từ đầu",
+                    CloseButtonText = "Đóng",
+                    DefaultButton = ContentDialogButton.Primary,
+                }.ShowAsync();
+                if (choice == ContentDialogResult.Primary)
+                {
+                    StatusText.Text = "Đã giữ checkpoint; bấm Quét để tiếp tục từ chỗ dừng.";
+                    RefreshRegionActions();
+                    return;
+                }
+                if (choice != ContentDialogResult.Secondary)
+                {
+                    RefreshRegionActions();
+                    return;
+                }
+            }
+        }
+        catch { }
         try
         {
             RestartButton.IsEnabled = false;
