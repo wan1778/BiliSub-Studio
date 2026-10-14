@@ -6,6 +6,7 @@ import math
 import os
 import sys
 import time
+import traceback
 from pathlib import Path
 
 
@@ -89,6 +90,52 @@ def segment_payload(segment, offset):
             "end": offset + max(start + 0.05, float(segment.end)),
             "text": " ".join(str(segment.text).strip().split()),
             "avg_logprob": float(segment.avg_logprob), "no_speech_prob": float(segment.no_speech_prob), "words": words}
+
+
+def recognition_plain(model, audio, beam):
+    # Retry path without the VAD filter: bypasses faster-whisper's VAD
+    # timestamp remap entirely (the flaky IndexError site observed
+    # 2026-10-14 on a 2h41m file), keeps word timestamps for seam
+    # reconciliation. Same quality gates otherwise.
+    return model.transcribe(
+        audio, language="zh", task="transcribe", beam_size=max(1, min(beam, 8)),
+        temperature=(0.0, 0.2, 0.4, 0.6, 0.8, 1.0),
+        condition_on_previous_text=True, word_timestamps=True,
+        vad_filter=False,
+        no_speech_threshold=0.2, log_prob_threshold=-1.2, compression_ratio_threshold=3.0,
+    )
+
+
+def transcribe_chunk_resilient(model, samples, beam, label, base_offset):
+    # One bad 60s chunk must never kill an hours-long job (2026-10-14:
+    # faster-whisper died with IndexError after 8 good minutes, zero
+    # segments emitted, whole run lost). Rescue ladder: full params ->
+    # no-VAD retry -> skip span with a loud warning. Empty results flow
+    # through hybrid_seam/hybrid_project as a silence gap; the frontier
+    # still advances and the C# checkpoint keeps every good segment.
+    try:
+        recognized, info = recognition(model, samples, beam)
+        result = [segment_payload(segment, base_offset)
+                  for segment in recognized if str(segment.text).strip()]
+    except Exception as first_error:
+        print(f"ASR_CHUNK_RETRY {label}: {type(first_error).__name__}: {first_error}", file=sys.stderr, flush=True)
+        try:
+            recognized, info = recognition_plain(model, samples, beam)
+            result = [segment_payload(segment, base_offset)
+                      for segment in recognized if str(segment.text).strip()]
+        except Exception as second_error:
+            print(f"ASR_CHUNK_SKIP {label}: {type(second_error).__name__}: {second_error}", file=sys.stderr, flush=True)
+            return [], None
+        print(f"ASR_CHUNK_RETRY_OK {label}", file=sys.stderr, flush=True)
+    wordless = [segment for segment in result if not segment["words"]]
+    if wordless:
+        # A spoken segment without word clocks cannot be seam-reconciled;
+        # drop it loudly instead of aborting the whole run. Kept text is
+        # rebuilt from real words only, never invented.
+        print(f"ASR_CHUNK_WORDLESS {label}: dropping {len(wordless)}/{len(result)} segments without word timestamps",
+              file=sys.stderr, flush=True)
+        result = [segment for segment in result if segment["words"]]
+    return result, info
 
 
 def hybrid_plan(audio, offset, core_start, probe):
@@ -225,10 +272,8 @@ def run_hybrid(args, model_dir, audio):
         if len(raw) != (chunk[3] - chunk[2]) * 2:
             raise RuntimeError("Hybrid audio chunk is truncated")
         samples = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
-        segments, _ = recognition(models[device], samples, args.beam)
-        result = [segment_payload(segment, args.offset + chunk[2] / rate) for segment in segments if str(segment.text).strip()]
-        if any(not segment["words"] for segment in result):
-            raise RuntimeError("Hybrid cannot reconcile a spoken segment without word timestamps")
+        label = f"hybrid-{device}@{args.offset + chunk[2] / rate:.1f}s"
+        result, _ = transcribe_chunk_resilient(models[device], samples, args.beam, label, args.offset + chunk[2] / rate)
         return result
 
     pending, lower, futures = {}, {}, {}
@@ -339,18 +384,17 @@ def main() -> int:
         raise RuntimeError("ASR audio has no samples")
     results = []
     info = None
-    for chunk in chunks:
+    for chunk_index, chunk in enumerate(chunks):
         with _wave.open(str(audio), "rb") as source:
             source.setpos(chunk[2])
             raw = source.readframes(chunk[3] - chunk[2])
         if len(raw) != (chunk[3] - chunk[2]) * 2:
             raise RuntimeError("ASR audio chunk is truncated")
         samples = _np.frombuffer(raw, dtype="<i2").astype(_np.float32) / 32768.0
-        recognized, info = recognition(model, samples, args.beam)
-        result = [segment_payload(segment, args.offset + chunk[2] / rate)
-                  for segment in recognized if str(segment.text).strip()]
-        if any(not segment["words"] for segment in result):
-            raise RuntimeError("ASR cannot reconcile a spoken segment without word timestamps")
+        label = f"chunk#{chunk_index}@{args.offset + chunk[2] / rate:.1f}s"
+        result, chunk_info = transcribe_chunk_resilient(model, samples, args.beam, label, args.offset + chunk[2] / rate)
+        if chunk_info is not None:
+            info = chunk_info
         results.append(result)
     count = 0
     word_count = 0
@@ -392,5 +436,8 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except Exception as error:
-        print(f"ASR_WORKER_ERROR: {type(error).__name__}: {error}", file=sys.stderr, flush=True)
+        # Full traceback to stderr: the C# host keeps the tail in the app
+        # log so the next library-level crash arrives with its crash site
+        # instead of one bare line (2026-10-14 IndexError lesson).
+        print(f"ASR_WORKER_ERROR: {type(error).__name__}: {error}\n{traceback.format_exc()}", file=sys.stderr, flush=True)
         raise

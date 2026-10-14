@@ -142,6 +142,13 @@ internal sealed partial class LocalAsrService : IDisposable
                         }, runtime.Environment, processes);
                     if (result.ExitCode != 0 || !ready || !completed)
                     {
+                        // Crash-site evidence: the worker now prints the full
+                        // traceback; keep its tail in the app log so the next
+                        // library-level failure arrives diagnosed (2026-10-14:
+                        // one bare IndexError line cost a 20-minute diag run).
+                        var stderrLines = (result.StandardError ?? "").Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries);
+                        if (stderrLines.Length > 1)
+                            job.Error("Whisper local dừng bất thường (8 dòng stderr cuối):\n" + string.Join('\n', stderrLines[^Math.Min(8, stderrLines.Length)..]));
                         var detail = string.IsNullOrWhiteSpace(result.StandardError) ? "worker không trả trạng thái hoàn tất" : LastLine(result.StandardError);
                         throw new InvalidOperationException("Whisper local dừng bất thường: " + detail);
                     }
