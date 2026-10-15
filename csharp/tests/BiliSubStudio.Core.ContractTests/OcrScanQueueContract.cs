@@ -70,6 +70,19 @@ internal static class OcrScanQueueContract
         Check(queue.WaitingCount == 1 && ReferenceEquals(queue.Items[0], fourth)
             && fourth.QueueNumber == 1, "only the Waiting item must remain, renumbered to 1");
 
+        // 8. Ma kẹt (15/10: mục còn Scanning nhưng job chết, cả hàng đứng im
+        // câm lặng): RequeueStuck đưa về Paused để TakeNext resume được.
+        var queue3 = new OcrScanQueue();
+        var s1 = queue3.Enqueue("s1.mp4", regionA, "balanced", "gpu", "8", 100);
+        var s2 = queue3.Enqueue("s2.mp4", regionA, "balanced", "gpu", "8", 200);
+        Check(ReferenceEquals(queue3.TakeNext(), s1), "stuck-fixture must take s1 first");
+        Check(queue3.TakeNext() is null, "TakeNext must refuse while s1 is Scanning");
+        Check(!queue3.RequeueStuck(s2.Id), "RequeueStuck must refuse a non-Scanning item");
+        Check(!queue3.RequeueStuck(Guid.NewGuid()), "RequeueStuck must refuse an unknown id");
+        Check(queue3.RequeueStuck(s1.Id), "RequeueStuck must park the stuck Scanning item as Paused");
+        Check(s1.Status == OcrQueueItemStatus.Paused, "requeued stuck item must be Paused");
+        Check(ReferenceEquals(queue3.TakeNext(), s1), "TakeNext must resume the requeued item before s2");
+
         return Task.CompletedTask;
     }
 

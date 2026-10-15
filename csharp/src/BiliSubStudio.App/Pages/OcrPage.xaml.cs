@@ -562,7 +562,13 @@ public sealed partial class OcrPage : Page
 
     private async void Scan_Click(object sender, RoutedEventArgs e)
     {
-        if (_path is null || _media is null) return;
+        if (_path is null || _media is null)
+        {
+            // Không bao giờ câm lặng: mọi nhánh từ chối đều báo rõ lý do.
+            StatusText.Text = "Chưa chọn video để quét/tiếp tục.";
+            Services.StartupDiagnostics.Write("ocr-scan-click", "ignored: no video loaded");
+            return;
+        }
         if (string.Equals(Selected(SourceBox), "listen", StringComparison.Ordinal))
         {
             // Hàng chờ chỉ nhận quét OCR: đang queue mà gạt sang Nghe thì chặn
@@ -574,6 +580,17 @@ public sealed partial class OcrPage : Page
             }
             await StartListenAsync();
             return;
+        }
+        // Gỡ kẹt câm (15/10: bấm Tiếp tục mà đứng im, log không dòng nào):
+        // _jobId còn nhưng job đã xong/mất (kẹt giữa chừng) thì reset để nút
+        // bấm có tác dụng trở lại, thay vì kẹt ở nhánh "Đang quét dở" mãi.
+        if (_jobId is not null
+            && (!_application.Jobs.TryGet(_jobId, out var liveJob)
+                || liveJob is null
+                || liveJob.Snapshot().Done))
+        {
+            Services.StartupDiagnostics.Write("ocr-scan-click", "healed stale _jobId " + _jobId);
+            _jobId = null;
         }
         // Quét = cho video đang setup vào hàng + tự chạy nối tiếp. Đang quét
         // vẫn setup video khác được; bấm Quét là nối vào hàng, driver tự lấy.
@@ -615,20 +632,27 @@ public sealed partial class OcrPage : Page
         {
             StatusText.Text = $"Tiếp tục mục tạm dừng: {pausedMatch.DisplayName} (giữ setup đã chốt lúc cho vào hàng).";
         }
-        if (_queueRunning) return; // driver đang chạy sẽ tự lấy mục mới.
+        if (_queueRunning)
+        {
+            StatusText.Text = "Hàng chờ đang bận xử lý mục khác; đợi xong rồi bấm lại.";
+            Services.StartupDiagnostics.Write("ocr-scan-click", "ignored: queue driver running");
+            return; // driver đang chạy sẽ tự lấy mục mới.
+        }
         if (_jobId is not null)
         {
             StatusText.Text = "Đang quét dở; chờ xong mục này rồi bấm Quét tiếp.";
             return;
         }
         _queueRunning = true;
+        bool progressed;
         try
         {
-            await RunQueueAsync();
+            progressed = await RunQueueAsync();
         }
         catch (Exception error)
         {
             StatusText.Text = "Hàng chờ lỗi: " + error.Message;
+            progressed = true; // đã báo lỗi rõ, không chạy fallback đè lên.
         }
         finally
         {
@@ -641,6 +665,8 @@ public sealed partial class OcrPage : Page
             }
             SyncQueueView();
         }
+        if (!progressed)
+            await TryDirectCheckpointResumeAsync();
     }
 
     // ---- Hàng chờ OCR (09/10): quét nhiều video nối tiếp, mỗi video giữ
@@ -714,14 +740,28 @@ public sealed partial class OcrPage : Page
             QueueStatusText.Text = "Chỉ dời được mục đang chờ.";
     }
 
-    private async Task RunQueueAsync()
+    private async Task<bool> RunQueueAsync()
     {
         var doneCount = 0;
         var failedCount = 0;
+        var tookAny = false;
         while (_queueRunning)
         {
             var item = _ocrQueue.TakeNext();
-            if (item is null) break;
+            if (item is null)
+            {
+                // Ma kẹt (15/10): mục còn Scanning nhưng không còn job OCR nào
+                // sống — đưa về Paused để resume, thay vì cả hàng đứng im.
+                var ghost = _ocrQueue.ActiveItem;
+                if (ghost is not null && !HasLiveOcrScanJob() && _ocrQueue.RequeueStuck(ghost.Id))
+                {
+                    QueueStatusText.Text = $"Gỡ kẹt mục {ghost.DisplayName} (không còn job quét sống); chạy tiếp.";
+                    Services.StartupDiagnostics.Write("ocr-queue", "requeued stuck " + ghost.DisplayName);
+                    item = _ocrQueue.TakeNext();
+                }
+                if (item is null) break;
+            }
+            tookAny = true;
             // Số thứ tự hiển thị = thứ tự xử lý thực tế đợt chạy này (video
             // xong tự rời hàng nên không đếm lại trong list được).
             var position = doneCount + failedCount + 1;
@@ -798,6 +838,49 @@ public sealed partial class OcrPage : Page
         QueueStatusText.Text = $"Hàng chờ xong: {doneCount} video xong"
             + (failedCount > 0 ? $" · {failedCount} lỗi đã bỏ qua" : "") + ".";
         StatusText.Text = QueueStatusText.Text;
+        return tookAny;
+    }
+
+    private bool HasLiveOcrScanJob() =>
+        _application.Jobs.ActiveSnapshots().Any(snapshot => string.Equals(snapshot.Kind, "ocrscan", StringComparison.Ordinal));
+
+    // Lưới an toàn cuối (15/10): hàng chờ không nhả được mục nào (trống/kẹt)
+    // nhưng checkpoint còn trên đĩa thì tiếp tục trực tiếp, khỏi phụ thuộc
+    // hàng. Khôi phục đúng setup của checkpoint (cơ chế 06/10) để key khớp.
+    private async Task TryDirectCheckpointResumeAsync()
+    {
+        try
+        {
+            if (_path is null || _media is null) return;
+            if (_jobId is not null || _queueRunning || HasLiveOcrScanJob()) return;
+            var request = BuildRequest();
+            var checkpoint = await _application.InspectOcrCheckpointAsync(request, CancellationToken.None);
+            if (!checkpoint.Exists)
+            {
+                var sameVideo = _application.FindOcrVideoCheckpoints(_path);
+                var newest = sameVideo.FirstOrDefault();
+                if (newest is null) return;
+                _region = newest.Region;
+                SelectValue(ScanModeBox, newest.Mode);
+                SelectValue(DeviceBox, newest.Device);
+                SelectValue(LanesBox, newest.Parallelism);
+                ApplyRegionVisual();
+                request = BuildRequest();
+                checkpoint = await _application.InspectOcrCheckpointAsync(request, CancellationToken.None);
+                if (!checkpoint.Exists) return;
+                StatusText.Text = $"Đã khôi phục khung quét + chế độ của lần quét {newest.SavedUtc:dd/MM HH:mm}; tiếp tục trực tiếp.";
+            }
+            StatusText.Text = $"Tiếp tục trực tiếp từ checkpoint ({checkpoint.ProgressPercent:0.0}% · {checkpoint.CueCount} câu).";
+            Services.StartupDiagnostics.Write("ocr-resume", $"direct resume {_path} {checkpoint.ProgressPercent:0.0}%");
+            _checkpointRequest = request;
+            ApplyRecoverableCheckpointCues(checkpoint);
+            ApplyCheckpointUi();
+            await StartScanAsync(request, OcrScanStartMode.Resume);
+        }
+        catch (Exception error)
+        {
+            StatusText.Text = "Tiếp tục trực tiếp lỗi: " + error.Message;
+        }
     }
 
     // Nghe riêng (Whisper-only): hiện trực tiếp % + giờ + chữ từ checkpoint,

@@ -282,6 +282,18 @@ public sealed class OcrScanQueue
         Changed?.Invoke();
     }
 
+    // Ma kẹt (mục còn Scanning nhưng không còn job OCR nào sống, ví dụ kẹt
+    // giữa chừng): đưa về Paused để TakeNext resume được, thay vì cả hàng
+    // đứng im câm lặng. Caller phải xác minh không còn job OCR sống trước.
+    public bool RequeueStuck(Guid id)
+    {
+        var item = Find(id);
+        if (item is null || item.Status != OcrQueueItemStatus.Scanning) return false;
+        item.Status = OcrQueueItemStatus.Paused;
+        Changed?.Invoke();
+        return true;
+    }
+
     public int ClearFinished()
     {
         // Done đã tự rời hàng ở MarkDone; đây dọn mục lỗi/hủy còn sót.
