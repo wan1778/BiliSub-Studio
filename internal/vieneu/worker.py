@@ -1812,29 +1812,140 @@ def punct_swap_variants(text: str) -> list:
     """Bản text đổi dấu câu cuối để phá vòng lặp attractor của model
     (kinh nghiệm cộng đồng XTTS: câu kẹt lặp mọi seed thường thoát khi
     đổi `.`/`。` thành `!`/`！` — chỉ đổi ngữ điệu, không đổi chữ).
-    Trả [] khi không có dấu đổi được. Pure, test được."""
+    Mở rộng V2: cue ngắn hay kết bằng `!`/`?` (đúng kiểu hay nhân đôi)
+    thì đổi NGƯỢC về `.` cho hiền + gập `!!...`/`...` (hiệu chuẩn 12/10:
+    bản `!` attractor ở mọi seed/param). Trả [] khi không có dấu đổi được.
+    Pure, test được."""
     stripped = (text or "").rstrip()
     if not stripped:
         return []
-    pairs = ((".", "!"), ("。", "！"))
+    out = []
+    multi = (("...", "."), ("…", "."), ("!!", "!"), ("？？", "？"))
+    for old, new in multi:
+        if stripped.endswith(old):
+            collapsed = stripped[: -len(old)] + new
+            if collapsed != stripped:
+                out.append(collapsed)
+    if out:
+        return out
+    pairs = ((".", "!"), ("。", "！"), ("!", "."), ("！", "。"), ("?", "."), ("？", "。"))
     for old, new in pairs:
         if stripped.endswith(old):
-            return [stripped[: -len(old)] + new]
-    return []
+            swapped = stripped[: -len(old)] + new
+            if swapped != stripped and swapped not in out:
+                out.append(swapped)
+    return out
 
 
 def final_pick_repeats(fitted_path, text: str = "") -> bool:
-    """Kiểm cuối trước khi ship (11/10): bản định ship có lặp không.
-    Dùng góc ACF-leaning (không gate theo số chữ — gate đó đã chạy trong vòng
-    seed; đây là lưới độc lập bắt ca lọt). Chữ tự lặp thì bỏ qua (audio giống
+    """Kiểm cuối trước khi ship (11/10, lưới V2 12/10): bản định ship có lặp không.
+    Ủy quyền cho cửa thống nhất draw_repeats (ACF + hạt nhân có số chữ +
+    dài-bất-thường + 2 cụm clip ngắn). Chữ tự lặp thì bỏ qua (audio giống
     nhau là đúng). Không bao giờ raise (file lạ -> False, fail-open).
     Pure-ish, test được."""
     try:
-        if text_self_repeats(text):
-            return False
-        return bool(speech_repeats(fitted_path))
+        return bool(draw_repeats(fitted_path, text))
     except Exception:
         return False
+
+
+def too_long_for_text(frames: int, text: str) -> bool:
+    """Bản đọc dài bất thường so với chữ (V2): cue ≤8 đơn vị mà ACTIVE
+    speech vượt units*0.35+0.2s. Đếm speech thật (mẫu ≥-44dBFS), không đếm
+    im lặng — file chưa trim/kê đầu im không đánh lừa. Hiệu chuẩn 12/10
+    trên 144 draws Ngọc Huyền: 65/90 draws cue ngắn trip (kể cả bản ACF
+    mù), 0/36 draws câu control và 0/36 câu dài trip. frames = số mẫu
+    active (không phải độ dài file)."""
+    units = speakable_units(text or "")
+    return 0 < units <= 8 and frames > (units * 0.35 + 0.2) * SAMPLE_RATE
+
+
+def speech_bursts(path, min_gap_seconds: float = 0.18, threshold: float = 0.25) -> int:
+    """Đếm cụm năng lượng (onset) cách nhau bởi im lặng thật: cue ngắn 1-3
+    chữ mà ≥2 cụm là nhân đôi — bắt được cả bản dưới 0.6s mà ACF/hạt nhân
+    mù (vụ "Sao cơ?" 0.8s mọi param ACF 0/18). Onset chỉ tính khi vừa cách
+    onset trước ≥min_gap, vừa đứng sau ≥0.12s im liên tục (khỏi đếm nhầm
+    nhấp nhô trong 1 cụm). numpy-only, ~ms. Lỗi -> 0 (không biết)."""
+    import numpy as np
+    try:
+        with wave.open(str(path), "rb") as source:
+            frames = source.getnframes()
+            rate = source.getframerate()
+            data = source.readframes(frames)
+        if frames <= 0 or len(data) != frames * 2 or rate <= 0:
+            return 0
+        samples = np.abs(np.frombuffer(data, dtype="<i2").astype(np.float32))
+        peak = float(np.max(samples))
+        if peak <= 0:
+            return 0
+        width = max(1, rate // 100)
+        nb = len(samples) // width
+        if nb < 2:
+            return 0
+        env = samples[:nb * width].reshape(nb, width).mean(axis=1) / peak
+        active = env >= threshold
+        gap_bins = max(1, int(round(min_gap_seconds * rate / width)))
+        quiet_bins = max(1, int(round(0.12 * rate / width)))
+        bursts = 0
+        last_on = -10 * gap_bins
+        quiet_run = 10 * quiet_bins
+        for i in range(nb):
+            if active[i]:
+                if (i == 0 or not active[i - 1]) and i - last_on >= gap_bins and quiet_run >= quiet_bins:
+                    bursts += 1
+                    last_on = i
+                quiet_run = 0
+            else:
+                quiet_run += 1
+        return bursts
+    except Exception:
+        return 0
+
+
+def draw_repeats(path, text: str = "") -> bool:
+    """Cửa thống nhất V2: bản vẽ có lặp không (OR 4 lớp).
+    ACF + luật hạt nhân (truyền số chữ, bắt nhân đôi khác ngữ điệu) +
+    dài-bất-thường theo chữ (bắt cả bản bị bóp dưới 0.6s) + 2 cụm năng
+    lượng cho clip ngắn (bắt bản ACF mù). Chữ tự lặp -> False. Fail-open."""
+    try:
+        if text_self_repeats(text):
+            return False
+        units = speakable_units(text or "")
+        # Câu dài (>8 đơn vị): giữ nguyên hành vi V1 (ACF-only). Luật hạt
+        # nhân theo số chữ + tripwire + 2-cụm chỉ hiệu chuẩn cho cue ngắn;
+        # trên câu dài chúng báo oan hàng loạt (đo 12/10: 36/36 câu control
+        # sạch bị gắn cờ khi gọi nuclear với max_words).
+        if 0 < units <= 8:
+            try:
+                if speech_repeats(path, units):
+                    return True
+            except Exception:
+                pass
+        else:
+            try:
+                if speech_repeats(path):
+                    return True
+            except Exception:
+                pass
+        try:
+            with wave.open(str(path), "rb") as source:
+                frames = source.getnframes()
+                rate = source.getframerate()
+                data = source.readframes(frames)
+        except Exception:
+            return False
+        if frames <= 0 or rate <= 0 or len(data) != frames * 2:
+            return False
+        import numpy as np
+        active = int((np.abs(np.frombuffer(data, dtype="<i2").astype(np.float32)) >= 300).sum())
+        if too_long_for_text(active, text):
+            return True
+        duration = frames / rate
+        if duration < 0.6 and 0 < units <= 3 and speech_bursts(path) >= 2:
+            return True
+    except Exception:
+        return False
+    return False
 
 
 def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str,
@@ -2084,11 +2195,15 @@ def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str,
             seed_best = None
             cut_best = None
             capped_streak = 0
-            for seed_pos in range(16):
+            # Họ seed xa ĐI TRƯỚC (V2): primary đã nghi thì seed gần hay cùng
+            # attractor — 1 draw họ xa ngay đầu thường thoát sớm, đỡ tốn attempts.
+            # Salt khác hẳn họ near nên dãy seed vẫn định trước, cache/sha an toàn.
+            for seed_pos in [16] + list(range(16)):
                 if attempt >= MAX_SYNTHESIS_ATTEMPTS:
                     break
+                salt = "reseed:far" if seed_pos == 16 else f"reseed:{seed_pos}"
                 seed = int(hashlib.sha256(
-                    f"{key}:reseed:{seed_pos}".encode("utf-8")).hexdigest(), 16) % (2 ** 31)
+                    f"{key}:{salt}".encode("utf-8")).hexdigest(), 16) % (2 ** 31)
                 seed_path = run_root / f"{key}-seed{seed_pos}.wav"
                 attempt += 1
                 on_attempt(attempt, scale)
@@ -2128,7 +2243,10 @@ def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str,
                     continue
                 if seed_best is None or seed_frames < seed_best[0]:
                     seed_best = (seed_frames, seed_source, seed_trim, seed_fitted, seed_pos)
-                if seed_frames <= target_frames:
+                # Chốt sớm CHỈ khi vừa khung VÀ sạch lưới V2 (11/10 chỉ check
+                # vừa khung nên bản nhân đôi-vừa-khung lọt thẳng; 12/10 thêm
+                # cửa thống nhất: ACF/hạt nhân/dài-bất-thường/2-cụm).
+                if seed_frames <= target_frames and not draw_repeats(seed_fitted, text):
                     break
             best_cut = False
             best_frames = None
