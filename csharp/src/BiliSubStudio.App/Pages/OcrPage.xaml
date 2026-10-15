@@ -183,6 +183,7 @@
                                 <ListView
                                     x:Name="QueueList"
                                     MaxHeight="220"
+                                    SelectionChanged="QueueList_SelectionChanged"
                                     ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                                     ScrollViewer.VerticalScrollBarVisibility="Auto"
                                     AutomationProperties.Name="Danh sách hàng chờ OCR">
@@ -202,6 +203,7 @@
                                     </ListView.ItemTemplate>
                                 </ListView>
                                 <StackPanel Orientation="Horizontal" Spacing="7">
+                                    <Button x:Name="QueueViewScanningButton" Click="QueueViewScanning_Click" Content="Về video đang quét" Visibility="Collapsed" Style="{StaticResource SecondaryButtonStyle}" />
                                     <Button x:Name="QueueUpButton" Click="QueueUp_Click" Content="Lên" Style="{StaticResource SecondaryButtonStyle}" />
                                     <Button x:Name="QueueDownButton" Click="QueueDown_Click" Content="Xuống" Style="{StaticResource SecondaryButtonStyle}" />
                                     <Button x:Name="QueueRemoveButton" Click="QueueRemove_Click" Content="Xóa mục" Style="{StaticResource DangerButtonStyle}" />

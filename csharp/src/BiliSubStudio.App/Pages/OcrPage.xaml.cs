@@ -38,6 +38,18 @@ public sealed partial class OcrPage : Page
     private readonly OcrScanQueue _ocrQueue = new();
     private readonly ObservableCollection<OcrQueueItem> _ocrQueueView = [];
     private bool _queueRunning;
+    // Preview tách khỏi setup (10/10, vụ preview dính video thêm sau cùng):
+    // _path/_media = video đang setup để quét; _viewPath/_viewMedia = video
+    // đang hiện trong player. Bấm mục hàng chờ chỉ đổi view, quét không đụng.
+    private string? _viewPath;
+    private MediaPreviewInfo? _viewMedia;
+    private readonly Dictionary<string, MediaPreviewInfo> _viewMediaCache = new(StringComparer.OrdinalIgnoreCase);
+    // Mục hàng chờ đang quét (để bôi đen, nút Về video đang quét, cue click).
+    private OcrQueueItem? _queueScanningItem;
+    private double _lastSafeFrontier;
+    private bool _syncingQueueSelect;
+    private bool ViewingSetupVideo =>
+        _viewPath is not null && string.Equals(_viewPath, _path, StringComparison.OrdinalIgnoreCase);
     private string? _listenProjectId;
     private IReadOnlyList<OcrCue> _cues = [];
     // Dòng đang hiển thị = dòng pipeline chung (OcrExportRow: Start/End/Text
@@ -197,6 +209,9 @@ public sealed partial class OcrPage : Page
             _path = videoPath;
             PathText.Text = videoPath;
             _media = await _application.Media.ProbeAsync(videoPath, CancellationToken.None);
+            _viewPath = videoPath;
+            _viewMedia = _media;
+            _viewMediaCache[videoPath] = _media;
             Timeline.Maximum = Math.Max(0.1, _media.Duration);
             Timeline.Value = 0;
             await PreparePlayerAsync(videoPath, _media.DirectCompatible);
@@ -370,16 +385,21 @@ public sealed partial class OcrPage : Page
         {
             _checkpointRequest = null;
             _activeRequest = null;
-            _cues = [];
-            _visibleCues = [];
-            _authoritative = false;
-            _liveCues.Clear();
-            _nextCueRenderAt = default;
-            _cueViewDirty = false;
-            _userAtEnd = true;
-            CueList.Items.Clear();
-            CueCountText.Text = "0 câu";
-            CancelButton.IsEnabled = false;
+            if (!_queueRunning)
+            {
+                // Giữa lúc hàng chạy mà xóa cue live thì mất đuôi đang quét
+                // (quét refille sau 2s nhưng giật + mất vị trí cuộn).
+                _cues = [];
+                _visibleCues = [];
+                _authoritative = false;
+                _liveCues.Clear();
+                _nextCueRenderAt = default;
+                _cueViewDirty = false;
+                _userAtEnd = true;
+                CueList.Items.Clear();
+                CueCountText.Text = "0 câu";
+                CancelButton.IsEnabled = false;
+            }
             ResetManualEdits();
             ScanButton.Content = "Quét từ đầu";
             ScanButton.IsEnabled = false;
@@ -393,13 +413,20 @@ public sealed partial class OcrPage : Page
             PublishPresenceContext(Path.GetFileName(selected), null);
             StatusText.Text = "Đang đọc video...";
             _media = await _application.Media.ProbeAsync(selected, CancellationToken.None);
+            _viewPath = selected;
+            _viewMedia = _media;
+            _viewMediaCache[selected] = _media;
+            PreviewCanvas.IsHitTestVisible = SelectRegionButton.IsOn;
             Timeline.Maximum = Math.Max(0.1, _media.Duration);
             Timeline.Value = 0;
             await PreparePlayerAsync(selected, _media.DirectCompatible);
             MediaText.Text = $"{_media.Width}×{_media.Height} · {_media.Duration:0.0}s · {_media.Codec} · {(_media.DirectCompatible ? "player native + frame FFmpeg" : "frame FFmpeg fallback")}";
             await UpdateFrameAsync();
             ApplyRegionVisual();
-            StatusText.Text = "Video đã sẵn sàng. Bật Chỉnh ROI để tạo, di chuyển hoặc đổi kích thước vùng phụ đề.";
+            StatusText.Text = "Video đã sẵn sàng. Bật Chỉnh ROI để tạo, di chuyển hoặc đổi kích thước vùng phụ đề."
+                + (_queueRunning && _queueScanningItem is not null
+                    ? $" Đang xem setup · quét vẫn chạy ở {_queueScanningItem.DisplayName} (bấm Về video đang quét để xem)."
+                    : string.Empty);
             Timeline.IsEnabled = true;
             SelectRegionButton.IsEnabled = true;
             RefreshFrameButton.IsEnabled = true;
@@ -465,8 +492,8 @@ public sealed partial class OcrPage : Page
 
     private async Task UpdateFrameAsync()
     {
-        if (_path is null || _media is null) return;
-        var bytes = await _application.Media.GetFrameJpegAsync(_path, Timeline.Value, CancellationToken.None);
+        if (_viewPath is null || _viewMedia is null) return;
+        var bytes = await _application.Media.GetFrameJpegAsync(_viewPath, Timeline.Value, CancellationToken.None);
         using var stream = new InMemoryRandomAccessStream();
         using (var writer = new DataWriter(stream.GetOutputStreamAt(0)))
         {
@@ -480,7 +507,7 @@ public sealed partial class OcrPage : Page
         UpdateClock();
     }
 
-    private void UpdateClock() => ClockText.Text = $"{FormatClock(Timeline.Value)} / {FormatClock(_media?.Duration ?? 0)}";
+    private void UpdateClock() => ClockText.Text = $"{FormatClock(Timeline.Value)} / {FormatClock(_viewMedia?.Duration ?? 0)}";
 
     private async void Playback_Click(object sender, RoutedEventArgs e)
     {
@@ -704,9 +731,87 @@ public sealed partial class OcrPage : Page
             : active is not null ? $"Đang quét · chờ {waiting}"
             : waiting > 0 ? $"{waiting} đang chờ"
             : pausedCount > 0 ? $"{pausedCount} tạm dừng" : "Hết việc";
+        QueueViewScanningButton.Visibility =
+            _queueRunning && _queueScanningItem is not null ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private OcrQueueItem? SelectedQueueItem() => QueueList.SelectedItem as OcrQueueItem;
+
+    // Xem preview 1 mục hàng chờ: CHỈ đổi view (player/khung/giờ), không đụng
+    // setup (_path/_region/ô mode) nên quét đang chạy không ảnh hưởng và bấm
+    // Quét sau đó vẫn đúng cấu hình đã vẽ.
+    private async Task ShowQueueVideoAsync(OcrQueueItem item, bool seekFrontier = false)
+    {
+        if (string.IsNullOrWhiteSpace(item.VideoPath)) return;
+        if (!string.Equals(item.VideoPath, _viewPath, StringComparison.OrdinalIgnoreCase) || _viewMedia is null)
+        {
+            if (!File.Exists(item.VideoPath))
+            {
+                StatusText.Text = $"Không xem được {item.DisplayName}: file video không còn.";
+                return;
+            }
+            if (!_viewMediaCache.TryGetValue(item.VideoPath, out var media))
+            {
+                media = await _application.Media.ProbeAsync(item.VideoPath, CancellationToken.None);
+                _viewMediaCache[item.VideoPath] = media;
+            }
+            _viewPath = item.VideoPath;
+            _viewMedia = media;
+            MediaText.Text = ViewingSetupVideo
+                ? $"{media.Width}×{media.Height} · {media.Duration:0.0}s · {media.Codec}"
+                : $"{media.Width}×{media.Height} · {media.Duration:0.0}s · {media.Codec} · Đang xem: {item.DisplayName}";
+            Timeline.Maximum = Math.Max(0.1, media.Duration);
+            Timeline.Value = Math.Clamp(Timeline.Value, Timeline.Minimum, Timeline.Maximum);
+            Timeline.IsEnabled = true;
+            PreviewCanvas.IsHitTestVisible = SelectRegionButton.IsOn && ViewingSetupVideo;
+            ApplyRegionVisual();
+            try
+            {
+                await PreparePlayerAsync(_viewPath, media.DirectCompatible);
+                if (seekFrontier && _lastSafeFrontier > 0)
+                {
+                    Timeline.Value = Math.Clamp(_lastSafeFrontier, Timeline.Minimum, Timeline.Maximum);
+                    if (_player is not null) _player.PlaybackSession.Position = TimeSpan.FromSeconds(Timeline.Value);
+                }
+                await UpdateFrameAsync();
+            }
+            catch (Exception error)
+            {
+                StatusText.Text = $"Preview {item.DisplayName} lỗi (quét vẫn chạy): " + error.Message;
+                Services.StartupDiagnostics.Write("ocr-queue-view", "preview failed: " + error.Message);
+            }
+        }
+        else if (seekFrontier && _lastSafeFrontier > 0)
+        {
+            Timeline.Value = Math.Clamp(_lastSafeFrontier, Timeline.Minimum, Timeline.Maximum);
+            if (_player is not null) _player.PlaybackSession.Position = TimeSpan.FromSeconds(Timeline.Value);
+            await UpdateFrameAsync();
+        }
+        _syncingQueueSelect = true;
+        try { QueueList.SelectedItem = item; }
+        finally { _syncingQueueSelect = false; }
+    }
+
+    private async void QueueList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_syncingQueueSelect) return;
+        if (QueueList.SelectedItem is OcrQueueItem item)
+        {
+            try { await ShowQueueVideoAsync(item); }
+            catch (Exception error) { StatusText.Text = "Không xem được video này: " + error.Message; }
+        }
+    }
+
+    private async void QueueViewScanning_Click(object sender, RoutedEventArgs e)
+    {
+        if (_queueScanningItem is null)
+        {
+            StatusText.Text = "Hiện không có video nào đang quét.";
+            return;
+        }
+        try { await ShowQueueVideoAsync(_queueScanningItem, seekFrontier: true); }
+        catch (Exception error) { StatusText.Text = "Không về được video đang quét: " + error.Message; }
+    }
 
     private void QueueClear_Click(object sender, RoutedEventArgs e)
     {
@@ -781,6 +886,16 @@ public sealed partial class OcrPage : Page
             PathText.Text = _path;
             _media = media;
             _region = item.Region;
+            _viewPath = item.VideoPath;
+            _viewMedia = media;
+            _viewMediaCache[item.VideoPath] = media;
+            _queueScanningItem = item;
+            _syncingQueueSelect = true;
+            try { QueueList.SelectedItem = item; }
+            finally { _syncingQueueSelect = false; }
+            PreviewCanvas.IsHitTestVisible = SelectRegionButton.IsOn;
+            QueueViewScanningButton.Visibility = Visibility.Visible;
+            SyncQueueView();
             Timeline.Maximum = Math.Max(0.1, media.Duration);
             Timeline.Value = 0;
             try
@@ -832,6 +947,8 @@ public sealed partial class OcrPage : Page
                     break;
             }
             _queueActiveRequest = null;
+            _queueScanningItem = null;
+            QueueViewScanningButton.Visibility = Visibility.Collapsed;
             // Mở lại nút Quét để setup video tiếp theo ngay khi mục này xong.
             if (_jobId is null) RefreshRegionActions();
         }
@@ -1322,6 +1439,7 @@ public sealed partial class OcrPage : Page
             if (snapshot.Result is OcrScanResult result)
             {
                 var safeProgress = SafeFrontierProgress(request, result.SafeFrontierSeconds, snapshot.Done);
+                _lastSafeFrontier = result.SafeFrontierSeconds;
                 Progress.Value = string.Equals(snapshot.Status, "finalizing", StringComparison.OrdinalIgnoreCase)
                     ? snapshot.Progress
                     : safeProgress;
@@ -1341,6 +1459,7 @@ public sealed partial class OcrPage : Page
             else if (snapshot.Result is OcrScanTelemetry telemetry)
             {
                 Progress.Value = SafeFrontierProgress(request, telemetry.SafeFrontierSeconds, snapshot.Done);
+                _lastSafeFrontier = telemetry.SafeFrontierSeconds;
                 TelemetryText.Text = $"SRT liên tục {Progress.Value:0.0}% ({FormatClock(telemetry.SafeFrontierSeconds)}) · tổng xử lý {snapshot.Progress:0.0}% · {telemetry.SegmentLanes} FFmpeg lane · {telemetry.WorkerCount} worker ({telemetry.WorkerKinds}) · {telemetry.ActiveLanes} đang chạy · {telemetry.CompletedLanes} xong · {telemetry.Frames} frames · {telemetry.OcrImages} OCR";
             }
             else if (snapshot.Result is OcrBenchmarkTelemetry benchmark)
@@ -1884,6 +2003,19 @@ public sealed partial class OcrPage : Page
     {
         UpdateManualEditButtons();
         if (_syncingCue || CueList.SelectedIndex < 0 || CueList.SelectedIndex >= _visibleCues.Count) return;
+        // Bấm cue live giữa lúc quét mà preview đang ở video khác (setup) thì
+        // đưa preview về đúng video đang quét TRƯỚC rồi mới tua — trước đây
+        // tua nhầm player video setup rồi kẹp giờ sai khung.
+        if (_queueRunning && _queueScanningItem is not null
+            && !string.Equals(_viewPath, _queueScanningItem.VideoPath, StringComparison.OrdinalIgnoreCase))
+        {
+            try { await ShowQueueVideoAsync(_queueScanningItem); }
+            catch (Exception error)
+            {
+                StatusText.Text = "Không về được video đang quét: " + error.Message;
+                return;
+            }
+        }
         var cue = _visibleCues[CueList.SelectedIndex];
         try
         {
@@ -2159,7 +2291,10 @@ public sealed partial class OcrPage : Page
 
     private void ApplyRegionVisual()
     {
-        if (_media is null || PreviewCanvas.ActualWidth <= 0 || PreviewCanvas.ActualHeight <= 0) return;
+        if (_viewMedia is null || PreviewCanvas.ActualWidth <= 0 || PreviewCanvas.ActualHeight <= 0) return;
+        // Xem video khác (không phải setup): giấu khung ROI, chỉ nhìn.
+        RoiRectangle.Visibility = ViewingSetupVideo ? Visibility.Visible : Visibility.Collapsed;
+        if (!ViewingSetupVideo) return;
         var region = ReadRegion();
         var rect = VideoRect();
         Canvas.SetLeft(RoiRectangle, rect.X + region.X * rect.Width);
@@ -2170,11 +2305,11 @@ public sealed partial class OcrPage : Page
 
     private Rect VideoRect()
     {
-        if (_media is null || PreviewCanvas.ActualWidth <= 0 || PreviewCanvas.ActualHeight <= 0)
+        if (_viewMedia is null || PreviewCanvas.ActualWidth <= 0 || PreviewCanvas.ActualHeight <= 0)
         {
             return new Rect(0, 0, PreviewCanvas.ActualWidth, PreviewCanvas.ActualHeight);
         }
-        var source = _media.Width / (double)_media.Height;
+        var source = _viewMedia.Width / (double)_viewMedia.Height;
         var host = PreviewCanvas.ActualWidth / PreviewCanvas.ActualHeight;
         return host > source
             ? new Rect((PreviewCanvas.ActualWidth - PreviewCanvas.ActualHeight * source) / 2, 0, PreviewCanvas.ActualHeight * source, PreviewCanvas.ActualHeight)
@@ -2289,7 +2424,7 @@ public sealed partial class OcrPage : Page
         var seconds = sender.Position.TotalSeconds;
         DispatcherQueue.TryEnqueue(() =>
         {
-            if (!_playerMode || _media is null) return;
+            if (!_playerMode || _viewMedia is null) return;
             _syncingTimeline = true;
             Timeline.Value = Math.Clamp(seconds, Timeline.Minimum, Timeline.Maximum);
             _syncingTimeline = false;
