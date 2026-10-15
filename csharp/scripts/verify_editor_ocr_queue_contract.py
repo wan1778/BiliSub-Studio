@@ -50,14 +50,20 @@ for token in (
     require(token in queue, f"QUEUE-01 queue state machine lost: {token}")
 require("Status == OcrQueueItemStatus.Paused" in queue,
         "QUEUE-01 TakeNext must resume paused items before new waiting items")
+require("public bool RequeueStuck(Guid id)" in queue,
+        "QUEUE-01 stuck Scanning items must be requeueable to Paused")
 require("public int QueueNumber" in queue and "NumberedName" in queue,
         "QUEUE-01 items must carry auto-compacting 1-based numbers")
 
 # One-button model: Scan enqueues the current setup and ensures the driver.
+# 15/10: the driver reports whether it took anything so a stuck queue falls
+# back to a direct checkpoint resume instead of standing still silently.
 for token in (
-    "private async Task RunQueueAsync()",
+    "private async Task<bool> RunQueueAsync()",
     "_ocrQueue.TakeNext()",
     "_ocrQueue.MarkFailed(item.Id,",
+    "_ocrQueue.RequeueStuck(",
+    "TryDirectCheckpointResumeAsync()",
     "OcrQueueItem? queueItem = null",
     "Tiếp tục mục tạm dừng",
     "Đã cho vào hàng chờ",
