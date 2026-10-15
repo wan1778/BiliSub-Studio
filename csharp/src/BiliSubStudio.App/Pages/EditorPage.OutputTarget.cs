@@ -12,7 +12,7 @@ public sealed partial class EditorPage
         if (configuredDirectory.Length == 0)
             throw new InvalidOperationException("Chưa cấu hình thư mục xuất video.");
         var directory = Path.GetFullPath(configuredDirectory);
-        var fileName = FileNameBox.Text?.Trim() ?? string.Empty;
+        var fileName = _project?.FileName?.Trim() ?? string.Empty;
         if (fileName.Length == 0)
             throw new InvalidOperationException("Tên file đầu ra không được để trống.");
         return new EditorOutputTarget(directory, fileName, EditorExportPolicy.Normalize(settings));

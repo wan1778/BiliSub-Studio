@@ -44,7 +44,7 @@ def verify_source(images: str, target: str) -> None:
     for token in (
         "_application.Config.OutputDirectory",
         "Path.GetFullPath(configuredDirectory)",
-        "FileNameBox.Text",
+        "_project?.FileName",
         "new EditorOutputTarget(directory, fileName,",
     ):
         require(token in capture, f"PROJECT-10 click-time output target lost: {token}")
@@ -94,7 +94,7 @@ def verify_source(images: str, target: str) -> None:
             "PROJECT-10 in-flight final render re-reads live output directory")
     require("composerInput, _application.Config.OutputDirectory" not in render,
             "PROJECT-10 image stage still uses mutable Config output directory")
-    require("composerInput, outputTarget.Directory, FileNameBox.Text" not in render,
+    require("FileNameBox.Text" not in render,
             "PROJECT-10 image stage still uses mutable filename UI")
 
 

@@ -19,6 +19,7 @@ def require(condition: bool, message: str) -> None:
 
 xaml = (PAGES / "EditorPage.xaml").read_text(encoding="utf-8")
 editor = (PAGES / "EditorPage.xaml.cs").read_text(encoding="utf-8")
+dialog = (PAGES / "EditorPage.ExportDialog.cs").read_text(encoding="utf-8")
 playback = (PAGES / "EditorPage.Playback.cs").read_text(encoding="utf-8")
 images = (PAGES / "EditorPage.Images.cs").read_text(encoding="utf-8")
 store = STORE.read_text(encoding="utf-8")
@@ -26,11 +27,13 @@ service = SERVICE.read_text(encoding="utf-8")
 tests = TESTS.read_text(encoding="utf-8")
 
 for token in (
-    'x:Name="TrimStartBox"',
-    'x:Name="TrimEndBox"',
-    'Click="TrimUseCurrentStart_Click"',
-    'Click="TrimUseCurrentEnd_Click"',
-    'Click="TrimReset_Click"',
+    'x:Name="ExportDialogTrimStartBox"',
+    'x:Name="ExportDialogTrimEndBox"',
+    'Click="ExportDialogTrimStartCurrent_Click"',
+    'Click="ExportDialogTrimEndCurrent_Click"',
+    'Click="ExportDialogTrimReset_Click"',
+    'x:Name="ExportDialogTrimSummaryText"',
+    'TextChanged="ExportDialogTrimBox_TextChanged"',
 ):
     require(token in xaml, f"TRIM-01 UI wiring lost: {token}")
 
@@ -47,18 +50,26 @@ for token in (
     "Trim: CurrentTrimRange());",
     "var trimChanged = hasMedia && _trimRangeValid",
     "|| hasImages || trimChanged)",
-    "TrimStartBox.IsEnabled = TrimEndBox.IsEnabled = editable;",
 ):
     require(token in editor, f"TRIM-01 Editor state owner lost: {token}")
+for token in (
+    "TryParseClockToSeconds(",
+    "CommitDialogTrim(",
+    "UpdateDialogTrimSummary(",
+    "FormatClockFull(trim.Start)",
+    "SetDialogTrimBoundaryFromCurrent(",
+):
+    require(token in dialog, f"TRIM-01 dialog trim owner lost: {token}")
 
 for token in (
     "var trim = EditorProjectStore.NormalizeTrim(request.Trim, request.Duration);",
     "request, trim.Start, trim.Duration, request.SourceWidth, request.SourceHeight",
     '"-ss", trim.Start.ToString("0.000", CultureInfo.InvariantCulture), "-i", input',
     '"-t", trim.Duration.ToString("0.000", CultureInfo.InvariantCulture)',
-    "BuildAudioArgumentsCore(audio, mp4, resetTimestamps: true)",
+    "BuildAudioArgumentsCore(audio, mp4: true, resetTimestamps: true)",
     "BuildVoiceAudioFilter(audio, voice, 1, trim.Start)",
-    "await ValidateRenderedOutputAsync(temporary, trim.Duration",
+    "await ValidateRenderedOutputAsync(",
+    "trim.Duration, voice is not null",
 ):
     require(token in service, f"TRIM-01 Export timeline contract lost: {token}")
 

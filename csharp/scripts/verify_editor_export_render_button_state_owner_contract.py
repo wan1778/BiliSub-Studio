@@ -77,7 +77,7 @@ def contract_errors(xaml: str, parts: dict[str, str]) -> list[str]:
             "_voiceTrack is not null",
             "hasImages",
             "trimChanged",
-            "!string.IsNullOrWhiteSpace(FileNameBox.Text)",
+            "!string.IsNullOrWhiteSpace(_project?.FileName)",
         )
         for token in required_tokens:
             if token not in owner:

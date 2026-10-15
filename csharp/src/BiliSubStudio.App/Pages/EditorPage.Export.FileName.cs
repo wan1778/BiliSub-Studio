@@ -1,5 +1,6 @@
 using BiliSubStudio.Core.IO;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Controls;
 
 namespace BiliSubStudio.App.Pages;
 
@@ -9,11 +10,11 @@ public sealed partial class EditorPage
 
     private void EditorFileName_LostFocus(object sender, RoutedEventArgs e)
     {
-        if (_normalizingEditorOutputFileName) return;
-        var current = FileNameBox.Text;
+        if (_normalizingEditorOutputFileName || sender is not TextBox box) return;
+        var current = box.Text;
         if (string.IsNullOrWhiteSpace(current))
         {
-            StatusText.Text = "Tên file đầu ra không được để trống.";
+            ExportDialogValidationText.Text = "Tên file đầu ra không được để trống.";
             RefreshEditorActions();
             return;
         }
@@ -22,8 +23,8 @@ public sealed partial class EditorPage
         if (string.Equals(current, normalized, StringComparison.Ordinal)) return;
 
         _normalizingEditorOutputFileName = true;
-        try { FileNameBox.Text = normalized; }
+        try { box.Text = normalized; }
         finally { _normalizingEditorOutputFileName = false; }
-        StatusText.Text = "Tên file đầu ra đã được chuẩn hóa an toàn: " + normalized;
+        ExportDialogValidationText.Text = "Tên file đầu ra đã được chuẩn hóa an toàn: " + normalized;
     }
 }

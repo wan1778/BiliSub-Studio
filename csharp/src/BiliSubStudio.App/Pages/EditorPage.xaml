@@ -751,50 +751,13 @@
 
                                 <Border Style="{StaticResource CardBorderStyle}" Padding="12">
                                     <StackPanel Spacing="8">
-                                        <TextBlock Text="NƠI LƯU" FontSize="10" FontWeight="SemiBold" Foreground="{ThemeResource MutedTextBrush}"/>
-                                        <Border Padding="8,7" CornerRadius="7" Background="{ThemeResource InputSurfaceBrush}" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="1" MinHeight="36">
-                                            <TextBlock x:Name="EditorOutputPathText" Style="{StaticResource MutedTextStyle}" TextWrapping="Wrap" FontSize="11" Foreground="{ThemeResource SecondaryTextBrush}" TextTrimming="CharacterEllipsis"/>
-                                        </Border>
-                                        <Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
-                                            <Button x:Name="EditorChooseOutputButton" Content="📁 Chọn thư mục" Style="{StaticResource SecondaryButtonStyle}" HorizontalAlignment="Stretch" CornerRadius="8"/>
-                                            <Button Grid.Column="1" x:Name="EditorOpenOutputButton" Content="Mở thư mục" Style="{StaticResource SecondaryButtonStyle}" HorizontalAlignment="Stretch" CornerRadius="8"/>
-                                        </Grid>
-                                    </StackPanel>
-                                </Border>
-
-                                <Border Style="{StaticResource CardBorderStyle}" Padding="12">
-                                    <StackPanel Spacing="8">
-                                        <TextBlock Text="TÊN FILE" FontSize="10" FontWeight="SemiBold" Foreground="{ThemeResource MutedTextBrush}"/>
-                                        <TextBox x:Name="FileNameBox" Header="Tên file đầu ra" PlaceholderText="video_edited.mp4" TextChanged="FileNameBox_TextChanged"/>
-                                        <TextBlock Text="Tự thêm hậu tố nếu trùng tên. Giữ nguyên đuôi .mp4 để tương thích player." FontSize="10" Foreground="{ThemeResource MutedTextBrush}" TextWrapping="Wrap"/>
-                                    </StackPanel>
-                                </Border>
-
-                                <Border Style="{StaticResource CardBorderStyle}" Padding="12">
-                                    <StackPanel Spacing="8">
-                                        <TextBlock Text="CẮT VIDEO · GIỮ LẠI" FontSize="10" FontWeight="SemiBold" Foreground="{ThemeResource MutedTextBrush}"/>
-                                        <TextBlock Text="Đặt mốc đầu/cuối theo thời gian video nguồn. Muốn bỏ vài phút cuối: kéo timeline tới điểm cần kết thúc rồi bấm Đặt cuối." FontSize="10" Foreground="{ThemeResource MutedTextBrush}" TextWrapping="Wrap"/>
-                                        <Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
-                                            <NumberBox x:Name="TrimStartBox" Header="Bắt đầu (giây)" Minimum="0" SmallChange="1" SpinButtonPlacementMode="Inline" ValueChanged="TrimRange_ValueChanged"/>
-                                            <NumberBox Grid.Column="1" x:Name="TrimEndBox" Header="Kết thúc (giây)" Minimum="0" SmallChange="1" SpinButtonPlacementMode="Inline" ValueChanged="TrimRange_ValueChanged"/>
-                                        </Grid>
-                                        <Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
-                                            <Button x:Name="TrimUseCurrentStartButton" Click="TrimUseCurrentStart_Click" Content="Đặt đầu tại vị trí hiện tại" Style="{StaticResource SecondaryButtonStyle}" HorizontalAlignment="Stretch" CornerRadius="8"/>
-                                            <Button Grid.Column="1" x:Name="TrimUseCurrentEndButton" Click="TrimUseCurrentEnd_Click" Content="Đặt cuối tại vị trí hiện tại" Style="{StaticResource SecondaryButtonStyle}" HorizontalAlignment="Stretch" CornerRadius="8"/>
-                                        </Grid>
-                                        <Button x:Name="TrimResetButton" Click="TrimReset_Click" Content="Giữ toàn bộ video" Style="{StaticResource SecondaryButtonStyle}" HorizontalAlignment="Stretch" CornerRadius="8"/>
-                                        <TextBlock x:Name="TrimSummaryText" Text="Giữ toàn bộ video." FontSize="10" Foreground="{ThemeResource SecondaryTextBrush}" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite"/>
-                                    </StackPanel>
-                                </Border>
-
-                                <Border Style="{StaticResource CardBorderStyle}" Padding="12">
-                                    <StackPanel Spacing="8">
                                         <TextBlock Text="XUẤT VIDEO" FontSize="10" FontWeight="SemiBold" Foreground="{ThemeResource MutedTextBrush}"/>
                                         <Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
                                             <Button x:Name="RenderButton" Click="Render_Click" Content="⬆  Xuất video" IsEnabled="False" HorizontalAlignment="Stretch" MinHeight="40" CornerRadius="8" FontWeight="SemiBold" Background="{ThemeResource AccentPrimaryBrush}" Foreground="White" BorderThickness="0"/>
                                             <Button Grid.Column="1" x:Name="CancelButton" Click="Cancel_Click" Content="Hủy" IsEnabled="False" Style="{StaticResource DangerButtonStyle}" HorizontalAlignment="Stretch" CornerRadius="8" MinHeight="40"/>
                                         </Grid>
                                         <ProgressBar x:Name="Progress" Minimum="0" Maximum="100" Height="4" CornerRadius="2" Foreground="{ThemeResource AccentPrimaryBrush}" AutomationProperties.Name="Tiến độ xuất video"/>
+                                        <TextBlock x:Name="RenderEtaText" FontSize="11" Foreground="{ThemeResource SecondaryTextBrush}" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite"/>
                                     </StackPanel>
                                 </Border>
                             </StackPanel>
@@ -852,9 +815,10 @@
                             <TextBlock Text="FILE ĐẦU RA" Style="{StaticResource ExportSectionTitleStyle}" />
                             <TextBox x:Name="ExportDialogFileNameBox" Header="Tên file" PlaceholderText="video_edited.mp4" />
                             <Grid ColumnSpacing="9">
-                                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
                                 <TextBox x:Name="ExportDialogDirectoryBox" Header="Thư mục lưu" IsReadOnly="True" TextWrapping="NoWrap" />
                                 <Button Grid.Column="1" x:Name="ExportDialogChooseDirectoryButton" Content="Chọn" Click="ExportDialogChooseDirectory_Click" VerticalAlignment="Bottom" MinHeight="34" Padding="17,6" Style="{StaticResource SecondaryButtonStyle}" />
+                                <Button Grid.Column="2" x:Name="ExportDialogOpenDirectoryButton" Content="Mở" Click="ExportDialogOpenDirectory_Click" VerticalAlignment="Bottom" MinHeight="34" Padding="17,6" Style="{StaticResource SecondaryButtonStyle}" />
                             </Grid>
                         </StackPanel>
                     </Border>
@@ -884,6 +848,25 @@
                             <ComboBox x:Name="ExportDialogFpsBox" Header="FPS" SelectedIndex="0" HorizontalAlignment="Stretch" SelectionChanged="ExportDialogSetting_Changed"><ComboBoxItem Content="Giữ nguyên nguồn" Tag="source" /><ComboBoxItem Content="24 FPS" Tag="24" /><ComboBoxItem Content="25 FPS" Tag="25" /><ComboBoxItem Content="30 FPS" Tag="30" /><ComboBoxItem Content="50 FPS" Tag="50" /><ComboBoxItem Content="60 FPS" Tag="60" /></ComboBox>
                             <ToggleSwitch x:Name="ExportDialogGpuToggle" Header="Tăng tốc GPU" IsOn="True" Toggled="ExportDialogSetting_Changed" />
                             <TextBlock Text="Tự động dùng NVIDIA NVENC khi khả dụng" FontSize="11" Foreground="#92A2B8" />
+                        </StackPanel>
+                    </Border>
+
+                    <Border Padding="17,14" Background="{StaticResource ExportCardBrush}" BorderBrush="{StaticResource ExportCardBorderBrush}" BorderThickness="1" CornerRadius="9">
+                        <StackPanel Spacing="9">
+                            <TextBlock Text="CẮT VIDEO · GIỮ LẠI" Style="{StaticResource ExportSectionTitleStyle}" />
+                            <TextBlock Text="Giữ lại đoạn cần xuất theo giờ chuẩn. Muốn bỏ vài phút cuối: kéo timeline tới điểm cần kết thúc rồi bấm Đặt cuối." FontSize="11" Foreground="#92A2B8" TextWrapping="Wrap" />
+                            <Grid ColumnSpacing="10">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                                <TextBox x:Name="ExportDialogTrimStartBox" Header="Bắt đầu (hh:mm:ss)" PlaceholderText="00:00:00" TextChanged="ExportDialogTrimBox_TextChanged" />
+                                <TextBox Grid.Column="1" x:Name="ExportDialogTrimEndBox" Header="Kết thúc (hh:mm:ss)" PlaceholderText="02:41:08" TextChanged="ExportDialogTrimBox_TextChanged" />
+                            </Grid>
+                            <Grid ColumnSpacing="9">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                                <Button x:Name="ExportDialogTrimStartCurrentButton" Click="ExportDialogTrimStartCurrent_Click" Content="Đầu tại vị trí hiện tại" Style="{StaticResource SecondaryButtonStyle}" HorizontalAlignment="Stretch" FontSize="12" />
+                                <Button Grid.Column="1" x:Name="ExportDialogTrimEndCurrentButton" Click="ExportDialogTrimEndCurrent_Click" Content="Cuối tại vị trí hiện tại" Style="{StaticResource SecondaryButtonStyle}" HorizontalAlignment="Stretch" FontSize="12" />
+                                <Button Grid.Column="2" x:Name="ExportDialogTrimResetButton" Click="ExportDialogTrimReset_Click" Content="Giữ toàn bộ" Style="{StaticResource SecondaryButtonStyle}" HorizontalAlignment="Stretch" FontSize="12" />
+                            </Grid>
+                            <TextBlock x:Name="ExportDialogTrimSummaryText" Text="Giữ toàn bộ video." FontSize="12" Foreground="#B3C0D2" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
                         </StackPanel>
                     </Border>
                 </StackPanel>

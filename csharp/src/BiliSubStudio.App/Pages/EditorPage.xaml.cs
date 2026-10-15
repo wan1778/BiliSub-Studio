@@ -307,14 +307,9 @@ public sealed partial class EditorPage : Page
         _syncingInputs = true;
         try
         {
-            FileNameBox.Text = _project.FileName;
             StartBox.Maximum = EndBox.Maximum = _media.Duration;
             EndBox.Value = _media.Duration;
-            TrimStartBox.Maximum = TrimEndBox.Maximum = _media.Duration;
-            TrimStartBox.Value = trim.Start;
-            TrimEndBox.Value = trim.End;
             _trimRangeValid = true;
-            UpdateTrimSummary(trim);
         }
         finally { _syncingInputs = false; }
         ShowWorkspaceSurface();
@@ -1648,109 +1643,12 @@ public sealed partial class EditorPage : Page
         return true;
     }
 
-    private void FileNameBox_TextChanged(object sender, TextChangedEventArgs e)
-    {
-        if (IsLoaded && !_syncingInputs)
-        {
-            QueueProjectSave();
-            RefreshEditorActions();
-        }
-    }
-
     private EditorTrimRange CurrentTrimRange()
     {
         if (_media is null) throw new InvalidOperationException("Chưa chọn video để cắt.");
-        return EditorProjectStore.NormalizeTrim(
-            new EditorTrimRange(TrimStartBox.Value, TrimEndBox.Value), _media.Duration);
-    }
-
-    private void TrimRange_ValueChanged(NumberBox sender, NumberBoxValueChangedEventArgs args)
-    {
-        if (!IsLoaded || _syncingInputs || _media is null || _project is null) return;
-        try
-        {
-            var trim = CurrentTrimRange();
-            _trimRangeValid = true;
-            _project = _project with { Trim = trim };
-            UpdateTrimSummary(trim);
-            QueueProjectSave();
-            StatusText.Text = EditorProjectStore.HasTrim(trim, _media.Duration)
-                ? $"Đã đặt khoảng giữ lại {FormatClock(trim.Start)}–{FormatClock(trim.End)}."
-                : "Đang giữ toàn bộ video.";
-        }
-        catch (Exception error)
-        {
-            _trimRangeValid = false;
-            TrimSummaryText.Text = error.Message;
-        }
-        RefreshEditorActions();
-    }
-
-    private void TrimUseCurrentStart_Click(object sender, RoutedEventArgs e) => SetTrimBoundaryFromCurrent(setStart: true);
-
-    private void TrimUseCurrentEnd_Click(object sender, RoutedEventArgs e) => SetTrimBoundaryFromCurrent(setStart: false);
-
-    private void SetTrimBoundaryFromCurrent(bool setStart)
-    {
-        if (_media is null || _project is null || EditorBusy || _playback.IsPreviewMode) return;
-        var value = Math.Clamp(Timeline.Value, 0, _media.Duration);
-        var candidate = setStart
-            ? new EditorTrimRange(value, TrimEndBox.Value)
-            : new EditorTrimRange(TrimStartBox.Value, value);
-        try
-        {
-            candidate = EditorProjectStore.NormalizeTrim(candidate, _media.Duration);
-            _syncingInputs = true;
-            try
-            {
-                TrimStartBox.Value = candidate.Start;
-                TrimEndBox.Value = candidate.End;
-            }
-            finally { _syncingInputs = false; }
-            _trimRangeValid = true;
-            _project = _project with { Trim = candidate };
-            UpdateTrimSummary(candidate);
-            QueueProjectSave();
-            RefreshEditorActions();
-            StatusText.Text = $"Đã đặt {(setStart ? "đầu" : "cuối")} đoạn giữ lại tại {FormatClock(value)}.";
-        }
-        catch (Exception error)
-        {
-            StatusText.Text = error.Message;
-        }
-    }
-
-    private void TrimReset_Click(object sender, RoutedEventArgs e)
-    {
-        if (_media is null || _project is null || EditorBusy || _playback.IsPreviewMode) return;
-        var trim = new EditorTrimRange(0, _media.Duration);
-        _syncingInputs = true;
-        try
-        {
-            TrimStartBox.Value = trim.Start;
-            TrimEndBox.Value = trim.End;
-        }
-        finally { _syncingInputs = false; }
-        _trimRangeValid = true;
-        _project = _project with { Trim = trim };
-        UpdateTrimSummary(trim);
-        QueueProjectSave();
-        RefreshEditorActions();
-        StatusText.Text = "Đã đặt lại: giữ toàn bộ video.";
-    }
-
-    private void UpdateTrimSummary(EditorTrimRange trim)
-    {
-        if (_media is null)
-        {
-            TrimSummaryText.Text = "Chưa chọn video.";
-            return;
-        }
-        var removedStart = trim.Start;
-        var removedEnd = Math.Max(0, _media.Duration - trim.End);
-        TrimSummaryText.Text = EditorProjectStore.HasTrim(trim, _media.Duration)
-            ? $"Giữ {FormatClock(trim.Start)} → {FormatClock(trim.End)} · dài {FormatClock(trim.Duration)} · bỏ đầu {FormatClock(removedStart)} · bỏ cuối {FormatClock(removedEnd)}."
-            : $"Giữ toàn bộ video · {FormatClock(_media.Duration)}.";
+        var stored = _project?.Trim;
+        var range = stored is null ? new EditorTrimRange(0, _media.Duration) : stored;
+        return EditorProjectStore.NormalizeTrim(range, _media.Duration);
     }
 
     private void SourceAudioGain_ValueChanged(object sender, Microsoft.UI.Xaml.Controls.Primitives.RangeBaseValueChangedEventArgs e) => UpdateAudioSettingsFromUi();
@@ -1831,7 +1729,7 @@ public sealed partial class EditorPage : Page
         return new VideoEditRequest(
             path,
             _application.Config.OutputDirectory,
-            FileNameBox.Text,
+            _project?.FileName ?? "video_edited.mp4",
             media.Width,
             media.Height,
             media.Duration,
@@ -1851,6 +1749,7 @@ public sealed partial class EditorPage : Page
     {
         if (_jobId is null) return;
         _application.CancelJob(_jobId);
+        ClearRenderEta();
         StatusText.Text = "Đang dừng FFmpeg và xóa file render dở...";
     }
 
@@ -2536,7 +2435,7 @@ public sealed partial class EditorPage : Page
 
     private EditorProject ProjectSnapshot() => (_project ?? throw new InvalidOperationException("Project Editor chưa mở.")) with
     {
-        FileName = FileNameBox.Text,
+        FileName = _project.FileName,
         Regions = _document.Regions.ToArray(),
         Subtitle = _subtitleSource is null ? null : new EditorSubtitleProject(
             _subtitleSource.Path,
@@ -2580,7 +2479,7 @@ public sealed partial class EditorPage : Page
         var hasImages = _imageFeatureInitialized && _imageOverlays.Count > 0;
         RenderButton.IsEnabled = editable && !cleanupPending && _trimRangeValid && !_subtitleManualDirty && _path is not null
             && (_document.Regions.Count > 0 || subtitleReady || audioChanged || _voiceTrack is not null || hasImages || trimChanged)
-            && !string.IsNullOrWhiteSpace(FileNameBox.Text);
+            && !string.IsNullOrWhiteSpace(_project?.FileName);
         CancelButton.IsEnabled = _jobId is not null;
         Timeline.IsEnabled = idle && hasMedia;
         PlayerPlayPauseButton.IsEnabled = idle && hasMedia && _playback.IsReady;
@@ -2590,9 +2489,6 @@ public sealed partial class EditorPage : Page
         StrengthBox.IsEnabled = editable && EffectUsesStrength(SelectedEffect());
         StartBox.IsEnabled = EndBox.IsEnabled = editable && !WholeToggle.IsOn;
         EditorUseCurrentStartButton.IsEnabled = EditorUseCurrentEndButton.IsEnabled = editable && !WholeToggle.IsOn;
-        FileNameBox.IsEnabled = editable;
-        TrimStartBox.IsEnabled = TrimEndBox.IsEnabled = editable;
-        TrimUseCurrentStartButton.IsEnabled = TrimUseCurrentEndButton.IsEnabled = TrimResetButton.IsEnabled = editable;
         ImportSrtButton.IsEnabled = idle && !_playback.IsPreviewMode;
         OpenTranslatedSrtButton.IsEnabled = idle && !_playback.IsPreviewMode && !_subtitleManualDirty && File.Exists(_project?.Subtitle?.OutputPath);
         SaveKaraokeAssButton.IsEnabled = editable && !_subtitleManualDirty && subtitleReady && KaraokeToggle.IsOn && _cueSpeechTiming.Count > 0;

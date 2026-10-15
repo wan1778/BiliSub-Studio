@@ -19,8 +19,8 @@ UI_EVENT_NAMES = {
     "PointerCanceled", "Loaded", "Unloaded", "SizeChanged", "LayoutUpdated", "KeyDown",
 }
 EXPECTED_XAML_BINDINGS = 54
-EXPECTED_XAML_CLICKS = 26
-EXPECTED_USER_CLICK_BINDINGS = 38
+EXPECTED_XAML_CLICKS = 27
+EXPECTED_USER_CLICK_BINDINGS = 39
 
 RUNTIME_UI_BINDINGS = [
     ("Overlay", "SizeChanged", "Overlay_SizeChanged"),
@@ -44,9 +44,9 @@ RUNTIME_UI_BINDINGS = [
     ("ImageHeightBox", "ValueChanged", "ImageGeometry_ValueChanged"),
     ("ImageOpacitySlider", "ValueChanged", "ImageOpacity_ValueChanged"),
     ("EditorAutoCompositeToggle", "Toggled", "EditorAutoComposite_Toggled"),
-    ("EditorChooseOutputButton", "Click", "EditorChooseOutput_Click"),
-    ("EditorOpenOutputButton", "Click", "EditorOpenOutput_Click"),
-    ("FileNameBox", "LostFocus", "EditorFileName_LostFocus"),
+    ("ExportDialogChooseDirectoryButton", "Click", "EditorChooseOutput_Click"),
+    ("ExportDialogOpenDirectoryButton", "Click", "EditorOpenOutput_Click"),
+    ("ExportDialogFileNameBox", "LostFocus", "EditorFileName_LostFocus"),
 ]
 CONDITIONAL_RUNTIME_UI_BINDINGS = [
     ("WorkspaceGrid", "SizeChanged", "ValidateUiShellLayoutForSmoke"),

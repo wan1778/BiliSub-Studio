@@ -68,26 +68,27 @@ settings = read(SETTINGS)
 application = read(APPLICATION)
 config_store = read(CONFIG_STORE)
 
-# EXPORT-03 — the Export inspector must expose one visible output-directory owner.
-require(xaml.count('x:Name="EditorOutputPathText"') == 1,
+# EXPORT-03 — the export dialog must expose one visible output-directory owner
+# (tab card removed: dialog is the single owner since its confirm persists).
+require(xaml.count('x:Name="ExportDialogDirectoryBox"') == 1,
         "EXPORT-03 requires one visible output-directory text owner")
-require(xaml.count('x:Name="EditorChooseOutputButton"') == 1,
+require(xaml.count('x:Name="ExportDialogChooseDirectoryButton"') == 1,
         "EXPORT-03 requires one Choose output-directory button")
-require(xaml.count('x:Name="EditorOpenOutputButton"') == 1,
+require(xaml.count('x:Name="ExportDialogOpenDirectoryButton"') == 1,
         "EXPORT-03 requires one Open output-directory button")
-require('Content="📁 Chọn thư mục"' in xaml and "Chọn thư mục" in xaml,
-        "EXPORT-03 Choose button must remain user-visible")
+require('Content="Chọn"' in xaml and 'Click="ExportDialogChooseDirectory_Click"' in xaml,
+        "EXPORT-03 Choose button must remain user-visible and wired")
 require('Click="EditorChooseOutput_Click"' not in xaml,
         "EXPORT-03 Choose button must not gain a duplicate XAML Click owner")
 
 # Static shell binds the one visible button exactly once.
-require(bootstrap.count("EditorChooseOutputButton.Click += EditorChooseOutput_Click;") == 1,
+require(bootstrap.count("ExportDialogChooseDirectoryButton.Click += EditorChooseOutput_Click;") == 1,
         "EXPORT-03 Choose output button must bind exactly once")
-require(bootstrap.count("EditorOpenOutputButton.Click += EditorOpenOutput_Click;") == 1,
+require(bootstrap.count("ExportDialogOpenDirectoryButton.Click += EditorOpenOutput_Click;") == 1,
         "EXPORT-03 Open output button must bind exactly once")
-require("_editorOutputPathText = EditorOutputPathText;" in bootstrap,
+require("_editorOutputPathText = ExportDialogDirectoryBox;" in bootstrap,
         "EXPORT-03 output path text must be owned by the static shell")
-require("EditorOutputPathText.Text = _application.Config.OutputDirectory;" in bootstrap,
+require("ExportDialogDirectoryBox.Text = _application.Config.OutputDirectory;" in bootstrap,
         "EXPORT-03 initial UI must show the current persisted output directory")
 
 choose = extract_method(parity, "private async void EditorChooseOutput_Click(")
@@ -151,7 +152,7 @@ capture = extract_method(output_target, "private EditorOutputTarget CaptureEdito
 require(capture, "EXPORT-03/PROJECT-10 output target capture owner is missing")
 require("_application.Config.OutputDirectory" in capture,
         "EXPORT-03 output target must originate from the authoritative Config snapshot")
-require("FileNameBox.Text" in capture,
+require("_project?.FileName" in capture,
         "EXPORT-03 output target must capture the current filename with the directory")
 
 render_project = extract_method(images, "private async Task RenderProjectAsync()")

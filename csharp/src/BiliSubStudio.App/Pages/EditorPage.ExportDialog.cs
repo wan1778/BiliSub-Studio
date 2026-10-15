@@ -4,6 +4,8 @@ using BiliSubStudio.Core.Editor;
 using BiliSubStudio.Core.IO;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Windows.Storage;
+using Windows.System;
 
 namespace BiliSubStudio.App.Pages;
 
@@ -27,8 +29,9 @@ public sealed partial class EditorPage
         if (_confirmedExportTarget is not { } target) return null;
 
         await _application.Settings.SetOutputDirectoryAsync(target.Directory, CancellationToken.None);
-        EditorOutputPathText.Text = target.Directory;
-        FileNameBox.Text = target.FileName;
+        // Tên file chốt từ dialog (ô tab đã dọn): lưu vào project để lần sau
+        // mở dialog vẫn thấy + nút Xuất vẫn biết tên khi chưa mở dialog.
+        _project = _project with { FileName = target.FileName };
         _lastExportSettings = target.Settings;
         QueueProjectSave();
         return target;
@@ -39,7 +42,7 @@ public sealed partial class EditorPage
         _syncingExportDialog = true;
         try
         {
-            var sourceName = string.IsNullOrWhiteSpace(FileNameBox.Text) ? "video_edited.mp4" : FileNameBox.Text;
+            var sourceName = string.IsNullOrWhiteSpace(_project?.FileName) ? "video_edited.mp4" : _project.FileName;
             ExportDialogFileNameBox.Text = FileNamePolicy.NormalizeVideoOutputName(sourceName);
             ExportDialogDirectoryBox.Text = _application.Config.OutputDirectory;
             SelectByTag(ExportDialogContainerBox, Path.GetExtension(ExportDialogFileNameBox.Text).Equals(".mkv", StringComparison.OrdinalIgnoreCase) ? "mkv" : "mp4");
@@ -49,6 +52,8 @@ public sealed partial class EditorPage
             SelectByTag(ExportDialogFpsBox, _lastExportSettings.FrameRate?.ToString("0", CultureInfo.InvariantCulture) ?? "source");
             SelectByTag(ExportDialogAudioBitrateBox, _lastExportSettings.AudioBitrateKbps.ToString(CultureInfo.InvariantCulture));
             ExportDialogGpuToggle.IsOn = _lastExportSettings.PreferHardwareAcceleration;
+            SyncDialogTrimBoxes();
+            UpdateDialogTrimSummary();
             if (_media is not null)
             {
                 ((ComboBoxItem)ExportDialogResolutionBox.Items[0]).Content = $"Giữ nguyên nguồn · {_media.Width} × {_media.Height}";
@@ -69,9 +74,10 @@ public sealed partial class EditorPage
             var directoryText = ExportDialogDirectoryBox.Text?.Trim() ?? string.Empty;
             if (directoryText.Length == 0) throw new InvalidDataException("Hãy chọn thư mục lưu video.");
             var directory = Path.GetFullPath(directoryText);
-            var container = SelectedTag(ExportDialogContainerBox, "mp4");
             var rawName = ExportDialogFileNameBox.Text?.Trim() ?? string.Empty;
             if (rawName.Length == 0) throw new InvalidDataException("Tên file đầu ra không được để trống.");
+            if (!_trimRangeValid) throw new InvalidDataException("Khoảng cắt chưa hợp lệ; sửa giờ Bắt đầu/Kết thúc (hh:mm:ss).");
+            var container = SelectedTag(ExportDialogContainerBox, "mp4");
             var fileName = FileNamePolicy.Sanitize(rawName, "BiliSub_edited." + container);
             fileName = Path.GetFileNameWithoutExtension(fileName) + "." + container;
             var settings = ReadExportDialogSettings();
@@ -147,6 +153,157 @@ public sealed partial class EditorPage
         var raw = ExportDialogFileNameBox.Text?.Trim() ?? "video_edited";
         if (raw.Length == 0) raw = "video_edited";
         ExportDialogFileNameBox.Text = Path.GetFileNameWithoutExtension(raw) + "." + container;
+    }
+
+    // Cắt video trong dialog (giờ chuẩn hh:mm:ss thay vì giây thô): ô tab đã
+    // dọn nên dialog là chủ sở hữu duy nhất. Ghi thẳng vào _project.Trim +
+    // lưu project ngay như tab cũ (mở dialog lần sau vẫn thấy).
+    private static string FormatClockFull(double seconds)
+    {
+        var value = TimeSpan.FromSeconds(Math.Max(0, seconds));
+        return value.ToString(@"hh\:mm\:ss");
+    }
+
+    internal static double TryParseClockToSeconds(string? text, double duration)
+    {
+        var cleaned = (text ?? string.Empty).Trim().Replace(',', '.');
+        if (cleaned.Length == 0)
+            throw new InvalidDataException("Giờ cắt không được để trống (hh:mm:ss).");
+        var parts = cleaned.Split(':', StringSplitOptions.RemoveEmptyEntries);
+        double seconds;
+        if (parts.Length == 3
+            && int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out var hours)
+            && int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var minutes)
+            && double.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out var secs))
+        {
+            seconds = hours * 3600 + minutes * 60 + secs;
+        }
+        else if (parts.Length == 2
+            && int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out var minutesOnly)
+            && double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var secsOnly))
+        {
+            seconds = minutesOnly * 60 + secsOnly;
+        }
+        else if (parts.Length == 1
+            && double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var rawSeconds))
+        {
+            seconds = rawSeconds;
+        }
+        else
+        {
+            throw new InvalidDataException($"Giờ không hợp lệ: {text} (dùng hh:mm:ss).");
+        }
+        if (!double.IsFinite(seconds) || seconds < 0 || seconds > duration)
+            throw new InvalidDataException($"Giờ phải trong 00:00:00–{TimeSpan.FromSeconds(duration):hh\\:mm\\:ss}.");
+        return seconds;
+    }
+
+    private void SyncDialogTrimBoxes()
+    {
+        if (_media is null || _project is null) return;
+        var trim = CurrentTrimRange();
+        ExportDialogTrimStartBox.Text = FormatClockFull(trim.Start);
+        ExportDialogTrimEndBox.Text = FormatClockFull(trim.End);
+    }
+
+    private void ExportDialogTrimBox_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (_syncingExportDialog || !IsLoaded) return;
+        CommitDialogTrim(note: null);
+    }
+
+    private void CommitDialogTrim(string? note)
+    {
+        if (_media is null || _project is null) return;
+        try
+        {
+            var start = TryParseClockToSeconds(ExportDialogTrimStartBox.Text, _media.Duration);
+            var end = TryParseClockToSeconds(ExportDialogTrimEndBox.Text, _media.Duration);
+            var trim = EditorProjectStore.NormalizeTrim(new EditorTrimRange(start, end), _media.Duration);
+            _trimRangeValid = true;
+            _project = _project with { Trim = trim };
+            UpdateDialogTrimSummary(trim);
+            QueueProjectSave();
+            RefreshEditorActions();
+            UpdateExportDialogSummary();
+            if (note is not null) ExportDialogValidationText.Text = string.Empty;
+        }
+        catch (Exception error)
+        {
+            _trimRangeValid = false;
+            ExportDialogTrimSummaryText.Text = error.Message;
+            RefreshEditorActions();
+        }
+    }
+
+    private void UpdateDialogTrimSummary() => UpdateDialogTrimSummary(CurrentTrimRange());
+
+    private void UpdateDialogTrimSummary(EditorTrimRange trim)
+    {
+        if (_media is null)
+        {
+            ExportDialogTrimSummaryText.Text = "Chưa chọn video.";
+            return;
+        }
+        var removedStart = trim.Start;
+        var removedEnd = Math.Max(0, _media.Duration - trim.End);
+        ExportDialogTrimSummaryText.Text = EditorProjectStore.HasTrim(trim, _media.Duration)
+            ? $"Giữ {FormatClockFull(trim.Start)} → {FormatClockFull(trim.End)} · dài {FormatClockFull(trim.Duration)} · bỏ đầu {FormatClockFull(removedStart)} · bỏ cuối {FormatClockFull(removedEnd)}."
+            : $"Giữ toàn bộ video · {FormatClockFull(_media.Duration)}.";
+    }
+
+    private void ExportDialogTrimStartCurrent_Click(object sender, RoutedEventArgs e) =>
+        SetDialogTrimBoundaryFromCurrent(setStart: true);
+
+    private void ExportDialogTrimEndCurrent_Click(object sender, RoutedEventArgs e) =>
+        SetDialogTrimBoundaryFromCurrent(setStart: false);
+
+    private void SetDialogTrimBoundaryFromCurrent(bool setStart)
+    {
+        if (_media is null || _project is null || EditorBusy || _playback.IsPreviewMode) return;
+        var value = Math.Clamp(Timeline.Value, 0, _media.Duration);
+        var current = CurrentTrimRange();
+        var candidate = EditorProjectStore.NormalizeTrim(
+            setStart ? new EditorTrimRange(value, current.End) : new EditorTrimRange(current.Start, value),
+            _media.Duration);
+        _syncingExportDialog = true;
+        try
+        {
+            ExportDialogTrimStartBox.Text = FormatClockFull(candidate.Start);
+            ExportDialogTrimEndBox.Text = FormatClockFull(candidate.End);
+        }
+        finally { _syncingExportDialog = false; }
+        CommitDialogTrim(note: null);
+        ExportDialogValidationText.Text = $"Đã đặt {(setStart ? "đầu" : "cuối")} đoạn giữ lại tại {FormatClockFull(value)}.";
+    }
+
+    private void ExportDialogTrimReset_Click(object sender, RoutedEventArgs e)
+    {
+        if (_media is null || _project is null || EditorBusy || _playback.IsPreviewMode) return;
+        var trim = new EditorTrimRange(0, _media.Duration);
+        _syncingExportDialog = true;
+        try
+        {
+            ExportDialogTrimStartBox.Text = FormatClockFull(trim.Start);
+            ExportDialogTrimEndBox.Text = FormatClockFull(trim.End);
+        }
+        finally { _syncingExportDialog = false; }
+        CommitDialogTrim(note: null);
+        ExportDialogValidationText.Text = "Đã đặt lại: giữ toàn bộ video.";
+    }
+
+    private async void ExportDialogOpenDirectory_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var shown = ExportDialogDirectoryBox.Text?.Trim() ?? string.Empty;
+            var folder = await StorageFolder.GetFolderFromPathAsync(shown.Length > 0 ? shown : _application.Config.OutputDirectory);
+            await Launcher.LaunchFolderAsync(folder);
+        }
+        catch (Exception error)
+        {
+            ExportDialogValidationText.Text = "Không mở được thư mục: " + error.Message;
+        }
     }
 
     private EditorExportSettings ReadExportDialogSettings()

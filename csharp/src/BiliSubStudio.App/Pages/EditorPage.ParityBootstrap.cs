@@ -86,11 +86,11 @@ public sealed partial class EditorPage
         // one runtime addition because they exercise the exact production TTS path
         // without adding another engine or duplicating the existing Generate button.
 
-        _editorOutputPathText = EditorOutputPathText;
-        _editorChooseOutputButton = EditorChooseOutputButton;
-        _editorOpenOutputButton = EditorOpenOutputButton;
+        _editorOutputPathText = ExportDialogDirectoryBox;
+        _editorChooseOutputButton = ExportDialogChooseDirectoryButton;
+        _editorOpenOutputButton = ExportDialogOpenDirectoryButton;
         _editorAutoCompositeToggle = EditorAutoCompositeToggle;
-        EditorOutputPathText.Text = _application.Config.OutputDirectory;
+        ExportDialogDirectoryBox.Text = _application.Config.OutputDirectory;
         EnsureVoiceSampleUi();
 
         // PLAYER-UI-02: polish the compact transport without changing playback ownership or handlers.
@@ -178,9 +178,9 @@ public sealed partial class EditorPage
         ImageOpacitySlider.ValueChanged += ImageOpacity_ValueChanged;
 
         EditorAutoCompositeToggle.Toggled += EditorAutoComposite_Toggled;
-        EditorChooseOutputButton.Click += EditorChooseOutput_Click;
-        EditorOpenOutputButton.Click += EditorOpenOutput_Click;
-        FileNameBox.LostFocus += EditorFileName_LostFocus;
+        ExportDialogChooseDirectoryButton.Click += EditorChooseOutput_Click;
+        ExportDialogOpenDirectoryButton.Click += EditorOpenOutput_Click;
+        ExportDialogFileNameBox.LostFocus += EditorFileName_LostFocus;
 
         // UI-11: MainWindow startup smoke resizes to 800x600, 1000x700 and 1500x900.
         // Validate the real shell at those layouts without affecting normal user resize.
@@ -379,6 +379,7 @@ public sealed partial class EditorPage
             + (99d - _imageStageProgressFloor) * childProgress / 99d;
         _imageStageDisplayProgress = Math.Max(_imageStageDisplayProgress, mapped);
         Progress.Value = Math.Clamp(_imageStageDisplayProgress, _imageStageProgressFloor, 99d);
+        UpdateRenderEta(Progress.Value);
         StatusText.Text = _imageStageProgressFloor > 0
             ? "Giai đoạn 2/2 · " + snapshot.Message
             : snapshot.Message;

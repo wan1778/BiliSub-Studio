@@ -607,6 +607,50 @@ public sealed partial class EditorPage
         RenderImageOverlays();
     }
 
+    // ETA render (dự đoán thời gian còn lại từ % tiến trình, làm mượt trung
+    // bình trượt cho số khỏi nhảy loạn; % đã quy đổi toàn cục 0-100 nên 1 công
+    // thức đúng cho cả 2 giai đoạn dựng).
+    private DateTime _renderEtaStartUtc = DateTime.UtcNow;
+    private double _renderEtaSmoothSeconds = double.NaN;
+
+    private static string FormatEta(double seconds)
+    {
+        var value = TimeSpan.FromSeconds(Math.Max(0, seconds));
+        return value.TotalHours >= 1
+            ? $"{(int)value.TotalHours}:{value.Minutes:00}:{value.Seconds:00}"
+            : $"{value.Minutes:00}:{value.Seconds:00}";
+    }
+
+    private void ResetRenderEta()
+    {
+        _renderEtaStartUtc = DateTime.UtcNow;
+        _renderEtaSmoothSeconds = double.NaN;
+        RenderEtaText.Text = "Đang tính thời gian còn lại...";
+    }
+
+    private void ClearRenderEta() => RenderEtaText.Text = string.Empty;
+
+    private void UpdateRenderEta(double progressPercent)
+    {
+        var fraction = Math.Clamp(progressPercent / 100d, 0, 1);
+        if (!(fraction > 0.005))
+        {
+            RenderEtaText.Text = "Đang tính thời gian còn lại...";
+            return;
+        }
+        var elapsed = (DateTime.UtcNow - _renderEtaStartUtc).TotalSeconds;
+        if (!(elapsed > 0))
+        {
+            RenderEtaText.Text = "Đang tính thời gian còn lại...";
+            return;
+        }
+        var raw = elapsed * (1 - fraction) / fraction;
+        _renderEtaSmoothSeconds = double.IsNaN(_renderEtaSmoothSeconds)
+            ? raw
+            : _renderEtaSmoothSeconds * 0.65 + raw * 0.35;
+        RenderEtaText.Text = _renderEtaSmoothSeconds < 5 ? "Sắp xong" : $"Còn khoảng {FormatEta(_renderEtaSmoothSeconds)}";
+    }
+
     private async Task RenderProjectAsync()
     {
         if (EditorBusy) return;
@@ -686,6 +730,7 @@ public sealed partial class EditorPage
                 };
                 _jobId = _application.StartEditor(request);
                 RefreshEditorActions();
+                ResetRenderEta();
                 DateTime? exportCancellingSinceUtc = null;
                 while (_jobId is not null)
                 {
@@ -693,6 +738,7 @@ public sealed partial class EditorPage
                     try { snapshot = _application.Jobs.GetSnapshot(_jobId); }
                     catch { _jobId = null; RefreshEditorActions(); break; }
                     Progress.Value = snapshot.Progress;
+                    UpdateRenderEta(snapshot.Progress);
                     StatusText.Text = snapshot.Message;
                     if (CheckStuckCancelling(snapshot, ref exportCancellingSinceUtc, () =>
                     {
@@ -740,6 +786,7 @@ public sealed partial class EditorPage
                 };
                 _jobId = _application.StartEditor(request);
                 RefreshEditorActions();
+                ResetRenderEta();
                 DateTime? baseCancellingSinceUtc = null;
                 while (_jobId is not null)
                 {
@@ -747,6 +794,7 @@ public sealed partial class EditorPage
                     try { snapshot = _application.Jobs.GetSnapshot(_jobId); }
                     catch { _jobId = null; RefreshEditorActions(); break; }
                     Progress.Value = Math.Clamp(snapshot.Progress * .68, 0, 68);
+                    UpdateRenderEta(Progress.Value);
                     StatusText.Text = "Đang dựng bản chỉnh trước khi ghép ảnh/logo · " + snapshot.Message;
                     if (CheckStuckCancelling(snapshot, ref baseCancellingSinceUtc, () =>
                     {
@@ -782,6 +830,7 @@ public sealed partial class EditorPage
             imageJob = _application.Jobs.Create("editor-image", cleanupAwareCancel: true);
             _jobId = imageJob.Id;
             RefreshEditorActions();
+            ResetRenderEta();
             var composer = new EditorImageOverlayComposer(_application.Tools, _application.Processes);
             var specs = _imageOverlays.Select(image => new EditorImageOverlaySpec(
                 image.Path, image.X, image.Y, image.Width, image.Height, image.Opacity)).ToArray();
@@ -829,6 +878,7 @@ public sealed partial class EditorPage
                 try { File.Delete(baseOutput); } catch { }
             }
             _jobId = null;
+            ClearRenderEta();
             RefreshEditorActions();
             RenderImageOverlays();
         }

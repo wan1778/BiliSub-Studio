@@ -6,7 +6,7 @@ namespace BiliSubStudio.App.Pages;
 
 public sealed partial class EditorPage
 {
-    private TextBlock? _editorOutputPathText;
+    private TextBox? _editorOutputPathText;
     private Button? _editorChooseOutputButton;
     private Button? _editorOpenOutputButton;
     private ToggleSwitch? _editorAutoCompositeToggle;
@@ -53,7 +53,10 @@ public sealed partial class EditorPage
                 ?? throw new InvalidOperationException("Không lấy được cửa sổ chính.");
             var window = app.MainWindow ?? throw new InvalidOperationException("Cửa sổ chính chưa sẵn sàng.");
             var picker = new FolderPickerService(() => window);
-            await picker.OpenFolderAsync(_application.Config.OutputDirectory);
+            // Mở đúng thư mục đang hiện trong dialog xuất (chưa bấm Bắt đầu
+            // thì đó là bản nháp); trống thì về nơi lưu đã lưu trong Config.
+            var shown = ExportDialogDirectoryBox.Text?.Trim() ?? string.Empty;
+            await picker.OpenFolderAsync(shown.Length > 0 ? shown : _application.Config.OutputDirectory);
         }
         catch (Exception error)
         {

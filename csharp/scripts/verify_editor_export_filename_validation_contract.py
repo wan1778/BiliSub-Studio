@@ -40,11 +40,11 @@ video_editor = read(VIDEO_EDITOR)
 image_composer = read(IMAGE_COMPOSER)
 all_editor_parts = "\n".join(read(path) for path in sorted(PAGES.glob("EditorPage*.cs")))
 
-require(xaml.count('x:Name="FileNameBox"') == 1,
+require(xaml.count('x:Name="ExportDialogFileNameBox"') == 1,
         "EXPORT-04 requires exactly one output filename field")
-require('TextChanged="FileNameBox_TextChanged"' in xaml,
-        "EXPORT-04 filename edits must remain connected to project/state refresh")
-require(bootstrap.count("FileNameBox.LostFocus += EditorFileName_LostFocus;") == 1,
+require("_project = _project with { FileName = target.FileName };" in read(PAGES / "EditorPage.ExportDialog.cs"),
+        "EXPORT-04 dialog confirm must commit the filename into the project")
+require(bootstrap.count("ExportDialogFileNameBox.LostFocus += EditorFileName_LostFocus;") == 1,
         "EXPORT-04 filename normalization must bind exactly once")
 require("private void EditorFileName_LostFocus(" in ui,
         "EXPORT-04 filename LostFocus handler is missing")
@@ -52,14 +52,14 @@ require("string.IsNullOrWhiteSpace(current)" in ui,
         "EXPORT-04 empty filename must be detected")
 require("FileNamePolicy.NormalizeVideoOutputName(current)" in ui,
         "EXPORT-04 UI must use the shared filename policy")
-require("FileNameBox.Text = normalized;" in ui,
+require("box.Text = normalized;" in ui,
         "EXPORT-04 corrected filename must be visible before render")
 require("RenderButton.IsEnabled =" not in ui,
         "EXPORT-04 must not create a second RenderButton state owner")
 
 require(all_editor_parts.count("RenderButton.IsEnabled =") == 1,
         "EXPORT-04 regressed EXPORT-02 by adding another RenderButton state owner")
-require("!string.IsNullOrWhiteSpace(FileNameBox.Text)" in editor,
+require("!string.IsNullOrWhiteSpace(_project?.FileName)" in editor,
         "EXPORT-04 must retain the empty-name RenderButton gate")
 
 for token in (

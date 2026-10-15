@@ -10,6 +10,7 @@ PAGES = ROOT / "csharp/src/BiliSubStudio.App/Pages"
 BOOTSTRAP = PAGES / "EditorPage.ParityBootstrap.cs"
 PARITY = PAGES / "EditorPage.ParityFixes.cs"
 IMAGES = PAGES / "EditorPage.Images.cs"
+XAML = PAGES / "EditorPage.xaml"
 COMPOSER = ROOT / "csharp/src/BiliSubStudio.App/Services/EditorImageOverlayComposer.cs"
 VIDEO_EDITOR = ROOT / "csharp/src/BiliSubStudio.Core/Editor/VideoEditorService.cs"
 
@@ -31,6 +32,7 @@ def read(path: Path) -> str:
 bootstrap = read(BOOTSTRAP)
 parity = read(PARITY)
 images = read(IMAGES)
+xaml = read(XAML)
 composer = read(COMPOSER)
 video = read(VIDEO_EDITOR)
 
@@ -172,5 +174,27 @@ running = False  # Unloaded -> Stop
 running = True   # Loaded -> Start same timer
 require(bindings == 1 and running,
         "EXPORT-14/CLEAN-02 retained progress timer must reopen with one Tick binding")
+
+# EXPORT-15 — render ETA: every final-render progress path must feed one
+# smoothed remaining-time label next to the bar (StatusText is overwritten by
+# job messages every tick, so the ETA needs its own label); the label clears
+# whenever the render leaves (done/cancel/detach).
+require('x:Name="RenderEtaText"' in xaml,
+        "EXPORT-15 render ETA label is missing")
+for token in (
+    "private void UpdateRenderEta(double progressPercent)",
+    "private void ResetRenderEta()",
+    "private void ClearRenderEta()",
+    "RenderEtaText.Text =",
+):
+    require(token in images, f"EXPORT-15 render ETA helper lost: {token}")
+require(images.count("ResetRenderEta();") >= 3,
+        "EXPORT-15 every render entry (direct/base/image) must arm the ETA clock")
+require(images.count("UpdateRenderEta(") >= 3,
+        "EXPORT-15 every render progress path must feed the ETA")
+require("UpdateRenderEta(Progress.Value);" in bootstrap,
+        "EXPORT-15 image-combo timer stage must feed the ETA")
+require("ClearRenderEta();" in images,
+        "EXPORT-15 ETA must clear when the render leaves")
 
 print("PASS: EXPORT-14 visible export progress and retained single Tick owner contract are locked")
