@@ -23,6 +23,17 @@ public sealed class OcrScanner
     // ~0.001-0.007. Steady windows keep the strict 0.02 bar. Caps are unchanged.
     private const double AdaptiveTransitionChangeThreshold = .015;
     private const int MaxLaneRecoveryAttempts = 2;
+    // Thang NVDEC-retry (17/10, lỗi crawl 0,08x): ffmpeg lane chết giữa đường
+    // (ExitCode != 0, decode hỏng/driver hiccup) trước đây rơi VĨNH VIỄN về
+    // software cho tới hết segment — 4/8 lane CPU hóa trên video 7h39m.
+    // Nay: tối đa MaxNvdecLaneAttempts lần NVDEC nối tiếp (mỗi lần resume từ
+    // checkpoint an toàn, backoff 1.5/3/6s cho driver hồi), hết thang mới
+    // software lần đầu tiên + telemetry đếm rõ để nhìn thấy.
+    private const int MaxNvdecLaneAttempts = 3;
+    private const double NvdecRetryBackoffSeconds = 1.5;
+    // Spawn 8 lane cách quãng tránh pha đua giành NVDEC session lúc start/resume
+    // (8 decoder + 2 CUDA worker context sinh cùng nhịp từng là dỏng hỏng session).
+    private const int LaneSpawnStaggerMs = 150;
     private static readonly TimeSpan CheckpointInterval = TimeSpan.FromSeconds(30);
     private readonly ToolManager _tools;
     private readonly ProcessRunner _processes;
@@ -589,6 +600,11 @@ public sealed class OcrScanner
 
         async Task<OcrLaneCheckpoint> RunGuardedLaneAsync(OcrLaneCheckpoint lane)
         {
+            // Stagger launch (17/10): 8 NVDEC session + 2 CUDA worker context khởi
+            // cùng nhịp từng làm NVDEC hỏng ngay đầu scan; cách quãng 150ms×index,
+            // lane đã xong chỉ vượt qua delay ~0 (try-quick return vẫn chạy).
+            var launchDelay = TimeSpan.FromMilliseconds(LaneSpawnStaggerMs * lane.Segment.Index);
+            if (launchDelay > TimeSpan.Zero) await Task.Delay(launchDelay, laneCancellation.Token);
             OcrLaneCheckpoint? outcome = null;
             var recoveryAttempts = 0;
             try
@@ -1386,16 +1402,33 @@ public sealed class OcrScanner
         Func<VadTimeline?>? vadSource = null)
     {
         if (lane.Completed) return lane;
-        try
+        // Boot chọn software thì giữ nguyên đường cũ (không có gì để retry NVDEC).
+        if (decoder != "nvdec")
+            return await RunLaneAsync(ffmpeg, source, request, mode, lane, nvdec: false, onProgress, job, processes, telemetry, cancellationToken, vadSource);
+        for (var attempt = 1; attempt <= MaxNvdecLaneAttempts; attempt++)
         {
-            return await RunLaneAsync(ffmpeg, source, request, mode, lane, decoder == "nvdec", onProgress, job, processes, telemetry, cancellationToken, vadSource);
+            try
+            {
+                return await RunLaneAsync(ffmpeg, source, request, mode, lane, nvdec: true, onProgress, job, processes, telemetry, cancellationToken, vadSource);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception error) when (error is not OcrRecognitionException)
+            {
+                if (attempt < MaxNvdecLaneAttempts)
+                {
+                    var backoff = NvdecRetryBackoffSeconds * Math.Pow(2, attempt - 1);
+                    Interlocked.Increment(ref telemetry.NvdecRetries);
+                    job.Log($"Lane {lane.Segment.Index + 1}: NVDEC lỗi (lần {attempt}/{MaxNvdecLaneAttempts}): {Compact(error.Message)} · retry sau {backoff:0.0}s từ vị trí {FormatClock(lane.MediaSeconds)}.");
+                    await Task.Delay(TimeSpan.FromSeconds(backoff), cancellationToken);
+                    continue;
+                }
+                Interlocked.Increment(ref telemetry.NvdecFailures);
+                Interlocked.Increment(ref telemetry.SoftwareFallbacks);
+                job.Log($"Lane {lane.Segment.Index + 1}: NVDEC lỗi {MaxNvdecLaneAttempts}/{MaxNvdecLaneAttempts} lần — fallback software cho phần còn lại của lane ({Compact(error.Message)}).");
+                return await RunLaneAsync(ffmpeg, source, request, mode, lane, nvdec: false, onProgress, job, processes, telemetry, cancellationToken, vadSource);
+            }
         }
-        catch (OperationCanceledException) { throw; }
-        catch (Exception error) when (decoder == "nvdec" && error is not OcrRecognitionException)
-        {
-            job.Log($"Lane {lane.Segment.Index + 1}: NVDEC lỗi, fallback software: {error.Message}");
-            return await RunLaneAsync(ffmpeg, source, request, mode, lane, false, onProgress, job, processes, telemetry, cancellationToken, vadSource);
-        }
+        throw new InvalidOperationException("NVDEC retry ladder không thể tới đây: for-loop luôn return hoặc throw.");
     }
 
     private async Task<OcrLaneCheckpoint> RunLaneAsync(
@@ -2490,6 +2523,12 @@ public sealed class OcrScanner
     {
         var args = new List<string> { "-hide_banner", "-loglevel", "info", "-nostdin", "-noautorotate" };
         if (nvdec) args.AddRange(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda", "-hwaccel_device", "0"]);
+        // Decode hardening (17/10): lane chết giữa đường vì frame hỏng/driver hiccup
+        // (ExitCode != 0) từng làm cả lane rơi vĩnh viễn về decode software (4/8 lane,
+        // video 7h39m, tốc độ rớt 0,08x realtime). Flags sau nuốt frame lỗi thay vì
+        // chết stream, cho CẢ nhánh NVDEC lẫn software; guard n-sequence showinfo
+        // (FrameTimestampReader) vẫn chặn mọi lệch JPEG↔PTS nên data-integrity không đổi.
+        args.AddRange(["-err_detect", "ignore_err", "-ec", "3", "-fflags", "+genpts+discardcorrupt"]);
         args.AddRange(["-copyts", "-seek_timestamp", "1"]);
         if (start > 0 || (probe is not null && probe.StartTimeSeconds != 0))
             args.AddRange(["-ss", start.ToString("0.#########", CultureInfo.InvariantCulture)]);
@@ -2692,7 +2731,7 @@ public sealed class OcrScanner
             + $"window={telemetry.WindowBatchImages} refinement={telemetry.RefinementImages} sample={telemetry.SampleImages} exhaustive={telemetry.ExhaustiveImages} "
             + $"batch_calls={ocrCalls} avg_batch={(ocrCalls > 0 ? ocrRequested / (double)ocrCalls : 0):0.00} "
             + $"probe_calls={probeCalls} probe_images={probeImages} probe_change={telemetry.ProbeChangeFrames} probe_same={telemetry.ProbeSameFrames} "
-            + $"lane_restarts={telemetry.LaneRestarts} worker_replacements={replacements} worker_recycles={Delta(inference.PlannedRecycles, inferenceBefore.PlannedRecycles)} "
+            + $"lane_restarts={telemetry.LaneRestarts} nvdec_retries={telemetry.NvdecRetries} nvdec_fail={telemetry.NvdecFailures} soft_fallback={telemetry.SoftwareFallbacks} worker_replacements={replacements} worker_recycles={Delta(inference.PlannedRecycles, inferenceBefore.PlannedRecycles)} "
             + $"queue_executed={queueExecuted} queue_peak={inference.QueuePeakDepth} queue_avgdepth={inference.QueueAvgDepth:0.00} queue_wait_ms={Delta(inference.QueueTotalWaitMs, inferenceBefore.QueueTotalWaitMs)} "
             + $"gates_vad={telemetry.GateVadVotes} gates_band={telemetry.GateBandDiffs} gates_text={telemetry.GateTextPresence} gates_roi={telemetry.GateRoiDecisions} council_skip={telemetry.CouncilSkips} council_scan={telemetry.CouncilScans} canary_hit={telemetry.CanaryHits} canary_vad={telemetry.CanaryVadAttributed} retro_ocr={telemetry.RetroOcrCalls} "
             + $"shadow_b={OcrGateShadow.FormatHistogram(telemetry.ShadowBandText, telemetry.ShadowBandBlank)} shadow_c={OcrGateShadow.FormatHistogram(telemetry.ShadowEdgeText, telemetry.ShadowEdgeBlank)} shadow_obs={telemetry.ShadowObservations} shadow_ms={telemetry.ShadowMsTotal} "
@@ -2949,6 +2988,11 @@ public sealed class OcrScanner
         public long ProbeChangeFrames;
         public long ProbeSameFrames;
         public long LaneRestarts;
+        // NVDEC resilience (17/10): đếm thang retry trong lane (retry/fail/fallback)
+        // để nhìn thấy sức khỏe NVDEC ngay trên dòng telemetry thay vì đọc log từng dòng.
+        public long NvdecRetries;
+        public long NvdecFailures;
+        public long SoftwareFallbacks;
         // Checkpoint save cost (diagnostic only): số lần lưu + tổng ms. Save 30s/lần
         // serialize toàn bộ cue (11MB ở pause 24:27) + copy .bak nên càng về cuối càng
         // lâu; log để phát hiện khi save thành nguồn lag mới.
@@ -3057,6 +3101,40 @@ public sealed class OcrScanner
             SingleWriter = true,
         });
         private readonly StringBuilder _diagnostic = new();
+        // Buffer lỗi decode thật (17/10): _diagnostic trước đây cap 48KB giữ HEAD
+        // (header + showinfo rác) nên khi ffmpeg chết mid-stream, exception chỉ
+        // mang đuôi showinfo — dòng lỗi CUDA/cuvid/decoder thật mất hẳn (cả 4 lane
+        // fallback 16/10 đều không lộ nguyên nhân). Nay gom riêng dòng lỗi theo
+        // keyword nếu buffer lỗi là EMPTY. Giữ nguyên tail 48KB để chẩn đoán sâu.
+        private const int DiagnosticTailCapacity = 48 * 1024;
+        private const int DecoderErrorCapacity = 8 * 1024;
+        private static readonly string[] DecoderErrorKeywords =
+        [
+            "error", "cuda", "cuvid", "nvdec", "decoder", "Impossible", "Invalid",
+            "corrupt", "damaged", "failed", "session", "out of memory", "no such", "cannot load",
+        ];
+        private readonly StringBuilder _decoderErrors = new();
+
+        private bool TryCaptureDecoderErrorLine(string line)
+        {
+            foreach (var keyword in DecoderErrorKeywords)
+                if (line.IndexOf(keyword, StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    if (_decoderErrors.Length < DecoderErrorCapacity) _decoderErrors.AppendLine(line);
+                    return true;
+                }
+            return false;
+        }
+
+        private string BuildDiagnostics()
+        {
+            var errors = _decoderErrors.ToString();
+            // Lỗi thật xếp CUỐI: Compact() (dùng ở throw/lane log) giữ 300 ký tự đuôi,
+            // nhờ đó ngay cả dòng log ngắn cũng rơi vào lỗi decode thay vì showinfo rác.
+            return errors.Length > 0
+                ? $"[stderr tail] {_diagnostic} [decoder errors] {errors}"
+                : _diagnostic.ToString();
+        }
 
         // Cách A: -copyts giữ source clock, showinfo pts_time là timestamp nguồn. Không cộng startAt.
         public FrameTimestampReader(StreamReader standardError) => Completion = PumpAsync(standardError);
@@ -3069,7 +3147,7 @@ public sealed class OcrScanner
             catch (ChannelClosedException error)
             {
                 throw new InvalidDataException(
-                    "FFmpeg không trả PTS cho frame OCR Chính xác. " + Compact(_diagnostic.ToString()), error);
+                    "FFmpeg không trả PTS cho frame OCR chính xác. " + Compact(BuildDiagnostics()), error);
             }
         }
 
@@ -3081,7 +3159,10 @@ public sealed class OcrScanner
             {
                 while (await standardError.ReadLineAsync() is { } line)
                 {
-                    if (_diagnostic.Length < 48 * 1024) _diagnostic.AppendLine(line);
+                    _diagnostic.AppendLine(line);
+                    if (_diagnostic.Length > DiagnosticTailCapacity)
+                        _diagnostic.Remove(0, _diagnostic.Length - DiagnosticTailCapacity);
+                    TryCaptureDecoderErrorLine(line);
                     if (line.IndexOf("Parsed_showinfo_", StringComparison.Ordinal) < 0) continue;
                     if (line.IndexOf("config ", StringComparison.Ordinal) >= 0) continue;
                     var match = TimestampPattern.Match(line);
@@ -3117,7 +3198,7 @@ public sealed class OcrScanner
             {
                 _timestamps.Writer.TryComplete(failure);
             }
-            return _diagnostic.ToString();
+            return BuildDiagnostics();
         }
     }
 

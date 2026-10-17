@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param()
 
 $ErrorActionPreference = "Stop"
@@ -28,7 +28,7 @@ function Get-SourceIdentity {
 
     # publish/ and publish-backup/ are build-output copies (old framework
     # publishes, live portable app data). Mirror validate_csharp_migration.py:
-    # never scan them for the source identity — a running portable app deletes
+    # never scan them for the source identity â€” a running portable app deletes
     # files inside them mid-scan (checkpoint replace) and kills the gate.
     $excludedSegments = @(".git", ".vs", "bin", "obj", "artifacts", "TestResults", "publish", "publish-backup")
     $rootFull = [System.IO.Path]::GetFullPath($RepositoryRoot).TrimEnd('\', '/')
@@ -149,6 +149,7 @@ Invoke-Checked python @("csharp/scripts/verify_global_log_ui_contract.py")
 Invoke-Checked python @("csharp/scripts/verify_logging_contract.py")
 Invoke-Checked python @("csharp/scripts/verify_ocr_worker_contract.py")
 Invoke-Checked python @("csharp/scripts/verify_ocr_scanner_contract.py")
+Invoke-Checked python @("csharp/scripts/verify_ocr_nvdec_resilience_contract.py")
 Invoke-Checked python @("csharp/scripts/verify_asr_hybrid_contract.py")
 Invoke-Checked python @("csharp/scripts/verify_asr_checkpoint_contract.py")
 Invoke-Checked dotnet @("restore", "csharp/BiliSubStudio.sln", "-p:Platform=x64", "-p:NuGetAudit=false")
