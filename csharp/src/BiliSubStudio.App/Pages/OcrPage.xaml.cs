@@ -718,7 +718,16 @@ public sealed partial class OcrPage : Page
             {
                 foreach (var item in _ocrQueueView)
                 {
-                    if (item.Id == id) { QueueList.SelectedItem = item; break; }
+                    if (item.Id == id)
+                    {
+                        // Rebuild sau Lên/Xuống/đếm lại KHÔNG được bắn preview: gán
+                        // selection dưới cờ gác, chỉ khôi phục highlight — preview và
+                        // khung ROI overlay giữ nguyên view mà user đang xem.
+                        _syncingQueueSelect = true;
+                        try { QueueList.SelectedItem = item; }
+                        finally { _syncingQueueSelect = false; }
+                        break;
+                    }
                 }
             }
         }

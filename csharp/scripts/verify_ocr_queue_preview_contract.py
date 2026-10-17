@@ -71,4 +71,9 @@ require("await ShowQueueVideoAsync(_queueScanningItem" in page,
 require("_lastSafeFrontier = result.SafeFrontierSeconds" in page,
         "QUEUE-02 scan loop must record the frontier for seek-back")
 
+# 17/10: rebuild trên Lên/Xuống chỉ được khôi phục highlight dưới cờ gac — gán
+# `SelectedItem` trần trong SyncQueueView từng mở lại preview + ẩn ROI overlay.
+require("_syncingQueueSelect = true;\n        try { QueueList.SelectedItem = item; }\n        finally { _syncingQueueSelect = false; }" in page,
+        "QUEUE-02 SyncQueueView must gate programmatic re-selection so rebuilds never fire preview")
+
 print("PASS: QUEUE-02 OCR queue preview contract")
