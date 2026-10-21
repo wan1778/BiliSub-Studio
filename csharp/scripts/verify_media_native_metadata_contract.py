@@ -67,8 +67,10 @@ def main() -> int:
     require("await _playurl.GetNativeInfoAsync(url, bvid, cookieFile, cancellationToken)" in native,
             "native metadata does not read view/detail + playurl through the playurl client")
     require("BackupUrls = stream.BackupUrls" in native and
-            '["Referer"] = "https://www.bilibili.com/"' in native,
-            "native formats must carry backup CDN urls and the Bilibili Referer header")
+            '["Referer"] = "https://www.bilibili.com/"' in native and
+            '["User-Agent"] = BilibiliPlayurlClient.BrowserUserAgent' in native,
+            "native formats must carry backup CDN urls plus the Bilibili Referer + browser User-Agent "
+            "(Bilibili CDN answers 403 without a User-Agent)")
     require("Id = native.Bvid" in native and "Title = native.Title" in native and
             "Thumbnail = native.ThumbnailUrl" in native,
             "native metadata does not map view/detail summary fields into the resolver info")
@@ -105,6 +107,8 @@ def main() -> int:
     # view thường (không ký) bị 412 nên không quay lại endpoint đó.
     require("public async Task<BilibiliNativeInfo> GetNativeInfoAsync" in playurl,
             "BilibiliPlayurlClient has no native view/detail + stream method")
+    require("internal const string BrowserUserAgent" in playurl,
+            "browser User-Agent constant is missing (CDN rejects UA-less downloads)")
     require("private async Task<NativeView> LoadViewDetailAsync" in playurl,
             "native summary does not use the signed view/detail endpoint")
     require('SignedWbiUri("/x/web-interface/wbi/view/detail"' in playurl,

@@ -34,6 +34,9 @@ public sealed record BilibiliNativeInfo(
 /// </summary>
 public sealed partial class BilibiliPlayurlClient
 {
+    internal const string BrowserUserAgent =
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151 Safari/537.36";
+
     private static readonly int[] MixinKeyEncTable =
     [
         46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35,
@@ -290,7 +293,7 @@ public sealed partial class BilibiliPlayurlClient
         using var request = new HttpRequestMessage(HttpMethod.Get, uri);
         request.Headers.TryAddWithoutValidation("Referer", "https://www.bilibili.com/");
         request.Headers.TryAddWithoutValidation("Origin", "https://www.bilibili.com");
-        request.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151 Safari/537.36");
+        request.Headers.TryAddWithoutValidation("User-Agent", BrowserUserAgent);
         if (!string.IsNullOrWhiteSpace(cookieHeader)) request.Headers.TryAddWithoutValidation("Cookie", cookieHeader);
         using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
         if (!response.IsSuccessStatusCode)

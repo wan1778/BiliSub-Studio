@@ -262,6 +262,7 @@ public sealed class YtDlpResolver
                 HttpHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
                 {
                     ["Referer"] = "https://www.bilibili.com/",
+                    ["User-Agent"] = BilibiliPlayurlClient.BrowserUserAgent,
                 },
                 BackupUrls = stream.BackupUrls,
             });
