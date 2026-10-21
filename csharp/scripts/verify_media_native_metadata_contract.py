@@ -64,16 +64,16 @@ def main() -> int:
         "private static string NormalizeCodec",
         "LoadNativeInfoAsync",
     )
-    require("await _subtitles.GetSummaryAsync(url, bvid, cookieFile, cancellationToken)" in native,
-            "native metadata does not reuse the hardened subtitle client for view data")
-    require("await _playurl.GetNativeStreamsAsync(url, bvid, cookieFile, cancellationToken)" in native,
-            "native metadata does not read DASH streams from playurl")
+    require("await _playurl.GetNativeInfoAsync(url, bvid, cookieFile, cancellationToken)" in native,
+            "native metadata does not read view/detail + playurl through the playurl client")
     require("BackupUrls = stream.BackupUrls" in native and
             '["Referer"] = "https://www.bilibili.com/"' in native,
             "native formats must carry backup CDN urls and the Bilibili Referer header")
-    require("Id = summary.Bvid" in native and "Title = summary.Title" in native and
-            "Thumbnail = summary.ThumbnailUrl" in native,
-            "native metadata does not map view summary fields into the resolver info")
+    require("Id = native.Bvid" in native and "Title = native.Title" in native and
+            "Thumbnail = native.ThumbnailUrl" in native,
+            "native metadata does not map view/detail summary fields into the resolver info")
+    require("native.DurationSeconds" in native,
+            "native metadata ignores the view/detail duration for size estimates")
     require("if (formats.Count == 0)" in native,
             "native fallback can silently resolve zero streams")
 
@@ -101,14 +101,25 @@ def main() -> int:
     require("public IReadOnlyList<string> BackupUrls { get; init; } = [];" in resolver,
             "YtDlpFormat lost the native backup-url carrier")
 
-    # Playurl client: WBI/cookie/playurl signing phải dùng chung một loader,
-    # không nhân đôi logic ký giữa endpoint map và native streams.
-    require("public async Task<IReadOnlyList<BilibiliNativeStream>> GetNativeStreamsAsync" in playurl,
-            "BilibiliPlayurlClient has no native stream method")
+    # Playurl client: cả view/detail lẫn playurl phải ký qua cùng một signer WBI;
+    # view thường (không ký) bị 412 nên không quay lại endpoint đó.
+    require("public async Task<BilibiliNativeInfo> GetNativeInfoAsync" in playurl,
+            "BilibiliPlayurlClient has no native view/detail + stream method")
+    require("private async Task<NativeView> LoadViewDetailAsync" in playurl,
+            "native summary does not use the signed view/detail endpoint")
+    require('SignedWbiUri("/x/web-interface/wbi/view/detail"' in playurl,
+            "view/detail is not signed with the shared WBI signer")
+    require('SignedWbiUri("/x/player/wbi/playurl"' in playurl,
+            "playurl is not signed with the shared WBI signer")
+    require('["platform"] = "web"' in playurl,
+            "view/detail query must carry platform=web like yt-dlp")
+    require("private static Uri SignedWbiUri(" in playurl,
+            "WBI signing is duplicated instead of one shared signer")
     require("private async Task<JsonDocument> LoadPlayurlAsync" in playurl,
-            "playurl signing is duplicated instead of a shared loader")
-    require(playurl.count("LoadPlayurlAsync(bvid, cid, cookieHeader, cancellationToken)") >= 2,
-            "endpoint map and native streams must share LoadPlayurlAsync")
+            "playurl loader is missing")
+    require("LoadPlayurlAsync(bvid, cid, cookieHeader, cancellationToken)" in playurl and
+            "LoadPlayurlAsync(bvid, view.Cid, cookieHeader, cancellationToken, mixinKey)" in playurl,
+            "endpoint map and native info must share LoadPlayurlAsync without re-fetching the mixin key")
     require("internal static string? ExtractBvid(string? value)" in playurl,
             "ExtractBvid must be reusable by the resolver fallback")
     require("public sealed record BilibiliNativeStream(" in playurl,
@@ -119,24 +130,15 @@ def main() -> int:
     require("\"backupUrl\", \"backup_url\"" in playurl,
             "native streams do not capture Bilibili backup CDN urls")
 
-    # Subtitle client: summary đi đúng đường view API đã có fingerprint 412.
-    summary = slice_between(
-        subtitles,
-        "public async Task<BilibiliVideoSummary> GetSummaryAsync",
-        "private async Task<(long Aid, long Cid)> ResolveVideoIdentityFallbackAsync",
-        "GetSummaryAsync",
-    )
-    require("https://api.bilibili.com/x/web-interface/view?bvid=" in summary,
-            "native summary does not use the Bilibili view API")
-    require("await WithFingerprintAsync(cookieHeader, bvid, cancellationToken)" in summary,
-            "native summary dropped the buvid fingerprint path (412 hardening)")
-    require("duration" in summary and "pic" in summary,
-            "native summary does not map duration/thumbnail")
+    # Subtitle client: không được quay lại tự lấy summary (native summary giờ
+    # thuộc playurl client để đi chung một signer WBI đã kiểm chứng).
+    require("BilibiliVideoSummary" not in subtitles and "GetSummaryAsync" not in subtitles,
+            "subtitle client must not own native summary anymore")
 
     require("verify_media_native_metadata_contract.py" in verify,
             "verify.ps1 does not run this contract")
 
-    print("PASS media native metadata: yt-dlp stays primary; extractor failures on BVID-only URLs fall back to view summary + signed playurl DASH streams with backup CDNs, Referer header, metadata-page warning, and shared WBI loader")
+    print("PASS media native metadata: yt-dlp stays primary; extractor failures on BVID-only URLs fall back to signed view/detail (title/duration/thumbnail/CID) + signed playurl DASH streams with backup CDNs, Referer header, metadata-page warning, and one shared WBI signer")
     return 0
 
 

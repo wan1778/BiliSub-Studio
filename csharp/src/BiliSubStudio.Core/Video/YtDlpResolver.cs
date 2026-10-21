@@ -239,10 +239,9 @@ public sealed class YtDlpResolver
     {
         var bvid = BilibiliPlayurlClient.ExtractBvid(url)
             ?? throw new InvalidOperationException("URL không chứa BVID để lấy metadata trực tiếp từ Bilibili.");
-        var summary = await _subtitles.GetSummaryAsync(url, bvid, cookieFile, cancellationToken);
-        var streams = await _playurl.GetNativeStreamsAsync(url, bvid, cookieFile, cancellationToken);
-        var formats = new List<YtDlpFormat>(streams.Count);
-        foreach (var stream in streams)
+        var native = await _playurl.GetNativeInfoAsync(url, bvid, cookieFile, cancellationToken);
+        var formats = new List<YtDlpFormat>(native.Streams.Count);
+        foreach (var stream in native.Streams)
         {
             var video = string.Equals(stream.Kind, "video", StringComparison.Ordinal);
             var bandwidth = stream.Bandwidth.GetValueOrDefault();
@@ -257,8 +256,8 @@ public sealed class YtDlpResolver
                 Fps = stream.FrameRate,
                 TotalBitrate = bandwidth > 0 ? bandwidth / 1000d : (double?)null,
                 AudioBitrate = !video && bandwidth > 0 ? bandwidth / 1000d : (double?)null,
-                ApproximateFileSize = bandwidth > 0 && summary.DurationSeconds > 0
-                    ? bandwidth * summary.DurationSeconds / 8d
+                ApproximateFileSize = bandwidth > 0 && native.DurationSeconds > 0
+                    ? bandwidth * native.DurationSeconds / 8d
                     : (double?)null,
                 HttpHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
                 {
@@ -271,9 +270,9 @@ public sealed class YtDlpResolver
             throw new InvalidDataException("API Bilibili không trả stream DASH nào cho video này.");
         return new YtDlpInfo
         {
-            Id = summary.Bvid,
-            Title = summary.Title,
-            Thumbnail = summary.ThumbnailUrl,
+            Id = native.Bvid,
+            Title = native.Title,
+            Thumbnail = native.ThumbnailUrl,
             Formats = formats,
         };
     }

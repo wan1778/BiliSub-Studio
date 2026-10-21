@@ -18,6 +18,13 @@ public sealed record BilibiliNativeStream(
     string Codecs,
     string Extension);
 
+public sealed record BilibiliNativeInfo(
+    string Bvid,
+    string Title,
+    double DurationSeconds,
+    string ThumbnailUrl,
+    IReadOnlyList<BilibiliNativeStream> Streams);
+
 /// <summary>
 /// Retrieves the raw Bilibili web playurl payload for a normal BV video so the
 /// downloader can preserve Bilibili's primary + backup CDN endpoints. yt-dlp
@@ -68,21 +75,22 @@ public sealed partial class BilibiliPlayurlClient
             StringComparer.OrdinalIgnoreCase);
     }
 
-    // Fallback metadata: đọc thẳng DASH streams từ playurl (WBI + cookie) khi
-    // yt-dlp không parse được trang. Trả đủ id/height/bandwidth/codec để resolver
-    // map sang format nội bộ và tải bằng RangeDownloader như bình thường.
-    public async Task<IReadOnlyList<BilibiliNativeStream>> GetNativeStreamsAsync(
+    // Fallback metadata: một vòng WBI (view/detail + playurl) khi yt-dlp không
+    // parse được trang. view/detail là đúng endpoint yt-dlp gọi sau khi thiếu
+    // __INITIAL_STATE__; view thường bị 412 nên bắt buộc ký WBI + cookie phiên.
+    public async Task<BilibiliNativeInfo> GetNativeInfoAsync(
         string sourceUrl,
         string infoId,
         string? cookieFile,
         CancellationToken cancellationToken)
     {
         var bvid = ExtractBvid(infoId) ?? ExtractBvid(sourceUrl)
-            ?? throw new InvalidOperationException("Không xác định được BVID để lấy stream Bilibili.");
+            ?? throw new InvalidOperationException("Không xác định được BVID để lấy metadata Bilibili.");
         var part = ExtractPart(infoId, sourceUrl);
         var cookieHeader = await ReadCookieHeaderAsync(cookieFile, cancellationToken);
-        var cid = await ResolveCidAsync(bvid, part, cookieHeader, cancellationToken);
-        using var document = await LoadPlayurlAsync(bvid, cid, cookieHeader, cancellationToken);
+        var mixinKey = await ResolveMixinKeyAsync(bvid, cookieHeader, cancellationToken);
+        var view = await LoadViewDetailAsync(bvid, part, mixinKey, cookieHeader, cancellationToken);
+        using var document = await LoadPlayurlAsync(bvid, view.Cid, cookieHeader, cancellationToken, mixinKey);
         var dash = document.RootElement.GetProperty("data").GetProperty("dash");
 
         var output = new List<BilibiliNativeStream>();
@@ -94,16 +102,17 @@ public sealed partial class BilibiliPlayurlClient
         if (dash.TryGetProperty("flac", out var flac) && flac.ValueKind == JsonValueKind.Object &&
             flac.TryGetProperty("audio", out var flacAudio) && flacAudio.ValueKind == JsonValueKind.Object)
             CollectNativeItem(flacAudio, "audio", output, seen);
-        return output;
+        return new BilibiliNativeInfo(bvid, view.Title, view.DurationSeconds, view.ThumbnailUrl, output);
     }
 
     private async Task<JsonDocument> LoadPlayurlAsync(
         string bvid,
         long cid,
         string cookieHeader,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? mixinKey = null)
     {
-        var mixinKey = await ResolveMixinKeyAsync(bvid, cookieHeader, cancellationToken);
+        mixinKey ??= await ResolveMixinKeyAsync(bvid, cookieHeader, cancellationToken);
 
         var parameters = new Dictionary<string, string>(StringComparer.Ordinal)
         {
@@ -118,17 +127,12 @@ public sealed partial class BilibiliPlayurlClient
         };
         if (!ContainsCookie(cookieHeader, "SESSDATA")) parameters["try_look"] = "1";
 
-        parameters["wts"] = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture);
-        var canonical = BuildQuery(parameters);
-        parameters["w_rid"] = Convert.ToHexStringLower(MD5.HashData(Encoding.UTF8.GetBytes(canonical + mixinKey)));
-        var playurl = new Uri("https://api.bilibili.com/x/player/wbi/playurl?" + BuildQuery(parameters));
+        var playurl = SignedWbiUri("/x/player/wbi/playurl", parameters, mixinKey);
         var document = await SendJsonAsync(playurl, cookieHeader, cancellationToken);
         try
         {
             var root = document.RootElement;
-            var code = root.TryGetProperty("code", out var codeElement) && codeElement.TryGetInt32(out var codeValue)
-                ? codeValue
-                : int.MinValue;
+            var code = ReadCode(root);
             if (code != 0)
             {
                 var message = root.TryGetProperty("message", out var messageElement) ? messageElement.GetString() : null;
@@ -147,6 +151,77 @@ public sealed partial class BilibiliPlayurlClient
             throw;
         }
     }
+
+    private async Task<NativeView> LoadViewDetailAsync(
+        string bvid,
+        int part,
+        string mixinKey,
+        string cookieHeader,
+        CancellationToken cancellationToken)
+    {
+        var parameters = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["bvid"] = bvid,
+            ["platform"] = "web",
+        };
+        var uri = SignedWbiUri("/x/web-interface/wbi/view/detail", parameters, mixinKey);
+        using var document = await SendJsonAsync(uri, cookieHeader, cancellationToken);
+        var root = document.RootElement;
+        var code = ReadCode(root);
+        if (code != 0 || !root.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object ||
+            !data.TryGetProperty("View", out var view) || view.ValueKind != JsonValueKind.Object)
+        {
+            var message = root.TryGetProperty("message", out var messageElement) ? messageElement.GetString() : null;
+            throw new InvalidOperationException($"Bilibili view/detail trả code {code}: {Compact(message)}");
+        }
+
+        var title = ReadString(view, "title")?.Trim() ?? string.Empty;
+        if (title.Length == 0) title = bvid;
+        var thumbnail = ReadString(view, "pic")?.Trim() ?? string.Empty;
+        if (thumbnail.StartsWith("http://", StringComparison.OrdinalIgnoreCase))
+            thumbnail = "https://" + thumbnail[7..];
+
+        long cid = 0;
+        double duration = 0;
+        if (view.TryGetProperty("pages", out var pages) && pages.ValueKind == JsonValueKind.Array)
+        {
+            var found = false;
+            var selected = default(JsonElement);
+            foreach (var page in pages.EnumerateArray())
+            {
+                if (page.ValueKind != JsonValueKind.Object) continue;
+                if (page.TryGetProperty("page", out var number) && number.TryGetInt32(out var pageNumber) && pageNumber == part)
+                {
+                    selected = page;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found && pages.GetArrayLength() >= part)
+            {
+                selected = pages[part - 1];
+                found = true;
+            }
+            if (found)
+            {
+                if (selected.TryGetProperty("cid", out var cidElement) && cidElement.TryGetInt64(out var cidValue) && cidValue > 0)
+                    cid = cidValue;
+                if (selected.TryGetProperty("duration", out var partDuration) && partDuration.ValueKind == JsonValueKind.Number &&
+                    partDuration.TryGetDouble(out var partSeconds) && partSeconds > 0)
+                    duration = partSeconds;
+            }
+        }
+        if (cid <= 0 && view.TryGetProperty("cid", out var viewCid) && viewCid.TryGetInt64(out var viewCidValue) && viewCidValue > 0)
+            cid = viewCidValue;
+        if (cid <= 0)
+            throw new InvalidOperationException($"Bilibili view/detail không trả CID cho phần {part}.");
+        if (duration <= 0 && view.TryGetProperty("duration", out var totalDuration) && totalDuration.ValueKind == JsonValueKind.Number &&
+            totalDuration.TryGetDouble(out var totalSeconds) && totalSeconds > 0)
+            duration = totalSeconds;
+        return new NativeView(cid, title, duration, thumbnail);
+    }
+
+    private sealed record NativeView(long Cid, string Title, double DurationSeconds, string ThumbnailUrl);
 
     private async Task<long> ResolveCidAsync(string bvid, int part, string cookieHeader, CancellationToken cancellationToken)
     {
@@ -385,6 +460,19 @@ public sealed partial class BilibiliPlayurlClient
         var match = FormatIdRegex().Match(url ?? string.Empty);
         return match.Success ? match.Groups["id"].Value : null;
     }
+
+    private static Uri SignedWbiUri(string path, Dictionary<string, string> parameters, string mixinKey)
+    {
+        parameters["wts"] = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture);
+        var canonical = BuildQuery(parameters);
+        parameters["w_rid"] = Convert.ToHexStringLower(MD5.HashData(Encoding.UTF8.GetBytes(canonical + mixinKey)));
+        return new Uri("https://api.bilibili.com" + path + "?" + BuildQuery(parameters));
+    }
+
+    private static int ReadCode(JsonElement root) =>
+        root.TryGetProperty("code", out var codeElement) && codeElement.TryGetInt32(out var code)
+            ? code
+            : int.MinValue;
 
     private static string BuildQuery(IReadOnlyDictionary<string, string> parameters) => string.Join("&",
         parameters.OrderBy(pair => pair.Key, StringComparer.Ordinal).Select(pair =>
