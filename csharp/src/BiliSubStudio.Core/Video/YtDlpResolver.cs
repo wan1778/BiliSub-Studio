@@ -33,13 +33,17 @@ public sealed class YtDlpResolver
         await _gate.WaitAsync(cancellationToken);
         try
         {
-            var info = await LoadInfoAsync(request.Url, request.CookieFile, cancellationToken);
+            var loaded = await LoadInfoWithFallbackAsync(request.Url, request.CookieFile, cancellationToken);
+            var info = loaded.Info;
             IReadOnlyDictionary<string, IReadOnlyList<string>> endpointMap =
                 new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase);
             var warnings = new List<string>();
+            if (loaded.Warning.Length > 0) warnings.Add(loaded.Warning);
             try
             {
-                endpointMap = await _playurl.GetEndpointMapAsync(request.Url, info.Id, request.CookieFile, cancellationToken);
+                endpointMap = loaded.Native
+                    ? NativeEndpointMap(info)
+                    : await _playurl.GetEndpointMapAsync(request.Url, info.Id, request.CookieFile, cancellationToken);
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception error)
@@ -87,7 +91,8 @@ public sealed class YtDlpResolver
         await _gate.WaitAsync(cancellationToken);
         try
         {
-            var info = await LoadInfoAsync(url, cookieFile, cancellationToken);
+            var loaded = await LoadInfoWithFallbackAsync(url, cookieFile, cancellationToken);
+            var info = loaded.Info;
             var qualities = info.Formats
                 .Where(IsVideo)
                 .Select(x => x.Height is > 0 and <= int.MaxValue ? (int)Math.Round(x.Height.Value) : 0)
@@ -139,7 +144,10 @@ public sealed class YtDlpResolver
                 .ThenBy(track => track.DisplayName, StringComparer.OrdinalIgnoreCase)
                 .ToArray();
 
-            return new VideoMetadata(info.Title, info.Id, qualities, selectedTracks, info.Thumbnail, subtitleWarning);
+            var notes = new List<string>();
+            if (loaded.Warning.Length > 0) notes.Add(loaded.Warning);
+            if (!string.IsNullOrWhiteSpace(subtitleWarning)) notes.Add(subtitleWarning);
+            return new VideoMetadata(info.Title, info.Id, qualities, selectedTracks, info.Thumbnail, string.Join(" ", notes));
         }
         finally
         {
@@ -179,6 +187,118 @@ public sealed class YtDlpResolver
             await Task.Delay(ResolveRetryDelays[attempt - 1], cancellationToken);
         }
         throw last!;
+    }
+
+    // yt-dlp là nguồn chính; khi extractor BiliBili hỏng trên một số video
+    // (Unable to extract initial state — issue yt-dlp #15924/#14793 chưa fix
+    // stable), rơi về API Bilibili trực tiếp bằng cookie phiên. Cùng một
+    // fallback dùng cho cả tải media lẫn trang metadata.
+    private async Task<(YtDlpInfo Info, bool Native, string Warning)> LoadInfoWithFallbackAsync(
+        string url,
+        string? cookieFile,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return (await LoadInfoAsync(url, cookieFile, cancellationToken), false, string.Empty);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception error)
+        {
+            if (!IsNativeFallbackEligible(url, error)) throw;
+            try
+            {
+                var native = await LoadNativeInfoAsync(url, cookieFile, cancellationToken);
+                return (native, true,
+                    "yt-dlp chưa đọc được trang video này (lỗi extractor BiliBili); đã lấy metadata trực tiếp từ API Bilibili.");
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception nativeError)
+            {
+                throw new InvalidOperationException(
+                    $"{error.GetBaseException().Message} · API Bilibili: {Compact(nativeError.GetBaseException().Message)}");
+            }
+        }
+    }
+
+    private static bool IsNativeFallbackEligible(string url, Exception error)
+    {
+        if (BilibiliPlayurlClient.ExtractBvid(url) is null) return false;
+        var message = error.GetBaseException().Message;
+        return message.Contains("Unable to extract", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("No video formats found", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("Unable to download webpage", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("Unable to download JSON metadata", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("Unable to process JSON", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async Task<YtDlpInfo> LoadNativeInfoAsync(
+        string url,
+        string? cookieFile,
+        CancellationToken cancellationToken)
+    {
+        var bvid = BilibiliPlayurlClient.ExtractBvid(url)
+            ?? throw new InvalidOperationException("URL không chứa BVID để lấy metadata trực tiếp từ Bilibili.");
+        var summary = await _subtitles.GetSummaryAsync(url, bvid, cookieFile, cancellationToken);
+        var streams = await _playurl.GetNativeStreamsAsync(url, bvid, cookieFile, cancellationToken);
+        var formats = new List<YtDlpFormat>(streams.Count);
+        foreach (var stream in streams)
+        {
+            var video = string.Equals(stream.Kind, "video", StringComparison.Ordinal);
+            var bandwidth = stream.Bandwidth.GetValueOrDefault();
+            formats.Add(new YtDlpFormat
+            {
+                FormatId = stream.FormatId,
+                Url = stream.Url,
+                Extension = stream.Extension,
+                VideoCodec = video ? NormalizeCodec(stream.Codecs) : "none",
+                AudioCodec = video ? "none" : NormalizeCodec(stream.Codecs),
+                Height = stream.Height,
+                Fps = stream.FrameRate,
+                TotalBitrate = bandwidth > 0 ? bandwidth / 1000d : (double?)null,
+                AudioBitrate = !video && bandwidth > 0 ? bandwidth / 1000d : (double?)null,
+                ApproximateFileSize = bandwidth > 0 && summary.DurationSeconds > 0
+                    ? bandwidth * summary.DurationSeconds / 8d
+                    : (double?)null,
+                HttpHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["Referer"] = "https://www.bilibili.com/",
+                },
+                BackupUrls = stream.BackupUrls,
+            });
+        }
+        if (formats.Count == 0)
+            throw new InvalidDataException("API Bilibili không trả stream DASH nào cho video này.");
+        return new YtDlpInfo
+        {
+            Id = summary.Bvid,
+            Title = summary.Title,
+            Thumbnail = summary.ThumbnailUrl,
+            Formats = formats,
+        };
+    }
+
+    private static string NormalizeCodec(string codec) =>
+        string.IsNullOrWhiteSpace(codec) ? "unknown" : codec;
+
+    private static IReadOnlyDictionary<string, IReadOnlyList<string>> NativeEndpointMap(YtDlpInfo info)
+    {
+        var output = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var format in info.Formats)
+        {
+            if (format.BackupUrls.Count == 0) continue;
+            if (!output.TryGetValue(format.FormatId, out var candidates))
+            {
+                candidates = [];
+                output[format.FormatId] = candidates;
+            }
+            foreach (var backup in format.BackupUrls)
+                if (!candidates.Contains(backup, StringComparer.OrdinalIgnoreCase)) candidates.Add(backup);
+        }
+        return output.ToDictionary(
+            pair => pair.Key,
+            pair => (IReadOnlyList<string>)pair.Value.ToArray(),
+            StringComparer.OrdinalIgnoreCase);
     }
 
     // Pure classifier so the retry loop stays trivial: permanent failures
@@ -384,6 +504,7 @@ public sealed class YtDlpResolver
         [JsonPropertyName("filesize")] public double? FileSize { get; init; }
         [JsonPropertyName("filesize_approx")] public double? ApproximateFileSize { get; init; }
         [JsonPropertyName("http_headers")] public Dictionary<string, string> HttpHeaders { get; init; } = [];
+        public IReadOnlyList<string> BackupUrls { get; init; } = [];
         [JsonPropertyName("tbr")] public double? TotalBitrate { get; init; }
         [JsonPropertyName("abr")] public double? AudioBitrate { get; init; }
     }

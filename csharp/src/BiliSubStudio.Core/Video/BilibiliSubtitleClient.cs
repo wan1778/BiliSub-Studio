@@ -7,6 +7,12 @@ using System.Text.RegularExpressions;
 namespace BiliSubStudio.Core.Video;
 
 /// <summary>
+/// Summary pulled straight from Bilibili's view API when yt-dlp cannot parse
+/// the video page (extractor bugs on legacy/odd pages).
+/// </summary>
+public sealed record BilibiliVideoSummary(string Bvid, string Title, double DurationSeconds, string ThumbnailUrl);
+
+/// <summary>
 /// Discovers Bilibili subtitle tracks directly from player metadata. This is a
 /// metadata-only fallback for cases where yt-dlp exposes no subtitles even though
 /// the signed-in Bilibili player has normal or AI captions.
@@ -142,6 +148,48 @@ public sealed partial class BilibiliSubtitleClient
             .OrderBy(SubtitleTrackPolicy.Priority)
             .ThenBy(track => track.DisplayName, StringComparer.OrdinalIgnoreCase)
             .ToArray();
+    }
+
+    // Fallback khi yt-dlp không đọc nổi trang video (Unable to extract initial
+    // state): title/duration/thumbnail vẫn lấy được từ view API với cookie
+    // phiên + buvid fingerprint, đúng đường mà subtitle discovery đang dùng.
+    public async Task<BilibiliVideoSummary> GetSummaryAsync(
+        string sourceUrl,
+        string infoId,
+        string? cookieFile,
+        CancellationToken cancellationToken)
+    {
+        var bvid = ExtractBvid(infoId) ?? ExtractBvid(sourceUrl)
+            ?? throw new InvalidOperationException("Không xác định được BVID để lấy metadata Bilibili.");
+        var cookieHeader = await ReadCookieHeaderAsync(cookieFile, cancellationToken);
+        cookieHeader = await WithFingerprintAsync(cookieHeader, bvid, cancellationToken);
+        using var document = await SendJsonAsync(
+            new Uri("https://api.bilibili.com/x/web-interface/view?bvid=" + Uri.EscapeDataString(bvid)),
+            cookieHeader,
+            bvid,
+            cancellationToken);
+        var root = document.RootElement;
+        var code = root.TryGetProperty("code", out var codeElement) && codeElement.TryGetInt32(out var codeValue)
+            ? codeValue
+            : int.MinValue;
+        if (code != 0 || !root.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object)
+        {
+            var message = root.TryGetProperty("message", out var messageElement) ? messageElement.GetString() : null;
+            throw new InvalidOperationException($"Không lấy được metadata video từ API Bilibili · code {code}: {Compact(message)}");
+        }
+
+        var title = ReadString(data, "title").Trim();
+        if (title.Length == 0) title = bvid;
+        var thumbnail = ReadString(data, "pic").Trim();
+        if (thumbnail.StartsWith("http://", StringComparison.OrdinalIgnoreCase))
+            thumbnail = "https://" + thumbnail[7..];
+        var duration = data.TryGetProperty("duration", out var durationElement)
+            && durationElement.ValueKind == JsonValueKind.Number
+            && durationElement.TryGetDouble(out var seconds)
+            && seconds > 0
+            ? seconds
+            : 0;
+        return new BilibiliVideoSummary(bvid, title, duration, thumbnail);
     }
 
     private async Task<(long Aid, long Cid)> ResolveVideoIdentityFallbackAsync(

@@ -7,6 +7,17 @@ using System.Text.RegularExpressions;
 
 namespace BiliSubStudio.Core.Video;
 
+public sealed record BilibiliNativeStream(
+    string FormatId,
+    string Kind,
+    string Url,
+    IReadOnlyList<string> BackupUrls,
+    int? Height,
+    double? Bandwidth,
+    double? FrameRate,
+    string Codecs,
+    string Extension);
+
 /// <summary>
 /// Retrieves the raw Bilibili web playurl payload for a normal BV video so the
 /// downloader can preserve Bilibili's primary + backup CDN endpoints. yt-dlp
@@ -39,6 +50,59 @@ public sealed partial class BilibiliPlayurlClient
         var part = ExtractPart(infoId, sourceUrl);
         var cookieHeader = await ReadCookieHeaderAsync(cookieFile, cancellationToken);
         var cid = await ResolveCidAsync(bvid, part, cookieHeader, cancellationToken);
+        using var document = await LoadPlayurlAsync(bvid, cid, cookieHeader, cancellationToken);
+        var dash = document.RootElement.GetProperty("data").GetProperty("dash");
+
+        var mutable = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        CollectArray(dash, "video", mutable);
+        CollectArray(dash, "audio", mutable);
+        if (dash.TryGetProperty("dolby", out var dolby) && dolby.ValueKind == JsonValueKind.Object)
+            CollectArray(dolby, "audio", mutable);
+        if (dash.TryGetProperty("flac", out var flac) && flac.ValueKind == JsonValueKind.Object &&
+            flac.TryGetProperty("audio", out var flacAudio) && flacAudio.ValueKind == JsonValueKind.Object)
+            CollectItem(flacAudio, mutable);
+
+        return mutable.ToDictionary(
+            pair => pair.Key,
+            pair => (IReadOnlyList<string>)pair.Value.ToArray(),
+            StringComparer.OrdinalIgnoreCase);
+    }
+
+    // Fallback metadata: đọc thẳng DASH streams từ playurl (WBI + cookie) khi
+    // yt-dlp không parse được trang. Trả đủ id/height/bandwidth/codec để resolver
+    // map sang format nội bộ và tải bằng RangeDownloader như bình thường.
+    public async Task<IReadOnlyList<BilibiliNativeStream>> GetNativeStreamsAsync(
+        string sourceUrl,
+        string infoId,
+        string? cookieFile,
+        CancellationToken cancellationToken)
+    {
+        var bvid = ExtractBvid(infoId) ?? ExtractBvid(sourceUrl)
+            ?? throw new InvalidOperationException("Không xác định được BVID để lấy stream Bilibili.");
+        var part = ExtractPart(infoId, sourceUrl);
+        var cookieHeader = await ReadCookieHeaderAsync(cookieFile, cancellationToken);
+        var cid = await ResolveCidAsync(bvid, part, cookieHeader, cancellationToken);
+        using var document = await LoadPlayurlAsync(bvid, cid, cookieHeader, cancellationToken);
+        var dash = document.RootElement.GetProperty("data").GetProperty("dash");
+
+        var output = new List<BilibiliNativeStream>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        CollectNativeArray(dash, "video", "video", output, seen);
+        CollectNativeArray(dash, "audio", "audio", output, seen);
+        if (dash.TryGetProperty("dolby", out var dolby) && dolby.ValueKind == JsonValueKind.Object)
+            CollectNativeArray(dolby, "audio", "audio", output, seen);
+        if (dash.TryGetProperty("flac", out var flac) && flac.ValueKind == JsonValueKind.Object &&
+            flac.TryGetProperty("audio", out var flacAudio) && flacAudio.ValueKind == JsonValueKind.Object)
+            CollectNativeItem(flacAudio, "audio", output, seen);
+        return output;
+    }
+
+    private async Task<JsonDocument> LoadPlayurlAsync(
+        string bvid,
+        long cid,
+        string cookieHeader,
+        CancellationToken cancellationToken)
+    {
         var mixinKey = await ResolveMixinKeyAsync(bvid, cookieHeader, cancellationToken);
 
         var parameters = new Dictionary<string, string>(StringComparer.Ordinal)
@@ -58,35 +122,30 @@ public sealed partial class BilibiliPlayurlClient
         var canonical = BuildQuery(parameters);
         parameters["w_rid"] = Convert.ToHexStringLower(MD5.HashData(Encoding.UTF8.GetBytes(canonical + mixinKey)));
         var playurl = new Uri("https://api.bilibili.com/x/player/wbi/playurl?" + BuildQuery(parameters));
-        using var document = await SendJsonAsync(playurl, cookieHeader, cancellationToken);
-        var root = document.RootElement;
-        var code = root.TryGetProperty("code", out var codeElement) && codeElement.TryGetInt32(out var codeValue)
-            ? codeValue
-            : int.MinValue;
-        if (code != 0)
+        var document = await SendJsonAsync(playurl, cookieHeader, cancellationToken);
+        try
         {
-            var message = root.TryGetProperty("message", out var messageElement) ? messageElement.GetString() : null;
-            throw new InvalidOperationException($"Bilibili playurl trả code {code}: {Compact(message)}");
+            var root = document.RootElement;
+            var code = root.TryGetProperty("code", out var codeElement) && codeElement.TryGetInt32(out var codeValue)
+                ? codeValue
+                : int.MinValue;
+            if (code != 0)
+            {
+                var message = root.TryGetProperty("message", out var messageElement) ? messageElement.GetString() : null;
+                throw new InvalidOperationException($"Bilibili playurl trả code {code}: {Compact(message)}");
+            }
+            if (!root.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object ||
+                !data.TryGetProperty("dash", out var dash) || dash.ValueKind != JsonValueKind.Object)
+            {
+                throw new InvalidDataException("Bilibili playurl không trả DASH endpoint.");
+            }
+            return document;
         }
-        if (!root.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object ||
-            !data.TryGetProperty("dash", out var dash) || dash.ValueKind != JsonValueKind.Object)
+        catch
         {
-            throw new InvalidDataException("Bilibili playurl không trả DASH endpoint.");
+            document.Dispose();
+            throw;
         }
-
-        var mutable = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
-        CollectArray(dash, "video", mutable);
-        CollectArray(dash, "audio", mutable);
-        if (dash.TryGetProperty("dolby", out var dolby) && dolby.ValueKind == JsonValueKind.Object)
-            CollectArray(dolby, "audio", mutable);
-        if (dash.TryGetProperty("flac", out var flac) && flac.ValueKind == JsonValueKind.Object &&
-            flac.TryGetProperty("audio", out var flacAudio) && flacAudio.ValueKind == JsonValueKind.Object)
-            CollectItem(flacAudio, mutable);
-
-        return mutable.ToDictionary(
-            pair => pair.Key,
-            pair => (IReadOnlyList<string>)pair.Value.ToArray(),
-            StringComparer.OrdinalIgnoreCase);
     }
 
     private async Task<long> ResolveCidAsync(string bvid, int part, string cookieHeader, CancellationToken cancellationToken)
@@ -212,6 +271,57 @@ public sealed partial class BilibiliPlayurlClient
         }
     }
 
+    private static void CollectNativeArray(
+        JsonElement parent,
+        string property,
+        string kind,
+        List<BilibiliNativeStream> output,
+        HashSet<string> seen)
+    {
+        if (!parent.TryGetProperty(property, out var array) || array.ValueKind != JsonValueKind.Array) return;
+        foreach (var item in array.EnumerateArray())
+            if (item.ValueKind == JsonValueKind.Object) CollectNativeItem(item, kind, output, seen);
+    }
+
+    private static void CollectNativeItem(
+        JsonElement item,
+        string kind,
+        List<BilibiliNativeStream> output,
+        HashSet<string> seen)
+    {
+        var primary = ReadString(item, "baseUrl", "base_url", "url");
+        if (!IsHttpUrl(primary)) return;
+        var formatId = item.TryGetProperty("id", out var idElement)
+            ? idElement.ValueKind == JsonValueKind.String ? idElement.GetString() : idElement.GetRawText()
+            : null;
+        formatId ??= ExtractFormatId(primary);
+        if (string.IsNullOrWhiteSpace(formatId)) return;
+        if (!seen.Add(kind + "|" + formatId + "|" + primary)) return;
+
+        var backups = new List<string>();
+        foreach (var property in new[] { "backupUrl", "backup_url" })
+        {
+            if (!item.TryGetProperty(property, out var array) || array.ValueKind != JsonValueKind.Array) continue;
+            foreach (var backup in array.EnumerateArray())
+                if (backup.ValueKind == JsonValueKind.String) AddCandidate(backups, backup.GetString());
+        }
+
+        var mime = ReadString(item, "mimeType", "mime_type") ?? string.Empty;
+        var extension = kind == "video"
+            ? "mp4"
+            : mime.Contains("flac", StringComparison.OrdinalIgnoreCase) ? "flac" : "m4a";
+        output.Add(new BilibiliNativeStream(
+            formatId!,
+            kind,
+            primary!,
+            backups,
+            ReadPositiveInt(item, "height"),
+            ReadPositiveDouble(item, "bandwidth"),
+            ReadPositiveDouble(item, "frameRate", "frame_rate"),
+            ReadString(item, "codecs") ?? string.Empty,
+            extension));
+    }
+
     private static void AddCandidate(List<string> candidates, string? value)
     {
         if (!IsHttpUrl(value) || candidates.Contains(value!, StringComparer.Ordinal)) return;
@@ -233,10 +343,25 @@ public sealed partial class BilibiliPlayurlClient
         return Path.GetFileNameWithoutExtension(uri.AbsolutePath);
     }
 
-    private static string? ExtractBvid(string? value)
+    internal static string? ExtractBvid(string? value)
     {
         var match = BvidRegex().Match(value ?? string.Empty);
         return match.Success ? match.Value : null;
+    }
+
+    private static int? ReadPositiveInt(JsonElement item, string name) =>
+        item.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number &&
+        value.TryGetInt32(out var result) && result > 0
+            ? result
+            : null;
+
+    private static double? ReadPositiveDouble(JsonElement item, params string[] names)
+    {
+        foreach (var name in names)
+            if (item.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number &&
+                value.TryGetDouble(out var result) && result > 0)
+                return result;
+        return null;
     }
 
     private static int ExtractPart(string infoId, string sourceUrl)
