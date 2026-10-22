@@ -24,7 +24,7 @@ These rules apply to the current **C# + .NET 10 + WinUI 3** production tree.
 - No Go production source or Go build path.
 - No second BiliSub backend process or fixed secondary HTTP port.
 - No `BiliSubStudioCore.exe`.
-- No localhost/browser/WebView/WebView2 production UI except the isolated official Bilibili login window (`BrowserLoginWindow.xaml/.cs`); it may load only `passport.bilibili.com` and must not host a custom login form.
+- No localhost/browser/WebView/WebView2 production UI except (a) the isolated official Bilibili login window (`BrowserLoginWindow.xaml/.cs`), which may load only `passport.bilibili.com` and must not host a custom login form, and (b) the Chrome session handoff bridge (`ChromeSessionBridge.cs` + `ChromeExtension`), which may use an ephemeral loopback listener and launch the user's Chrome solely to receive the existing Bilibili `SESSDATA` from a user-installed extension. The bridge must not render login UI, collect credentials, use a fixed port, or read browser cookie databases.
 - No deleting completed/recoverable download state after a network error or cancellation.
 - No accepting incomplete/oversized Range bodies as completed data.
 - No changing downloader concurrency, segment size, CDN rotation, resume semantics and fallback behavior together without targeted tests for each affected contract.

@@ -39,6 +39,7 @@ internal static class Program
         ("download endpoint race selects fastest route and short-body dribble rotates fast", DownloadEndpointContract.RunAsync),
         ("resolve retries only transient network blips, never auth blocks", DownloadResilienceContract.ResolveRetryClassificationAsync),
         ("download 412 failures tell the user to re-login once", DownloadResilienceContract.SessionGuidanceAsync),
+        ("Chrome login bridge accepts only its one-time token and SESSDATA", ChromeLoginBridgeContractAsync),
         ("fully stalled route fails fast instead of hanging forever", DownloadResilienceContract.StallDetectorAsync),
         ("user cancel during a stall still reports cancel", DownloadResilienceContract.UserCancelStillReportsCancelAsync),
         ("refresh storm collapses to one refetch inside cooldown", DownloadResilienceContract.RefreshStormSuppressedAsync),
@@ -3016,6 +3017,37 @@ internal static class Program
         BitConverter.GetBytes((ushort)0x020B).CopyTo(bytes, 0x98);
         System.Text.Encoding.ASCII.GetBytes(marker).CopyTo(bytes, 0x100);
         return bytes;
+    }
+
+    private static async Task ChromeLoginBridgeContractAsync()
+    {
+        string? imported = null;
+        await using var server = new ChromeLoginBridgeServer((cookie, _) =>
+        {
+            imported = cookie;
+            return Task.FromResult("Tester");
+        });
+        using var http = new HttpClient(new HttpClientHandler { UseProxy = false });
+        var page = await http.GetStringAsync(server.Url);
+        True(page.Contains("name=\"bilisub-bridge\"", StringComparison.Ordinal), "bridge page meta tag missing");
+        True(page.Contains(server.Token, StringComparison.Ordinal), "bridge page token missing");
+        True(!page.Contains("<input", StringComparison.OrdinalIgnoreCase), "bridge page must not host a login form");
+
+        var sessionUrl = new Uri(new Uri(server.Url), "/session");
+        using var bad = await http.PostAsync(
+            sessionUrl,
+            new StringContent("{\"token\":\"wrong\",\"sessdata\":\"x\"}", System.Text.Encoding.UTF8, "application/json"));
+        Equal(HttpStatusCode.Forbidden, bad.StatusCode);
+
+        using var response = await http.PostAsync(
+            sessionUrl,
+            new StringContent(
+                JsonSerializer.Serialize(new { token = server.Token, sessdata = "test-session" }),
+                System.Text.Encoding.UTF8,
+                "application/json"));
+        Equal(HttpStatusCode.OK, response.StatusCode);
+        Equal("SESSDATA=test-session", imported);
+        Equal("Tester", await server.WaitForSessionAsync(TimeSpan.FromSeconds(2), CancellationToken.None));
     }
 
     private static ResolvedStream FixtureStream(long size) => new(StreamKind.Video, "v1", "https://fixture.invalid/video", new Dictionary<string, string>(), size, 1080, "m4s", 1);

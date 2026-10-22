@@ -1,0 +1,22 @@
+BiliSub Bridge - Chrome extension
+================================
+
+Extension nay chi lam mot viec: doc cookie SESSDATA cua Bilibili trong Chrome
+va gui sang BiliSub Studio khi ban bam "Dong bo tu Chrome".
+
+Cai dat mot lan:
+1. Mo Chrome, nhap chrome://extensions vao thanh dia chi.
+2. Bat "Developer mode" (Che do danh cho nha phat trien).
+3. Bam "Load unpacked" (Tai tien ich da giai nen).
+4. Chon thu muc nay (thu muc dang chua file manifest.json).
+5. Kiem tra extension "BiliSub Bridge" dang duoc bat trong dung profile Chrome
+   ma ban da dang nhap Bilibili.
+
+Sau do quay lai BiliSub Studio, vao Cai dat -> Dang nhap -> "Dong bo tu Chrome".
+
+Luu y:
+- Extension khong luu SESSDATA; moi lan dong bo no chi doc cookie hien tai.
+- Extension khong doc mat khau, khong dang nhap thay ban.
+- Neu Chrome co nhieu profile, hay cai extension trong profile dang dung Bilibili.
+- Sau khi cap nhat BiliSub Studio, neu extension khong chay, mo chrome://extensions
+  va bam Reload tren extension BiliSub Bridge.

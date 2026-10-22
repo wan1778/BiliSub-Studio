@@ -195,6 +195,11 @@ SettingsPage / Đăng nhập
   -> AccountPage
   -> BilibiliAuthService.StartQrAsync / PollQrAsync
   -> QrMatrixEncoder -> native Canvas
+  -> ChromeSessionBridge.SyncAsync (optional Chrome login handoff)
+      -> ChromeLoginBridgeServer (ephemeral 127.0.0.1 port + one-time token)
+      -> launches the user's Chrome -> BiliSub Bridge extension reads SESSDATA
+      -> BilibiliAuthService.SetCookieAsync (validate + DPAPI save)
+  -> BrowserLoginWindow (isolated official passport page, alternative path)
   -> SessionStore -> Windows DPAPI -> Data/session.bin
   -> ApplicationLog status/error without cookie contents
 ```
@@ -541,7 +546,7 @@ package_windows_candidate.ps1
 
 - `BiliSubStudio.Core` has no WinUI/WinRT UI dependency.
 - WinUI pages do not spawn FFmpeg/Python/yt-dlp directly.
-- No localhost production server, `/api` UI adapter or `BiliSubStudioCore.exe` exists in the C# production path. The only WebView2 host is the isolated official Bilibili login window; it has no custom login form.
+- No `/api` UI adapter, `BiliSubStudioCore.exe` or fixed secondary backend port exists in the C# production path. The only WebView2 host is the isolated official Bilibili login window; it has no custom login form. The Chrome session bridge is an in-process ephemeral loopback listener used only to receive `SESSDATA` from the explicitly installed BiliSub Bridge Chrome extension; it renders no login UI and never reads a browser cookie database.
 - Go production directories are not imported or invoked by the C# application.
 - Update discovery and payload hosting are GitHub-only; transactional update safety remains owned by `UpdateService`.
 - The transient-CDN hardening changes only video transport classification/retry/degradation; it does not alter OCR scanner topology, editor render algorithms, metadata ownership or the unified Media UI contract.

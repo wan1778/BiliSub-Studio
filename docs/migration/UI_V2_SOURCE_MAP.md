@@ -47,7 +47,7 @@ The archive contains no `.git` directory, so the archive comment and SHA-256 are
 | OCR install/worker/pool | `csharp/src/BiliSubStudio.Core/Ocr/OcrInstaller.cs`, `OcrWorkerClient.cs`, `OcrManager.cs` |
 | OCR scan/checkpoint/reconcile | `csharp/src/BiliSubStudio.Core/Ocr/OcrScanner.cs`, `OcrCheckpointStore.cs` |
 | Video editor | `csharp/src/BiliSubStudio.Core/Editor/VideoEditorService.cs` |
-| Login/session | `csharp/src/BiliSubStudio.Core/Authentication/BilibiliAuthService.cs`, `SessionStore.cs` |
+| Login/session | `csharp/src/BiliSubStudio.Core/Authentication/BilibiliAuthService.cs`, `SessionStore.cs`, `ChromeLoginBridgeServer.cs`; Chrome handoff UI in `csharp/src/BiliSubStudio.App/Services/ChromeSessionBridge.cs` + `ChromeExtension/` |
 | Update/report | `csharp/src/BiliSubStudio.Core/Maintenance/UpdateService.cs`, `BugReportService.cs` |
 | Top-level routed native feature pages | `VideoPage`, `OcrPage`, `EditorPage`, `SettingsPage` |
 

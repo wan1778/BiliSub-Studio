@@ -1,3 +1,4 @@
+using BiliSubStudio.App.Services;
 using BiliSubStudio.Core.Application;
 using BiliSubStudio.Core.Authentication;
 using BiliSubStudio.Core.Diagnostics;
@@ -13,6 +14,7 @@ public sealed partial class AccountPage : Page
 {
     private readonly BiliSubApplication _application;
     private readonly ApplicationLog _log;
+    private readonly ChromeSessionBridge _chromeBridge;
     private CancellationTokenSource? _qrCancellation;
     private BrowserLoginWindow? _browserLoginWindow;
     private bool _busy;
@@ -21,6 +23,7 @@ public sealed partial class AccountPage : Page
     {
         _application = application;
         _log = log;
+        _chromeBridge = new ChromeSessionBridge(application, log);
         InitializeComponent();
         Loaded += async (_, _) => await RefreshStatusAsync();
         Unloaded += (_, _) => _qrCancellation?.Cancel();
@@ -119,10 +122,49 @@ public sealed partial class AccountPage : Page
         window.Closed += (_, _) =>
         {
             _browserLoginWindow = null;
-            _ = RefreshStatusAsync();
+            if (!_busy) _ = RefreshStatusAsync();
         };
         _browserLoginWindow = window;
         window.Activate();
+    }
+
+    private async void ChromeSync_Click(object sender, RoutedEventArgs e)
+    {
+        if (_busy) return;
+        try
+        {
+            SetBusy(true);
+            if (_browserLoginWindow is not null) _browserLoginWindow.Close();
+            LoginStatusText.Text = "Đang lấy phiên Bilibili từ Chrome...";
+            var user = await _chromeBridge.SyncAsync(CancellationToken.None);
+            LoginStatusText.Text = string.IsNullOrWhiteSpace(user)
+                ? "Đã đồng bộ phiên Bilibili từ Chrome."
+                : "Đã đăng nhập: " + user;
+            _log.Info("Đăng nhập", "Đồng bộ phiên từ Chrome thành công.");
+            if (Microsoft.UI.Xaml.Application.Current is App app) app.MainWindow?.Activate();
+            await RefreshStatusAsync();
+        }
+        catch (Exception error)
+        {
+            LoginStatusText.Text = error.Message;
+            _log.Error("Đăng nhập", "Đồng bộ phiên từ Chrome lỗi: " + error.Message);
+            if (Microsoft.UI.Xaml.Application.Current is App app) app.MainWindow?.Activate();
+        }
+        finally { SetBusy(false); }
+    }
+
+    private void ChromeExtension_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            _chromeBridge.OpenExtensionFolder();
+            _log.Info("Đăng nhập", "Đã mở thư mục extension Chrome.");
+        }
+        catch (Exception error)
+        {
+            LoginStatusText.Text = error.Message;
+            _log.Error("Đăng nhập", "Mở thư mục extension Chrome lỗi: " + error.Message);
+        }
     }
 
     private async void Validate_Click(object sender, RoutedEventArgs e)
@@ -185,6 +227,8 @@ public sealed partial class AccountPage : Page
         ValidateButton.IsEnabled = !busy;
         DeleteButton.IsEnabled = !busy;
         BrowserLoginButton.IsEnabled = !busy;
+        ChromeSyncButton.IsEnabled = !busy;
+        ChromeExtensionButton.IsEnabled = !busy;
         SaveCookieButton.IsEnabled = !busy && !string.IsNullOrWhiteSpace(CookieBox.Password);
     }
 }

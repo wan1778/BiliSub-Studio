@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "BiliSub Bridge",
+  "version": "1.0.0",
+  "description": "Chuyển phiên đăng nhập Bilibili từ Chrome sang BiliSub Studio.",
+  "permissions": ["cookies"],
+  "host_permissions": ["https://*.bilibili.com/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://127.0.0.1/*"],
+      "js": ["bridge.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
