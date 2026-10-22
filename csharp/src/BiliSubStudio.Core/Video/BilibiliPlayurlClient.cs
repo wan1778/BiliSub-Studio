@@ -35,7 +35,7 @@ public sealed record BilibiliNativeInfo(
 public sealed partial class BilibiliPlayurlClient
 {
     internal const string BrowserUserAgent =
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151 Safari/537.36";
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36";
 
     private static readonly int[] MixinKeyEncTable =
     [
@@ -294,6 +294,11 @@ public sealed partial class BilibiliPlayurlClient
         request.Headers.TryAddWithoutValidation("Referer", "https://www.bilibili.com/");
         request.Headers.TryAddWithoutValidation("Origin", "https://www.bilibili.com");
         request.Headers.TryAddWithoutValidation("User-Agent", BrowserUserAgent);
+        request.Headers.TryAddWithoutValidation("Accept", "application/json, text/plain, */*");
+        request.Headers.TryAddWithoutValidation("Accept-Language", "vi-VN,vi;q=0.9,en;q=0.8");
+        request.Headers.TryAddWithoutValidation("Sec-Fetch-Dest", "empty");
+        request.Headers.TryAddWithoutValidation("Sec-Fetch-Mode", "cors");
+        request.Headers.TryAddWithoutValidation("Sec-Fetch-Site", "same-site");
         if (!string.IsNullOrWhiteSpace(cookieHeader)) request.Headers.TryAddWithoutValidation("Cookie", cookieHeader);
         using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
         if (!response.IsSuccessStatusCode)

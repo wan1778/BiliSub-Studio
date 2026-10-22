@@ -9,9 +9,12 @@ public sealed class ToolManager
 {
     private const string YtDlpUrl = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe";
     private const string FfmpegUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip";
+    private static readonly TimeSpan YtDlpMaxAge = TimeSpan.FromDays(7);
+    private static readonly TimeSpan YtDlpRefreshRetry = TimeSpan.FromHours(1);
     private readonly AppPaths _paths;
     private readonly HttpClient _http;
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private DateTime _lastYtDlpRefreshAttemptUtc = DateTime.MinValue;
 
     public ToolManager(AppPaths paths, HttpClient http)
     {
@@ -30,10 +33,25 @@ public sealed class ToolManager
         await _gate.WaitAsync(cancellationToken);
         try
         {
+            Directory.CreateDirectory(_paths.Tools);
             if (!IsOwnedTool(YtDlpPath))
             {
-                Directory.CreateDirectory(_paths.Tools);
                 await DownloadAtomicAsync(YtDlpUrl, YtDlpPath, cancellationToken);
+            }
+            else if (ShouldRefreshYtDlp(File.GetLastWriteTimeUtc(YtDlpPath), DateTime.UtcNow)
+                && DateTime.UtcNow - _lastYtDlpRefreshAttemptUtc >= YtDlpRefreshRetry)
+            {
+                _lastYtDlpRefreshAttemptUtc = DateTime.UtcNow;
+                try
+                {
+                    await DownloadAtomicAsync(YtDlpUrl, YtDlpPath, cancellationToken);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+                catch (Exception)
+                {
+                    // A stale extractor is still better than blocking every download
+                    // when GitHub is temporarily unavailable.
+                }
             }
             return YtDlpPath;
         }
@@ -128,6 +146,9 @@ public sealed class ToolManager
             TryDelete(temporary);
         }
     }
+
+    internal static bool ShouldRefreshYtDlp(DateTime lastWriteUtc, DateTime nowUtc) =>
+        nowUtc - lastWriteUtc >= YtDlpMaxAge;
 
     private bool IsOwnedTool(string candidate)
     {

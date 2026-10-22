@@ -215,10 +215,34 @@ public sealed class YtDlpResolver
             catch (OperationCanceledException) { throw; }
             catch (Exception nativeError)
             {
-                throw new InvalidOperationException(
-                    $"{error.GetBaseException().Message} · API Bilibili: {Compact(nativeError.GetBaseException().Message)}");
+                throw new InvalidOperationException(DescribeResolveFailure(error, nativeError));
             }
         }
+    }
+
+    internal static string DescribeResolveFailure(Exception ytError, Exception nativeError)
+    {
+        var native = nativeError.GetBaseException();
+        var nativeMessage = Compact(native.Message);
+        var ytMessage = Compact(ytError.GetBaseException().Message);
+        if (native is HttpRequestException { StatusCode: HttpStatusCode.PreconditionFailed }
+            || nativeMessage.Contains("HTTP 412", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Bilibili đang chặn API (412). Phiên đăng nhập thiếu cookie thiết bị hoặc đã hết hạn; hãy vào Cài đặt → Đăng nhập → Đồng bộ lại từ Chrome rồi thử lại.";
+        }
+        if (nativeMessage.Contains("code -404", StringComparison.OrdinalIgnoreCase)
+            || nativeMessage.Contains("code -10403", StringComparison.OrdinalIgnoreCase)
+            || nativeMessage.Contains("啥都木有", StringComparison.Ordinal)
+            || nativeMessage.Contains("稿件不可见", StringComparison.Ordinal))
+        {
+            return "Video không tồn tại, đã bị xóa hoặc đang ở chế độ riêng tư. Hãy kiểm tra lại liên kết.";
+        }
+        if (ytMessage.Contains("deleted or geo-restricted", StringComparison.OrdinalIgnoreCase)
+            || ytMessage.Contains("Unable to extract initial state", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Không đọc được video: video có thể đã bị xóa hoặc giới hạn khu vực. Nếu video vẫn mở được trong Chrome, hãy cập nhật yt-dlp rồi thử lại.";
+        }
+        return $"{ytMessage} · API Bilibili: {nativeMessage}";
     }
 
     private static bool IsNativeFallbackEligible(string url, Exception error)

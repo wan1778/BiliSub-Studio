@@ -187,7 +187,7 @@ public sealed partial class BilibiliSubtitleClient
         using var request = new HttpRequestMessage(HttpMethod.Get,
             new Uri("https://www.bilibili.com/video/" + Uri.EscapeDataString(bvid) + "/"));
         request.Headers.TryAddWithoutValidation("Referer", "https://www.bilibili.com/");
-        request.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151 Safari/537.36");
+        request.Headers.TryAddWithoutValidation("User-Agent", BilibiliPlayurlClient.BrowserUserAgent);
         if (!string.IsNullOrWhiteSpace(cookieHeader)) request.Headers.TryAddWithoutValidation("Cookie", cookieHeader);
         using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
         if (!response.IsSuccessStatusCode)
@@ -314,7 +314,7 @@ public sealed partial class BilibiliSubtitleClient
         using var request = new HttpRequestMessage(HttpMethod.Get, uri);
         request.Headers.TryAddWithoutValidation("Referer", $"https://www.bilibili.com/video/{bvid}");
         request.Headers.TryAddWithoutValidation("Origin", "https://www.bilibili.com");
-        request.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151 Safari/537.36");
+        request.Headers.TryAddWithoutValidation("User-Agent", BilibiliPlayurlClient.BrowserUserAgent);
         if (acceptBinary) request.Headers.TryAddWithoutValidation("Accept", "application/octet-stream");
         if (!string.IsNullOrWhiteSpace(cookieHeader)) request.Headers.TryAddWithoutValidation("Cookie", cookieHeader);
         using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
@@ -455,7 +455,7 @@ public sealed partial class BilibiliSubtitleClient
                 using var request = new HttpRequestMessage(HttpMethod.Get,
                     new Uri("https://api.bilibili.com/x/frontend/finger/spi"));
                 request.Headers.TryAddWithoutValidation("Referer", "https://www.bilibili.com/");
-                request.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151 Safari/537.36");
+                request.Headers.TryAddWithoutValidation("User-Agent", BilibiliPlayurlClient.BrowserUserAgent);
                 using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
                 if (response.IsSuccessStatusCode)
                 {

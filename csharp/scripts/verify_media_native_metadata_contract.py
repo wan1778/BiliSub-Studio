@@ -7,6 +7,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 RESOLVER = ROOT / "csharp" / "src" / "BiliSubStudio.Core" / "Video" / "YtDlpResolver.cs"
 PLAYURL = ROOT / "csharp" / "src" / "BiliSubStudio.Core" / "Video" / "BilibiliPlayurlClient.cs"
 SUBTITLES = ROOT / "csharp" / "src" / "BiliSubStudio.Core" / "Video" / "BilibiliSubtitleClient.cs"
+TOOLMANAGER = ROOT / "csharp" / "src" / "BiliSubStudio.Core" / "Tools" / "ToolManager.cs"
 VERIFY = ROOT / "csharp" / "scripts" / "verify.ps1"
 
 
@@ -27,6 +28,7 @@ def main() -> int:
     resolver = RESOLVER.read_text(encoding="utf-8")
     playurl = PLAYURL.read_text(encoding="utf-8")
     subtitles = SUBTITLES.read_text(encoding="utf-8")
+    toolmanager = TOOLMANAGER.read_text(encoding="utf-8")
     verify = VERIFY.read_text(encoding="utf-8")
 
     # yt-dlp phải giữ vai trò nguồn chính: fallback chỉ chạy trong catch sau khi
@@ -138,11 +140,31 @@ def main() -> int:
     # thuộc playurl client để đi chung một signer WBI đã kiểm chứng).
     require("BilibiliVideoSummary" not in subtitles and "GetSummaryAsync" not in subtitles,
             "subtitle client must not own native summary anymore")
+    require("BilibiliPlayurlClient.BrowserUserAgent)" in subtitles,
+            "subtitle requests drifted away from the shared browser User-Agent")
+
+    # The browser-facing identity and error copy must stay aligned with the real Chrome
+    # profile, otherwise Bilibili answers 412 without a useful explanation.
+    require("Chrome/155.0.0.0" in playurl and "(KHTML, like Gecko)" in playurl,
+            "native browser User-Agent is not a complete Chrome 155 identity")
+    require("DescribeResolveFailure" in resolver and "Đồng bộ lại từ Chrome" in resolver,
+            "HTTP 412 does not point the user back to the Chrome session sync")
+    require("bị xóa" in resolver and "giới hạn khu vực" in resolver,
+            "permanent video failures are not mapped to actionable Vietnamese messages")
+
+    # An owned yt-dlp binary must not stay frozen forever; refresh is bounded so a
+    # GitHub outage cannot block download jobs.
+    require("YtDlpMaxAge = TimeSpan.FromDays(7)" in toolmanager and
+            "ShouldRefreshYtDlp(" in toolmanager and
+            "DownloadAtomicAsync(YtDlpUrl, YtDlpPath, cancellationToken)" in toolmanager,
+            "app-owned yt-dlp is never refreshed")
+    require("YtDlpRefreshRetry" in toolmanager and "catch (OperationCanceledException)" in toolmanager,
+            "yt-dlp refresh is not bounded by a retry cooldown/cancellation path")
 
     require("verify_media_native_metadata_contract.py" in verify,
             "verify.ps1 does not run this contract")
 
-    print("PASS media native metadata: yt-dlp stays primary; extractor failures on BVID-only URLs fall back to signed view/detail (title/duration/thumbnail/CID) + signed playurl DASH streams with backup CDNs, Referer header, metadata-page warning, and one shared WBI signer")
+    print("PASS media native metadata: yt-dlp stays primary and refreshes when stale; extractor failures on BVID-only URLs fall back to signed view/detail + playurl DASH streams; Chrome-155 UA, 412/deleted error copy, and native preview warnings stay aligned")
     return 0
 
 
