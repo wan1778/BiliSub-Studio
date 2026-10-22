@@ -17,7 +17,12 @@ namespace BiliSubStudio.Core.Ocr;
 // nguyên (fail-open): đo là diagnostic, không bao giờ được giết chữ oan.
 public static class OcrLineLuminance
 {
-    public const int BrightLumaMin = 224;
+    // 22/10 field: the 桃花剑神 white caption measures only 4-6% at luma 224
+    // (color grading + JPEG), but 16-21% at 200 with zero colored pixels. The
+    // old 224 cut dropped those readable frames as blank and split one caption
+    // into 0.2s fragments. Match the chroma gate's white definition instead of
+    // treating compressed white as scene ink.
+    public const int BrightLumaMin = 200;
     public const int DarkLumaMax = 64;
 
     // Ngưỡng phe sáng (đo 16/09: thoại sáng 12-19%; giấy/mực/nền 0%). Biên an

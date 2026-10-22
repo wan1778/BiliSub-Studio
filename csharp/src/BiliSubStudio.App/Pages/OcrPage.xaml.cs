@@ -1845,7 +1845,7 @@ public sealed partial class OcrPage : Page
 
     private void ApplyRecoverableCheckpointCues(OcrCheckpointInfo checkpoint)
     {
-        var cues = checkpoint.RecoverableCues ?? checkpoint.RecentCues;
+        var cues = OcrTextCleanup.Cleanup(checkpoint.RecoverableCues ?? checkpoint.RecentCues).Cues;
         ApplyAuthoritativeCues(cues);
     }
 

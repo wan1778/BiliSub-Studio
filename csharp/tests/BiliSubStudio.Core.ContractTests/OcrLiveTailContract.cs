@@ -175,6 +175,26 @@ internal static class OcrLiveTailContract
             await live.StopAsync();
         }
 
+        // 7b: resume seed cleans the field variant chain instead of exposing raw
+        // near-duplicates until Pause. No worker/pixel work is needed.
+        using (var live = new OcrLiveTailReconciler())
+        {
+            var chain = new[]
+            {
+                Prov(2434.27375, 2434.940437, "江白我肚子上都有肉7", 0.99),
+                Prov(2434.940437, 2435.507125, "江白我肚子上都有肉了", 0.98),
+                Prov(2435.507125, 2436.073812, "江白我肚子上都有肉下", 0.97),
+                Prov(2436.073812, 2436.6405, "江白我肚子上都有肉了", 0.98),
+                Prov(2436.6405, 2437.207187, "江白我肚子上都有肉7", 0.97),
+                Prov(2437.207187, 2437.773875, "江白我肚子上都有肉了", 0.98),
+            };
+            live.ResetCommitted(chain);
+            var view = live.CommittedView;
+            Check(view.Count == 1, $"resume seed must clean field variant chain (got {view.Count})");
+            Check(view[0].Start == 2434.27375 && view[0].End == 2437.773875,
+                "cleaned resume seed must preserve the union span");
+        }
+
         // 8: out-of-order multi-lane arrival (vu live-split p02): prefix co san 10 cue
         // tuong lai (> TailWindow), fresh la cap dash-variant TOI TRE o qua khu.
         // Cu: gop thanh 1 (pixel Same) thay vi nam tho song doi.

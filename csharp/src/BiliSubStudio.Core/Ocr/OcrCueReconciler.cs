@@ -21,11 +21,19 @@ public static class OcrCueReconciler
     // nghe và gộp/xóa tay (18/09: cặp 关于战神篇 hở đúng 0.3s của user).
     // Trên 0.5s coi như thoại lặp thật (dưới hẳn bằng chứng blank 0.55s+).
     private const double IdenticalReviewGapSeconds = 0.5;
+    private const double SimilarVariantMinSimilarity = 0.82;
+    private const double SimilarVariantGapSeconds = 0.9;
 
-    private static double AllowedGapSeconds(OcrCue previous, OcrCue cue, double continuationWindow) =>
-        string.Equals(previous.Text, cue.Text, StringComparison.Ordinal)
-            ? Math.Max(continuationWindow, IdenticalTextMicroGapSeconds)
+    private static double AllowedGapSeconds(OcrCue previous, OcrCue cue, double continuationWindow)
+    {
+        if (string.Equals(previous.Text, cue.Text, StringComparison.Ordinal))
+            return Math.Max(continuationWindow, IdenticalTextMicroGapSeconds);
+        if (cue.Start - previous.End > SimilarVariantGapSeconds + Epsilon)
+            return continuationWindow;
+        return OcrTextCleanup.TextSimilarity(previous.Text, cue.Text) >= SimilarVariantMinSimilarity
+            ? Math.Max(continuationWindow, SimilarVariantGapSeconds)
             : continuationWindow;
+    }
 
     // Legacy/no-pixel sync: không merge cross-cue, chỉ normalize + giữ tách (deterministic unit tests, không FFmpeg).
     public static IReadOnlyList<OcrCue> MergeTouchingIdentical(IEnumerable<OcrCue> cues)

@@ -275,6 +275,10 @@ def main() -> int:
     require('["probe_images_base64"] = imageBase64' in worker_client and
             "change_scores" in worker_client and "ProbeVisualChangesExAsync(imageBase64" in manager,
             "C# OCR worker path does not validate and expose the every-frame visual probe protocol")
+    require("_probeGate" in manager and "IsMemoryPressure" in manager and
+            "CombineProbeResults" in manager and "imageBase64.Count > 2" in manager and
+            "first.ChangeScores.Concat(second.ChangeScores)" in manager,
+            "visual probe cannot split an out-of-memory batch without losing transition scores")
     require("var authoritative = snapshot.Done" in page and
             "ApplyAuthoritativeCues(result.Cues)" in page and
             "ExportCurrentSrtAsync" in page and "_cues, outputDirectory" in page and "ExportButton.IsEnabled = false;" in page,

@@ -850,7 +850,8 @@ public sealed class OcrScanner
             // BoundaryMerges giữ số cũ (grep toàn src: không chỗ nào đọc). Checkpoint vẫn
             // đủ lanes để resume; finish về sau tính lại từ đầu.
             job.Set("finalizing", 99.5, "Đang lưu checkpoint tạm dừng · bỏ qua ghép SRT (để dành lúc finish/xuất).");
-            mergedAll = await BuildPausedPreviewAsync(liveTail, lanes, source, sharedPixelComparer, liveWindow, frontier, token);
+            mergedAll = OcrTextCleanup.Cleanup(
+                await BuildPausedPreviewAsync(liveTail, lanes, source, sharedPixelComparer, liveWindow, frontier, token)).Cues;
             boundaryMerges = checkpoint.BoundaryMerges;
             merged = mergedAll;
         }

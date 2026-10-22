@@ -10,6 +10,7 @@ public sealed class OcrManager : IAsyncDisposable
     private readonly HardwareService _hardware;
     private readonly OcrInstaller _installer;
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly SemaphoreSlim _probeGate = new(2, 2);
     private readonly object _lifecycleSync = new();
     private readonly List<OcrWorkerClient> _workers = [];
     private CancellationTokenSource _preparationCancellation = new();
@@ -508,11 +509,72 @@ public sealed class OcrManager : IAsyncDisposable
         IReadOnlyList<string> imageBase64,
         CancellationToken cancellationToken)
     {
-        Interlocked.Increment(ref _probeCalls);
-        Interlocked.Add(ref _probeImages, imageBase64.Count);
-        return await RunWithRecoveryAsync(
-            (worker, token) => worker.ProbeVisualChangesExAsync(imageBase64, token),
-            cancellationToken);
+        try
+        {
+            return await RunProbeCoreAsync(imageBase64, cancellationToken);
+        }
+        catch (Exception error) when (imageBase64.Count > 2 && IsMemoryPressure(error))
+        {
+            // A 65-image probe decodes every frame at once. On a busy machine that
+            // can exhaust the worker even when the pool is healthy; split at the
+            // boundary frame and keep every transition score instead of failing
+            // the whole lane and making the user resume from checkpoint.
+            var split = (imageBase64.Count + 1) / 2;
+            var left = imageBase64.Take(split).ToArray();
+            var right = imageBase64.Skip(split - 1).ToArray();
+            var first = await ProbeVisualChangesExAsync(left, cancellationToken);
+            var second = await ProbeVisualChangesExAsync(right, cancellationToken);
+            return CombineProbeResults(first, second);
+        }
+    }
+
+    private async Task<VisualProbeResult> RunProbeCoreAsync(
+        IReadOnlyList<string> imageBase64,
+        CancellationToken cancellationToken)
+    {
+        await _probeGate.WaitAsync(cancellationToken);
+        try
+        {
+            Interlocked.Increment(ref _probeCalls);
+            Interlocked.Add(ref _probeImages, imageBase64.Count);
+            return await RunWithRecoveryAsync(
+                (worker, token) => worker.ProbeVisualChangesExAsync(imageBase64, token),
+                cancellationToken);
+        }
+        finally { _probeGate.Release(); }
+    }
+
+    internal static VisualProbeResult CombineProbeResults(VisualProbeResult first, VisualProbeResult second) =>
+        new(
+            first.ChangeScores.Concat(second.ChangeScores).ToArray(),
+            CombineOptional(first.BandChangeScores, second.BandChangeScores),
+            CombineEdgeDensity(first.EdgeDensity, second.EdgeDensity));
+
+    private static IReadOnlyList<double>? CombineOptional(
+        IReadOnlyList<double>? first,
+        IReadOnlyList<double>? second) =>
+        first is null || second is null ? null : first.Concat(second).ToArray();
+
+    private static IReadOnlyList<double>? CombineEdgeDensity(
+        IReadOnlyList<double>? first,
+        IReadOnlyList<double>? second) =>
+        first is null || second is null || second.Count == 0
+            ? null
+            : first.Concat(second.Skip(1)).ToArray();
+
+    private static bool IsMemoryPressure(Exception error)
+    {
+        for (var current = error; current is not null; current = current.InnerException)
+        {
+            if (current is OutOfMemoryException) return true;
+            var message = current.Message;
+            if (message.Contains("Insufficient memory", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("OutOfMemory", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("Cannot allocate memory", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("bad_alloc", StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
     }
 
     public OcrInferenceTelemetry GetInferenceTelemetry()

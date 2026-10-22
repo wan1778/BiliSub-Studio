@@ -39,7 +39,9 @@ internal static class Program
         ("download endpoint race selects fastest route and short-body dribble rotates fast", DownloadEndpointContract.RunAsync),
         ("resolve retries only transient network blips, never auth blocks", DownloadResilienceContract.ResolveRetryClassificationAsync),
         ("download 412 failures tell the user to re-login once", DownloadResilienceContract.SessionGuidanceAsync),
-        ("Chrome login bridge accepts only its one-time token and SESSDATA", ChromeLoginBridgeContractAsync),
+        ("Chrome login bridge accepts only its one-time token and Bilibili cookies", ChromeLoginBridgeContractAsync),
+        ("stale yt-dlp refreshes weekly and permanent resolve errors stay actionable", ResolveToolPolicyAsync),
+        ("OCR probe memory fallback preserves every transition score", OcrProbeChunkContractAsync),
         ("fully stalled route fails fast instead of hanging forever", DownloadResilienceContract.StallDetectorAsync),
         ("user cancel during a stall still reports cancel", DownloadResilienceContract.UserCancelStillReportsCancelAsync),
         ("refresh storm collapses to one refetch inside cooldown", DownloadResilienceContract.RefreshStormSuppressedAsync),
@@ -180,6 +182,8 @@ internal static class Program
             return await OcrGpuRuntimeContract.PrepareAsync(appRootOnly);
         if (arguments is ["--ocr-fragments-runtime", var ocrRoot, var ocrVideo])
             return await OcrFragmentRuntimeContract.RunAsync(ocrRoot, ocrVideo);
+        if (arguments is ["--ocr-false-blank-runtime", var falseBlankRoot, var falseBlankVideo, var falseBlankStart, var falseBlankDuration])
+            return await OcrFalseBlankRuntimeContract.RunAsync(falseBlankRoot, falseBlankVideo, falseBlankStart, falseBlankDuration);
         if (arguments is ["--asr-voice-runtime", var asrRoot, var asrVideo, var asrSrt])
             return await EditorAsrVoiceRuntimeContract.RunAsync(asrRoot, asrVideo, asrSrt);
         if (arguments is ["--nghi-tts-runtime", var ttsRoot, var ttsVideo])
@@ -3019,6 +3023,44 @@ internal static class Program
         return bytes;
     }
 
+    private static Task ResolveToolPolicyAsync()
+    {
+        var now = new DateTime(2026, 10, 22, 0, 0, 0, DateTimeKind.Utc);
+        True(!ToolManager.ShouldRefreshYtDlp(now.AddDays(-6), now), "fresh yt-dlp was refreshed early");
+        True(ToolManager.ShouldRefreshYtDlp(now.AddDays(-8), now), "stale yt-dlp was not refreshed");
+
+        var extractor = new InvalidOperationException("yt-dlp resolve: Unable to extract initial state");
+        var deleted = YtDlpResolver.DescribeResolveFailure(
+            extractor,
+            new InvalidOperationException("Bilibili view/detail trả code -404: 啥都木有"));
+        True(deleted.Contains("bị xóa", StringComparison.Ordinal), "deleted video did not map to an actionable message");
+
+        var blocked = YtDlpResolver.DescribeResolveFailure(
+            extractor,
+            new HttpRequestException("Bilibili API HTTP 412.", null, HttpStatusCode.PreconditionFailed));
+        True(blocked.Contains("Đồng bộ lại từ Chrome", StringComparison.Ordinal),
+            "412 did not point the user back to the Chrome session sync");
+        return Task.CompletedTask;
+    }
+
+    private static Task OcrProbeChunkContractAsync()
+    {
+        var first = new VisualProbeResult([.1, .2], [.11, .22], [1, 2, 3]);
+        var second = new VisualProbeResult([.2, .4], [.21, .44], [2, 3, 4]);
+        var combined = OcrManager.CombineProbeResults(first, second);
+        True(combined.ChangeScores.SequenceEqual(new[] { .1, .2, .2, .4 }), "probe change scores were lost at the split");
+        True(combined.BandChangeScores is not null && combined.BandChangeScores.SequenceEqual(new[] { .11, .22, .21, .44 }),
+            "probe band scores were not concatenated");
+        True(combined.EdgeDensity is not null && combined.EdgeDensity.SequenceEqual(new[] { 1d, 2d, 3d, 3d, 4d }),
+            "overlap frame was duplicated in edge density");
+        var noShadow = OcrManager.CombineProbeResults(
+            new VisualProbeResult([.1], null, null),
+            new VisualProbeResult([.2], null, null));
+        True(noShadow.BandChangeScores is null && noShadow.EdgeDensity is null,
+            "missing shadow fields must stay absent after a split");
+        return Task.CompletedTask;
+    }
+
     private static async Task ChromeLoginBridgeContractAsync()
     {
         string? imported = null;
@@ -3044,12 +3086,52 @@ internal static class Program
         using var response = await http.PostAsync(
             sessionUrl,
             new StringContent(
-                JsonSerializer.Serialize(new { token = server.Token, sessdata = "test-session" }),
+                JsonSerializer.Serialize(new
+                {
+                    token = server.Token,
+                    sessdata = "test-session",
+                    cookies = "SESSDATA=test-session; buvid3=device-1; b_nut=1"
+                }),
                 System.Text.Encoding.UTF8,
                 "application/json"));
         Equal(HttpStatusCode.OK, response.StatusCode);
-        Equal("SESSDATA=test-session", imported);
+        Equal("SESSDATA=test-session; buvid3=device-1; b_nut=1", imported);
         Equal("Tester", await server.WaitForSessionAsync(TimeSpan.FromSeconds(2), CancellationToken.None));
+
+        string? mismatchImported = null;
+        await using var mismatch = new ChromeLoginBridgeServer("test-page-secret", (cookie, _) =>
+        {
+            mismatchImported = cookie;
+            return Task.FromResult("Mismatch");
+        });
+        using var mismatchResponse = await http.PostAsync(
+            new Uri(new Uri(mismatch.Url), "/session"),
+            new StringContent(
+                JsonSerializer.Serialize(new
+                {
+                    token = mismatch.Token,
+                    sessdata = "test-session",
+                    cookies = "SESSDATA=other-session; buvid3=device-1"
+                }),
+                System.Text.Encoding.UTF8,
+                "application/json"));
+        Equal(HttpStatusCode.BadRequest, mismatchResponse.StatusCode);
+        True(mismatchImported is null, "mismatched session cookies must not reach the importer");
+
+        string? legacyImported = null;
+        await using var legacy = new ChromeLoginBridgeServer("test-page-secret", (cookie, _) =>
+        {
+            legacyImported = cookie;
+            return Task.FromResult("LegacyTester");
+        });
+        using var legacyResponse = await http.PostAsync(
+            new Uri(new Uri(legacy.Url), "/session"),
+            new StringContent(
+                JsonSerializer.Serialize(new { token = legacy.Token, sessdata = "legacy-session" }),
+                System.Text.Encoding.UTF8,
+                "application/json"));
+        Equal(HttpStatusCode.OK, legacyResponse.StatusCode);
+        Equal("SESSDATA=legacy-session", legacyImported);
     }
 
     private static ResolvedStream FixtureStream(long size) => new(StreamKind.Video, "v1", "https://fixture.invalid/video", new Dictionary<string, string>(), size, 1080, "m4s", 1);

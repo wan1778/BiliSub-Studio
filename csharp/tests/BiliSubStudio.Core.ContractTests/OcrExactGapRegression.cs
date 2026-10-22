@@ -137,6 +137,49 @@ internal static class OcrExactGapRegression
         Check(beyondMerged.Count == 2, "identical 0.30s gap stays 2 cues (review-only zone 0.25-0.5s)");
         Check(beyondComparer.Calls == 0, "beyond-micro-gap pair must not reach pixel comparer");
 
+        // 12. High-similarity variant + micro-gap beyond the normal continuation window
+        // is still temporal: same caption, pixel Same => merge.
+        var variant = new[]
+        {
+            Prov(2434.27375, 2434.907, "江白我肚子上都有肉7", 0.99),
+            Prov(2435.073687, 2435.740, "江白我肚子上都有肉了", 0.98),
+        };
+        var variantComparer = new FakePixelComparer(PixelCheckResult.Same);
+        var variantMerged = await OcrCueReconciler.MergeTouchingIdenticalAsync(
+            variant, "v.mp4", variantComparer, ct, productionExhaustiveWindow);
+        Check(variantMerged.Count == 1, "high-similarity variant with 0.1667s gap must merge on Same");
+        Check(variantComparer.Calls == 1, "high-similarity variant must reach pixel verifier once");
+        Check(variantMerged[0].Start == 2434.27375 && variantMerged[0].End == 2435.740,
+            "high-similarity variant merge must preserve the union span");
+
+        // 13. Real transition with similarity exactly 0.8 stays outside the variant
+        // window: no pixel call, no review.
+        var realTransition = new[]
+        {
+            Prov(32598.216, 32599.416, "三十年河东", 0.99),
+            Prov(32599.749, 32600.916, "三十年河西", 0.98),
+        };
+        var transitionComparer = new FakePixelComparer(PixelCheckResult.Same);
+        var transitionMerged = await OcrCueReconciler.MergeTouchingIdenticalAsync(
+            realTransition, "v.mp4", transitionComparer, ct, productionExhaustiveWindow);
+        Check(transitionMerged.Count == 2, "real 0.8-similar transition must stay separate");
+        Check(transitionComparer.Calls == 0, "real 0.8-similar transition must not reach pixel verifier");
+        Check(!transitionMerged.Any(c => c.NeedsReview), "real 0.8-similar transition must not be flagged");
+
+        // 14. High-similarity spelling variant across a pause: pixel still decides.
+        // Unavailable keeps both cues and asks for review instead of silently merging.
+        var spellVariant = new[]
+        {
+            Prov(18560.109, 18560.776, "我拿到神格7", 0.99),
+            Prov(18561.109, 18561.776, "我拿到神格了", 0.98),
+        };
+        var spellComparer = new FakePixelComparer(PixelCheckResult.Unavailable);
+        var spellMerged = await OcrCueReconciler.MergeTouchingIdenticalAsync(
+            spellVariant, "v.mp4", spellComparer, ct, productionExhaustiveWindow);
+        Check(spellMerged.Count == 2, "Unavailable high-similarity variant must stay separate");
+        Check(spellMerged.All(c => c.NeedsReview), "Unavailable high-similarity variant must be flagged");
+        Check(spellComparer.Calls == 1, "high-similarity variant must reach pixel verifier once");
+
         // Inflated scene-text unions must reach the pixel gate in BOTH directions.
         // These are the recorded boxes from the remaining V04 field boundaries.
         foreach (var (inflated, subtitle) in new[]

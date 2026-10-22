@@ -7,7 +7,7 @@ using BiliSubStudio.Core.Ocr;
 namespace BiliSubStudio.Core.ContractTests;
 
 // Ứng viên 2 luminance (spec khóa 16/09; luật nhới + enforce 21/09): chữ ký
-// sáng từng dòng (trắng>=224 + tối<64). Thoại đo thật: sáng 12-19%; giấy/mờ/
+// sáng từng dòng (trắng>=200 + tối<64). Thoại đo thật: sáng 12-19%; giấy/mờ/
 // nền/mực-cảnh: 0% sáng. Luật nhới (user chốt 21/09 "thà giữ rác hơn xén
 // thoại"): chỉ đòi phe sáng — sub nền sáng viền mỏng không bị xén oan.
 // Enforce ngay ở tầng frame; mọi lỗi decode/box -> passthrough nguyên,
@@ -81,6 +81,24 @@ internal static class OcrLuminanceGateContract
         });
         var lines = new[] { FullBox("你好世界") };
         var measured = OcrLineLuminance.Measure(dialogue, lines, 640, 80);
+        // 22/10 field 桃花剑神: color grading leaves the visible white caption at
+        // 4-6% pixels at 224 but 16-21% pixels at 200. The old 224 cut turned those
+        // frames into a blank and split one caption into 0.2s cues.
+        var compressedWhite = EncodeJpeg(graphics =>
+        {
+            graphics.Clear(Color.Black);
+            using var brush = new SolidBrush(Color.FromArgb(212, 212, 212));
+            graphics.FillRectangle(brush, 60, 10, 200, 24);
+            graphics.FillRectangle(brush, 300, 10, 160, 24);
+            graphics.FillRectangle(brush, 120, 44, 260, 24);
+        });
+        var compressedMeasured = OcrLineLuminance.Measure(compressedWhite, lines, 640, 80);
+        Check(compressedMeasured is not null && compressedMeasured[0] is not null,
+            "decode nen trang nacn xam hong");
+        Check(compressedMeasured![0]!.BrightFraction > 0.05,
+            "sub trang nacn xam van phai do ra phe sang");
+        Check(OcrLineLuminance.KeepLine(compressedMeasured[0]!),
+            "sub trang nacn xam khong duoc giet oan");
         Check(measured is not null && measured.Count == 1 && measured[0] is not null,
             "decode hộp thoại tổng hợp hỏng");
         Check(OcrLineLuminance.KeepLine(measured![0]!), "chữ trắng nền đen phải giữ");

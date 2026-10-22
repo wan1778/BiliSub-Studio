@@ -125,7 +125,7 @@ public sealed class OcrLiveTailReconciler : IDisposable
             // live telemetry until thousands of FFmpeg comparisons finish and
             // leaves the UI list blank. New appends still get incremental
             // pixel-gated tail reconciliation through the normal loop.
-            _view = OcrCueReconciler.MergeTouchingIdentical(_committed).ToList();
+            _view = OcrTextCleanup.Cleanup(OcrCueReconciler.MergeTouchingIdentical(_committed)).Cues.ToList();
             _covered.Clear();
             foreach (var cue in _committed) _covered.Add(cue);
             _revision++;
