@@ -226,6 +226,63 @@ public sealed partial class BilibiliPlayurlClient
 
     private sealed record NativeView(long Cid, string Title, double DurationSeconds, string ThumbnailUrl);
 
+    // Identity for the subtitle path (22/10 field): the plain
+    // web-interface/view endpoint answers HTTP 412 for this session, but the
+    // signed view/detail endpoint still returns aid + cid, and the legacy
+    // player/v2 subtitle list needs only the cid. Reusing this signer keeps
+    // one verified WBI implementation and lets the subtitle client find the
+    // AI caption track instead of reporting a misleading "session expired".
+    public async Task<(long Aid, long Cid)?> ResolveSignedIdentityAsync(
+        string bvid,
+        int part,
+        string cookieHeader,
+        CancellationToken cancellationToken)
+    {
+        var mixinKey = await ResolveMixinKeyAsync(bvid, cookieHeader, cancellationToken);
+        var parameters = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["bvid"] = bvid,
+            ["platform"] = "web",
+        };
+        var uri = SignedWbiUri("/x/web-interface/wbi/view/detail", parameters, mixinKey);
+        using var document = await SendJsonAsync(uri, cookieHeader, cancellationToken);
+        var root = document.RootElement;
+        if (ReadCode(root) != 0 || !root.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object ||
+            !data.TryGetProperty("View", out var view) || view.ValueKind != JsonValueKind.Object)
+            return null;
+
+        long aid = 0;
+        if (view.TryGetProperty("aid", out var aidElement) && aidElement.TryGetInt64(out var aidValue) && aidValue > 0)
+            aid = aidValue;
+
+        long cid = 0;
+        if (view.TryGetProperty("pages", out var pages) && pages.ValueKind == JsonValueKind.Array)
+        {
+            JsonElement selected = default;
+            var found = false;
+            foreach (var page in pages.EnumerateArray())
+            {
+                if (page.ValueKind != JsonValueKind.Object) continue;
+                if (page.TryGetProperty("page", out var number) && number.TryGetInt32(out var pageNumber) && pageNumber == part)
+                {
+                    selected = page;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found && pages.GetArrayLength() >= part)
+            {
+                selected = pages[part - 1];
+                found = true;
+            }
+            if (found && selected.TryGetProperty("cid", out var cidElement) && cidElement.TryGetInt64(out var cidValue) && cidValue > 0)
+                cid = cidValue;
+        }
+        if (cid <= 0 && view.TryGetProperty("cid", out var viewCid) && viewCid.TryGetInt64(out var viewCidValue) && viewCidValue > 0)
+            cid = viewCidValue;
+        return cid <= 0 ? null : (aid, cid);
+    }
+
     private async Task<long> ResolveCidAsync(string bvid, int part, string cookieHeader, CancellationToken cancellationToken)
     {
         var uri = new Uri("https://api.bilibili.com/x/player/pagelist?bvid=" + Uri.EscapeDataString(bvid) + "&jsonp=jsonp");

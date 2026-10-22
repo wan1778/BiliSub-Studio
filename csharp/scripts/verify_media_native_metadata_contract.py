@@ -143,6 +143,19 @@ def main() -> int:
     require("BilibiliPlayurlClient.BrowserUserAgent)" in subtitles,
             "subtitle requests drifted away from the shared browser User-Agent")
 
+    # 22/10 field: web-interface/view không ký bị Bilibili chặn 412 nên app báo
+    # nhầm "hết phiên đăng nhập" và mất track phụ đề AI (zh). Identity phải đi
+    # qua view/detail có ký WBI của playurl client và không được chết khi
+    # không lấy được AID (player/v2 chỉ cần cid).
+    require("public async Task<(long Aid, long Cid)?> ResolveSignedIdentityAsync" in playurl,
+            "playurl client has no signed view/detail identity resolver")
+    require('SignedWbiUri("/x/web-interface/wbi/view/detail"' in playurl,
+            "signed identity must reuse the shared WBI signer")
+    require("ResolveSignedIdentityAsync" in subtitles,
+            "subtitle client does not reuse the signed view/detail identity")
+    require("identity.Aid > 0" in subtitles,
+            "AI subtitle lookup must be skipped when the aid is unknown")
+
     # The browser-facing identity and error copy must stay aligned with the real Chrome
     # profile, otherwise Bilibili answers 412 without a useful explanation.
     require("Chrome/155.0.0.0" in playurl and "(KHTML, like Gecko)" in playurl,

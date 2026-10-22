@@ -184,6 +184,8 @@ internal static class Program
             return await OcrFragmentRuntimeContract.RunAsync(ocrRoot, ocrVideo);
         if (arguments is ["--ocr-false-blank-runtime", var falseBlankRoot, var falseBlankVideo, var falseBlankStart, var falseBlankDuration])
             return await OcrFalseBlankRuntimeContract.RunAsync(falseBlankRoot, falseBlankVideo, falseBlankStart, falseBlankDuration);
+        if (arguments is ["--bili-subtitle-tracks", var biliBvid, var biliCookieFile])
+            return await BilibiliSubtitleRuntimeContract.RunAsync(biliBvid, biliCookieFile);
         if (arguments is ["--asr-voice-runtime", var asrRoot, var asrVideo, var asrSrt])
             return await EditorAsrVoiceRuntimeContract.RunAsync(asrRoot, asrVideo, asrSrt);
         if (arguments is ["--nghi-tts-runtime", var ttsRoot, var ttsVideo])

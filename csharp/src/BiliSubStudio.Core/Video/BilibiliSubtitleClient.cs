@@ -28,6 +28,7 @@ public sealed partial class BilibiliSubtitleClient
     };
 
     private readonly HttpClient _http;
+    private readonly BilibiliPlayurlClient _playurl = new();
 
     // Vân tay buvid chống chặn 412 (23/09): API sub của Bilibili khóa rủi ro
     // khi thiếu buvid3. Lấy 1 lần/process từ finger/spi (không cần đăng nhập),
@@ -51,26 +52,38 @@ public sealed partial class BilibiliSubtitleClient
         var cookieHeader = await ReadCookieHeaderAsync(cookieFile, cancellationToken);
         cookieHeader = await WithFingerprintAsync(cookieHeader, bvid, cancellationToken);
         (long Aid, long Cid) identity;
-        try
+        // 22/10 field: web-interface/view không ký bị Bilibili chặn 412, còn
+        // view/detail có ký WBI vẫn trả aid + cid. Dùng chính signer đã kiểm
+        // chứng của playurl client để không mất track phụ đề AI (zh).
+        var signed = await _playurl.ResolveSignedIdentityAsync(bvid, part, cookieHeader, cancellationToken);
+        if (signed is { } signedIdentity)
         {
-            identity = await ResolveVideoIdentityAsync(bvid, part, cookieHeader, cancellationToken);
-            probe?.Invoke("identity: view");
+            identity = signedIdentity;
+            probe?.Invoke($"identity: signed view/detail aid={identity.Aid} cid={identity.Cid}");
         }
-        catch (HttpRequestException viewError)
+        else
         {
-            // view hay bị chặn 412 trong khi pagelist/archive-stat thường mở:
-            // đi đường vòng lấy cid/aid, giữ nguyên lỗi gốc để báo rõ.
-            probe?.Invoke($"identity: view HTTP {(int?)viewError.StatusCode}, thử đường vòng");
             try
             {
-                identity = await ResolveVideoIdentityFallbackAsync(bvid, part, cookieHeader, cancellationToken);
-                probe?.Invoke($"identity: fallback aid={identity.Aid} cid={identity.Cid}");
+                identity = await ResolveVideoIdentityAsync(bvid, part, cookieHeader, cancellationToken);
+                probe?.Invoke("identity: view");
             }
-            catch (Exception fallbackError)
+            catch (HttpRequestException viewError)
             {
-                probe?.Invoke("identity: fallback lỗi: " + Compact(fallbackError.GetBaseException().Message));
-                throw new HttpRequestException(
-                    $"Bilibili subtitle API HTTP {(int?)viewError.StatusCode} (bước lấy mã video view).", null, viewError.StatusCode);
+                // view hay bị chặn 412 trong khi pagelist/archive-stat thường mở:
+                // đi đường vòng lấy cid/aid, giữ nguyên lỗi gốc để báo rõ.
+                probe?.Invoke($"identity: view HTTP {(int?)viewError.StatusCode}, thử đường vòng");
+                try
+                {
+                    identity = await ResolveVideoIdentityFallbackAsync(bvid, part, cookieHeader, cancellationToken);
+                    probe?.Invoke($"identity: fallback aid={identity.Aid} cid={identity.Cid}");
+                }
+                catch (Exception fallbackError)
+                {
+                    probe?.Invoke("identity: fallback lỗi: " + Compact(fallbackError.GetBaseException().Message));
+                    throw new HttpRequestException(
+                        $"Bilibili subtitle API HTTP {(int?)viewError.StatusCode} (bước lấy mã video view).", null, viewError.StatusCode);
+                }
             }
         }
         var tracks = new List<SubtitleTrack>();
@@ -113,7 +126,7 @@ public sealed partial class BilibiliSubtitleClient
         var hasAi = tracks.Any(track => track.Ai);
         var hasSession = ContainsCookie(cookieHeader, "SESSDATA");
         probe?.Invoke($"web/view: hasAi={hasAi} hasSession={hasSession}");
-        if (!hasAi && hasSession)
+        if (!hasAi && hasSession && identity.Aid > 0)
         {
             var context = Uri.EscapeDataString("{\"video_type\":1}");
             var uri = new Uri(
@@ -178,7 +191,16 @@ public sealed partial class BilibiliSubtitleClient
             throw new InvalidDataException($"Đường vòng pagelist không thấy phần {part}.");
         var cid = selected.GetProperty("cid").GetInt64();
 
-        var aid = await ResolveAidFromPageAsync(bvid, cookieHeader, cancellationToken);
+        // AID chỉ cần cho endpoint phụ đề AI; player/v2 (phụ đề thường + AI
+        // legacy) chỉ cần cid. Trang video có thể bị chặn rủi ro nên không có
+        // AID vẫn phải lấy được danh sách track qua player/v2.
+        var aid = 0L;
+        try
+        {
+            aid = await ResolveAidFromPageAsync(bvid, cookieHeader, cancellationToken);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch { }
         return (aid, cid);
     }
 
