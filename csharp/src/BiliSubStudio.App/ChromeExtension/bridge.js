@@ -25,37 +25,37 @@
     }).catch(() => {});
   };
 
-  const postSession = async (sessdata) => {
-    setStatus("Đã tìm thấy phiên, đang gửi sang BiliSub Studio…");
+  const postSession = async (session) => {
+    setStatus("ÄÃ£ tÃ¬m tháº¥y phiÃªn, Ä‘ang gá»­i sang BiliSub Studioâ€¦");
     const response = await fetch("/session", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token, sessdata })
+      body: JSON.stringify({ token, sessdata: session.sessdata, cookies: session.cookies || "" })
     });
     const result = await response.json().catch(() => ({}));
     if (!response.ok || !result.ok) {
-      throw new Error(result.error || "BiliSub Studio không nhận được phiên.");
+      throw new Error(result.error || "BiliSub Studio khÃ´ng nháº­n Ä‘Æ°á»£c phiÃªn.");
     }
-    setStatus("Đã đồng bộ. Tab này sẽ tự đóng.");
+    setStatus("ÄÃ£ Ä‘á»“ng bá»™. Tab nÃ y sáº½ tá»± Ä‘Ã³ng.");
     await chrome.runtime.sendMessage({ type: "closeBridgeTab" }).catch(() => {});
   };
 
   try {
-    setStatus("Đang đọc phiên Bilibili từ Chrome…");
+    setStatus("Äang Ä‘á»c phiÃªn Bilibili tá»« Chromeâ€¦");
     let session = await chrome.runtime.sendMessage({ type: "getBilibiliSession" });
     if (session?.ok) {
-      await postSession(session.sessdata);
+      await postSession(session);
       return;
     }
     if (!session?.needsLogin) {
-      await postError(session?.error || "Không đọc được phiên Bilibili từ Chrome.");
+      await postError(session?.error || "KhÃ´ng Ä‘á»c Ä‘Æ°á»£c phiÃªn Bilibili tá»« Chrome.");
       return;
     }
 
-    setStatus("Chưa đăng nhập. Đang mở trang đăng nhập Bilibili trong Chrome…");
+    setStatus("ChÆ°a Ä‘Äƒng nháº­p. Äang má»Ÿ trang Ä‘Äƒng nháº­p Bilibili trong Chromeâ€¦");
     const opened = await chrome.runtime.sendMessage({ type: "openLoginTab" });
     if (!opened?.ok) {
-      await postError(opened?.error || "Không mở được trang đăng nhập Bilibili trong Chrome.");
+      await postError(opened?.error || "KhÃ´ng má»Ÿ Ä‘Æ°á»£c trang Ä‘Äƒng nháº­p Bilibili trong Chrome.");
       return;
     }
 
@@ -63,16 +63,16 @@
       await delay(2000);
       session = await chrome.runtime.sendMessage({ type: "getBilibiliSession" });
       if (session?.ok) {
-        await postSession(session.sessdata);
+        await postSession(session);
         return;
       }
       if (!session?.needsLogin) {
-        await postError(session?.error || "Không đọc được phiên Bilibili từ Chrome.");
+        await postError(session?.error || "KhÃ´ng Ä‘á»c Ä‘Æ°á»£c phiÃªn Bilibili tá»« Chrome.");
         return;
       }
     }
-    await postError("Hết thời gian chờ đăng nhập Bilibili. Hãy bấm đăng nhập lại.");
+    await postError("Háº¿t thá»i gian chá» Ä‘Äƒng nháº­p Bilibili. HÃ£y báº¥m Ä‘Äƒng nháº­p láº¡i.");
   } catch (error) {
-    setStatus(error?.message || "Không đồng bộ được phiên Bilibili.");
+    setStatus(error?.message || "KhÃ´ng Ä‘á»“ng bá»™ Ä‘Æ°á»£c phiÃªn Bilibili.");
   }
 })();

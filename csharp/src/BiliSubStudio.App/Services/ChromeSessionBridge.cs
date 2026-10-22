@@ -9,8 +9,8 @@ namespace BiliSubStudio.App.Services;
 
 // Bridges the user's existing Chrome Bilibili login into the app without
 // touching Chrome's encrypted cookie database. The optional BiliSub Bridge
-// extension reads SESSDATA with Chrome's cookies API and posts it to a
-// short-lived loopback listener. Chrome is only launched to open that one
+// extension reads the Bilibili session cookie header with Chrome's cookies API
+// and posts it to a short-lived loopback listener. Chrome is only launched to open that one
 // tokenized handoff tab; the app never renders a login page here.
 public sealed class ChromeSessionBridge
 {

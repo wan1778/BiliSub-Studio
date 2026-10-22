@@ -8,13 +8,13 @@ namespace BiliSubStudio.Core.Authentication;
 
 // One-shot loopback handoff used by the optional Chrome extension. The app
 // launches Chrome with a tokenized local URL; the extension reads the user's
-// existing Bilibili SESSDATA and posts it back. This server never renders a
-// login form, never reads a browser cookie database and stores only SESSDATA
-// through the normal authentication service.
+// existing Bilibili session cookies and posts them back. This server never
+// renders a login form, never reads a browser cookie database and stores the
+// session cookie header through the normal authentication service.
 public sealed class ChromeLoginBridgeServer : IAsyncDisposable
 {
     private const int MaxHeaderBytes = 16 * 1024;
-    private const int MaxBodyBytes = 8 * 1024;
+    private const int MaxBodyBytes = 32 * 1024;
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
     private readonly Func<string, CancellationToken, Task<string>> _importSession;
     private readonly TcpListener _listener;
@@ -134,9 +134,25 @@ public sealed class ChromeLoginBridgeServer : IAsyncDisposable
             return;
         }
 
+        var cookieHeader = "SESSDATA=" + sessdata;
+        var browserCookies = (payload.Cookies ?? string.Empty).Trim();
+        if (browserCookies.Length > 0)
+        {
+            var normalized = SessionStore.NormalizeCookie(browserCookies);
+            if (!TryGetCookie(normalized, "SESSDATA", out var cookieSessdata)
+                || !string.Equals(cookieSessdata, sessdata, StringComparison.Ordinal))
+            {
+                const string message = "Cookie phiên Bilibili không hợp lệ.";
+                await WriteJsonAsync(stream, 400, "Bad Request", new { ok = false, error = message }, cancellationToken);
+                _completion.TrySetException(new InvalidOperationException(message));
+                return;
+            }
+            cookieHeader = normalized;
+        }
+
         try
         {
-            var user = await _importSession("SESSDATA=" + sessdata, cancellationToken);
+            var user = await _importSession(cookieHeader, cancellationToken);
             try { await WriteJsonAsync(stream, 200, "OK", new { ok = true, user }, cancellationToken); }
             catch (Exception) { }
             _completion.TrySetResult(user);
@@ -164,6 +180,20 @@ public sealed class ChromeLoginBridgeServer : IAsyncDisposable
         try { await WriteJsonAsync(stream, 200, "OK", new { ok = true }, cancellationToken); }
         catch (Exception) { }
         _completion.TrySetException(new InvalidOperationException(message));
+    }
+
+    private static bool TryGetCookie(string header, string name, out string value)
+    {
+        foreach (var part in header.Split(';', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var separator = part.IndexOf('=');
+            if (separator <= 0) continue;
+            if (!part[..separator].Trim().Equals(name, StringComparison.OrdinalIgnoreCase)) continue;
+            value = part[(separator + 1)..].Trim();
+            return value.Length > 0;
+        }
+        value = string.Empty;
+        return false;
     }
 
     private bool TokenEquals(string? value)
@@ -332,6 +362,6 @@ setTimeout(function () {
         }
     }
 
-    private sealed record BridgePayload(string? Token, string? Sessdata);
+    private sealed record BridgePayload(string? Token, string? Sessdata, string? Cookies);
     private sealed record ErrorPayload(string? Token, string? Error);
 }

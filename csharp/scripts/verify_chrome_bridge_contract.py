@@ -35,8 +35,10 @@ require("RandomNumberGenerator.GetBytes(32)" in server and "FixedTimeEquals" in 
         "Chrome bridge token must be random and compared in constant time")
 require('"/bilisub-bridge"' in server and '"/session"' in server and '"/error"' in server,
         "Chrome bridge HTTP routes are incomplete")
-require('"SESSDATA=" + sessdata' in server,
-        "Chrome bridge must import only the current SESSDATA value")
+require('"SESSDATA=" + sessdata' in server and "payload.Cookies" in server,
+        "Chrome bridge must accept the full current browser cookie header with SESSDATA fallback")
+require("SessionStore.NormalizeCookie" in server and "TryGetCookie" in server,
+        "Chrome bridge must normalize and validate browser cookies before import")
 require("_importSession" in server and "WaitForSessionAsync" in server,
         "Chrome bridge must expose one validated session import and completion wait")
 require("bilisub-bridge-secret" in server and "BuildPage(Token, _pageSecret)" in server,
@@ -89,8 +91,10 @@ require(any("http://127.0.0.1/" in pattern
 scripts = [name for script in manifest.get("content_scripts", []) for name in script.get("js", [])]
 require(scripts.index("bridge-secret.js") < scripts.index("bridge.js"),
         "BiliSub Bridge must load the per-install secret before the bridge script")
-require("chrome.cookies.get" in background and '"SESSDATA"' in background,
-        "BiliSub Bridge must read only the Bilibili SESSDATA cookie")
+require("chrome.cookies.getAll" in background and '"SESSDATA"' in background,
+        "BiliSub Bridge must read the Bilibili browser cookie set")
+require("SESSION_COOKIE_NAMES" in background and "buvid3" in background and "b_nut" in background,
+        "BiliSub Bridge must forward the device cookies required by Bilibili APIs")
 require("openLoginTab" in background and "passport.bilibili.com/login" in background,
         "BiliSub Bridge must open the official login page as a Chrome tab")
 require("needsLogin" in background and "needsLogin" in content,
@@ -99,8 +103,8 @@ require("/session" in content and "/error" in content and "closeBridgeTab" in co
         "BiliSub Bridge must post the session, report errors and close its helper tab")
 require("BILISUB_BRIDGE_SECRET" in content and "bilisub-bridge-secret" in content,
         "BiliSub Bridge must reject a page without the per-install secret")
-require("sessdata" in content and "token" in content and "openLoginTab" in content,
-        "BiliSub Bridge must poll after opening the official login tab")
+require("sessdata" in content and "cookies" in content and "token" in content and "openLoginTab" in content,
+        "BiliSub Bridge must post the full cookie header and poll after opening the official login tab")
 require("attempt < 140" in content,
         "BiliSub Bridge must wait up to five minutes for login")
 require("password" not in (background + content).lower(),
@@ -108,8 +112,8 @@ require("password" not in (background + content).lower(),
 require("Load unpacked" in readme and "chrome://extensions" in readme,
         "BiliSub Bridge README must document the one-time unpacked install")
 
-require("ephemeral loopback listener" in agents and "per-install shared secret" in agents,
-        "AGENTS.md must document the scoped ephemeral Chrome bridge exception and page secret")
+require("ephemeral loopback listener" in agents and "per-install shared secret" in agents and "session cookies" in agents,
+        "AGENTS.md must document the scoped ephemeral Chrome bridge exception, session cookies and page secret")
 require("ChromeLoginBridgeServer" in call_map and "ephemeral" in call_map and "per-install" in call_map,
         "call map must document the Chrome bridge ownership, ephemeral listener and page secret")
 
