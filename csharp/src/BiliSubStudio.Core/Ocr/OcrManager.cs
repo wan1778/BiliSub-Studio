@@ -32,6 +32,7 @@ public sealed class OcrManager : IAsyncDisposable
     // chạy tiếp bằng replacement 1:1 có sẵn.
     private int _smallTierDeaths;
     private bool _smallGrowSuppressed;
+    private string _lastSmallTierGrowReason = string.Empty;
 
     private bool IsSmallTierActiveLocked() =>
         (string.Equals(_activeDetModel, OcrInstaller.SmallDetectionModel, StringComparison.Ordinal)
@@ -301,15 +302,35 @@ public sealed class OcrManager : IAsyncDisposable
         await _gate.WaitAsync(cancellationToken);
         try
         {
-            if (!IsSmallTierActiveLocked() || _smallGrowSuppressed
-                || string.Equals(_activeMode, "cpu", StringComparison.OrdinalIgnoreCase))
+            if (!IsSmallTierActiveLocked())
+            {
+                _lastSmallTierGrowReason = "model tier không phải small/mobile nên không mở rộng worker.";
                 return _workers.Count;
+            }
+            if (_smallGrowSuppressed)
+            {
+                _lastSmallTierGrowReason = "pool đã bị ghim OOM ở lượt quét trước nên không mở rộng worker.";
+                return _workers.Count;
+            }
+            if (string.Equals(_activeMode, "cpu", StringComparison.OrdinalIgnoreCase))
+            {
+                _lastSmallTierGrowReason = "chế độ CPU không mở rộng worker.";
+                return _workers.Count;
+            }
             var want = OcrTopologyBenchmark.SmallTierWorkerTarget(lanes);
-            if (_workers.Count >= want) return _workers.Count;
+            if (_workers.Count >= want)
+            {
+                _lastSmallTierGrowReason = string.Empty;
+                return _workers.Count;
+            }
             var live = _hardware.ResourceSnapshot();
             if (!OcrTopologyBenchmark.ShouldGrowSmallTier(
-                live.VramTelemetryAvailable, live.AvailableVramBytes, _workers.Count, lanes))
+                live.VramTelemetryAvailable, live.AvailableVramBytes, live.TotalVramBytes,
+                live.AvailableMemoryBytes, _workers.Count, lanes))
+            {
+                _lastSmallTierGrowReason = DescribeSmallTierGrowBlock(live, lanes);
                 return _workers.Count;
+            }
             var hardware = _hardware.Snapshot();
             var desired = DesiredKinds(_activeMode, want);
             for (var index = _workers.Count; index < desired.Length; index++)
@@ -321,10 +342,33 @@ public sealed class OcrManager : IAsyncDisposable
                 _workers.Add(worker);
             }
             RebuildAvailabilityLocked();
+            _lastSmallTierGrowReason = string.Empty;
             return _workers.Count;
         }
         finally { _gate.Release(); }
     }
+
+    // Lý do không mở rộng small tier (log cho người dùng): card nhỏ, RAM bị
+    // siết, hoặc lane NVDEC đã ăn phần VRAM còn lại.
+    internal static string DescribeSmallTierGrowBlock(HardwareResourceSnapshot live, int lanes)
+    {
+        if (!live.VramTelemetryAvailable)
+            return "không đọc được VRAM trống nên không mở rộng worker.";
+        if (live.TotalVramBytes < OcrTopologyBenchmark.SmallTierGrowMinTotalVramBytes)
+            return $"card chỉ có {live.TotalVramBytes / (1024.0 * 1024 * 1024):0.0} GiB VRAM "
+                + $"(cần >= {OcrTopologyBenchmark.SmallTierGrowMinTotalVramBytes / (1024.0 * 1024 * 1024):0.0} GiB để chứa cả lane NVDEC lẫn worker) nên giữ pool 2 worker ổn định.";
+        if (live.AvailableVramBytes < OcrTopologyBenchmark.SmallTierGrowReserveBytes)
+            return $"VRAM trống {live.AvailableVramBytes / (1024.0 * 1024 * 1024):0.0} GiB dưới ngưỡng "
+                + $"{OcrTopologyBenchmark.SmallTierGrowReserveBytes / (1024.0 * 1024 * 1024):0.0} GiB nên không mở rộng worker.";
+        if (live.AvailableMemoryBytes < OcrTopologyBenchmark.SmallTierGrowMinFreeRamBytes)
+            return $"RAM trống {live.AvailableMemoryBytes / (1024.0 * 1024 * 1024):0.0} GiB dưới ngưỡng "
+                + $"{OcrTopologyBenchmark.SmallTierGrowMinFreeRamBytes / (1024.0 * 1024 * 1024):0.0} GiB nên không mở rộng worker.";
+        if (lanes > OcrTopologyBenchmark.SmallTierMaxGrowLanes)
+            return $"{lanes} lane NVDEC đã ăn quá nhiều VRAM nên không mở rộng worker.";
+        return "không đủ điều kiện mở rộng worker.";
+    }
+
+    internal string SmallTierGrowReason => _lastSmallTierGrowReason;
 
     // OOM backstop: death không kế hoạch thứ 2 trong pool grown thì ghim —
     // lần quét sau không grow nữa. Chỉ ghi cờ (không mutate pool ở đây).

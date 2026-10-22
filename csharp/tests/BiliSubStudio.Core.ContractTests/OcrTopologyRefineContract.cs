@@ -1,4 +1,5 @@
 using System.Reflection;
+using BiliSubStudio.Core.Hardware;
 using BiliSubStudio.Core.Ocr;
 
 namespace BiliSubStudio.Core.ContractTests;
@@ -102,10 +103,12 @@ internal static class OcrTopologyRefineContract
         Check(script.Probed.Count == 2, $"degenerate ladder must not refine (got {script.Probed.Count} probes)");
     }
 
-    // Small-tier worker target + VRAM grow gate (pure, không cần GPU):
+    // Small-tier worker target + VRAM/RAM grow gate (pure, không cần GPU):
     // cap 4 mọi lane>=4, floor 1; chỉ grow khi telemetry có + free>=3GB +
-    // chưa đủ worker. (28/09: bar 1GB->3GB vì 16 lane NVDEC + 4 worker OOM
-    // trên card 4GB — small-tier không grow trên card nhỏ, về behaviour ổn định.)
+    // card đủ lớn + RAM còn dư + chưa đủ worker. (28/09: bar 1GB->3GB vì 16
+    // lane NVDEC + 4 worker OOM trên card 4GB. 22/10 field: card 4GB + 8
+    // lane NVDEC + 4 worker OOM tiếp (OpenCV alloc storm 14:24) và pool
+    // churn chạy 0.23x — nên grow cần card >= 6GB + RAM trống >= 4GB.)
     private static void SmallTierTargetAndGate()
     {
         var target = Benchmark.GetMethod("SmallTierWorkerTarget", BindingFlags.Static | BindingFlags.NonPublic)
@@ -119,15 +122,30 @@ internal static class OcrTopologyRefineContract
         Check(Target(99) == 4, "lane lớn vẫn cap 4");
         var gate = Benchmark.GetMethod("ShouldGrowSmallTier", BindingFlags.Static | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("missing ShouldGrowSmallTier");
-        bool Grow(bool telemetry, long freeBytes, int current, int lanes) =>
-            (bool)gate.Invoke(null, [telemetry, freeBytes, current, lanes])!;
+        bool Grow(bool telemetry, long freeBytes, long totalVram, long freeRam, int current, int lanes) =>
+            (bool)gate.Invoke(null, [telemetry, freeBytes, totalVram, freeRam, current, lanes])!;
         const long gb = 1024L * 1024 * 1024;
-        Check(!Grow(false, 8 * gb, 2, 8), "không telemetry không được grow mù");
-        Check(!Grow(true, 2 * gb, 2, 8), "dưới 3GB không được grow");
-        Check(Grow(true, 3 * gb, 2, 8), "đủ 3GB phải grow");
-        Check(!Grow(true, 8 * gb, 2, 16), "16 lane không grow (NVDEC VRAM)");
-        Check(!Grow(true, 2 * gb, 4, 8), "đủ worker rồi không grow thừa");
-        Check(!Grow(true, 2 * gb, 2, 2), "2 lane đủ 2 worker rồi");
+        Check(!Grow(false, 8 * gb, 8 * gb, 8 * gb, 2, 8), "không telemetry không được grow mù");
+        Check(!Grow(true, 2 * gb, 8 * gb, 8 * gb, 2, 8), "dưới 3GB không được grow");
+        Check(Grow(true, 3 * gb, 8 * gb, 8 * gb, 2, 8), "đủ 3GB + card 8GB + RAM dư thì phải grow");
+        Check(!Grow(true, 8 * gb, 8 * gb, 8 * gb, 2, 16), "16 lane không grow (NVDEC VRAM)");
+        Check(!Grow(true, 2 * gb, 8 * gb, 8 * gb, 4, 8), "đủ worker rồi không grow thừa");
+        Check(!Grow(true, 2 * gb, 8 * gb, 8 * gb, 2, 2), "2 lane đủ 2 worker rồi");
+        // 22/10 field regression: 4 GiB card (RTX 3050 Laptop) + 8 lane NVDEC
+        // + 4 small-tier worker làm probe chết vì thiếu VRAM và pool churn.
+        Check(!Grow(true, 3 * gb, 4 * gb, 8 * gb, 2, 8), "card 4GB không được grow small tier");
+        Check(!Grow(true, 3 * gb, 8 * gb, 2 * gb, 2, 8), "RAM trống 2GB không được grow small tier");
+        SmallTierBlockReason(4 * gb, 3 * gb, 8 * gb);
+    }
+
+    // Người dùng phải đọc được lý do giữ 2 worker (log scan) thay vì tưởng app bị treo.
+    private static void SmallTierBlockReason(long totalVram, long freeVram, long freeRam)
+    {
+        var describe = typeof(OcrManager).GetMethod("DescribeSmallTierGrowBlock", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing DescribeSmallTierGrowBlock");
+        var reason = (string)describe.Invoke(null, [new HardwareResourceSnapshot(32L * 1024 * 1024 * 1024, freeRam, true, totalVram, freeVram), 8])!;
+        Check(reason.Length > 0, "phải có lý do khi chặn grow");
+        Check(reason.Contains("GiB"), $"lý do chặn grow phải nói rõ mức VRAM: {reason}");
     }
 
     private static void Check(bool valid, string message)

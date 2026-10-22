@@ -292,6 +292,8 @@ public sealed class OcrScanner
         var grownWorkers = await _ocr.TryGrowSmallTierAsync(selected, token);
         if (grownWorkers != configuredWorkers)
             job.Log($"OCR Small tier mở rộng worker {configuredWorkers} → {grownWorkers} (VRAM cho phép).");
+        else if (_ocr.SmallTierGrowReason.Length > 0)
+            job.Log($"OCR Small tier giữ {configuredWorkers} worker: {_ocr.SmallTierGrowReason}");
         // Sức mạnh runtime thật (27/09, vụ balanced 4h: grow 2→4 xong nhưng
         // mọi đường runtime/recovery/telemetry vẫn dùng configuredWorkers=2 —
         // lane retry rebuild pool về 2, giết worker đã grow, cả lượt quét còn

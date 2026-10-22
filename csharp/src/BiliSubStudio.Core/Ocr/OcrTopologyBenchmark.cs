@@ -19,6 +19,17 @@ internal static class OcrTopologyBenchmark
     // máy ổn định, không mổ benchmark lúc này.
     internal const long SmallTierGrowReserveBytes = 3L * 1024 * 1024 * 1024;
 
+    // 22/10 field: the grow decision is taken before the FFmpeg lanes hold
+    // their NVDEC buffers, so "3 GiB free" on a 4 GiB card looked healthy and
+    // small tier grew 2 -> 4. Eight NVDEC lanes plus four mobile workers then
+    // exhausted the card: the visual probe died with an OpenCV allocation
+    // storm (14:24:37) and the churned pool ran at 0.23x realtime while the
+    // commit limit was 42.8/44.4 GiB. A 4 GiB card can host the stable
+    // 2-worker pool, not 4 workers plus 8 decoders, so growing needs a card
+    // with room for both roles and enough free RAM for the extra workers.
+    internal const long SmallTierGrowMinTotalVramBytes = 6L * 1024 * 1024 * 1024;
+    internal const long SmallTierGrowMinFreeRamBytes = 4L * 1024 * 1024 * 1024;
+
     internal static int SmallTierWorkerTarget(int lanes) =>
         Math.Min(SmallTierMaxWorkers, Math.Max(1, lanes));
 
@@ -28,10 +39,18 @@ internal static class OcrTopologyBenchmark
     // 16 lane + 2 worker vẫn xong như 8 lane, chỉ chậm hơn grow; đổi lại sống.)
     internal const int SmallTierMaxGrowLanes = 8;
 
-    internal static bool ShouldGrowSmallTier(bool telemetryAvailable, long availableBytes, int currentWorkers, int lanes) =>
+    internal static bool ShouldGrowSmallTier(
+        bool telemetryAvailable,
+        long availableBytes,
+        long totalVramBytes,
+        long availableRamBytes,
+        int currentWorkers,
+        int lanes) =>
         telemetryAvailable
         && lanes <= SmallTierMaxGrowLanes
         && availableBytes >= SmallTierGrowReserveBytes
+        && totalVramBytes >= SmallTierGrowMinTotalVramBytes
+        && availableRamBytes >= SmallTierGrowMinFreeRamBytes
         && currentWorkers < SmallTierWorkerTarget(lanes);
 
     internal static IReadOnlyList<int> Levels { get; } = [1, 2, 4, 8, 16];
