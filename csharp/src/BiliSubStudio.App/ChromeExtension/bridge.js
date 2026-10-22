@@ -3,6 +3,11 @@
   if (!meta) return;
 
   const token = meta.getAttribute("content") || "";
+  const expectedSecret = self.BILISUB_BRIDGE_SECRET || "";
+  const secretMeta = document.querySelector('meta[name="bilisub-bridge-secret"]');
+  const pageSecret = secretMeta ? secretMeta.getAttribute("content") || "" : "";
+  if (!expectedSecret || pageSecret !== expectedSecret) return;
+
   const status = document.getElementById("status");
   const setStatus = (text) => {
     if (!status) return;

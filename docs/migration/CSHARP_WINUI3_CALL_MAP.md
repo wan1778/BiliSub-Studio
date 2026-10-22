@@ -196,8 +196,8 @@ SettingsPage / Đăng nhập
   -> BilibiliAuthService.StartQrAsync / PollQrAsync
   -> QrMatrixEncoder -> native Canvas
   -> ChromeSessionBridge.SyncAsync (optional Chrome login handoff)
-      -> ChromeLoginBridgeServer (ephemeral 127.0.0.1 port + one-time token)
-      -> launches the user's Chrome -> BiliSub Bridge extension reads SESSDATA
+      -> ChromeLoginBridgeServer (ephemeral 127.0.0.1 port + one-time token + per-install page secret)
+      -> launches the user's Chrome -> BiliSub Bridge extension verifies the secret and reads SESSDATA
       -> BilibiliAuthService.SetCookieAsync (validate + DPAPI save)
   -> BrowserLoginWindow (isolated official passport page, alternative path)
   -> SessionStore -> Windows DPAPI -> Data/session.bin

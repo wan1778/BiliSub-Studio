@@ -8,7 +8,8 @@ Cai dat mot lan:
 1. Mo Chrome, nhap chrome://extensions vao thanh dia chi.
 2. Bat "Developer mode" (Che do danh cho nha phat trien).
 3. Bam "Load unpacked" (Tai tien ich da giai nen).
-4. Chon thu muc nay (thu muc dang chua file manifest.json).
+4. Chon thu muc do app mo bang nut "Mo thu muc extension" (thu muc trong Data,
+   chua file manifest.json va bridge-secret.js).
 5. Kiem tra extension "BiliSub Bridge" dang duoc bat trong dung profile Chrome
    ma ban da dang nhap Bilibili.
 

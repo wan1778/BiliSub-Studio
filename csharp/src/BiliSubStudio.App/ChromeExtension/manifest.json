@@ -10,8 +10,8 @@
   },
   "content_scripts": [
     {
-      "matches": ["http://127.0.0.1/*"],
-      "js": ["bridge.js"],
+      "matches": ["http://127.0.0.1/bilisub-bridge*"],
+      "js": ["bridge-secret.js", "bridge.js"],
       "run_at": "document_idle"
     }
   ]

@@ -21,10 +21,12 @@ public sealed class ChromeLoginBridgeServer : IAsyncDisposable
     private readonly CancellationTokenSource _lifetime = new();
     private readonly TaskCompletionSource<string> _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly Task _acceptLoop;
+    private readonly string _pageSecret;
     private readonly int _port;
 
-    public ChromeLoginBridgeServer(Func<string, CancellationToken, Task<string>> importSession)
+    public ChromeLoginBridgeServer(string pageSecret, Func<string, CancellationToken, Task<string>> importSession)
     {
+        _pageSecret = string.IsNullOrWhiteSpace(pageSecret) ? throw new ArgumentException("Page secret is required.", nameof(pageSecret)) : pageSecret;
         _importSession = importSession ?? throw new ArgumentNullException(nameof(importSession));
         Token = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
         _listener = new TcpListener(IPAddress.Loopback, 0);
@@ -91,7 +93,7 @@ public sealed class ChromeLoginBridgeServer : IAsyncDisposable
                             await WriteTextAsync(stream, 403, "Forbidden", "text/plain", "Token không hợp lệ.", timeout.Token);
                             return;
                         }
-                        await WriteTextAsync(stream, 200, "OK", "text/html", BuildPage(Token), timeout.Token);
+                        await WriteTextAsync(stream, 200, "OK", "text/html", BuildPage(Token, _pageSecret), timeout.Token);
                         return;
                     case ("POST", "/session"):
                         await HandleSessionAsync(stream, request, timeout.Token);
@@ -271,13 +273,14 @@ public sealed class ChromeLoginBridgeServer : IAsyncDisposable
         if (bodyBytes.Length > 0) await stream.WriteAsync(bodyBytes, cancellationToken);
     }
 
-    private static string BuildPage(string token) => $$"""
+    private static string BuildPage(string token, string pageSecret) => $$"""
 <!doctype html>
 <html lang="vi">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="bilisub-bridge" content="{{token}}">
+<meta name="bilisub-bridge-secret" content="{{pageSecret}}">
 <title>BiliSub Studio - Đồng bộ từ Chrome</title>
 <style>
 :root { color-scheme: dark; }

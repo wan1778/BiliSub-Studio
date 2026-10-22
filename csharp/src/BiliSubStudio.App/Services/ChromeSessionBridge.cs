@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
+using System.Text;
 using BiliSubStudio.Core.Application;
 using BiliSubStudio.Core.Authentication;
 using BiliSubStudio.Core.Diagnostics;
@@ -12,6 +14,7 @@ namespace BiliSubStudio.App.Services;
 // tokenized handoff tab; the app never renders a login page here.
 public sealed class ChromeSessionBridge
 {
+    private const string SecretPrefix = "self.BILISUB_BRIDGE_SECRET = \"";
     private static readonly TimeSpan SessionTimeout = TimeSpan.FromSeconds(45);
     private readonly BiliSubApplication _application;
     private readonly ApplicationLog _log;
@@ -30,10 +33,12 @@ public sealed class ChromeSessionBridge
 
         try
         {
-            EnsureExtensionDirectory();
+            var extensionDirectory = EnsureExtensionDirectory();
+            var pageSecret = ReadExtensionSecret(extensionDirectory);
             var chrome = FindChrome()
                 ?? throw new InvalidOperationException("Không tìm thấy Google Chrome trên máy. Hãy cài Chrome và đăng nhập Bilibili trước.");
             await using var server = new ChromeLoginBridgeServer(
+                pageSecret,
                 (cookie, token) => _application.Authentication.SetCookieAsync(cookie, token));
             LaunchChrome(chrome, server.Url);
             _log.Info("Đăng nhập", "Đang chờ phiên Bilibili từ Chrome.");
@@ -71,11 +76,40 @@ public sealed class ChromeSessionBridge
         foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
         {
             var relative = Path.GetRelativePath(source, file);
+            if (string.Equals(relative, "bridge-secret.js", StringComparison.OrdinalIgnoreCase)) continue;
             var destination = Path.Combine(target, relative);
             Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
             File.Copy(file, destination, overwrite: true);
         }
+        EnsureExtensionSecret(target);
         return target;
+    }
+
+    private static void EnsureExtensionSecret(string extensionDirectory)
+    {
+        var path = Path.Combine(extensionDirectory, "bridge-secret.js");
+        if (File.Exists(path) && TryReadSecret(File.ReadAllText(path)) is not null) return;
+        var secret = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
+        File.WriteAllText(
+            path,
+            "// Generated per install. Keep this file with the extension.\n" + SecretPrefix + secret + "\";\n",
+            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+    }
+
+    private static string ReadExtensionSecret(string extensionDirectory)
+    {
+        var path = Path.Combine(extensionDirectory, "bridge-secret.js");
+        return TryReadSecret(File.ReadAllText(path))
+            ?? throw new InvalidOperationException("Không đọc được khóa kết nối extension Chrome.");
+    }
+
+    private static string? TryReadSecret(string text)
+    {
+        var start = text.IndexOf(SecretPrefix, StringComparison.Ordinal);
+        if (start < 0) return null;
+        start += SecretPrefix.Length;
+        var end = text.IndexOf('"', start);
+        return end == start + 64 ? text[start..end] : null;
     }
 
     public void OpenExtensionFolder()

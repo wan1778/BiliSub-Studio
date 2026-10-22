@@ -3022,7 +3022,7 @@ internal static class Program
     private static async Task ChromeLoginBridgeContractAsync()
     {
         string? imported = null;
-        await using var server = new ChromeLoginBridgeServer((cookie, _) =>
+        await using var server = new ChromeLoginBridgeServer("test-page-secret", (cookie, _) =>
         {
             imported = cookie;
             return Task.FromResult("Tester");
@@ -3030,6 +3030,8 @@ internal static class Program
         using var http = new HttpClient(new HttpClientHandler { UseProxy = false });
         var page = await http.GetStringAsync(server.Url);
         True(page.Contains("name=\"bilisub-bridge\"", StringComparison.Ordinal), "bridge page meta tag missing");
+        True(page.Contains("name=\"bilisub-bridge-secret\"", StringComparison.Ordinal), "bridge page secret meta tag missing");
+        True(page.Contains("test-page-secret", StringComparison.Ordinal), "bridge page secret missing");
         True(page.Contains(server.Token, StringComparison.Ordinal), "bridge page token missing");
         True(!page.Contains("<input", StringComparison.OrdinalIgnoreCase), "bridge page must not host a login form");
 

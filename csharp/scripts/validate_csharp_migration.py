@@ -37,6 +37,7 @@ REQUIRED = [
     CSHARP / "src/BiliSubStudio.Core/Authentication/ChromeLoginBridgeServer.cs",
     CSHARP / "src/BiliSubStudio.App/Services/ChromeSessionBridge.cs",
     CSHARP / "src/BiliSubStudio.App/ChromeExtension/manifest.json",
+    CSHARP / "src/BiliSubStudio.App/ChromeExtension/bridge-secret.js",
     CSHARP / "scripts/verify_chrome_bridge_contract.py",
     CSHARP / "src/BiliSubStudio.Core/Configuration/AppConfig.cs",
     CSHARP / "src/BiliSubStudio.Core/Maintenance/UpdateService.cs",
