@@ -15,7 +15,7 @@ namespace BiliSubStudio.App.Services;
 public sealed class ChromeSessionBridge
 {
     private const string SecretPrefix = "self.BILISUB_BRIDGE_SECRET = \"";
-    private static readonly TimeSpan SessionTimeout = TimeSpan.FromSeconds(45);
+    private static readonly TimeSpan SessionTimeout = TimeSpan.FromMinutes(5);
     private readonly BiliSubApplication _application;
     private readonly ApplicationLog _log;
     private readonly SemaphoreSlim _gate = new(1, 1);

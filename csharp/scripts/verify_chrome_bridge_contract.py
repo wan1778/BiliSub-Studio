@@ -59,6 +59,8 @@ require("bridge-secret.js" in bridge and "RandomNumberGenerator" in bridge and "
         "app Chrome bridge must generate and read the per-install extension secret")
 require("_application.Authentication.SetCookieAsync" in bridge,
         "Chrome handoff must validate through the existing authentication service")
+require("TimeSpan.FromMinutes(5)" in bridge,
+        "Chrome login tab must allow enough time for QR/SMS login")
 require("SESSDATA=" not in bridge,
         "app Chrome bridge must not construct a SESSDATA value itself")
 
@@ -68,6 +70,10 @@ require("ChromeExtensionButton" in account_xaml and 'Click="ChromeExtension_Clic
         "Account page must expose the extension folder button")
 require("ChromeSync_Click" in account_code and "_chromeBridge.SyncAsync" in account_code,
         "Account page must call the Chrome bridge sync owner")
+require("BrowserLogin_Click" in account_code and "SyncChromeAsync" in account_code,
+        "both account login buttons must use the Chrome tab bridge")
+require("new BrowserLoginWindow" not in account_code,
+        "Account page must not open an embedded login window")
 require("ChromeExtension_Click" in account_code and "_chromeBridge.OpenExtensionFolder" in account_code,
         "Account page must open the staged extension folder")
 require("ChromeExtension" in app_project,
@@ -85,12 +91,18 @@ require(scripts.index("bridge-secret.js") < scripts.index("bridge.js"),
         "BiliSub Bridge must load the per-install secret before the bridge script")
 require("chrome.cookies.get" in background and '"SESSDATA"' in background,
         "BiliSub Bridge must read only the Bilibili SESSDATA cookie")
+require("openLoginTab" in background and "passport.bilibili.com/login" in background,
+        "BiliSub Bridge must open the official login page as a Chrome tab")
+require("needsLogin" in background and "needsLogin" in content,
+        "BiliSub Bridge must distinguish missing login from other errors")
 require("/session" in content and "/error" in content and "closeBridgeTab" in content,
-        "BiliSub Bridge must post the session, report errors and close its tab")
+        "BiliSub Bridge must post the session, report errors and close its helper tab")
 require("BILISUB_BRIDGE_SECRET" in content and "bilisub-bridge-secret" in content,
         "BiliSub Bridge must reject a page without the per-install secret")
-require("sessdata" in content and "token" in content,
-        "BiliSub Bridge payload must carry the one-time token and SESSDATA")
+require("sessdata" in content and "token" in content and "openLoginTab" in content,
+        "BiliSub Bridge must poll after opening the official login tab")
+require("attempt < 140" in content,
+        "BiliSub Bridge must wait up to five minutes for login")
 require("password" not in (background + content).lower(),
         "BiliSub Bridge must never handle passwords")
 require("Load unpacked" in readme and "chrome://extensions" in readme,

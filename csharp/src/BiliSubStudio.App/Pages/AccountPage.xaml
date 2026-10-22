@@ -58,11 +58,11 @@
                             <TextBlock Style="{StaticResource MutedTextStyle}" Text="Lấy đúng phiên Bilibili bạn đã đăng nhập trong Chrome. Cần cài extension BiliSub Bridge một lần; sau đó app tự đọc SESSDATA, xác minh và lưu bằng Windows DPAPI." TextWrapping="Wrap" />
                         </StackPanel>
                         <StackPanel Orientation="Horizontal" Spacing="8">
-                            <Button x:Name="ChromeSyncButton" Click="ChromeSync_Click" Content="Đồng bộ từ Chrome" />
+                            <Button x:Name="ChromeSyncButton" Click="ChromeSync_Click" Content="Đăng nhập / Đồng bộ từ Chrome" />
                             <Button x:Name="ChromeExtensionButton" Click="ChromeExtension_Click" Content="Mở thư mục extension" Style="{StaticResource SecondaryButtonStyle}" />
                         </StackPanel>
                         <Border Padding="11,8" Background="{ThemeResource RaisedSurfaceBrush}" CornerRadius="8">
-                            <TextBlock FontSize="11" Style="{StaticResource MutedTextStyle}" Text="Lần đầu: mở thư mục extension → chrome://extensions → bật Developer mode → Load unpacked → chọn thư mục đó. Extension phải được bật trong đúng profile Chrome đang đăng nhập Bilibili." TextWrapping="Wrap" />
+                            <TextBlock FontSize="11" Style="{StaticResource MutedTextStyle}" Text="Lần đầu: mở thư mục extension → chrome://extensions → bật Developer mode → Load unpacked → chọn thư mục đó. Sau khi cập nhật app, bấm Reload trên extension. Extension phải được bật trong đúng profile Chrome đang đăng nhập Bilibili." TextWrapping="Wrap" />
                         </Border>
                     </StackPanel>
                 </Border>
@@ -73,9 +73,9 @@
                             <TextBlock Style="{StaticResource CardTitleStyle}" Text="Đăng nhập bằng trình duyệt" />
                             <TextBlock Style="{StaticResource MutedTextStyle}" Text="Mở trang đăng nhập Bilibili chính thức (passport.bilibili.com). Bạn tự đăng nhập bằng tài khoản thật; app tự lấy phiên SESSDATA, xác minh và lưu bằng Windows DPAPI." TextWrapping="Wrap" />
                         </StackPanel>
-                        <Button x:Name="BrowserLoginButton" HorizontalAlignment="Left" Click="BrowserLogin_Click" Content="Mở trang đăng nhập Bilibili" />
+                        <Button x:Name="BrowserLoginButton" HorizontalAlignment="Left" Click="BrowserLogin_Click" Content="Đăng nhập Bilibili trong Chrome" />
                         <Border Padding="11,8" Background="{ThemeResource RaisedSurfaceBrush}" CornerRadius="8">
-                            <TextBlock FontSize="11" Style="{StaticResource MutedTextStyle}" Text="Cửa sổ nhúng dùng profile riêng, không đọc cookie Chrome/Edge. Để dùng phiên Chrome đang đăng nhập, hãy dùng mục “Đồng bộ từ Chrome” bên trên." TextWrapping="Wrap" />
+                            <TextBlock FontSize="11" Style="{StaticResource MutedTextStyle}" Text="Trang passport.bilibili.com mở thành tab Chrome. Extension BiliSub Bridge tự gửi phiên về app sau khi đăng nhập; app không mở cửa sổ đăng nhập nhúng." TextWrapping="Wrap" />
                         </Border>
                     </StackPanel>
                 </Border>

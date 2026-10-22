@@ -199,7 +199,7 @@ SettingsPage / Đăng nhập
       -> ChromeLoginBridgeServer (ephemeral 127.0.0.1 port + one-time token + per-install page secret)
       -> launches the user's Chrome -> BiliSub Bridge extension verifies the secret and reads SESSDATA
       -> BilibiliAuthService.SetCookieAsync (validate + DPAPI save)
-  -> BrowserLoginWindow (isolated official passport page, alternative path)
+  -> official passport login page opened as a normal Chrome tab (AccountPage no longer opens BrowserLoginWindow)
   -> SessionStore -> Windows DPAPI -> Data/session.bin
   -> ApplicationLog status/error without cookie contents
 ```

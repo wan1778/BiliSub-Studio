@@ -6,10 +6,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (chrome.runtime.lastError) {
         sendResponse({ ok: false, error: chrome.runtime.lastError.message });
       } else if (!cookie?.value) {
-        sendResponse({ ok: false, error: "Chưa đăng nhập Bilibili trong Chrome." });
+        sendResponse({ ok: false, needsLogin: true, error: "Chưa đăng nhập Bilibili trong Chrome." });
       } else {
         sendResponse({ ok: true, sessdata: cookie.value });
       }
+    });
+    return true;
+  }
+
+  if (message?.type === "openLoginTab") {
+    chrome.tabs.create({ url: "https://passport.bilibili.com/login", active: true }, () => {
+      sendResponse(chrome.runtime.lastError
+        ? { ok: false, error: chrome.runtime.lastError.message }
+        : { ok: true });
     });
     return true;
   }

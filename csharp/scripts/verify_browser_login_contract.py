@@ -33,8 +33,10 @@ require("_pollTimer" in window and "NavigationCompleted" in window and "TryCaptu
         "browser login must capture the session automatically after navigation and while polling")
 require("Đăng nhập bằng trình duyệt" in account_xaml and "BrowserLogin_Click" in account_xaml,
         "account page must expose the browser login entry point")
-require("_browserLoginWindow" in account and "RefreshStatusAsync" in account,
-        "account page must keep one browser window and refresh login status on close")
+require("SyncChromeAsync" in account and "_chromeBridge.SyncAsync" in account and "RefreshStatusAsync" in account,
+        "both account login entry points must route through the Chrome tab bridge and refresh status")
+require("new BrowserLoginWindow" not in account,
+        "account page must not open an embedded login window")
 require("Microsoft.Web.WebView2" not in app_project,
         "WebView2 must stay the WindowsAppSDK transitive dependency, not a second pinned package")
 require("CookieBox.Password" not in window, "browser login must never read or log cookie values from the account UI")

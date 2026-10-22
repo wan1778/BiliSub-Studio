@@ -16,7 +16,6 @@ public sealed partial class AccountPage : Page
     private readonly ApplicationLog _log;
     private readonly ChromeSessionBridge _chromeBridge;
     private CancellationTokenSource? _qrCancellation;
-    private BrowserLoginWindow? _browserLoginWindow;
     private bool _busy;
 
     public AccountPage(BiliSubApplication application, ApplicationLog log)
@@ -110,32 +109,19 @@ public sealed partial class AccountPage : Page
         }
     }
 
-    private void BrowserLogin_Click(object sender, RoutedEventArgs e)
-    {
-        if (_browserLoginWindow is not null)
-        {
-            _browserLoginWindow.Activate();
-            return;
-        }
-        _log.Info("Đăng nhập", "Mở cửa sổ đăng nhập Bilibili chính thức.");
-        var window = new BrowserLoginWindow(_application, _log);
-        window.Closed += (_, _) =>
-        {
-            _browserLoginWindow = null;
-            if (!_busy) _ = RefreshStatusAsync();
-        };
-        _browserLoginWindow = window;
-        window.Activate();
-    }
+    private async void BrowserLogin_Click(object sender, RoutedEventArgs e) =>
+        await SyncChromeAsync("Đang mở trang đăng nhập Bilibili trong Chrome...");
 
-    private async void ChromeSync_Click(object sender, RoutedEventArgs e)
+    private async void ChromeSync_Click(object sender, RoutedEventArgs e) =>
+        await SyncChromeAsync("Đang lấy phiên Bilibili từ Chrome...");
+
+    private async Task SyncChromeAsync(string waitingText)
     {
         if (_busy) return;
         try
         {
             SetBusy(true);
-            if (_browserLoginWindow is not null) _browserLoginWindow.Close();
-            LoginStatusText.Text = "Đang lấy phiên Bilibili từ Chrome...";
+            LoginStatusText.Text = waitingText;
             var user = await _chromeBridge.SyncAsync(CancellationToken.None);
             LoginStatusText.Text = string.IsNullOrWhiteSpace(user)
                 ? "Đã đồng bộ phiên Bilibili từ Chrome."
