@@ -203,11 +203,23 @@ for marker in (
 require('Link="Assets\\worker.py"' in app_project and "internal\\ocr\\worker.py" in app_project,
         "app project must package the embedded OCR worker asset")
 
-app_sources = "\n".join(
-    read(path) for path in (CSHARP / "src/BiliSubStudio.App").rglob("*.*") if path.suffix in {".cs", ".xaml"}
+app_files = [
+    path for path in (CSHARP / "src/BiliSubStudio.App").rglob("*.*")
+    if path.suffix in {".cs", ".xaml"} and not ({"obj", "bin"} & set(path.parts))
+]
+app_sources = "\n".join(read(path) for path in app_files)
+# WebView2 is forbidden as the production UI shell, but the embedded browser
+# login window is the one intentional host: it is the only way to read a
+# Bilibili session without asking the user to paste cookies.
+browser_login_files = {"BrowserLoginWindow.xaml", "BrowserLoginWindow.xaml.cs"}
+app_sources_without_browser_login = "\n".join(
+    read(path) for path in app_files if path.name not in browser_login_files
 )
 for marker in ("http://localhost", "https://localhost", "WebView2", "BiliSubStudioCore.exe", '"/api/'):
-    require(marker not in app_sources, f"production C# UI contains forbidden marker {marker}")
+    require(marker not in app_sources_without_browser_login, f"production C# UI contains forbidden marker {marker}")
+webview_owners = {path.name for path in app_files if "WebView2" in read(path)}
+require(webview_owners <= browser_login_files,
+        f"WebView2 leaked outside the browser login window: {sorted(webview_owners - browser_login_files)}")
 require('SizeChanged="' not in app_sources and not re.search(r"\b(?:Page|RootGrid)_SizeChanged\b", app_sources),
         "layout must not mutate main grids from SizeChanged")
 
