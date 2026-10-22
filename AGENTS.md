@@ -24,7 +24,7 @@ These rules apply to the current **C# + .NET 10 + WinUI 3** production tree.
 - No Go production source or Go build path.
 - No second BiliSub backend process or fixed secondary HTTP port.
 - No `BiliSubStudioCore.exe`.
-- No localhost/browser/WebView/WebView2 production UI.
+- No localhost/browser/WebView/WebView2 production UI except the isolated official Bilibili login window (`BrowserLoginWindow.xaml/.cs`); it may load only `passport.bilibili.com` and must not host a custom login form.
 - No deleting completed/recoverable download state after a network error or cancellation.
 - No accepting incomplete/oversized Range bodies as completed data.
 - No changing downloader concurrency, segment size, CDN rotation, resume semantics and fallback behavior together without targeted tests for each affected contract.

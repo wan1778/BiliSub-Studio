@@ -55,11 +55,11 @@
                     <StackPanel Spacing="10">
                         <StackPanel Spacing="2">
                             <TextBlock Style="{StaticResource CardTitleStyle}" Text="Đăng nhập bằng trình duyệt" />
-                            <TextBlock Style="{StaticResource MutedTextStyle}" Text="Mở tab Bilibili ngay trong app để đăng nhập bằng QR, mật khẩu hoặc SMS. App tự lấy phiên từ trình duyệt và lưu bằng Windows DPAPI; không cần dán cookie." TextWrapping="Wrap" />
+                            <TextBlock Style="{StaticResource MutedTextStyle}" Text="Mở trang đăng nhập Bilibili chính thức (passport.bilibili.com). Bạn tự đăng nhập bằng tài khoản thật; app tự lấy phiên SESSDATA, xác minh và lưu bằng Windows DPAPI." TextWrapping="Wrap" />
                         </StackPanel>
-                        <Button x:Name="BrowserLoginButton" HorizontalAlignment="Left" Click="BrowserLogin_Click" Content="Mở trình duyệt đăng nhập" />
+                        <Button x:Name="BrowserLoginButton" HorizontalAlignment="Left" Click="BrowserLogin_Click" Content="Mở trang đăng nhập Bilibili" />
                         <Border Padding="11,8" Background="{ThemeResource RaisedSurfaceBrush}" CornerRadius="8">
-                            <TextBlock FontSize="11" Style="{StaticResource MutedTextStyle}" Text="Bilibili không hỗ trợ đăng nhập bằng tài khoản Google. Trình duyệt nhúng dùng đúng trang đăng nhập Bilibili, không đọc cookie từ Chrome/Edge của bạn." TextWrapping="Wrap" />
+                            <TextBlock FontSize="11" Style="{StaticResource MutedTextStyle}" Text="Cửa sổ dùng profile trình duyệt riêng, không đọc cookie Chrome/Edge. Bạn chỉ cần đăng nhập một lần trên trang chính chủ; các lần sau app dùng phiên đã lưu." TextWrapping="Wrap" />
                         </Border>
                     </StackPanel>
                 </Border>

@@ -114,6 +114,7 @@ public sealed partial class AccountPage : Page
             _browserLoginWindow.Activate();
             return;
         }
+        _log.Info("Đăng nhập", "Mở cửa sổ đăng nhập Bilibili chính thức.");
         var window = new BrowserLoginWindow(_application, _log);
         window.Closed += (_, _) =>
         {

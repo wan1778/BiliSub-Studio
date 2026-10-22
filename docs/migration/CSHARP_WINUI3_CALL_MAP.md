@@ -541,7 +541,7 @@ package_windows_candidate.ps1
 
 - `BiliSubStudio.Core` has no WinUI/WinRT UI dependency.
 - WinUI pages do not spawn FFmpeg/Python/yt-dlp directly.
-- No localhost production server, `/api` UI adapter, WebView/WebView2 or `BiliSubStudioCore.exe` exists in the C# production path.
+- No localhost production server, `/api` UI adapter or `BiliSubStudioCore.exe` exists in the C# production path. The only WebView2 host is the isolated official Bilibili login window; it has no custom login form.
 - Go production directories are not imported or invoked by the C# application.
 - Update discovery and payload hosting are GitHub-only; transactional update safety remains owned by `UpdateService`.
 - The transient-CDN hardening changes only video transport classification/retry/degradation; it does not alter OCR scanner topology, editor render algorithms, metadata ownership or the unified Media UI contract.

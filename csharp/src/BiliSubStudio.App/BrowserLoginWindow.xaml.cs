@@ -7,10 +7,10 @@ using Microsoft.Web.WebView2.Core;
 
 namespace BiliSubStudio.App;
 
-// Bilibili không có OAuth cho app bên thứ ba và trình duyệt hệ thống không cho
-// đọc cookie của domain khác. WebView2 là "tab trình duyệt" nhúng: user đăng
-// nhập trên đúng trang passport.bilibili.com, app đọc cookie từ CookieManager
-// ngay khi SESSDATA xuất hiện rồi lưu bằng DPAPI như luồng cookie/QR hiện có.
+// Bilibili has no OAuth for third-party apps and the system browser does not
+// expose its cookies. This window is the isolated official passport page: the
+// user logs in there, the app reads SESSDATA from WebView2's cookie manager,
+// validates it and stores the session with DPAPI. No custom login form.
 public sealed partial class BrowserLoginWindow : Window
 {
     private const string LoginUrl = "https://passport.bilibili.com/login";
@@ -23,17 +23,18 @@ public sealed partial class BrowserLoginWindow : Window
     private bool _capturing;
     private bool _completed;
     private DateTime _nextCaptureUtc;
+    private DateTime _nextFailureLogUtc;
 
     public BrowserLoginWindow(BiliSubApplication application, ApplicationLog log)
     {
         _application = application;
         _log = log;
         InitializeComponent();
-        Title = "Đăng nhập Bilibili bằng trình duyệt";
+        Title = "Bilibili";
         AppWindow.Resize(new Windows.Graphics.SizeInt32(1080, 820));
         _pollTimer = DispatcherQueue.CreateTimer();
         _pollTimer.Interval = TimeSpan.FromSeconds(1.5);
-        _pollTimer.Tick += async (_, _) => await TryCaptureAsync(manual: false);
+        _pollTimer.Tick += async (_, _) => await TryCaptureAsync();
         Closed += OnClosed;
     }
 
@@ -47,7 +48,7 @@ public sealed partial class BrowserLoginWindow : Window
             Directory.CreateDirectory(_profileDirectory);
             // WinUI exposes only the parameterless WinRT CreateAsync; point its
             // default profile at our temp folder via the documented env override
-            // so the login session never touches the user's normal Edge profile.
+            // so the login session never touches the user's normal browser profile.
             var previousProfile = Environment.GetEnvironmentVariable("WEBVIEW2_USER_DATA_FOLDER");
             try
             {
@@ -66,78 +67,50 @@ public sealed partial class BrowserLoginWindow : Window
             Browser.CoreWebView2.NavigationCompleted += OnNavigationCompleted;
             Browser.CoreWebView2.Navigate(LoginUrl);
             _pollTimer.Start();
-            BrowserProgress.IsActive = true;
-            CaptureButton.IsEnabled = true;
-            StatusText.Text = "Đăng nhập trên trang Bilibili. App tự lưu phiên khi đăng nhập xong.";
         }
         catch (Exception error)
         {
-            BrowserProgress.IsActive = false;
-            StatusText.Text = "Không mở được trình duyệt: " + error.Message;
+            ErrorBar.Message = error.Message;
+            ErrorBar.IsOpen = true;
             _log.Error("Đăng nhập", "Không mở được WebView2 đăng nhập: " + error.Message);
         }
     }
 
     private async void OnNavigationCompleted(CoreWebView2 sender, CoreWebView2NavigationCompletedEventArgs args)
     {
-        if (args.IsSuccess) await TryCaptureAsync(manual: false);
+        if (args.IsSuccess) await TryCaptureAsync();
     }
 
-    private async void Capture_Click(object sender, RoutedEventArgs e) => await TryCaptureAsync(manual: true);
-
-    private void Close_Click(object sender, RoutedEventArgs e) => Close();
-
-    private async Task TryCaptureAsync(bool manual)
+    private async Task TryCaptureAsync()
     {
         if (_capturing || _completed) return;
-        if (!manual && DateTime.UtcNow < _nextCaptureUtc) return;
-        if (Browser.CoreWebView2 is null)
-        {
-            if (manual) StatusText.Text = "Trình duyệt chưa sẵn sàng.";
-            return;
-        }
+        if (DateTime.UtcNow < _nextCaptureUtc) return;
+        if (Browser.CoreWebView2 is null) return;
         _capturing = true;
-        CaptureButton.IsEnabled = false;
         try
         {
             var cookie = await ReadCookieHeaderAsync();
-            if (!HasSession(cookie))
-            {
-                if (manual) StatusText.Text = "Chưa thấy phiên đăng nhập. Hãy đăng nhập Bilibili trong cửa sổ này trước.";
-                return;
-            }
-            if (!Uri.TryCreate(Browser.CoreWebView2.Source, UriKind.Absolute, out var source)
-                || !source.Host.EndsWith("bilibili.com", StringComparison.OrdinalIgnoreCase))
-            {
-                if (manual) StatusText.Text = "Hãy quay lại trang bilibili.com sau khi đăng nhập rồi thử lại.";
-                return;
-            }
-            StatusText.Text = "Đã thấy phiên đăng nhập, đang xác minh...";
+            if (cookie.Length == 0) return;
             var user = await _application.Authentication.SetCookieAsync(cookie, _lifetime.Token);
             _completed = true;
             _pollTimer.Stop();
-            BrowserProgress.IsActive = false;
-            StatusText.Text = string.IsNullOrWhiteSpace(user) ? "Đăng nhập thành công." : "Đăng nhập thành công: " + user;
             _log.Info("Đăng nhập", "Đăng nhập bằng trình duyệt nhúng thành công.");
-            CaptureButton.IsEnabled = false;
-            await Task.Delay(900, _lifetime.Token);
+            Title = string.IsNullOrWhiteSpace(user) ? "Bilibili - đã đăng nhập" : "Bilibili - " + user;
             Close();
         }
         catch (OperationCanceledException) { }
         catch (Exception error)
         {
             _nextCaptureUtc = DateTime.UtcNow.AddSeconds(10);
-            StatusText.Text = "Chưa xác minh được phiên: " + error.Message;
-            if (manual) _log.Warning("Đăng nhập", "Phiên trình duyệt chưa hợp lệ: " + error.Message);
+            if (DateTime.UtcNow >= _nextFailureLogUtc)
+            {
+                _nextFailureLogUtc = DateTime.UtcNow.AddSeconds(60);
+                _log.Warning("Đăng nhập", "Chưa xác minh được phiên trình duyệt: " + error.Message);
+            }
         }
         finally
         {
-            if (!_completed)
-            {
-                _capturing = false;
-                if (_initialized && Browser.CoreWebView2 is not null) CaptureButton.IsEnabled = true;
-                BrowserProgress.IsActive = false;
-            }
+            if (!_completed) _capturing = false;
         }
     }
 
@@ -159,10 +132,6 @@ public sealed partial class BrowserLoginWindow : Window
         var session = cookies.FirstOrDefault(cookie => string.Equals(cookie.Name, "SESSDATA", StringComparison.Ordinal));
         return session is null ? string.Empty : SessionStore.NormalizeCookie("SESSDATA=" + session.Value);
     }
-
-    private static bool HasSession(string cookie) => cookie
-        .Split(';', StringSplitOptions.RemoveEmptyEntries)
-        .Any(part => part.TrimStart().StartsWith("SESSDATA=", StringComparison.Ordinal) && part.Length > "SESSDATA=".Length);
 
     private void OnNewWindowRequested(CoreWebView2 sender, CoreWebView2NewWindowRequestedEventArgs args)
     {
