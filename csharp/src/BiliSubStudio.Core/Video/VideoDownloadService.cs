@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
@@ -53,6 +54,9 @@ public sealed class VideoDownloadService
     {
         ArgumentNullException.ThrowIfNull(job);
         var cancellationToken = job.CancellationToken;
+        var jobClock = Stopwatch.StartNew();
+        var refreshCount = 0;
+        var oneConnectionTime = TimeSpan.Zero;
         if (string.IsNullOrWhiteSpace(request.Url)) throw new ArgumentException("URL rỗng.", nameof(request));
         var outputDirectory = string.IsNullOrWhiteSpace(request.OutputDirectory) ? _paths.DefaultDownloads : Path.GetFullPath(request.OutputDirectory.Trim());
         Directory.CreateDirectory(outputDirectory);
@@ -141,7 +145,7 @@ public sealed class VideoDownloadService
         var routeGeneration = currentStreams.Count == 0 ? 0L : currentStreams.Values.Max(x => x.Generation);
         var refreshRounds = new Dictionary<StreamKind, int>();
 
-        async Task<ResolvedStream> RefreshAsync(StreamKind kind, long seen, CancellationToken token)
+        async Task<ResolvedStream> RefreshAsync(StreamKind kind, long seen, RefreshCause cause, CancellationToken token)
         {
             await selectionGate.WaitAsync(token);
             try
@@ -149,10 +153,11 @@ public sealed class VideoDownloadService
                 if (!currentStreams.TryGetValue(kind, out var existing))
                     throw new InvalidOperationException("Không có stream hiện tại để phục hồi CDN.");
                 if (existing.Generation != seen) return existing;
+                refreshCount++;
 
                 var endpoints = EndpointUrls(existing);
                 var nextIndex = existing.EndpointIndex + 1;
-                if (nextIndex >= 0 && nextIndex < endpoints.Count)
+                if (cause != RefreshCause.SignatureExpired && nextIndex >= 0 && nextIndex < endpoints.Count)
                 {
                     routeGeneration++;
                     var rotated = existing with
@@ -170,7 +175,12 @@ public sealed class VideoDownloadService
                 refreshRounds[kind] = refreshRound;
                 var previousFingerprint = Fingerprint(existing);
                 var previousHost = Host(existing);
-                job.Warn($"CDN {kind}: đã thử hết {endpoints.Count} endpoint; refetch playurl vòng {refreshRound}.");
+                if (cause == RefreshCause.SignatureExpired)
+                    job.Warn($"CDN {kind}: chữ ký URL đã cũ; refetch playurl trực tiếp vòng {refreshRound} (bỏ qua 4 endpoint dùng chung chữ ký hết hạn).");
+                else if (cause == RefreshCause.LowThroughput)
+                    job.Warn($"CDN {kind}: tốc độ tuyến hiện tại thấp; refetch playurl vòng {refreshRound} để tìm tuyến khác.");
+                else
+                    job.Warn($"CDN {kind}: đã thử hết {endpoints.Count} endpoint; refetch playurl vòng {refreshRound}.");
 
                 var freshSelection = await _resolver.ResolveAsync(resolveRequest with { EndpointOffset = 0 }, token);
                 if (!string.IsNullOrWhiteSpace(freshSelection.EndpointDiscoveryWarning)) job.Warn(freshSelection.EndpointDiscoveryWarning);
@@ -240,8 +250,10 @@ public sealed class VideoDownloadService
             {
                 var path = await _downloader.DownloadAsync(
                     stream, work, name, connections,
-                    (seen, token) => RefreshAsync(stream.Kind, seen, token),
-                    status => Report(stream.Kind, status), cancellationToken);
+                    (seen, token) => RefreshAsync(stream.Kind, seen, RefreshCause.TransportFailure, token),
+                    status => Report(stream.Kind, status), cancellationToken,
+                    refreshWithCause: (seen, cause, token) => RefreshAsync(stream.Kind, seen, cause, token),
+                    log: message => job.Log(message));
                 return (path, true);
             }
             catch (OperationCanceledException) { throw; }
@@ -256,9 +268,43 @@ public sealed class VideoDownloadService
             catch (Exception error)
             {
                 rangeError = error;
+                // 401/403 after ~2h is an expired playurl signature, not a dead
+                // route: re-sign and retry at the configured concurrency instead
+                // of pinning the rest of the job to a single slow connection.
+                if (connections > 1 && CdnRefreshPolicy.IsSignatureExpiry(error))
+                {
+                    job.Warn($"Range {stream.Kind}: chữ ký CDN hết hạn; xin chữ ký mới và giữ nguyên {connections} kết nối thay vì hạ 1.");
+                    for (var signatureAttempt = 1; signatureAttempt <= 2; signatureAttempt++)
+                    {
+                        ResolvedStream latest;
+                        await selectionGate.WaitAsync(cancellationToken);
+                        try { latest = currentStreams.TryGetValue(stream.Kind, out var current) ? current : stream; }
+                        finally { selectionGate.Release(); }
+                        try
+                        {
+                            if (latest.Generation == stream.Generation || CdnRefreshPolicy.ShouldRefresh(latest.SignedAtUtc, DateTimeOffset.UtcNow))
+                                latest = await RefreshAsync(stream.Kind, latest.Generation, RefreshCause.SignatureExpired, cancellationToken);
+                            var path = await _downloader.DownloadAsync(
+                                latest, work, name, connections,
+                                (seen, token) => RefreshAsync(stream.Kind, seen, RefreshCause.TransportFailure, token),
+                                status => Report(stream.Kind, status), cancellationToken,
+                                refreshWithCause: (seen, cause, token) => RefreshAsync(stream.Kind, seen, cause, token),
+                                log: message => job.Log(message));
+                            job.Log($"Range {stream.Kind} đã phục hồi với {connections} kết nối sau khi làm mới chữ ký.");
+                            return (path, true);
+                        }
+                        catch (OperationCanceledException) { throw; }
+                        catch (Exception signatureError)
+                        {
+                            rangeError = signatureError;
+                            if (!CdnRefreshPolicy.IsSignatureExpiry(signatureError)) break;
+                        }
+                    }
+                }
                 if (connections > 1)
                 {
-                    job.Warn($"Range {stream.Kind} gặp lỗi sau CDN rotation; tự hạ 1 kết nối trước fallback: {error.GetBaseException().Message}");
+                    job.Warn($"Range {stream.Kind} gặp lỗi sau CDN rotation; tự hạ 1 kết nối trước fallback: {rangeError?.GetBaseException().Message}");
+                    var stableWatch = Stopwatch.StartNew();
                     try
                     {
                         ResolvedStream stableStream;
@@ -271,8 +317,10 @@ public sealed class VideoDownloadService
                         job.Warn($"Range {stream.Kind}: thử lại 1 kết nối từ CDN {Host(stableStream)} · endpoint {stableStream.EndpointIndex + 1}/{EndpointCount(stableStream)}.");
                         var path = await _downloader.DownloadAsync(
                             stableStream, work, name, 1,
-                            (seen, token) => RefreshAsync(stream.Kind, seen, token),
-                            status => Report(stream.Kind, status), cancellationToken);
+                            (seen, token) => RefreshAsync(stream.Kind, seen, RefreshCause.TransportFailure, token),
+                            status => Report(stream.Kind, status), cancellationToken,
+                            refreshWithCause: (seen, cause, token) => RefreshAsync(stream.Kind, seen, cause, token),
+                            log: message => job.Log(message));
                         job.Log($"Range {stream.Kind} đã phục hồi ở chế độ 1 kết nối.");
                         return (path, true);
                     }
@@ -281,6 +329,7 @@ public sealed class VideoDownloadService
                     {
                         rangeError = stableError;
                     }
+                    finally { oneConnectionTime += stableWatch.Elapsed; }
                 }
             }
 
@@ -387,6 +436,8 @@ public sealed class VideoDownloadService
             Directory.Delete(work, recursive: true);
             var size = new FileInfo(output).Length;
             job.Log($"Hoàn tất: {output}");
+            var stableNote = oneConnectionTime > TimeSpan.Zero ? $" · {oneConnectionTime.TotalSeconds:0} giây chạy 1 kết nối" : string.Empty;
+            job.Log($"Hiệu suất: {FormatSpeed(size / Math.Max(0.001, jobClock.Elapsed.TotalSeconds))} trung bình toàn job · {refreshCount} lần làm mới CDN · tối đa {peakConnections} kết nối{stableNote}.");
             job.Set("done", 100, output);
             return new VideoDownloadResult(output, size, usedRange, peakConnections);
         }

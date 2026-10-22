@@ -43,6 +43,7 @@ internal static class Program
         ("user cancel during a stall still reports cancel", DownloadResilienceContract.UserCancelStillReportsCancelAsync),
         ("refresh storm collapses to one refetch inside cooldown", DownloadResilienceContract.RefreshStormSuppressedAsync),
         ("refresh cooldown decides first-failure versus quiet backoff", DownloadResilienceContract.RefreshCooldownDecisionAsync),
+        ("expired playurl signatures re-sign instead of downshifting to one connection", CdnRefreshPolicyContract.RunAsync),
         ("completed range resume reports terminal transport progress", RangeCompletedResumeTelemetryAsync),
         ("range cancellation removes unfinished temp artifacts", RangeCancellationCleanupAsync),
         ("range downloader rejects CDN totals disagreeing with metadata", RangeProbeTotalMismatchAsync),

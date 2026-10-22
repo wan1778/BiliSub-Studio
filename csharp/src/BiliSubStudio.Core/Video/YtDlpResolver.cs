@@ -438,7 +438,8 @@ public sealed class YtDlpResolver
             generation,
             endpoints,
             activeIndex,
-            estimatedSize);
+            estimatedSize,
+            DateTimeOffset.UtcNow);
     }
 
     private static IReadOnlyList<string> MergeEndpointUrls(string primaryUrl, IReadOnlyList<string>? rawEndpoints)

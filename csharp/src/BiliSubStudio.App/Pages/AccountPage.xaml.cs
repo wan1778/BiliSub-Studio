@@ -14,6 +14,7 @@ public sealed partial class AccountPage : Page
     private readonly BiliSubApplication _application;
     private readonly ApplicationLog _log;
     private CancellationTokenSource? _qrCancellation;
+    private BrowserLoginWindow? _browserLoginWindow;
     private bool _busy;
 
     public AccountPage(BiliSubApplication application, ApplicationLog log)
@@ -106,6 +107,23 @@ public sealed partial class AccountPage : Page
         }
     }
 
+    private void BrowserLogin_Click(object sender, RoutedEventArgs e)
+    {
+        if (_browserLoginWindow is not null)
+        {
+            _browserLoginWindow.Activate();
+            return;
+        }
+        var window = new BrowserLoginWindow(_application, _log);
+        window.Closed += (_, _) =>
+        {
+            _browserLoginWindow = null;
+            _ = RefreshStatusAsync();
+        };
+        _browserLoginWindow = window;
+        window.Activate();
+    }
+
     private async void Validate_Click(object sender, RoutedEventArgs e)
     {
         try
@@ -165,6 +183,7 @@ public sealed partial class AccountPage : Page
         QrButton.IsEnabled = !busy;
         ValidateButton.IsEnabled = !busy;
         DeleteButton.IsEnabled = !busy;
+        BrowserLoginButton.IsEnabled = !busy;
         SaveCookieButton.IsEnabled = !busy && !string.IsNullOrWhiteSpace(CookieBox.Password);
     }
 }

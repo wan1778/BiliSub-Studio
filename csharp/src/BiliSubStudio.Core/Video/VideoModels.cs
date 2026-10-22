@@ -13,7 +13,8 @@ public sealed record ResolvedStream(
     long Generation,
     IReadOnlyList<string>? EndpointUrls = null,
     int EndpointIndex = 0,
-    long EstimatedSize = 0);
+    long EstimatedSize = 0,
+    DateTimeOffset SignedAtUtc = default);
 
 public sealed record StreamSelection(
     string Title,

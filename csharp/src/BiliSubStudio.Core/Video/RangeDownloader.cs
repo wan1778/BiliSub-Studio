@@ -31,6 +31,11 @@ public sealed class RangeDownloader
     private const int MaxSegmentAttempts = 32;
     private const int MaxProbeAttempts = 6;
     private const int ManifestVersion = 2;
+    private const double LowSpeedThresholdBytesPerSecond = 512 * 1024;
+    private const int MaxLowSpeedReroutes = 3;
+    private const int MinSegmentsForLowSpeedReroute = 8;
+    private static readonly TimeSpan LowSpeedWindow = TimeSpan.FromSeconds(90);
+    private static readonly TimeSpan LowSpeedRerouteCooldown = TimeSpan.FromMinutes(5);
     private readonly HttpClient _http;
 
     public RangeDownloader(HttpClient http) => _http = http;
@@ -43,10 +48,19 @@ public sealed class RangeDownloader
         Func<long, CancellationToken, Task<ResolvedStream>>? refresh,
         Action<RangeDownloadStatus>? status,
         CancellationToken cancellationToken,
-        TimeSpan? stallTimeout = null)
+        TimeSpan? stallTimeout = null,
+        Func<long, RefreshCause, CancellationToken, Task<ResolvedStream>>? refreshWithCause = null,
+        Action<string>? log = null)
     {
         if (string.IsNullOrWhiteSpace(original.Url)) throw new ArgumentException("Stream URL rỗng.", nameof(original));
         concurrency = Math.Clamp(concurrency, 1, 8);
+        var canRefresh = refresh is not null || refreshWithCause is not null;
+        async Task<ResolvedStream> RefreshStreamAsync(long seen, RefreshCause cause, CancellationToken token)
+        {
+            if (refreshWithCause is not null) return await refreshWithCause(seen, cause, token);
+            if (refresh is not null) return await refresh(seen, token);
+            throw new InvalidOperationException("Không có callback làm mới CDN.");
+        }
         Directory.CreateDirectory(workDirectory);
 
         // A signed Bilibili CDN endpoint can transiently answer 403/429/5xx even though the
@@ -60,6 +74,18 @@ public sealed class RangeDownloader
         for (var attempt = 1; attempt <= MaxProbeAttempts; attempt++)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (attempt == 1 && canRefresh && CdnRefreshPolicy.ShouldRefresh(current.SignedAtUtc, DateTimeOffset.UtcNow))
+            {
+                try
+                {
+                    current = await RefreshStreamAsync(current.Generation, RefreshCause.SignatureExpired, cancellationToken);
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception error)
+                {
+                    log?.Invoke($"CDN {current.Kind}: proactive refresh lỗi: {error.GetBaseException().Message}");
+                }
+            }
             try
             {
                 (total, rangeSupported) = await ProbeAsync(current, cancellationToken);
@@ -72,9 +98,9 @@ public sealed class RangeDownloader
                     probeError = new InvalidDataException(
                         $"CDN báo tổng {total} byte nhưng metadata là {original.Size} byte cho {original.Kind}; " +
                         "làm mới tuyến và probe lại, không ghép file thiếu âm thầm.");
-                    if (refresh is not null && attempt < MaxProbeAttempts)
+                    if (canRefresh && attempt < MaxProbeAttempts)
                     {
-                        current = await refresh(current.Generation, cancellationToken);
+                        current = await RefreshStreamAsync(current.Generation, RefreshCause.TransportFailure, cancellationToken);
                         await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(3_000, 250 * attempt * attempt)), cancellationToken);
                         continue;
                     }
@@ -88,9 +114,12 @@ public sealed class RangeDownloader
             catch (HttpRequestException error)
             {
                 probeError = error;
-                if (refresh is not null)
+                if (canRefresh)
                 {
-                    current = await refresh(current.Generation, cancellationToken);
+                    var cause = CdnRefreshPolicy.IsSignatureExpiry(error)
+                        ? RefreshCause.SignatureExpired
+                        : RefreshCause.TransportFailure;
+                    current = await RefreshStreamAsync(current.Generation, cause, cancellationToken);
                 }
                 await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(3_000, 250 * attempt * attempt)), cancellationToken);
             }
@@ -194,6 +223,89 @@ public sealed class RangeDownloader
             catch (OperationCanceledException) { }
         }
 
+        // A route chosen by the 256 KiB startup race can still collapse to a
+        // trickle for hours without ever failing (field job 2026-10-22: 0.88 MiB/s
+        // average on one endpoint while another route served 8 MiB/s). Errors
+        // rotate endpoints, but a silently slow route never does; this watchdog
+        // converts sustained low throughput into the same bounded reroute path.
+        using var lowSpeedCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var lowSpeedMonitor = Task.Run(async () =>
+        {
+            if (!canRefresh || (original.EndpointUrls?.Count ?? 0) < 2) return;
+            var samples = new Queue<(DateTime At, long Bytes)>();
+            var sampleGate = new object();
+            var lowSince = DateTime.MinValue;
+            var lastRerouteUtc = DateTime.MinValue;
+            var reroutes = 0;
+            try
+            {
+                while (!lowSpeedCancellation.Token.IsCancellationRequested)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(10), lowSpeedCancellation.Token);
+                    if (stopwatch.Elapsed < TimeSpan.FromMinutes(2)) continue;
+                    var now = DateTime.UtcNow;
+                    var bytes = Volatile.Read(ref networkBytes);
+                    var reroute = false;
+                    lock (sampleGate)
+                    {
+                        samples.Enqueue((now, bytes));
+                        while (samples.Count > 0 && now - samples.Peek().At > LowSpeedWindow) samples.Dequeue();
+                        if (samples.Count < 3) continue;
+                        var first = samples.Peek();
+                        var elapsed = (now - first.At).TotalSeconds;
+                        if (elapsed < 45) continue;
+                        var speed = (bytes - first.Bytes) / elapsed;
+                        if (speed >= LowSpeedThresholdBytesPerSecond)
+                        {
+                            lowSince = DateTime.MinValue;
+                            continue;
+                        }
+                        if (lowSince == DateTime.MinValue) lowSince = now;
+                        if (now - lowSince < TimeSpan.FromSeconds(30)) continue;
+                        if (now - lastRerouteUtc < LowSpeedRerouteCooldown) continue;
+                        if (reroutes >= MaxLowSpeedReroutes) continue;
+                        if (queue.Count < MinSegmentsForLowSpeedReroute) continue;
+                        lastRerouteUtc = now;
+                        lowSince = DateTime.MinValue;
+                        reroutes++;
+                        reroute = true;
+                    }
+                    if (!reroute) continue;
+                    log?.Invoke($"CDN {original.Kind}: tốc độ thấp dưới {LowSpeedThresholdBytesPerSecond / (1024 * 1024):0.#} MB/s trong {LowSpeedWindow.TotalSeconds:0} giây; thử đổi endpoint ({reroutes}/{MaxLowSpeedReroutes}).");
+                    ResolvedStream snapshot;
+                    await currentGate.WaitAsync(lowSpeedCancellation.Token);
+                    try
+                    {
+                        snapshot = current;
+                        if (ShouldRefreshNow(lastRefreshUtc, DateTime.UtcNow)) lastRefreshUtc = DateTime.UtcNow;
+                    }
+                    finally { currentGate.Release(); }
+                    try
+                    {
+                        var fresh = await RefreshStreamAsync(snapshot.Generation, RefreshCause.LowThroughput, lowSpeedCancellation.Token);
+                        await currentGate.WaitAsync(lowSpeedCancellation.Token);
+                        try
+                        {
+                            if (current.Generation == snapshot.Generation) current = fresh;
+                        }
+                        finally { currentGate.Release(); }
+                    }
+                    catch (OperationCanceledException) { throw; }
+                    catch (Exception error)
+                    {
+                        log?.Invoke($"CDN {original.Kind}: đổi endpoint do tốc độ thấp lỗi: {error.GetBaseException().Message}");
+                    }
+                }
+            }
+            catch (OperationCanceledException) { }
+        }, CancellationToken.None);
+        async Task StopLowSpeedMonitorAsync()
+        {
+            lowSpeedCancellation.Cancel();
+            try { await lowSpeedMonitor; }
+            catch (OperationCanceledException) { }
+        }
+
         async Task WorkerAsync()
         {
             while (queue.TryDequeue(out var segment))
@@ -207,9 +319,39 @@ public sealed class RangeDownloader
                     {
                         workerToken.ThrowIfCancellationRequested();
                         ResolvedStream stream;
+                        var proactiveRefresh = false;
                         await currentGate.WaitAsync(workerToken);
-                        try { stream = current; }
+                        try
+                        {
+                            stream = current;
+                            if (canRefresh
+                                && CdnRefreshPolicy.ShouldRefresh(stream.SignedAtUtc, DateTimeOffset.UtcNow)
+                                && ShouldRefreshNow(lastRefreshUtc, DateTime.UtcNow))
+                            {
+                                lastRefreshUtc = DateTime.UtcNow;
+                                proactiveRefresh = true;
+                            }
+                        }
                         finally { currentGate.Release(); }
+                        if (proactiveRefresh)
+                        {
+                            try
+                            {
+                                var fresh = await RefreshStreamAsync(stream.Generation, RefreshCause.SignatureExpired, workerToken);
+                                await currentGate.WaitAsync(workerToken);
+                                try
+                                {
+                                    if (current.Generation == stream.Generation) current = fresh;
+                                    stream = current;
+                                }
+                                finally { currentGate.Release(); }
+                            }
+                            catch (OperationCanceledException) { throw; }
+                            catch (Exception error)
+                            {
+                                log?.Invoke($"CDN {original.Kind}: proactive refresh lỗi: {error.GetBaseException().Message}");
+                            }
+                        }
 
                         var path = SegmentPath(segmentDirectory, segment.Index);
                         var temporary = path + ".tmp";
@@ -280,6 +422,7 @@ public sealed class RangeDownloader
                                 weakProgressFailures++;
                             }
 
+                            var signatureExpired = CdnRefreshPolicy.IsSignatureExpiry(error);
                             var immediateRefresh = error is HttpRequestException;
                             var shortBody = error is EndOfStreamException;
                             if (shortBody) Interlocked.Increment(ref consecutiveShortBody);
@@ -294,7 +437,7 @@ public sealed class RangeDownloader
                             // refetch làm mọi worker xếp hàng (kẹt 1/8). Check +
                             // stamp cooldown trong gate; publish chỉ khi generation
                             // còn nguyên (worker khác thắng thì bản này bỏ).
-                            var wantsRefresh = refresh is not null
+                            var wantsRefresh = canRefresh
                                 && (immediateRefresh || forceRotation || (weakProgressFailures > 0 && weakProgressFailures % 2 == 0));
                             var refreshDue = false;
                             await currentGate.WaitAsync(workerToken);
@@ -308,9 +451,10 @@ public sealed class RangeDownloader
                                 }
                             }
                             finally { currentGate.Release(); }
-                            if (refreshDue && refresh is not null)
+                            if (refreshDue && canRefresh)
                             {
-                                var fresh = await refresh(stream.Generation, workerToken);
+                                var cause = signatureExpired ? RefreshCause.SignatureExpired : RefreshCause.TransportFailure;
+                                var fresh = await RefreshStreamAsync(stream.Generation, cause, workerToken);
                                 await currentGate.WaitAsync(workerToken);
                                 try
                                 {
@@ -361,6 +505,7 @@ public sealed class RangeDownloader
                 throw fatalTransportError!;
             }
             await StopStallMonitorAsync();
+            await StopLowSpeedMonitorAsync();
             if (completed.Count != segments.Count)
             {
                 throw new InvalidDataException("Resume manifest thiếu segment hoàn tất.");
@@ -374,6 +519,7 @@ public sealed class RangeDownloader
         catch
         {
             await StopStallMonitorAsync();
+            await StopLowSpeedMonitorAsync();
             DeleteFiles(segmentDirectory, "*.tmp");
             TryDelete(output + ".assembling.tmp");
             throw;
