@@ -45,6 +45,7 @@ public sealed partial class EditorPage
     private Button? _removeImageButton;
     private Button? _imageTopRightButton;
     private Button? _imageTopLeftButton;
+    private Button? _imageFitFrameButton;
     private ListView? _imageList;
     private TextBlock? _imageStatusText;
     private NumberBox? _imageXBox;
@@ -118,18 +119,9 @@ public sealed partial class EditorPage
             pixelHeight = decoder.PixelHeight;
         }
         if (pixelWidth == 0 || pixelHeight == 0) throw new InvalidDataException("Không đọc được kích thước ảnh/logo.");
-        var width = .18;
-        var aspect = pixelWidth / (double)pixelHeight;
-        var height = width * _media.Width / (aspect * _media.Height);
-        if (height > .34)
-        {
-            height = .34;
-            width = height * aspect * _media.Height / _media.Width;
-        }
-        width = Math.Clamp(width, .03, .45);
-        height = Math.Clamp(height, .03, .45);
+        var placement = EditorImageOverlayLayout.DefaultPlacement(pixelWidth, pixelHeight, _media.Width, _media.Height);
         var state = new EditorImageOverlayState(
-            Path.GetFullPath(path), Math.Max(0, 1 - width - .025), .025, width, height, 1, pixelWidth, pixelHeight);
+            Path.GetFullPath(path), placement.X, placement.Y, placement.Width, placement.Height, 1, pixelWidth, pixelHeight);
         _imageOverlays.Add(state);
         _selectedImageIndex = _imageOverlays.Count - 1;
         await EnsureBitmapLoadedAsync(state.Path);
@@ -140,9 +132,14 @@ public sealed partial class EditorPage
         RefreshEditorActions();
         var saveError = await SaveImageSidecarSafeAsync();
         if (_imageStatusText is not null)
+        {
+            var sizeHint = placement.Width >= .99 && placement.Height >= .99
+                ? "Ảnh đã vừa khung video."
+                : "Kéo trực tiếp trên preview để đặt logo.";
             _imageStatusText.Text = saveError is null
-                ? $"Đã thêm {Path.GetFileName(state.Path)}. Kéo trực tiếp trên preview để đặt logo."
+                ? $"Đã thêm {Path.GetFileName(state.Path)}. {sizeHint}"
                 : $"Đã thêm {Path.GetFileName(state.Path)} nhưng chưa lưu được vào project: {saveError.Message}";
+        }
     }
 
     private void ImageList_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -932,6 +929,7 @@ public sealed partial class EditorPage
         if (_removeImageButton is not null) _removeImageButton.IsEnabled = editable && selected;
         if (_imageTopLeftButton is not null) _imageTopLeftButton.IsEnabled = editable && selected;
         if (_imageTopRightButton is not null) _imageTopRightButton.IsEnabled = editable && selected;
+        if (_imageFitFrameButton is not null) _imageFitFrameButton.IsEnabled = editable && selected;
         if (_imageList is not null) _imageList.IsEnabled = editable;
         if (_imageXBox is not null) _imageXBox.IsEnabled = editable && selected;
         if (_imageYBox is not null) _imageYBox.IsEnabled = editable && selected;

@@ -1,3 +1,4 @@
+using BiliSubStudio.Core.Editor;
 using Microsoft.UI.Xaml;
 
 namespace BiliSubStudio.App.Pages;
@@ -20,11 +21,33 @@ public sealed partial class EditorPage
             Y = Math.Min(.025, maxY),
         };
         _imageOverlays[_selectedImageIndex] = image;
-        await SaveImageSidecarAsync();
+        await SaveImageSidecarSafeAsync();
         LoadSelectedImageIntoInputs();
         RenderImageOverlays();
         NotifyEditorCompositeChanged();
         if (_imageStatusText is not null)
             _imageStatusText.Text = right ? "Đã đặt ảnh/logo vào góc phải." : "Đã đặt ảnh/logo vào góc trái.";
+    }
+
+    private async void ImageFitFrame_Click(object sender, RoutedEventArgs e)
+    {
+        if (!TryGetSelectedImage(out var image) || EditorBusy || _media is null) return;
+        var placement = EditorImageOverlayLayout.FitInside(image.PixelWidth, image.PixelHeight, _media.Width, _media.Height);
+        image = image with
+        {
+            X = placement.X,
+            Y = placement.Y,
+            Width = placement.Width,
+            Height = placement.Height,
+        };
+        _imageOverlays[_selectedImageIndex] = image;
+        var saveError = await SaveImageSidecarSafeAsync();
+        LoadSelectedImageIntoInputs();
+        RenderImageOverlays();
+        NotifyEditorCompositeChanged();
+        if (_imageStatusText is not null)
+            _imageStatusText.Text = saveError is null
+                ? "Đã đưa ảnh/logo vừa khung video."
+                : "Đã đưa ảnh/logo vừa khung nhưng chưa lưu được project: " + saveError.Message;
     }
 }

@@ -716,6 +716,7 @@
                                             <Button x:Name="ImageTopLeftButton" Content="◰ Góc trái" Style="{StaticResource SecondaryButtonStyle}" HorizontalAlignment="Stretch" CornerRadius="8"/>
                                             <Button Grid.Column="1" x:Name="ImageTopRightButton" Content="◳ Góc phải" Style="{StaticResource SecondaryButtonStyle}" HorizontalAlignment="Stretch" CornerRadius="8"/>
                                         </Grid>
+                                        <Button x:Name="ImageFitFrameButton" Content="⤢  Vừa khung video" Style="{StaticResource SecondaryButtonStyle}" HorizontalAlignment="Stretch" CornerRadius="8"/>
                                     </StackPanel>
                                 </Border>
 

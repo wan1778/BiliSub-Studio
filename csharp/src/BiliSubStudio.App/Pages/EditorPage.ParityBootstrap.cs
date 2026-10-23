@@ -140,6 +140,7 @@ public sealed partial class EditorPage
         _removeImageButton = RemoveImageButton;
         _imageTopRightButton = ImageTopRightButton;
         _imageTopLeftButton = ImageTopLeftButton;
+        _imageFitFrameButton = ImageFitFrameButton;
         _imageList = ImageSourceList;
         _imageStatusText = ImageStatusText;
         _imageXBox = ImageXBox;
@@ -171,6 +172,7 @@ public sealed partial class EditorPage
         RemoveImageButton.Click += RemoveImageSafe_Click;
         ImageTopLeftButton.Click += ImageCornerPreset_Click;
         ImageTopRightButton.Click += ImageCornerPreset_Click;
+        ImageFitFrameButton.Click += ImageFitFrame_Click;
         ImageXBox.ValueChanged += ImageGeometry_ValueChanged;
         ImageYBox.ValueChanged += ImageGeometry_ValueChanged;
         ImageWidthBox.ValueChanged += ImageGeometry_ValueChanged;
