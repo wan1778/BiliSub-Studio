@@ -81,7 +81,7 @@ public partial class App : Microsoft.UI.Xaml.Application
             StartupDiagnostics.WriteException("winui-operation-aborted", args.Exception);
             return;
         }
-        StartupDiagnostics.ShowFatalError("winui-unhandled", args.Exception);
+        StartupDiagnostics.ShowUnhandledError("winui-unhandled", args.Exception);
         Exit();
     }
 }

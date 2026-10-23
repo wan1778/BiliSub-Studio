@@ -75,6 +75,23 @@ internal static class StartupDiagnostics
         _ = MessageBoxW(IntPtr.Zero, message, "BiliSub Studio - Lỗi khởi động", 0x00000010u | 0x00000000u);
     }
 
+    // Lỗi phát sinh khi app đang chạy (không phải lúc khởi động): đừng báo nhầm
+    // là "không thể khởi động" — người dùng sẽ tưởng app hỏng từ đầu.
+    public static void ShowUnhandledError(string stage, Exception error)
+    {
+        WriteException(stage, error);
+        if (IsSmokeTest)
+        {
+            return;
+        }
+
+        var message = "BiliSub Studio gặp lỗi không mong muốn và phải đóng lại.\n\n"
+            + error.Message
+            + "\n\nNhật ký lỗi đã được lưu tại:\n"
+            + LogPath;
+        _ = MessageBoxW(IntPtr.Zero, message, "BiliSub Studio - Lỗi", 0x00000010u | 0x00000000u);
+    }
+
     public static async Task WriteSmokeSentinelAsync(CancellationToken cancellationToken = default)
     {
         if (SmokeSentinelPath is null)

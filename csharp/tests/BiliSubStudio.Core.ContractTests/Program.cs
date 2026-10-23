@@ -83,6 +83,7 @@ internal static class Program
         ("editor region resize keeps all eight handles pixel-valid", EditorRegionResizeContractAsync),
         ("editor numeric X Y W H inputs require source-pixel-valid geometry", EditorRegionNumericInputsContractAsync),
         ("editor blur strength validates input and shares Preview Export radius", EditorBlurStrengthContractAsync),
+        ("editor image sidecar saves atomically without sharing violations or temp leftovers", EditorImageSidecarContract.RunAsync),
         ("editor clean effect removes objects with direct delogo and strength-free persistence", EditorCleanEffectContract.RunAsync),
         ("editor Mosaic strength drives pixelated Preview Export dimensions", EditorMosaicStrengthContractAsync),
         ("editor Cover is opaque strength-free and preserves Preview Export geometry", EditorCoverEffectContractAsync),

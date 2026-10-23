@@ -1,4 +1,3 @@
-using System.Text.Json;
 using BiliSubStudio.App.Services;
 using BiliSubStudio.Core.Editor;
 using Microsoft.UI;
@@ -72,19 +71,17 @@ public sealed partial class EditorPage
         _selectedImageIndex = -1;
         var missingImageCount = 0;
         var path = ImageSidecarPath(_project.Id);
-        if (File.Exists(path))
+        EditorImageSidecarStore.CleanupOrphanTemps(path);
+        var loaded = await EditorImageSidecarStore.ReadAsync(path);
+        foreach (var entry in loaded.Take(MaxEditorImages))
         {
-            await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 32 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
-            var loaded = await JsonSerializer.DeserializeAsync<List<EditorImageOverlayState>>(stream) ?? [];
-            foreach (var image in loaded.Take(MaxEditorImages))
+            var image = ToImageOverlay(entry);
+            if (IsMissingImageFile(image))
             {
-                if (IsMissingImageFile(image))
-                {
-                    missingImageCount++;
-                    continue;
-                }
-                if (TryNormalizeImageState(image, out var normalized)) _imageOverlays.Add(normalized);
+                missingImageCount++;
+                continue;
             }
+            if (TryNormalizeImageState(image, out var normalized)) _imageOverlays.Add(normalized);
         }
         for (var index = 0; index < _imageOverlays.Count; index++)
             await EnsureBitmapLoadedAsync(_imageOverlays[index].Path);
@@ -136,13 +133,16 @@ public sealed partial class EditorPage
         _imageOverlays.Add(state);
         _selectedImageIndex = _imageOverlays.Count - 1;
         await EnsureBitmapLoadedAsync(state.Path);
-        await SaveImageSidecarAsync();
         RenderImageList();
         LoadSelectedImageIntoInputs();
         RenderImageOverlays();
         NotifyEditorCompositeChanged();
-        if (_imageStatusText is not null) _imageStatusText.Text = $"Đã thêm {Path.GetFileName(state.Path)}. Kéo trực tiếp trên preview để đặt logo.";
         RefreshEditorActions();
+        var saveError = await SaveImageSidecarSafeAsync();
+        if (_imageStatusText is not null)
+            _imageStatusText.Text = saveError is null
+                ? $"Đã thêm {Path.GetFileName(state.Path)}. Kéo trực tiếp trên preview để đặt logo."
+                : $"Đã thêm {Path.GetFileName(state.Path)} nhưng chưa lưu được vào project: {saveError.Message}";
     }
 
     private void ImageList_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -168,17 +168,20 @@ public sealed partial class EditorPage
             return;
         }
         _imageOverlays[_selectedImageIndex] = image with { X = x, Y = y, Width = width, Height = height };
-        await SaveImageSidecarAsync();
+        var saveError = await SaveImageSidecarSafeAsync();
         RenderImageOverlays();
         NotifyEditorCompositeChanged();
-        if (_imageStatusText is not null) _imageStatusText.Text = "Đã cập nhật vị trí/kích thước ảnh/logo.";
+        if (_imageStatusText is not null)
+            _imageStatusText.Text = saveError is null
+                ? "Đã cập nhật vị trí/kích thước ảnh/logo."
+                : "Đã cập nhật vị trí/kích thước trên preview nhưng chưa lưu được project: " + saveError.Message;
     }
 
     private async void ImageOpacity_ValueChanged(object sender, Microsoft.UI.Xaml.Controls.Primitives.RangeBaseValueChangedEventArgs e)
     {
         if (_syncingImageInputs || !TryGetSelectedImage(out var image) || _imageOpacitySlider is null) return;
         _imageOverlays[_selectedImageIndex] = image with { Opacity = Math.Clamp(_imageOpacitySlider.Value / 100, .05, 1) };
-        await SaveImageSidecarAsync();
+        await SaveImageSidecarSafeAsync();
         RenderImageOverlays();
         NotifyEditorCompositeChanged();
     }
@@ -230,10 +233,15 @@ public sealed partial class EditorPage
         _imageDragStart = null;
         _imageDragOriginal = null;
         _imageDragKind = DragKind.None;
-        if (commit) await SaveImageSidecarAsync();
+        var saveError = commit ? await SaveImageSidecarSafeAsync() : null;
         LoadSelectedImageIntoInputs();
         RenderImageOverlays();
-        if (_imageStatusText is not null) _imageStatusText.Text = commit ? "Đã lưu vị trí/kích thước ảnh/logo." : "Đã hủy thay đổi ảnh/logo.";
+        if (_imageStatusText is not null)
+            _imageStatusText.Text = !commit
+                ? "Đã hủy thay đổi ảnh/logo."
+                : saveError is null
+                    ? "Đã lưu vị trí/kích thước ảnh/logo."
+                    : "Đã cập nhật vị trí ảnh/logo trên preview nhưng chưa lưu được project: " + saveError.Message;
     }
 
     private (int Index, DragKind Kind) HitTestImage(Point point)
@@ -533,26 +541,28 @@ public sealed partial class EditorPage
         // Never rewrite a source-specific sidecar after the underlying video was replaced.
         if (!CurrentSourceFingerprintMatches()) return;
         var path = ImageSidecarPath(_project.Id);
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        if (_imageOverlays.Count == 0)
-        {
-            File.Delete(path);
-            return;
-        }
-        var temporary = path + ".tmp-" + Guid.NewGuid().ToString("N");
+        await EditorImageSidecarStore.WriteAsync(path, _imageOverlays.Select(ToSidecarEntry).ToArray());
+    }
+
+    private async Task<Exception?> SaveImageSidecarSafeAsync()
+    {
         try
         {
-            await using var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None, 32 * 1024, FileOptions.Asynchronous | FileOptions.WriteThrough);
-            await JsonSerializer.SerializeAsync(stream, _imageOverlays, cancellationToken: CancellationToken.None);
-            await stream.FlushAsync();
-            stream.Flush(flushToDisk: true);
-            File.Move(temporary, path, overwrite: true);
+            await SaveImageSidecarAsync();
+            return null;
         }
-        finally
+        catch (Exception error)
         {
-            try { File.Delete(temporary); } catch { }
+            StartupDiagnostics.WriteException("editor-image-sidecar-save", error);
+            return error;
         }
     }
+
+    private static EditorImageSidecarEntry ToSidecarEntry(EditorImageOverlayState image) =>
+        new(image.Path, image.X, image.Y, image.Width, image.Height, image.Opacity, image.PixelWidth, image.PixelHeight);
+
+    private static EditorImageOverlayState ToImageOverlay(EditorImageSidecarEntry entry) =>
+        new(entry.Path, entry.X, entry.Y, entry.Width, entry.Height, entry.Opacity, entry.PixelWidth, entry.PixelHeight);
 
     private async Task SaveImageSidecarStrictAsync()
     {
@@ -564,8 +574,7 @@ public sealed partial class EditorPage
             return;
         }
         var path = ImageSidecarPath(_project.Id);
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        File.Delete(path);
+        EditorImageSidecarStore.Delete(path);
     }
 
     private string ImageSidecarPath(string projectId) => Path.Combine(_application.Paths.Data, "Projects", projectId + ".images.json");
