@@ -13,13 +13,13 @@ internal sealed partial class LocalTtsService
     private const long MaxSentenceGroupOverlapFrames = 5512;
     private const long MaxSentenceGroupDurationFrames = 6615000;
     // Luật pace (01/10 + micro-band 02/10 2.0x, user 07/10 nghe thử mở
-    // 2.5x, chỉ VieNeu): tăng tốc không vượt 1.5x mọi đường, NGOẠI TRỪ
-    // cue micro (khung <1.1s) được 2.5x; cue rộng stretch tối đa 1.4x
+    // 2.5x, user 25/10 mở 3.0x, chỉ VieNeu): tăng tốc không vượt 1.5x mọi đường, NGOẠI TRỪ
+    // cue micro (khung <1.1s) được 3.0x; cue rộng stretch tối đa 1.4x
     // thời lượng (pace không dưới 1/1.4). Trần record nới 0.01
-    // (1.51 / micro 2.51) để trừ FIT_HEADROOM + margin retry của worker.
+    // (1.51 / micro 3.01) để trừ FIT_HEADROOM + margin retry của worker.
     // Mirror y hệt worker theo window, comment lý do.
     private const double VieneuMaxTempoFactor = 1.51;
-    private const double VieneuMicroMaxTempoFactor = 2.51;
+    private const double VieneuMicroMaxTempoFactor = 3.01;
     private const long VieneuMicroWindowFrames = 24255; // 1.1s @22050 Hz
     // Overflow tran khung (user duyet cho cue don qua dai: doc nguyen cau toi
     // tran window-cap, de len 1-2 cue sau, khong doi timeline). Mirror worker

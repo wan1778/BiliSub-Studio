@@ -346,13 +346,13 @@ internal static class EditorLicensedVoiceProfileContract
         {
             ["source_frames"] = 29250L, ["native_reference_frames"] = 29250L,
             ["generated_frames"] = 11250L, ["padding_frames"] = 3082L,
-            ["actual_speed_factor"] = 2.6d, ["tempo_factor"] = 2.6d,
+            ["actual_speed_factor"] = 3.1d, ["tempo_factor"] = 3.1d,
             ["tempo_input_frames"] = 29250L, ["raw_duration"] = 29250d / 22050,
         };
         try
         {
             validate.Invoke(null, [Cue(vtempoMicroTooFast), 14332L, false, 22050, true, 0]);
-            throw new InvalidOperationException("VieNeu micro tempo over 2.5x was accepted");
+            throw new InvalidOperationException("VieNeu micro tempo over 3.0x was accepted");
         }
         catch (TargetInvocationException error) when (error.InnerException is InvalidDataException) { }
         var vtempoLongTooFast = new Dictionary<string, object>(vtempoMicro)

@@ -54,18 +54,18 @@ MAX_ACTUAL_SPEED = 100.0
 # seed nào cũng bó tay (vụ "Vâng" need 1.97x); cue rộng stretch tối đa 1.4x
 # thời lượng (pace không dưới ~0.71x). HARD_MAX_SPEED áp trên need
 # (input/target); factor ghi record có thể chạm ~1.5005 do FIT_HEADROOM +
-# TEMPO_RETRY_MARGIN nên trần record là 1.51 (micro: 2.51 tương ứng). C#
+# TEMPO_RETRY_MARGIN nên trần record là 1.51 (micro: 3.01 tương ứng). C#
 # mirror y hệt theo window, comment lý do.
 HARD_MAX_SPEED = 1.5
 HARD_MAX_FACTOR = 1.51
-# Micro-band (02/10 2.0x, user 07/10 nghe thu mo 2.5x): cue micro
-# (khung <1.1s, thuong 1-3 chu) mang carrier prosody co dinh (~1.0s cho
-# tu don nhu "Cam") nen need thuc 1.5-2.5x ma seed nao cung bo tay;
-# atempo tren clip <1s hau nhu trong suot nen tran rieng 2.5x (record
-# 2.51 theo cung margin FIT+T margin). Moi cue con lai giu 1.5x. Luon
-# review (duong tempo). C# mirror y het theo window.
-MICRO_MAX_SPEED = 2.5
-MICRO_MAX_FACTOR = 2.51
+# Micro-band (02/10 2.0x, user 07/10 nghe thu mo 2.5x, user 25/10 mo 3.0x): cue micro
+    # (khung <1.1s, thuong 1-3 chu) mang carrier prosody co dinh (~1.0s cho
+    # tu don nhu "Cam") nen need thuc 1.5-3.0x ma seed nao cung bo tay;
+    # atempo tren clip <1s hau nhu trong suot nen tran rieng 3.0x (record
+    # 3.01 theo cung margin FIT+T margin). Moi cue con lai giu 1.5x. Luon
+    # review (duong tempo). C# mirror y het theo window.
+    MICRO_MAX_SPEED = 3.0
+    MICRO_MAX_FACTOR = 3.01
 MICRO_WINDOW_FRAMES = round(1.1 * SAMPLE_RATE)
 # Overflow (user duyet): cue don qua dai (truncate chi giu <50% chu) thi doc
 # NGUYEN CAU toc do toi tran window-cap, cho tran khung toi da 3.0s, chap nhan
