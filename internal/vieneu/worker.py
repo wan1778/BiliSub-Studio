@@ -59,13 +59,13 @@ MAX_ACTUAL_SPEED = 100.0
 HARD_MAX_SPEED = 1.5
 HARD_MAX_FACTOR = 1.51
 # Micro-band (02/10 2.0x, user 07/10 nghe thu mo 2.5x, user 25/10 mo 3.0x): cue micro
-    # (khung <1.1s, thuong 1-3 chu) mang carrier prosody co dinh (~1.0s cho
-    # tu don nhu "Cam") nen need thuc 1.5-3.0x ma seed nao cung bo tay;
-    # atempo tren clip <1s hau nhu trong suot nen tran rieng 3.0x (record
-    # 3.01 theo cung margin FIT+T margin). Moi cue con lai giu 1.5x. Luon
-    # review (duong tempo). C# mirror y het theo window.
-    MICRO_MAX_SPEED = 3.0
-    MICRO_MAX_FACTOR = 3.01
+# (khung <1.1s, thuong 1-3 chu) mang carrier prosody co dinh (~1.0s cho
+# tu don nhu "Cam") nen need thuc 1.5-3.0x ma seed nao cung bo tay;
+# atempo tren clip <1s hau nhu trong suot nen tran rieng 3.0x (record
+# 3.01 theo cung margin FIT+T margin). Moi cue con lai giu 1.5x. Luon
+# review (duong tempo). C# mirror y het theo window.
+MICRO_MAX_SPEED = 3.0
+MICRO_MAX_FACTOR = 3.01
 MICRO_WINDOW_FRAMES = round(1.1 * SAMPLE_RATE)
 # Overflow (user duyet): cue don qua dai (truncate chi giu <50% chu) thi doc
 # NGUYEN CAU toc do toi tran window-cap, cho tran khung toi da 3.0s, chap nhan
