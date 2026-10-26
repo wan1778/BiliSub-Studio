@@ -12,7 +12,14 @@ function Invoke-Checked {
         [string[]]$ArgumentList
     )
 
-    & $FilePath @ArgumentList
+    # Windows PowerShell 5.1 gom stderr của lệnh native thành error record;
+    # với ErrorActionPreference=Stop, các contract script viết log ra stderr
+    # (vd unittest dots) sẽ dừng gate dù exit code là 0. Chỉ exit code mới
+    # được xem là kết quả của gate.
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try { & $FilePath @ArgumentList }
+    finally { $ErrorActionPreference = $previousPreference }
     if ($LASTEXITCODE -ne 0) {
         throw "$FilePath failed with exit code $LASTEXITCODE"
     }
