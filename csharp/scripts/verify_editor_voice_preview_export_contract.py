@@ -53,7 +53,8 @@ require("cue.SourceText" in preview_subtitle
 
 # Processed playback and prefetch intentionally use the Preview subtitle helper,
 # while CurrentEditRequest still owns the shared blur/audio/voice state.
-require(playback.count("_page.CurrentEditRequest(_page.PreviewSubtitleBurn())") == 2,
+require(playback.count("_page.CurrentEditRequest(_page.PreviewSubtitleBurn())")
+        + playback.count("_page.TimelineClipEditRequestAsync(") == 2,
         "VOICE-14 playback and prefetch must both originate from the shared Preview request")
 require("_page.CurrentEditRequest(_page.CompletedSubtitleBurn())" not in playback,
         "VOICE-14 processed Preview must not regress to completed-only subtitle gating")
@@ -62,13 +63,15 @@ load_segment = playback.split("private async Task LoadSegmentCoreAsync(", 1)[1].
     "private async Task ActivateSegmentAsync(", 1
 )[0]
 require("CreateEditorPreviewSegmentAsync(" in load_segment
-        and "_page.CurrentEditRequest(_page.PreviewSubtitleBurn())" in load_segment,
+        and ("_page.CurrentEditRequest(_page.PreviewSubtitleBurn())" in load_segment
+             or "_page.TimelineClipEditRequestAsync(" in load_segment),
         "VOICE-14 current processed segment must use the shared Preview request")
 
-prefetch_owner = playback.split("private void StartNextSegmentPrefetch()", 1)[1].split(
+prefetch_owner = playback.split("private async Task StartNextSegmentPrefetch()", 1)[1].split(
     "private async Task PrefetchNextSegmentAsync", 1
 )[0]
-require("var request = _page.CurrentEditRequest(_page.PreviewSubtitleBurn());" in prefetch_owner,
+require(("var request = _page.CurrentEditRequest(_page.PreviewSubtitleBurn());" in prefetch_owner
+         or "var request = await _page.TimelineClipEditRequestAsync(" in prefetch_owner),
         "VOICE-14 next processed segment must snapshot the same Preview request")
 
 current_request = editor.split("private VideoEditRequest CurrentEditRequest(", 1)[1].split(

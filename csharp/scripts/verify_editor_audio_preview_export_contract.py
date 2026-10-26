@@ -29,8 +29,9 @@ require("_audioSettings," in request and "_voiceTrack" in request,
 preview = PLAYBACK.split("private async Task LoadSegmentCoreAsync(", 1)[1].split(
     "private async Task ActivateSegmentAsync(", 1
 )[0]
-require("_page.CurrentEditRequest(_page.PreviewSubtitleBurn())" in preview,
-        "AUDIO-SHARED processed Preview does not originate from CurrentEditRequest")
+require(("_page.CurrentEditRequest(_page.PreviewSubtitleBurn())" in preview
+         or "_page.TimelineClipEditRequestAsync(" in preview),
+        "AUDIO-SHARED processed Preview does not originate from the shared request")
 
 export = IMAGES.split("private async Task RenderProjectAsync()", 1)[1].split(
     "private void RefreshImageControls()", 1
