@@ -816,7 +816,7 @@
                         </StackPanel>
 
                         <ScrollViewer Grid.Column="1" x:Name="TimelineScrollViewer" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled"
-                                      ViewChanged="TimelineScroll_ViewChanged" SizeChanged="TimelineScroll_SizeChanged" Background="Transparent">
+                                      ViewChanged="TimelineScroll_ViewChanged" Background="Transparent">
                             <Canvas x:Name="TimelineContentGrid" Width="800" Height="134" Background="Transparent">
                                 <Canvas x:Name="TimelineRulerCanvas" Height="26" Width="800" Background="Transparent"
                                         PointerPressed="TimelineRuler_PointerPressed" AutomationProperties.Name="Thước thời gian" />

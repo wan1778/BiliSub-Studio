@@ -54,6 +54,9 @@ public sealed partial class EditorPage
         if (_timelineSelectionHooked) return;
         _timelineSelectionHooked = true;
         SubtitleCueList.SelectionChanged += TimelineCueListSelectionChanged;
+        // Không dùng thuộc tính SizeChanged trong XAML: repo cấm layout mutate
+        // từ SizeChanged. Subscribe bằng code + dispatch trễ để không re-enter.
+        TimelineScrollViewer.SizeChanged += TimelineViewportResized;
     }
 
     private static double TimelinePixelsPerSecondForZoom(double zoom)
@@ -93,14 +96,16 @@ public sealed partial class EditorPage
         var tracksHeight = EditorTimelineLayout.TracksHeight(TimelineLaneCount);
         var contentHeight = EditorTimelineLayout.RulerHeight + TimelineRulerGap + tracksHeight;
 
-        TimelineContentGrid.Width = contentWidth;
-        TimelineContentGrid.Height = contentHeight;
-        TimelineRulerCanvas.Width = contentWidth;
-        TimelineTracksCanvas.Width = contentWidth;
+        // Chỉ gán khi thực sự khác: nếu không, SizeChanged của ScrollViewer sẽ
+        // đẩy vòng layout lặp lại vô hạn.
+        if (Math.Abs(TimelineContentGrid.Width - contentWidth) > .5) TimelineContentGrid.Width = contentWidth;
+        if (Math.Abs(TimelineContentGrid.Height - contentHeight) > .5) TimelineContentGrid.Height = contentHeight;
+        if (Math.Abs(TimelineRulerCanvas.Width - contentWidth) > .5) TimelineRulerCanvas.Width = contentWidth;
+        if (Math.Abs(TimelineTracksCanvas.Width - contentWidth) > .5) TimelineTracksCanvas.Width = contentWidth;
         Canvas.SetTop(TimelineRulerCanvas, 0);
         Canvas.SetTop(TimelineTracksCanvas, EditorTimelineLayout.RulerHeight + TimelineRulerGap);
-        TimelineTracksCanvas.Height = tracksHeight;
-        TimelinePlayhead.Height = contentHeight;
+        if (Math.Abs(TimelineTracksCanvas.Height - tracksHeight) > .5) TimelineTracksCanvas.Height = tracksHeight;
+        if (Math.Abs(TimelinePlayhead.Height - contentHeight) > .5) TimelinePlayhead.Height = contentHeight;
 
         var (visibleStart, visibleEnd) = EditorTimelineLayout.VisibleWindow(
             CurrentTimelineScrollOffset(),
@@ -385,8 +390,9 @@ public sealed partial class EditorPage
         if (sender is not FrameworkElement block || block.DataContext is not int regionIndex) return;
         var regions = _document.Regions;
         if (regionIndex < 0 || regionIndex >= regions.Count) return;
-        _document.Select(regionIndex);
-        RenderDocument();
+        // RegionList là chủ sở hữu duy nhất của việc chọn vùng (BLUR-03): timeline
+        // chỉ gán chỉ số, không tự gọi _document.Select.
+        RegionList.SelectedIndex = regionIndex;
     }
 
     private void TimelineCueListSelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -484,7 +490,7 @@ public sealed partial class EditorPage
         QueueTimelineRender();
     }
 
-    private void TimelineScroll_SizeChanged(object sender, SizeChangedEventArgs e) => QueueTimelineRender();
+    private void TimelineViewportResized(object sender, SizeChangedEventArgs e) => QueueTimelineRender();
 
     private void TimelineRuler_PointerPressed(object sender, PointerRoutedEventArgs e) => SeekTimelineFromPointer(e);
 
