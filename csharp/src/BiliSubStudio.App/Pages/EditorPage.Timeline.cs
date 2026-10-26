@@ -21,10 +21,11 @@ namespace BiliSubStudio.App.Pages;
 /// </summary>
 public sealed partial class EditorPage
 {
-    private const int TimelineLaneEffect = 0;
-    private const int TimelineLaneSubtitle = 1;
-    private const int TimelineLaneVoice = 2;
-    private const int TimelineLaneCount = 3;
+    private const int TimelineLaneVideo = 0;
+    private const int TimelineLaneEffect = 1;
+    private const int TimelineLaneSubtitle = 2;
+    private const int TimelineLaneVoice = 3;
+    private const int TimelineLaneCount = 4;
     private const double TimelineRulerGap = 3;
     private const int MaxTimelineBlocks = 600;
     private const double TimelineCueEdgeGrabPixels = 6;
@@ -47,6 +48,8 @@ public sealed partial class EditorPage
     private double _timelineDragNewEnd;
     private double _timelineDragOriginScreenX;
     private FrameworkElement? _timelineDragBlock;
+    private IReadOnlyList<EditorTimelineClip> _timelineClips = [];
+    private int _timelineSelectedClipIndex = -1;
 
     private static readonly SolidColorBrush TimelineTickBrush = TimelineBrush(255, 88, 100, 118);
     private static readonly SolidColorBrush TimelineMajorTickBrush = TimelineBrush(255, 148, 164, 186);
@@ -60,6 +63,8 @@ public sealed partial class EditorPage
     private static readonly SolidColorBrush TimelineVoiceReviewBrush = TimelineBrush(255, 239, 68, 68);
     private static readonly SolidColorBrush TimelineTrimShadeBrush = TimelineBrush(140, 10, 16, 26);
     private static readonly SolidColorBrush TimelineSummaryBrush = TimelineBrush(255, 72, 86, 108);
+    private static readonly SolidColorBrush TimelineClipBrush = TimelineBrush(255, 45, 212, 191);
+    private static readonly SolidColorBrush TimelineClipSelectedBrush = TimelineBrush(255, 125, 211, 252);
 
     private static SolidColorBrush TimelineBrush(byte alpha, byte red, byte green, byte blue) =>
         new(Color.FromArgb(alpha, red, green, blue));
@@ -72,6 +77,7 @@ public sealed partial class EditorPage
         // Không dùng thuộc tính SizeChanged trong XAML: repo cấm layout mutate
         // từ SizeChanged. Subscribe bằng code + dispatch trễ để không re-enter.
         TimelineScrollViewer.SizeChanged += TimelineViewportResized;
+        SyncTimelineHeaderRows();
         // WinUI nối handler ValueChanged SAU khi nạp XAML, nên Value="35" trong
         // XAML không được áp cho code. Đặt zoom ở đây để trạng thái luôn
         // xác định, không phụ thuộc thứ tự nạp XAML.
@@ -80,6 +86,22 @@ public sealed partial class EditorPage
 
     private const double DefaultTimelineZoom = 35;
     private const double ReadableTimelinePixelsPerSecond = 8;
+
+    /// <summary>
+    /// Cột nhãn lane phải khớp đúng chiều cao lane trong Canvas, nếu không
+    /// chữ sẽ trôi dần theo từng lane (mỗi lane lệch đúng bằng khoảng cách
+    /// giữa các lane).
+    /// </summary>
+    private void SyncTimelineHeaderRows()
+    {
+        if (TimelineHeaderGrid is null) return;
+        var rows = TimelineHeaderGrid.RowDefinitions;
+        if (rows.Count < 2 + TimelineLaneCount) return;
+        rows[0].Height = new GridLength(EditorTimelineLayout.RulerHeight);
+        rows[1].Height = new GridLength(TimelineRulerGap);
+        for (var lane = 0; lane < TimelineLaneCount; lane++)
+            rows[2 + lane].Height = new GridLength(EditorTimelineLayout.LaneHeight);
+    }
 
     /// <summary>
     /// Mở nguồn/project mới: dải thời gian phải vừa khung và quay về đầu.
@@ -92,13 +114,30 @@ public sealed partial class EditorPage
         _timelineScrollOffset = 0;
         _timelineDragCueIndex = -1;
         _timelineDragBlock = null;
+        ApplyTimelineComposition();
         ApplyTimelineFit();
     }
+
+    /// <summary>
+    /// Nạp danh sách clip của project. Dự án cũ chưa có timeline thì tự sinh
+    /// một clip từ video nguồn để không phá dự án đang dùng.
+    /// </summary>
+    private void ApplyTimelineComposition()
+    {
+        EditorSourceFingerprint? fingerprint = _project?.Source;
+        if (fingerprint is null && _media is not null)
+            fingerprint = new EditorSourceFingerprint(_path ?? string.Empty, 0, 0, _media.Width, _media.Height, _media.Duration);
+        _timelineClips = EditorTimelineComposition.Resolve(_project?.Timeline, fingerprint ?? default);
+        _timelineSelectedClipIndex = _timelineClips.Count > 0 ? 0 : -1;
+    }
+
+    /// <summary>Tổng thời lượng của dải ghép (tổng các clip).</summary>
+    private double TimelineDuration => EditorTimelineComposition.TotalDuration(_timelineClips);
 
     private void ApplyTimelineFit()
     {
         if (TimelineScrollViewer is null) return;
-        var duration = _media?.Duration ?? 0;
+        var duration = TimelineDuration > 0 ? TimelineDuration : _media?.Duration ?? 0;
         var viewport = TimelineScrollViewer.ViewportWidth > 1 ? TimelineScrollViewer.ViewportWidth : TimelineScrollViewer.ActualWidth;
         if (duration <= 0 || viewport <= 1) return;
         _timelineFitPending = false;
@@ -150,7 +189,7 @@ public sealed partial class EditorPage
     private void RenderTimeline()
     {
         if (TimelineContentGrid is null || TimelineRulerCanvas is null || TimelineTracksCanvas is null) return;
-        var duration = _media?.Duration ?? 0;
+        var duration = TimelineDuration > 0 ? TimelineDuration : _media?.Duration ?? 0;
         var pps = _timelinePixelsPerSecond;
         var contentWidth = EditorTimelineLayout.ContentWidth(duration, pps);
         var tracksHeight = EditorTimelineLayout.TracksHeight(TimelineLaneCount);
@@ -265,9 +304,67 @@ public sealed partial class EditorPage
             TimelineTracksCanvas.Children.Add(background);
         }
 
+        RenderTimelineVideoBlocks(pps, visibleStart, visibleEnd);
         RenderTimelineEffectBlocks(pps, visibleStart, visibleEnd);
         RenderTimelineSubtitleBlocks(pps, visibleStart, visibleEnd);
         RenderTimelineVoiceBlocks(pps, visibleStart, visibleEnd);
+    }
+
+    /// <summary>
+    /// Lane video: mỗi clip là một khối trên dải ghép. Bấm vào khối để chọn
+    /// clip (dùng cho tách/xoá), clip chứa playhead được tô sáng.
+    /// </summary>
+    private void RenderTimelineVideoBlocks(double pps, double visibleStart, double visibleEnd)
+    {
+        if (_timelineClips.Count == 0) return;
+        var starts = EditorTimelineComposition.Starts(_timelineClips);
+        var playheadClip = EditorTimelineComposition.Locate(_timelineClips, Timeline.Value).Clip.Id;
+        for (var index = 0; index < _timelineClips.Count; index++)
+        {
+            var clip = _timelineClips[index];
+            var timelineStart = starts[index];
+            var timelineEnd = timelineStart + clip.Duration;
+            if (!EditorTimelineLayout.IntersectsVisible(timelineStart, timelineEnd, visibleStart, visibleEnd)) continue;
+            var width = Math.Max(2, EditorTimelineLayout.XForTime(clip.Duration, pps));
+            var selected = index == _timelineSelectedClipIndex || clip.Id == playheadClip;
+            var block = new Border
+            {
+                Width = width,
+                Height = EditorTimelineLayout.LaneHeight - 4,
+                CornerRadius = new CornerRadius(3),
+                Background = selected ? TimelineClipSelectedBrush : TimelineClipBrush,
+                BorderBrush = index == _timelineSelectedClipIndex ? TimelineCueSelectedBrush : TimelineBrush(0, 0, 0, 0),
+                BorderThickness = new Thickness(index == _timelineSelectedClipIndex ? 1 : 0),
+            };
+            if (width >= 46)
+            {
+                block.Child = new TextBlock
+                {
+                    Text = TrimPreview(clip.Label),
+                    FontSize = 9,
+                    Foreground = TimelineBrush(255, 8, 47, 55),
+                    Margin = new Thickness(4, 0, 2, 0),
+                    VerticalAlignment = VerticalAlignment.Center,
+                    IsTextScaleFactorEnabled = false,
+                };
+            }
+            Canvas.SetLeft(block, EditorTimelineLayout.XForTime(timelineStart, pps));
+            Canvas.SetTop(block, EditorTimelineLayout.LaneTop(TimelineLaneVideo) + 2);
+            ToolTipService.SetToolTip(block,
+                $"{clip.Label} · {FormatClock(clip.Duration)} · nguồn {clip.SourcePath}\nKéo mép phải để cắt đoạn này.");
+            var captured = index;
+            block.PointerPressed += (_, args) => TimelineVideoClipPressed(captured, args);
+            TimelineTracksCanvas.Children.Add(block);
+        }
+    }
+
+    private void TimelineVideoClipPressed(int index, PointerRoutedEventArgs args)
+    {
+        if (index < 0 || index >= _timelineClips.Count) return;
+        _timelineSelectedClipIndex = index;
+        QueueTimelineRender();
+        var clip = _timelineClips[index];
+        StatusText.Text = $"Đang chọn đoạn “{clip.Label}” ({FormatClock(clip.Duration)}). Dùng Tách/Xoá để chỉnh dải ghép.";
     }
 
     private void RenderTimelineEffectBlocks(double pps, double visibleStart, double visibleEnd)
@@ -279,9 +376,11 @@ public sealed partial class EditorPage
             var region = regions[index];
             var start = region.WholeVideo ? 0 : region.Start;
             var end = region.WholeVideo ? duration : region.End;
-            if (!EditorTimelineLayout.IntersectsVisible(start, end, visibleStart, visibleEnd)) continue;
-            var left = EditorTimelineLayout.XForTime(start, pps);
-            var width = Math.Max(2, EditorTimelineLayout.XForTime(end - start, pps));
+            var timelineStart = TimelineTimeForSource(start);
+            var timelineEnd = TimelineTimeForSource(end);
+            if (!EditorTimelineLayout.IntersectsVisible(timelineStart, timelineEnd, visibleStart, visibleEnd)) continue;
+            var left = EditorTimelineLayout.XForTime(timelineStart, pps);
+            var width = Math.Max(2, EditorTimelineLayout.XForTime(timelineEnd - timelineStart, pps));
             var block = new Border
             {
                 Width = width,
@@ -307,7 +406,11 @@ public sealed partial class EditorPage
         if (cues is null || cues.Count == 0) return;
         var visible = 0;
         foreach (var cue in cues)
-            if (EditorTimelineLayout.IntersectsVisible(cue.Start, cue.End, visibleStart, visibleEnd)) visible++;
+            if (EditorTimelineLayout.IntersectsVisible(
+                    TimelineTimeForSource(cue.Start),
+                    TimelineTimeForSource(cue.End),
+                    visibleStart,
+                    visibleEnd)) visible++;
         if (visible > MaxTimelineBlocks)
         {
             // Mật độ quá cao: dựng một thanh tổng hợp thay vì hàng nghìn element.
@@ -330,9 +433,11 @@ public sealed partial class EditorPage
         for (var index = 0; index < cues.Count; index++)
         {
             var cue = cues[index];
-            if (!EditorTimelineLayout.IntersectsVisible(cue.Start, cue.End, visibleStart, visibleEnd)) continue;
-            var left = EditorTimelineLayout.XForTime(cue.Start, pps);
-            var width = Math.Max(2, EditorTimelineLayout.XForTime(cue.End - cue.Start, pps));
+            var timelineStart = TimelineTimeForSource(cue.Start);
+            var timelineEnd = TimelineTimeForSource(cue.End);
+            if (!EditorTimelineLayout.IntersectsVisible(timelineStart, timelineEnd, visibleStart, visibleEnd)) continue;
+            var left = EditorTimelineLayout.XForTime(timelineStart, pps);
+            var width = Math.Max(2, EditorTimelineLayout.XForTime(timelineEnd - timelineStart, pps));
             var hasVietnamese = !string.IsNullOrWhiteSpace(cue.VietnameseText);
             var selected = _subtitleCueSelectedIndex == index;
             var block = new Border
@@ -375,9 +480,11 @@ public sealed partial class EditorPage
         if (track is null) return;
         var start = track.Start;
         var end = track.Start + Math.Max(0, track.Duration);
-        if (!EditorTimelineLayout.IntersectsVisible(start, end, visibleStart, visibleEnd)) return;
-        var left = EditorTimelineLayout.XForTime(start, pps);
-        var width = Math.Max(2, EditorTimelineLayout.XForTime(end - start, pps));
+        var timelineStart = TimelineTimeForSource(start);
+        var timelineEnd = TimelineTimeForSource(end);
+        if (!EditorTimelineLayout.IntersectsVisible(timelineStart, timelineEnd, visibleStart, visibleEnd)) return;
+        var left = EditorTimelineLayout.XForTime(timelineStart, pps);
+        var width = Math.Max(2, EditorTimelineLayout.XForTime(timelineEnd - timelineStart, pps));
         var block = new Border
         {
             Width = width,
@@ -392,8 +499,11 @@ public sealed partial class EditorPage
 
         var visibleWindows = 0;
         foreach (var window in _voiceCueWindows.Values)
-            if (EditorTimelineLayout.IntersectsVisible(window.VoiceStart, window.VoiceEnd, visibleStart, visibleEnd))
-                visibleWindows++;
+            if (EditorTimelineLayout.IntersectsVisible(
+                    TimelineTimeForSource(window.VoiceStart),
+                    TimelineTimeForSource(window.VoiceEnd),
+                    visibleStart,
+                    visibleEnd)) visibleWindows++;
         if (visibleWindows > MaxTimelineBlocks)
         {
             var summary = new Border
@@ -413,19 +523,124 @@ public sealed partial class EditorPage
 
         foreach (var window in _voiceCueWindows.Values)
         {
-            if (!EditorTimelineLayout.IntersectsVisible(window.VoiceStart, window.VoiceEnd, visibleStart, visibleEnd)) continue;
+            var windowStart = TimelineTimeForSource(window.VoiceStart);
+            var windowEnd = TimelineTimeForSource(window.VoiceEnd);
+            if (!EditorTimelineLayout.IntersectsVisible(windowStart, windowEnd, visibleStart, visibleEnd)) continue;
             var mark = new Rectangle
             {
-                Width = Math.Max(1, EditorTimelineLayout.XForTime(window.VoiceEnd - window.VoiceStart, pps)),
+                Width = Math.Max(1, EditorTimelineLayout.XForTime(windowEnd - windowStart, pps)),
                 Height = EditorTimelineLayout.LaneHeight - 4,
                 Fill = string.Equals(window.Status, "review", StringComparison.OrdinalIgnoreCase)
                     ? TimelineVoiceReviewBrush
                     : TimelineBrush(60, 255, 255, 255),
             };
-            Canvas.SetLeft(mark, EditorTimelineLayout.XForTime(window.VoiceStart, pps));
+            Canvas.SetLeft(mark, EditorTimelineLayout.XForTime(windowStart, pps));
             Canvas.SetTop(mark, EditorTimelineLayout.LaneTop(TimelineLaneVoice) + 2);
             TimelineTracksCanvas.Children.Add(mark);
         }
+    }
+
+    /// <summary>
+    /// Đổi thời gian trong file nguồn sang thời gian trên dải ghép. Dải một
+    /// video thì bằng nhau; dải nhiều clip thì tính theo vị trí của clip chứa
+    /// thời gian đó.
+    /// </summary>
+    private double TimelineTimeForSource(double sourceTime)
+    {
+        if (_timelineClips.Count <= 1) return sourceTime;
+        var starts = EditorTimelineComposition.Starts(_timelineClips);
+        for (var index = 0; index < _timelineClips.Count; index++)
+        {
+            var clip = _timelineClips[index];
+            if (sourceTime >= clip.Start - .0005 && sourceTime <= clip.End + .0005)
+                return starts[index] + (sourceTime - clip.Start);
+        }
+        return sourceTime;
+    }
+
+    /// <summary>Đổi thời gian trên dải ghép về thời gian trong file nguồn của clip tương ứng.</summary>
+    private double SourceTimeForTimeline(double timelineTime)
+        => EditorTimelineComposition.Locate(_timelineClips, timelineTime).SourceTime;
+
+    private void ApplyTimelineClips(IReadOnlyList<EditorTimelineClip> clips)
+    {
+        _timelineClips = clips;
+        _timelineSelectedClipIndex = clips.Count > 0 ? Math.Clamp(_timelineSelectedClipIndex, 0, clips.Count - 1) : -1;
+        if (_project is not null) _project = _project with { Timeline = new EditorTimelineProject(clips) };
+        QueueTimelineRender();
+    }
+
+    private async void TimelineAddClipButton_Click(object sender, RoutedEventArgs args)
+    {
+        try
+        {
+            var path = await _picker.PickVideoAsync();
+            if (string.IsNullOrWhiteSpace(path)) return;
+            var media = await _application.Media.ProbeAsync(path, CancellationToken.None);
+            if (media.Duration <= 0)
+            {
+                StatusText.Text = "Không đọc được thời lượng của video vừa chọn.";
+                return;
+            }
+            var clip = new EditorTimelineClip(
+                $"clip-{Guid.NewGuid().ToString("N")[..8]}",
+                path,
+                0,
+                media.Duration,
+                Path.GetFileName(path));
+            var clips = new List<EditorTimelineClip>(_timelineClips) { clip };
+            ApplyTimelineClips(clips);
+            await SaveProjectNowAsync();
+            StatusText.Text = $"Đã thêm đoạn “{clip.Label}” ({FormatClock(clip.Duration)}) vào cuối dải thời gian.";
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception error)
+        {
+            StatusText.Text = "Không thêm được đoạn video: " + error.Message;
+        }
+    }
+
+    private async void TimelineSplitClipButton_Click(object sender, RoutedEventArgs args)
+    {
+        if (_timelineClips.Count == 0) return;
+        var (clip, sourceTime, _) = EditorTimelineComposition.Locate(_timelineClips, Timeline.Value);
+        var index = -1;
+        for (var position = 0; position < _timelineClips.Count; position++)
+        {
+            if (_timelineClips[position].Id != clip.Id) continue;
+            index = position;
+            break;
+        }
+        var clips = EditorTimelineComposition.SplitAtSourceTime(_timelineClips, index, sourceTime);
+        if (clips.Count == _timelineClips.Count)
+        {
+            StatusText.Text = "Không tách được: hãy đặt playhead vào giữa một đoạn video.";
+            return;
+        }
+        _timelineSelectedClipIndex = index;
+        ApplyTimelineClips(clips);
+        await SaveProjectNowAsync();
+        StatusText.Text = "Đã tách đoạn video tại playhead.";
+    }
+
+    private async void TimelineRemoveClipButton_Click(object sender, RoutedEventArgs args)
+    {
+        var index = _timelineSelectedClipIndex;
+        if (index < 0 || index >= _timelineClips.Count)
+        {
+            StatusText.Text = "Hãy bấm vào một đoạn video trên dải để chọn đoạn cần xoá.";
+            return;
+        }
+        if (_timelineClips.Count <= 1)
+        {
+            StatusText.Text = "Dải thời gian phải còn ít nhất một đoạn video.";
+            return;
+        }
+        var label = _timelineClips[index].Label;
+        var clips = EditorTimelineComposition.RemoveAt(_timelineClips, index);
+        ApplyTimelineClips(clips);
+        await SaveProjectNowAsync();
+        StatusText.Text = $"Đã xoá đoạn “{label}” khỏi dải thời gian.";
     }
 
     private static SolidColorBrush TimelineEffectBrush(string effect) => effect?.Trim().ToLowerInvariant() switch
@@ -624,7 +839,7 @@ public sealed partial class EditorPage
         {
             ApplyTimelineZoom(TimelineZoomForPixelsPerSecond(ReadableTimelinePixelsPerSecond));
         }
-        _timelinePendingScrollTime = time;
+        _timelinePendingScrollTime = TimelineTimeForSource(time);
         QueueTimelineRender();
     }
 
@@ -640,7 +855,8 @@ public sealed partial class EditorPage
         if (viewport <= 1) return;
         var pps = _timelinePixelsPerSecond;
         var x = EditorTimelineLayout.XForTime(time, pps);
-        var offset = Math.Clamp(x - viewport / 2, 0, Math.Max(0, EditorTimelineLayout.ContentWidth(_media?.Duration ?? 0, pps) - viewport));
+        var timelineDuration = TimelineDuration > 0 ? TimelineDuration : _media?.Duration ?? 0;
+        var offset = Math.Clamp(x - viewport / 2, 0, Math.Max(0, EditorTimelineLayout.ContentWidth(timelineDuration, pps) - viewport));
         if (Math.Abs(offset - CurrentTimelineScrollOffset()) < 1) return;
         TimelineScrollViewer.UpdateLayout();
         TimelineScrollViewer.ChangeView(offset, null, null);
@@ -649,7 +865,7 @@ public sealed partial class EditorPage
     private void UpdateTimelinePlayhead()
     {
         if (TimelinePlayhead is null) return;
-        var x = EditorTimelineLayout.XForTime(Timeline.Value, _timelinePixelsPerSecond);
+        var x = EditorTimelineLayout.XForTime(TimelineTimeForSource(Timeline.Value), _timelinePixelsPerSecond);
         Canvas.SetLeft(TimelinePlayhead, x);
     }
 
@@ -724,8 +940,8 @@ public sealed partial class EditorPage
     {
         if (_media is null || TimelineContentGrid is null) return;
         var position = e.GetCurrentPoint(TimelineContentGrid).Position;
-        var time = EditorTimelineLayout.TimeForX(position.X, _timelinePixelsPerSecond);
-        var target = Math.Clamp(time, 0, _media.Duration);
+        var timelineTime = EditorTimelineLayout.TimeForX(position.X, _timelinePixelsPerSecond);
+        var target = Math.Clamp(SourceTimeForTimeline(timelineTime), 0, _media.Duration);
         _ = SeekEditorToSubtitleCueAsync(target);
     }
 }

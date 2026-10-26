@@ -2471,6 +2471,7 @@ public sealed partial class EditorPage : Page
             _subtitleStyle),
         Audio = _audioSettings,
         Trim = _project.Trim,
+        Timeline = _timelineClips.Count > 0 ? new EditorTimelineProject(_timelineClips) : _project.Timeline,
         UpdatedUtc = DateTimeOffset.UtcNow,
     };
 

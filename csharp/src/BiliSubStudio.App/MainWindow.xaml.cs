@@ -239,6 +239,7 @@ public sealed partial class MainWindow : Window
             ShowGlobalLog(false);
         }
         ContentFrame.Content = _pages["video"];
+        MaximizeMainWindow();
         StartupDiagnostics.Write("layout-smoke-pass");
     }
 
@@ -524,7 +525,29 @@ public sealed partial class MainWindow : Window
         var height = Math.Min(900, primaryHeight);
         var x = Math.Max(0, (primaryWidth - width) / 2);
         var y = Math.Max(0, (primaryHeight - height) / 2);
-        AppWindow.GetFromWindowId(windowId).MoveAndResize(new RectInt32(x, y, width, height));
+        var appWindow = AppWindow.GetFromWindowId(windowId);
+        // Mặc định mở full màn hình: khung 1500x900 che mất player + dải
+        // thời gian trên màn hình lớn. Vẫn kẹp trong màn chính như cũ.
+        if (appWindow.Presenter is OverlappedPresenter overlapped)
+        {
+            overlapped.Maximize();
+            return;
+        }
+        appWindow.MoveAndResize(new RectInt32(x, y, width, height));
+    }
+
+    private void MaximizeMainWindow()
+    {
+        try
+        {
+            var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
+            var appWindow = AppWindow.GetFromWindowId(Win32Interop.GetWindowIdFromWindow(hwnd));
+            if (appWindow.Presenter is OverlappedPresenter presenter) presenter.Maximize();
+        }
+        catch (Exception error)
+        {
+            StartupDiagnostics.WriteException("main-window-maximize-failed", error);
+        }
     }
 
     [DllImport("user32.dll", SetLastError = true)]

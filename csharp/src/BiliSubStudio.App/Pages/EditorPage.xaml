@@ -789,9 +789,20 @@
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
                         <TextBlock Text="Dải thời gian" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center" />
                         <TextBlock Grid.Column="1" x:Name="TimelineZoomText" Style="{StaticResource MutedTextStyle}" FontSize="11" VerticalAlignment="Center" Text="—" />
+                        <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                            <Button x:Name="TimelineAddClipButton" Click="TimelineAddClipButton_Click" Style="{StaticResource SecondaryButtonStyle}"
+                                    Padding="8,3" Height="26" MinHeight="26" ToolTipService.ToolTip="Thêm một video vào cuối dải thời gian">+ Video</Button>
+                            <Button x:Name="TimelineSplitClipButton" Click="TimelineSplitClipButton_Click" Style="{StaticResource SecondaryButtonStyle}"
+                                    Padding="8,3" Height="26" MinHeight="26" ToolTipService.ToolTip="Tách đoạn video tại vị trí playhead">Tách</Button>
+                            <Button x:Name="TimelineRemoveClipButton" Click="TimelineRemoveClipButton_Click" Style="{StaticResource SecondaryButtonStyle}"
+                                    Padding="8,3" Height="26" MinHeight="26" ToolTipService.ToolTip="Xoá đoạn video đang chọn">Xoá</Button>
+                        </StackPanel>
                         <Slider Grid.Column="3" x:Name="TimelineZoomSlider" Minimum="0" Maximum="100" Value="35" Width="130"
                                 ValueChanged="TimelineZoom_ValueChanged" VerticalAlignment="Center" AutomationProperties.Name="Mức thu phóng dải thời gian" />
                         <Button Grid.Column="4" x:Name="TimelineZoomOutButton" Content="−" Click="TimelineZoomOut_Click" Padding="0" Width="30" Height="26" MinWidth="30"
@@ -808,12 +819,21 @@
                             <ColumnDefinition Width="*" />
                         </Grid.ColumnDefinitions>
 
-                        <StackPanel Grid.Column="0" Width="72">
-                            <TextBlock Text="Thước" FontSize="9" Foreground="{ThemeResource MutedTextBrush}" Height="26" VerticalAlignment="Center" />
-                            <TextBlock x:Name="TimelineLaneEffectLabel" Text="Hiệu ứng" FontSize="10" Foreground="{ThemeResource SecondaryTextBrush}" Height="26" VerticalAlignment="Center" />
-                            <TextBlock x:Name="TimelineLaneSubtitleLabel" Text="Phụ đề" FontSize="10" Foreground="{ThemeResource SecondaryTextBrush}" Height="26" VerticalAlignment="Center" />
-                            <TextBlock x:Name="TimelineLaneVoiceLabel" Text="Voice" FontSize="10" Foreground="{ThemeResource SecondaryTextBrush}" Height="26" VerticalAlignment="Center" />
-                        </StackPanel>
+                        <Grid Grid.Column="0" Width="78" x:Name="TimelineHeaderGrid">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="26" />
+                                <RowDefinition Height="3" />
+                                <RowDefinition Height="26" />
+                                <RowDefinition Height="26" />
+                                <RowDefinition Height="26" />
+                                <RowDefinition Height="26" />
+                            </Grid.RowDefinitions>
+                            <TextBlock Grid.Row="0" Text="Thước" FontSize="9" Foreground="{ThemeResource MutedTextBrush}" VerticalAlignment="Center" />
+                            <TextBlock Grid.Row="2" x:Name="TimelineLaneVideoLabel" Text="Video" FontSize="10" Foreground="{ThemeResource SecondaryTextBrush}" VerticalAlignment="Center" />
+                            <TextBlock Grid.Row="3" x:Name="TimelineLaneEffectLabel" Text="Hiệu ứng" FontSize="10" Foreground="{ThemeResource SecondaryTextBrush}" VerticalAlignment="Center" />
+                            <TextBlock Grid.Row="4" x:Name="TimelineLaneSubtitleLabel" Text="Phụ đề" FontSize="10" Foreground="{ThemeResource SecondaryTextBrush}" VerticalAlignment="Center" />
+                            <TextBlock Grid.Row="5" x:Name="TimelineLaneVoiceLabel" Text="Voice" FontSize="10" Foreground="{ThemeResource SecondaryTextBrush}" VerticalAlignment="Center" />
+                        </Grid>
 
                         <ScrollViewer Grid.Column="1" x:Name="TimelineScrollViewer" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled"
                                       ViewChanged="TimelineScroll_ViewChanged" Background="Transparent">

@@ -93,7 +93,8 @@ public sealed record EditorProject(
     EditorSpeechProject? Speech = null,
     EditorTtsProject? Tts = null,
     IReadOnlyDictionary<string, string>? VoiceOverrides = null,
-    EditorTrimRange? Trim = null);
+    EditorTrimRange? Trim = null,
+    EditorTimelineProject? Timeline = null);
 
 public sealed record EditorProjectSummary(
     string Id,

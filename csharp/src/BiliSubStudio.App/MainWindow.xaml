@@ -15,17 +15,17 @@
             AlwaysShowHeader="False"
             Background="{ThemeResource CanvasBrush}"
             IsBackButtonVisible="Collapsed"
-            IsPaneOpen="True"
+            IsPaneOpen="False"
             IsPaneToggleButtonVisible="True"
             IsSettingsVisible="False"
             OpenPaneLength="216"
             PaneDisplayMode="Left"
             SelectionChanged="Navigation_SelectionChanged">
             <NavigationView.MenuItems>
-                <NavigationViewItem Content="Tải media" Tag="video" />
-                <NavigationViewItem Content="OCR phụ đề" Tag="ocr" />
-                <NavigationViewItem Content="Chỉnh video" Tag="editor" />
-                <NavigationViewItem Content="Cài đặt" Tag="settings" />
+                <NavigationViewItem FontFamily="Segoe Fluent Icons" FontSize="18" Icon="&#xE896;" Tag="video" ToolTipService.ToolTip="Tải media" />
+                <NavigationViewItem FontFamily="Segoe Fluent Icons" FontSize="18" Icon="&#xE8A5;" Tag="ocr" ToolTipService.ToolTip="OCR phụ đề" />
+                <NavigationViewItem FontFamily="Segoe Fluent Icons" FontSize="18" Icon="&#xE714;" Tag="editor" ToolTipService.ToolTip="Chỉnh video" />
+                <NavigationViewItem FontFamily="Segoe Fluent Icons" FontSize="18" Icon="&#xE713;" Tag="settings" ToolTipService.ToolTip="Cài đặt" />
             </NavigationView.MenuItems>
             <Frame x:Name="ContentFrame" Background="{ThemeResource CanvasBrush}" />
         </NavigationView>
