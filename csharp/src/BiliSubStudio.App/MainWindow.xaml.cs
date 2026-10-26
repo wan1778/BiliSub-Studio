@@ -252,6 +252,7 @@ public sealed partial class MainWindow : Window
         try
         {
             ResizeInitialWindow();
+            Navigation.IsPaneOpen = false;
             await _application.InitializeAsync();
             ((VideoPage)_pages["video"]).ApplyConfiguration();
             ((OcrPage)_pages["ocr"]).ApplyConfiguration();
