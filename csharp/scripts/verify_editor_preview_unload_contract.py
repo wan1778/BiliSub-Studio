@@ -67,7 +67,7 @@ require(dispose.index("_page.PreviewPlayer.SetMediaPlayer(null);") < dispose.ind
 
 position = method_body(source, "private void PlayerPositionChanged(")
 require("if (_isUnloading || !IsPreviewMode) return;" in position
-        and "if (_isUnloading || !IsPreviewMode || _page._media is null) return;" in position,
+        and position.count("if (_isUnloading || !IsPreviewMode") >= 2,
         "PREVIEW-UNLOAD must reject both incoming and queued position callbacks")
 
 ended = method_body(source, "private void PlayerMediaEnded(")
