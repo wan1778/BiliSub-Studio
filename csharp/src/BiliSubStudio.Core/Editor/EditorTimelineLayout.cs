@@ -10,7 +10,10 @@ public static class EditorTimelineLayout
     public const double RulerHeight = 26;
     public const double LaneHeight = 26;
     public const double LaneGap = 3;
-    public const double MinPixelsPerSecond = .4;
+    // 0.02 px/s là mức đủ nhỏ để "Vừa khung" nhìn trọn video dài (3.6 giờ =
+    // 13032s cần ~0.08 px/s cho khung ~1000px). Trần cũ 0.4 khiến nút Vừa
+    // khung không bao giờ vừa với video dài.
+    public const double MinPixelsPerSecond = .02;
     public const double MaxPixelsPerSecond = 600;
     public const double MaxContentWidth = 120_000;
     public const double MinimumTickPixels = 84;

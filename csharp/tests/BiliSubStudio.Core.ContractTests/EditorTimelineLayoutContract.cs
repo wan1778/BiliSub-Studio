@@ -11,6 +11,12 @@ internal static class EditorTimelineLayoutContract
     {
         Require(Close(EditorTimelineLayout.FitPixelsPerSecond(100, 1000), 10),
             "fit zoom must show 100s inside 1000px");
+        // Video 3.6 giờ phải vừa được trong khung ~1000px: trần zoom cũ 0.4
+        // khiến nút "Vừa khung" không bao giờ vừa và zoom bị kẹp ở mức min.
+        var longFit = EditorTimelineLayout.FitPixelsPerSecond(13032, 1000);
+        Require(longFit > .05 && longFit < .1, "a 3.6h video must fit the viewport instead of clamping");
+        Require(EditorTimelineLayout.ContentWidth(13032, longFit) <= 1100,
+            "fit content width must stay inside the viewport");
         Require(EditorTimelineLayout.FitPixelsPerSecond(0, 1000) == EditorTimelineLayout.MinPixelsPerSecond,
             "empty media must not divide by zero");
         Require(EditorTimelineLayout.FitPixelsPerSecond(100, 0) == EditorTimelineLayout.MinPixelsPerSecond,

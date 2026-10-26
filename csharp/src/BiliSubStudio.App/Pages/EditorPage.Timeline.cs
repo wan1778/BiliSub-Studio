@@ -29,6 +29,7 @@ public sealed partial class EditorPage
 
     private double _timelinePixelsPerSecond = 10;
     private double _timelineScrollOffset;
+    private bool _timelineUserZoomed;
     private bool _syncingTimelineZoom;
     private bool _timelineRenderQueued;
     private bool _timelineSelectionHooked;
@@ -57,6 +58,24 @@ public sealed partial class EditorPage
         // Không dùng thuộc tính SizeChanged trong XAML: repo cấm layout mutate
         // từ SizeChanged. Subscribe bằng code + dispatch trễ để không re-enter.
         TimelineScrollViewer.SizeChanged += TimelineViewportResized;
+        // WinUI nối handler ValueChanged SAU khi nạp XAML, nên Value="35" trong
+        // XAML không được áp cho code. Đặt zoom ở đây để trạng thái luôn
+        // xác định, không phụ thuộc thứ tự nạp XAML.
+        ApplyTimelineZoom(DefaultTimelineZoom);
+    }
+
+    private const double DefaultTimelineZoom = 35;
+    private const double ReadableTimelinePixelsPerSecond = 8;
+
+    /// <summary>Đặt zoom từ giá trị slider (0..100) và cập nhật mọi thứ liên quan.</summary>
+    private void ApplyTimelineZoom(double zoom)
+    {
+        _syncingTimelineZoom = true;
+        try { TimelineZoomSlider.Value = Math.Clamp(zoom, TimelineZoomSlider.Minimum, TimelineZoomSlider.Maximum); }
+        finally { _syncingTimelineZoom = false; }
+        _timelinePixelsPerSecond = TimelinePixelsPerSecondForZoom(TimelineZoomSlider.Value);
+        UpdateTimelineZoomText();
+        QueueTimelineRender();
     }
 
     private static double TimelinePixelsPerSecondForZoom(double zoom)
@@ -409,6 +428,12 @@ public sealed partial class EditorPage
     private void ScrollTimelineToTime(double time)
     {
         if (TimelineScrollViewer is null) return;
+        // Nếu người dùng chưa tự zoom, mức fit cho video dài làm cue vô hình;
+        // phóng tới mức đọc được rồi mới cuộn tới cue.
+        if (!_timelineUserZoomed && _timelinePixelsPerSecond < ReadableTimelinePixelsPerSecond)
+        {
+            ApplyTimelineZoom(TimelineZoomForPixelsPerSecond(ReadableTimelinePixelsPerSecond));
+        }
         var viewport = TimelineScrollViewer.ViewportWidth > 1 ? TimelineScrollViewer.ViewportWidth : TimelineScrollViewer.ActualWidth;
         if (viewport <= 1) return;
         var pps = _timelinePixelsPerSecond;
@@ -437,18 +462,21 @@ public sealed partial class EditorPage
     private void TimelineZoom_ValueChanged(object sender, RangeBaseValueChangedEventArgs e)
     {
         if (_syncingTimelineZoom) return;
+        _timelineUserZoomed = true;
         _timelinePixelsPerSecond = TimelinePixelsPerSecondForZoom(e.NewValue);
         QueueTimelineRender();
     }
 
     private void TimelineZoomOut_Click(object sender, RoutedEventArgs e)
     {
-        TimelineZoomSlider.Value = Math.Max(TimelineZoomSlider.Minimum, TimelineZoomSlider.Value - 6);
+        _timelineUserZoomed = true;
+        ApplyTimelineZoom(TimelineZoomSlider.Value - 6);
     }
 
     private void TimelineZoomIn_Click(object sender, RoutedEventArgs e)
     {
-        TimelineZoomSlider.Value = Math.Min(TimelineZoomSlider.Maximum, TimelineZoomSlider.Value + 6);
+        _timelineUserZoomed = true;
+        ApplyTimelineZoom(TimelineZoomSlider.Value + 6);
     }
 
     private void TimelineFit_Click(object sender, RoutedEventArgs e)
@@ -456,11 +484,9 @@ public sealed partial class EditorPage
         var viewport = TimelineScrollViewer.ViewportWidth > 1 ? TimelineScrollViewer.ViewportWidth : TimelineScrollViewer.ActualWidth;
         var duration = _media?.Duration ?? 0;
         if (viewport <= 1 || duration <= 0) return;
+        _timelineUserZoomed = true;
         var pps = EditorTimelineLayout.FitPixelsPerSecond(duration, viewport);
-        _syncingTimelineZoom = true;
-        try { TimelineZoomSlider.Value = TimelineZoomForPixelsPerSecond(pps); }
-        finally { _syncingTimelineZoom = false; }
-        _timelinePixelsPerSecond = pps;
+        ApplyTimelineZoom(TimelineZoomForPixelsPerSecond(pps));
         TimelineScrollViewer.ChangeView(0, null, null);
         QueueTimelineRender();
     }
