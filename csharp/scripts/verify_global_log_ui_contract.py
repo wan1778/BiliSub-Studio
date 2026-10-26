@@ -40,9 +40,8 @@ require(nav == [
     ("Cài đặt", "settings"),
 ], f"production navigation drifted: {nav}")
 # Rail trái gọn: mỗi mục điều hướng phải có icon để hiển thị khi pane đóng.
-for attributes in nav_items:
-    require('Icon="' in attributes,
-            "every top-level navigation item must carry an icon for the compact rail")
+require('new FontIcon' in main_code,
+        "navigation items must get a Segoe Fluent Icons icon for the compact rail")
 require('IsPaneOpen="False"' in main_xaml,
         "the navigation rail must start collapsed so the editor gets the full width")
 # Mỗi lần mở app phải full màn hình: giao diện editor cần player + dải thời gian.

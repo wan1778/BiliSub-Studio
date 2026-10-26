@@ -22,10 +22,10 @@
             PaneDisplayMode="Left"
             SelectionChanged="Navigation_SelectionChanged">
             <NavigationView.MenuItems>
-                <NavigationViewItem FontFamily="Segoe Fluent Icons" FontSize="18" Icon="&#xE896;" ToolTipService.ToolTip="Tải media" Content="Tải media" Tag="video" />
-                <NavigationViewItem FontFamily="Segoe Fluent Icons" FontSize="18" Icon="&#xE8A5;" ToolTipService.ToolTip="OCR phụ đề" Content="OCR phụ đề" Tag="ocr" />
-                <NavigationViewItem FontFamily="Segoe Fluent Icons" FontSize="18" Icon="&#xE714;" ToolTipService.ToolTip="Chỉnh video" Content="Chỉnh video" Tag="editor" />
-                <NavigationViewItem FontFamily="Segoe Fluent Icons" FontSize="18" Icon="&#xE713;" ToolTipService.ToolTip="Cài đặt" Content="Cài đặt" Tag="settings" />
+                <NavigationViewItem Content="Tải media" Tag="video" />
+                <NavigationViewItem Content="OCR phụ đề" Tag="ocr" />
+                <NavigationViewItem Content="Chỉnh video" Tag="editor" />
+                <NavigationViewItem Content="Cài đặt" Tag="settings" />
             </NavigationView.MenuItems>
             <Frame x:Name="ContentFrame" Background="{ThemeResource CanvasBrush}" />
         </NavigationView>

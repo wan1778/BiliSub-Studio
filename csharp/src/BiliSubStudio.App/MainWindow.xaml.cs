@@ -12,6 +12,7 @@ using Microsoft.UI;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
 using Windows.Graphics;
 
 namespace BiliSubStudio.App;
@@ -133,6 +134,7 @@ public sealed partial class MainWindow : Window
         Closed += OnClosed;
         AppWindow.Closing += OnAppWindowClosing;
         Navigation.SelectedItem = Navigation.MenuItems[0];
+        ApplyNavigationIcons();
         ContentFrame.Content = _pages["video"];
         UpdateErrorBadge();
         _refreshGlobalTranslationProgress();
@@ -457,6 +459,32 @@ public sealed partial class MainWindow : Window
             _errorCount++;
             UpdateErrorBadge();
             ShowGlobalLog(true);
+        }
+    }
+
+    /// <summary>
+    /// Rail trái gọn: mỗi mục điều hướng dùng icon Segoe Fluent Icons nên khi
+    /// pane đóng vẫn nhận ra mục đang chọn (nhãn chữ nằm trong tooltip).
+    /// </summary>
+    private void ApplyNavigationIcons()
+    {
+        var glyphs = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["video"] = "\uE896",
+            ["ocr"] = "\uE8A5",
+            ["editor"] = "\uE714",
+            ["settings"] = "\uE713",
+        };
+        foreach (var item in Navigation.MenuItems.OfType<NavigationViewItem>())
+        {
+            if (item.Tag is not string tag || !glyphs.TryGetValue(tag, out var glyph)) continue;
+            item.Icon = new FontIcon
+            {
+                Glyph = glyph,
+                FontFamily = new FontFamily("Segoe Fluent Icons"),
+                FontSize = 18,
+            };
+            ToolTipService.SetToolTip(item, item.Content?.ToString() ?? tag);
         }
     }
 
