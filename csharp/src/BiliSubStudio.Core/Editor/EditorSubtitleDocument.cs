@@ -21,6 +21,12 @@ public sealed record EditorSubtitleSource(
     string Sha256,
     IReadOnlyList<EditorSubtitleCue> Cues);
 
+public enum EditorCueEdge
+{
+    Start,
+    End,
+}
+
 public static partial class EditorSubtitleDocument
 {
     public const long MaxSourceBytes = 32L * 1024 * 1024;
@@ -123,6 +129,47 @@ public static partial class EditorSubtitleDocument
             output.AppendLine();
         }
         return output.ToString().Replace("\r\n", "\n", StringComparison.Ordinal).Replace("\n", "\r\n", StringComparison.Ordinal);
+    }
+
+    public static string FormatTimestamp(double seconds)
+    {
+        if (!double.IsFinite(seconds)) throw new ArgumentOutOfRangeException(nameof(seconds));
+        var totalMilliseconds = (long)Math.Round(Math.Max(0, seconds) * 1000, MidpointRounding.AwayFromZero);
+        var hours = totalMilliseconds / 3_600_000;
+        var minutes = totalMilliseconds / 60_000 % 60;
+        var wholeSeconds = totalMilliseconds / 1000 % 60;
+        var milliseconds = totalMilliseconds % 1000;
+        return string.Create(CultureInfo.InvariantCulture, $"{hours:00}:{minutes:00}:{wholeSeconds:00},{milliseconds:000}");
+    }
+
+    public static string FormatTiming(double start, double end) =>
+        $"{FormatTimestamp(start)} --> {FormatTimestamp(end)}";
+
+    public static EditorSubtitleCue RetimeCue(
+        IReadOnlyList<EditorSubtitleCue> cues,
+        int index,
+        EditorCueEdge edge,
+        double value,
+        double minDuration = .2)
+    {
+        ArgumentNullException.ThrowIfNull(cues);
+        if (index < 0 || index >= cues.Count) throw new ArgumentOutOfRangeException(nameof(index));
+        if (!double.IsFinite(value)) throw new ArgumentOutOfRangeException(nameof(value));
+        if (!double.IsFinite(minDuration) || minDuration <= 0) throw new ArgumentOutOfRangeException(nameof(minDuration));
+        var cue = cues[index];
+        if (edge == EditorCueEdge.Start)
+        {
+            var previousEnd = index > 0 ? cues[index - 1].End : 0;
+            var maxStart = cue.End - minDuration;
+            var minStart = Math.Min(Math.Max(previousEnd, 0), maxStart);
+            var start = Math.Clamp(value, minStart, maxStart);
+            return cue with { Start = start, End = cue.End, Timing = FormatTiming(start, cue.End) };
+        }
+        var nextStart = index < cues.Count - 1 ? cues[index + 1].Start : double.PositiveInfinity;
+        var minEnd = cue.Start + minDuration;
+        var maxEnd = Math.Max(nextStart, minEnd);
+        var end = Math.Clamp(value, minEnd, maxEnd);
+        return cue with { Start = cue.Start, End = end, Timing = FormatTiming(cue.Start, end) };
     }
 
     public static void ValidateUnchangedTimeline(IReadOnlyList<EditorSubtitleCue> source, IReadOnlyList<EditorSubtitleCue> translated)

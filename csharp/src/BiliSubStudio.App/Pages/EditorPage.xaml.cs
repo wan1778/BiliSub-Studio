@@ -302,6 +302,7 @@ public sealed partial class EditorPage : Page
         _draftRegion = null;
         Timeline.Maximum = Math.Max(0.1, _media.Duration);
         Timeline.Value = trim.Start;
+        ResetTimelineForNewSource();
         PathText.Text = candidatePath;
         MediaText.Text = $"{_media.Width}×{_media.Height} · {_media.Duration:0.0}s · {_media.Codec} · preview xử lý dùng cùng pipeline FFmpeg với export";
         _syncingInputs = true;
@@ -389,6 +390,7 @@ public sealed partial class EditorPage : Page
         PathText.Text = candidate;
         MediaText.Text = $"{media.Width}×{media.Height} · {media.Duration:0.0}s · {media.Codec} · preview xử lý dùng cùng pipeline FFmpeg với export";
         Timeline.Maximum = Math.Max(0.1, media.Duration);
+        ResetTimelineForNewSource();
         await EnsureImageProjectLoadedAsync();
         await _playback.PrepareAsync();
         RenderDocument();
@@ -474,12 +476,23 @@ public sealed partial class EditorPage : Page
             var translated = restoreTranslatedCues
                 ? saved.Cues.ToDictionary(x => x.Id, x => x.VietnameseText, StringComparer.Ordinal)
                 : new Dictionary<string, string>(StringComparer.Ordinal);
+            var savedTimings = saved.Cues.ToDictionary(x => x.Id, x => x, StringComparer.Ordinal);
             _subtitleSource = current with
             {
-                Cues = current.Cues.Select(x => x with
+                Cues = current.Cues.Select(x =>
                 {
-                    VietnameseText = translated.TryGetValue(x.Id, out var value) ? value
-                        : saved.TranslationPolicyKey == EditorSubtitleDocument.DirectVietnamesePolicyKey ? x.SourceText : string.Empty,
+                    var vietnamese = translated.TryGetValue(x.Id, out var value) ? value
+                        : saved.TranslationPolicyKey == EditorSubtitleDocument.DirectVietnamesePolicyKey ? x.SourceText : string.Empty;
+                    if (!savedTimings.TryGetValue(x.Id, out var savedCue)) return x with { VietnameseText = vietnamese };
+                    if (Math.Abs(savedCue.Start - x.Start) < .0005 && Math.Abs(savedCue.End - x.End) < .0005)
+                        return x with { VietnameseText = vietnamese };
+                    return x with
+                    {
+                        VietnameseText = vietnamese,
+                        Start = savedCue.Start,
+                        End = savedCue.End,
+                        Timing = savedCue.Timing,
+                    };
                 }).ToArray(),
             };
             if (!restoreTranslatedCues && _project is not null)

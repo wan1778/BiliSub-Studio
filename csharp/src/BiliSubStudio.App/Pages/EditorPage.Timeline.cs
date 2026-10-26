@@ -26,13 +26,24 @@ public sealed partial class EditorPage
     private const int TimelineLaneCount = 3;
     private const double TimelineRulerGap = 3;
     private const int MaxTimelineBlocks = 600;
+    private const double TimelineCueEdgeGrabPixels = 6;
+    private const double TimelineCueMinDuration = .2;
+    private const double TimelineCueVisiblePixels = 3;
 
     private double _timelinePixelsPerSecond = 10;
     private double _timelineScrollOffset;
-    private bool _timelineUserZoomed;
     private bool _syncingTimelineZoom;
     private bool _timelineRenderQueued;
     private bool _timelineSelectionHooked;
+    private bool _timelineFitPending;
+    private int _timelineDragCueIndex = -1;
+    private EditorCueEdge _timelineDragEdge;
+    private double _timelineDragOriginContentX;
+    private double _timelineDragOriginStart;
+    private double _timelineDragOriginEnd;
+    private double _timelineDragNewStart;
+    private double _timelineDragNewEnd;
+    private FrameworkElement? _timelineDragBlock;
 
     private static readonly SolidColorBrush TimelineTickBrush = TimelineBrush(255, 88, 100, 118);
     private static readonly SolidColorBrush TimelineMajorTickBrush = TimelineBrush(255, 148, 164, 186);
@@ -66,6 +77,33 @@ public sealed partial class EditorPage
 
     private const double DefaultTimelineZoom = 35;
     private const double ReadableTimelinePixelsPerSecond = 8;
+
+    /// <summary>
+    /// Mở nguồn/project mới: dải thời gian phải vừa khung và quay về đầu.
+    /// Không làm vậy thì thước giữ zoom của project cũ và hiển thị sai phạm vi
+    /// (video 9 giờ nhìn như video 3 giờ).
+    /// </summary>
+    private void ResetTimelineForNewSource()
+    {
+        _timelineFitPending = true;
+        _timelineScrollOffset = 0;
+        _timelineDragCueIndex = -1;
+        _timelineDragBlock = null;
+        ApplyTimelineFit();
+    }
+
+    private void ApplyTimelineFit()
+    {
+        if (TimelineScrollViewer is null) return;
+        var duration = _media?.Duration ?? 0;
+        var viewport = TimelineScrollViewer.ViewportWidth > 1 ? TimelineScrollViewer.ViewportWidth : TimelineScrollViewer.ActualWidth;
+        if (duration <= 0 || viewport <= 1) return;
+        _timelineFitPending = false;
+        var pps = EditorTimelineLayout.FitPixelsPerSecond(duration, viewport);
+        ApplyTimelineZoom(TimelineZoomForPixelsPerSecond(pps));
+        TimelineScrollViewer.ChangeView(0, null, null);
+        QueueTimelineRender();
+    }
 
     /// <summary>Đặt zoom từ giá trị slider (0..100) và cập nhật mọi thứ liên quan.</summary>
     private void ApplyTimelineZoom(double zoom)
@@ -280,6 +318,7 @@ public sealed partial class EditorPage
             Canvas.SetTop(summary, EditorTimelineLayout.LaneTop(TimelineLaneSubtitle) + 2);
             ToolTipService.SetToolTip(summary,
                 $"{visible} câu phụ đề trong khung nhìn — thu gọn để giữ app mượt. Thu phóng để xem từng câu.");
+            summary.PointerPressed += TimelineSubtitleSummaryPressed;
             TimelineTracksCanvas.Children.Add(summary);
             return;
         }
@@ -316,9 +355,12 @@ public sealed partial class EditorPage
             }
             Canvas.SetLeft(block, left);
             Canvas.SetTop(block, EditorTimelineLayout.LaneTop(TimelineLaneSubtitle) + 2);
-            ToolTipService.SetToolTip(block, $"#{cue.Number} · {cue.Timing}\n{TrimPreview(cue.SourceText)}");
+            ToolTipService.SetToolTip(block, $"#{cue.Number} · {cue.Timing}\n{TrimPreview(cue.SourceText)}\nKéo mép trái/phải để đổi thời lượng.");
             var captured = index;
-            block.PointerPressed += (_, args) => TimelineCuePressed(captured, args);
+            block.PointerPressed += (_, args) => TimelineCuePointerPressed(captured, block, args);
+            block.PointerMoved += (_, args) => TimelineCuePointerMoved(captured, block, args);
+            block.PointerReleased += (_, args) => TimelineCuePointerReleased(captured, block, args);
+            block.PointerCanceled += (_, args) => TimelineCuePointerCanceled(captured, block, args);
             TimelineTracksCanvas.Children.Add(block);
         }
     }
@@ -403,6 +445,136 @@ public sealed partial class EditorPage
         SubtitleCueList.SelectedIndex = index;
     }
 
+    private void TimelineSubtitleSummaryPressed(object sender, PointerRoutedEventArgs args)
+    {
+        args.Handled = true;
+        if (TimelineContentGrid is null) return;
+        var position = args.GetCurrentPoint(TimelineContentGrid).Position;
+        var time = EditorTimelineLayout.TimeForX(position.X, _timelinePixelsPerSecond);
+        ApplyTimelineZoom(TimelineZoomForPixelsPerSecond(ReadableTimelinePixelsPerSecond));
+        ScrollTimelineToTime(time);
+    }
+
+    private void TimelineCuePointerPressed(int index, FrameworkElement block, PointerRoutedEventArgs args)
+    {
+        var cues = _subtitleSource?.Cues;
+        if (cues is null || index < 0 || index >= cues.Count || TimelineContentGrid is null) return;
+        var width = block.ActualWidth;
+        if (width < TimelineCueEdgeGrabPixels * 3)
+        {
+            TimelineCuePressed(index, args);
+            return;
+        }
+        var position = args.GetCurrentPoint(block).Position;
+        EditorCueEdge edge;
+        if (position.X <= TimelineCueEdgeGrabPixels) edge = EditorCueEdge.Start;
+        else if (position.X >= width - TimelineCueEdgeGrabPixels) edge = EditorCueEdge.End;
+        else
+        {
+            TimelineCuePressed(index, args);
+            return;
+        }
+        args.Handled = true;
+        var cue = cues[index];
+        _timelineDragCueIndex = index;
+        _timelineDragEdge = edge;
+        _timelineDragOriginStart = cue.Start;
+        _timelineDragOriginEnd = cue.End;
+        _timelineDragNewStart = cue.Start;
+        _timelineDragNewEnd = cue.End;
+        _timelineDragOriginContentX = args.GetCurrentPoint(TimelineContentGrid).Position.X;
+        _timelineDragBlock = block;
+        block.CapturePointer(args.Pointer);
+    }
+
+    private void TimelineCuePointerMoved(int index, FrameworkElement block, PointerRoutedEventArgs args)
+    {
+        if (_timelineDragCueIndex != index || _timelineDragBlock is null || TimelineContentGrid is null) return;
+        args.Handled = true;
+        var cues = _subtitleSource?.Cues;
+        if (cues is null || index < 0 || index >= cues.Count) return;
+        var pps = _timelinePixelsPerSecond;
+        if (pps <= 0) return;
+        var contentX = args.GetCurrentPoint(TimelineContentGrid).Position.X;
+        var deltaSeconds = (contentX - _timelineDragOriginContentX) / pps;
+        var updated = EditorSubtitleDocument.RetimeCue(
+            cues,
+            index,
+            _timelineDragEdge,
+            _timelineDragEdge == EditorCueEdge.Start
+                ? _timelineDragOriginStart + deltaSeconds
+                : _timelineDragOriginEnd + deltaSeconds,
+            TimelineCueMinDuration);
+        _timelineDragNewStart = updated.Start;
+        _timelineDragNewEnd = updated.End;
+        Canvas.SetLeft(block, EditorTimelineLayout.XForTime(updated.Start, pps));
+        block.Width = Math.Max(2, EditorTimelineLayout.XForTime(updated.End - updated.Start, pps));
+    }
+
+    private void TimelineCuePointerReleased(int index, FrameworkElement block, PointerRoutedEventArgs args)
+    {
+        if (_timelineDragCueIndex != index) return;
+        args.Handled = true;
+        block.ReleasePointerCapture(args.Pointer);
+        var start = _timelineDragNewStart;
+        var end = _timelineDragNewEnd;
+        var changed = Math.Abs(start - _timelineDragOriginStart) > .001
+            || Math.Abs(end - _timelineDragOriginEnd) > .001;
+        _timelineDragCueIndex = -1;
+        _timelineDragBlock = null;
+        if (!changed)
+        {
+            QueueTimelineRender();
+            return;
+        }
+        _ = CommitCueTimingAsync(index, start, end);
+    }
+
+    private void TimelineCuePointerCanceled(int index, FrameworkElement block, PointerRoutedEventArgs args)
+    {
+        if (_timelineDragCueIndex != index) return;
+        args.Handled = true;
+        block.ReleasePointerCapture(args.Pointer);
+        _timelineDragCueIndex = -1;
+        _timelineDragBlock = null;
+        QueueTimelineRender();
+    }
+
+    private async Task CommitCueTimingAsync(int index, double start, double end)
+    {
+        try
+        {
+            var source = _subtitleSource;
+            var cues = source?.Cues;
+            if (source is null || cues is null || index < 0 || index >= cues.Count) return;
+            var cue = cues[index];
+            var updated = cue with
+            {
+                Start = start,
+                End = end,
+                Timing = EditorSubtitleDocument.FormatTiming(start, end),
+            };
+            var array = cues.ToArray();
+            array[index] = updated;
+            _subtitleSource = source with { Cues = array };
+            MarkTranslatedOutputStale();
+            await SaveProjectNowAsync();
+            LoadSelectedSubtitleCue();
+            UpdateSubtitleSummary();
+            RenderOverlays();
+            QueuePreviewRefresh();
+            RefreshEditorActions();
+            RefreshSubtitleCueEditorControls();
+            SubtitleCueEditorStatus.Text = $"Đã đổi thời lượng cue {cue.Number}: {updated.Timing}";
+            StatusText.Text = $"Đã đổi thời lượng cue {cue.Number} trên dải thời gian. Bấm “Lưu SRT Việt” để ghi timecode mới ra file.";
+            QueueTimelineRender();
+        }
+        catch (Exception error)
+        {
+            StatusText.Text = "Không đổi được thời lượng cue: " + error.Message;
+        }
+    }
+
     private void TimelineRegionPressed(object sender, PointerRoutedEventArgs args)
     {
         args.Handled = true;
@@ -421,16 +593,19 @@ public sealed partial class EditorPage
         if (cues is null) return;
         var index = SubtitleCueList.SelectedIndex;
         if (index < 0 || index >= cues.Count) return;
-        ScrollTimelineToTime(cues[index].Start);
+        var cue = cues[index];
+        ScrollTimelineToTime(cue.Start, cue.End - cue.Start);
         QueueTimelineRender();
     }
 
-    private void ScrollTimelineToTime(double time)
+    private void ScrollTimelineToTime(double time, double spanSeconds = 0)
     {
         if (TimelineScrollViewer is null) return;
-        // Nếu người dùng chưa tự zoom, mức fit cho video dài làm cue vô hình;
-        // phóng tới mức đọc được rồi mới cuộn tới cue.
-        if (!_timelineUserZoomed && _timelinePixelsPerSecond < ReadableTimelinePixelsPerSecond)
+        // Cue quá nhỏ để nhìn thấy khi đang thu nhỏ: phóng tới mức đọc được
+        // rồi mới cuộn tới cue, nhưng không đụng vào mức zoom người dùng đã
+        // phóng vào.
+        if (spanSeconds > 0 && _timelinePixelsPerSecond < ReadableTimelinePixelsPerSecond
+            && spanSeconds * _timelinePixelsPerSecond < TimelineCueVisiblePixels)
         {
             ApplyTimelineZoom(TimelineZoomForPixelsPerSecond(ReadableTimelinePixelsPerSecond));
         }
@@ -462,33 +637,24 @@ public sealed partial class EditorPage
     private void TimelineZoom_ValueChanged(object sender, RangeBaseValueChangedEventArgs e)
     {
         if (_syncingTimelineZoom) return;
-        _timelineUserZoomed = true;
+        _timelineFitPending = false;
         _timelinePixelsPerSecond = TimelinePixelsPerSecondForZoom(e.NewValue);
         QueueTimelineRender();
     }
 
     private void TimelineZoomOut_Click(object sender, RoutedEventArgs e)
     {
-        _timelineUserZoomed = true;
         ApplyTimelineZoom(TimelineZoomSlider.Value - 6);
     }
 
     private void TimelineZoomIn_Click(object sender, RoutedEventArgs e)
     {
-        _timelineUserZoomed = true;
         ApplyTimelineZoom(TimelineZoomSlider.Value + 6);
     }
 
     private void TimelineFit_Click(object sender, RoutedEventArgs e)
     {
-        var viewport = TimelineScrollViewer.ViewportWidth > 1 ? TimelineScrollViewer.ViewportWidth : TimelineScrollViewer.ActualWidth;
-        var duration = _media?.Duration ?? 0;
-        if (viewport <= 1 || duration <= 0) return;
-        _timelineUserZoomed = true;
-        var pps = EditorTimelineLayout.FitPixelsPerSecond(duration, viewport);
-        ApplyTimelineZoom(TimelineZoomForPixelsPerSecond(pps));
-        TimelineScrollViewer.ChangeView(0, null, null);
-        QueueTimelineRender();
+        ApplyTimelineFit();
     }
 
     /// <summary>
@@ -516,7 +682,11 @@ public sealed partial class EditorPage
         QueueTimelineRender();
     }
 
-    private void TimelineViewportResized(object sender, SizeChangedEventArgs e) => QueueTimelineRender();
+    private void TimelineViewportResized(object sender, SizeChangedEventArgs e)
+    {
+        if (_timelineFitPending) ApplyTimelineFit();
+        else QueueTimelineRender();
+    }
 
     private void TimelineRuler_PointerPressed(object sender, PointerRoutedEventArgs e) => SeekTimelineFromPointer(e);
 

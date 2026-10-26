@@ -86,6 +86,7 @@ internal static class Program
         ("editor image sidecar saves atomically without sharing violations or temp leftovers", EditorImageSidecarContract.RunAsync),
         ("editor image placement fills matching frame aspect and fits logos without distortion", EditorImageOverlayLayoutContract.RunAsync),
         ("editor timeline maps seconds to pixels, clamps zoom and virtualizes the viewport", EditorTimelineLayoutContract.RunAsync),
+        ("editor timeline retiming keeps SRT timecodes and never overlaps neighbor cues", EditorSubtitleRetimingContract.RunAsync),
         ("editor clean effect removes objects with direct delogo and strength-free persistence", EditorCleanEffectContract.RunAsync),
         ("editor Mosaic strength drives pixelated Preview Export dimensions", EditorMosaicStrengthContractAsync),
         ("editor Cover is opaque strength-free and preserves Preview Export geometry", EditorCoverEffectContractAsync),
