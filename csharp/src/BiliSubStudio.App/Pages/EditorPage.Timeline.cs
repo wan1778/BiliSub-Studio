@@ -1,3 +1,4 @@
+using BiliSubStudio.App.Services;
 using BiliSubStudio.Core.Editor;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -44,6 +45,7 @@ public sealed partial class EditorPage
     private double _timelineDragOriginEnd;
     private double _timelineDragNewStart;
     private double _timelineDragNewEnd;
+    private double _timelineDragOriginScreenX;
     private FrameworkElement? _timelineDragBlock;
 
     private static readonly SolidColorBrush TimelineTickBrush = TimelineBrush(255, 88, 100, 118);
@@ -487,6 +489,7 @@ public sealed partial class EditorPage
         _timelineDragOriginContentX = args.GetCurrentPoint(TimelineContentGrid).Position.X;
         _timelineDragBlock = block;
         block.CapturePointer(args.Pointer);
+        _timelineDragOriginScreenX = Win32Cursor.TryGetScreenPosition(out var screenX, out _) ? screenX : 0d;
     }
 
     private void TimelineCuePointerMoved(int index, FrameworkElement block, PointerRoutedEventArgs args)
@@ -497,8 +500,14 @@ public sealed partial class EditorPage
         if (cues is null || index < 0 || index >= cues.Count) return;
         var pps = _timelinePixelsPerSecond;
         if (pps <= 0) return;
-        var contentX = args.GetCurrentPoint(TimelineContentGrid).Position.X;
-        var deltaSeconds = (contentX - _timelineDragOriginContentX) / pps;
+        var scale = TimelineContentGrid.XamlRoot?.RasterizationScale ?? 1d;
+        var cursorContentX = _timelineDragOriginContentX;
+        if (Win32Cursor.TryGetScreenPosition(out var screenX, out _))
+        {
+            var originScreenX = _timelineDragOriginScreenX - _timelineDragOriginContentX * scale;
+            cursorContentX = (screenX - originScreenX) / scale;
+        }
+        var deltaSeconds = (cursorContentX - _timelineDragOriginContentX) / pps;
         var updated = EditorSubtitleDocument.RetimeCue(
             cues,
             index,
