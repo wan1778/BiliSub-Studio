@@ -15,7 +15,9 @@ public static class EditorTimelineLayout
     // khung không bao giờ vừa với video dài.
     public const double MinPixelsPerSecond = .02;
     public const double MaxPixelsPerSecond = 600;
-    public const double MaxContentWidth = 120_000;
+    // Video dài 9-10 giờ ở mức zoom đọc được (8 px/s) cần ~270.000 DIP nội
+    // dung; trần cũ 120.000 cắt mất nửa sau của dải thời gian.
+    public const double MaxContentWidth = 1_200_000;
     public const double MinimumTickPixels = 84;
 
     private static readonly double[] TickLadder =

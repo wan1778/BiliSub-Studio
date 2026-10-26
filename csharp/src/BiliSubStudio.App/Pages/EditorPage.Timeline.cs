@@ -36,6 +36,7 @@ public sealed partial class EditorPage
     private bool _timelineRenderQueued;
     private bool _timelineSelectionHooked;
     private bool _timelineFitPending;
+    private double? _timelinePendingScrollTime;
     private int _timelineDragCueIndex = -1;
     private EditorCueEdge _timelineDragEdge;
     private double _timelineDragOriginContentX;
@@ -174,6 +175,7 @@ public sealed partial class EditorPage
         RenderTimelineLanes(contentWidth, pps, visibleStart, visibleEnd);
         UpdateTimelinePlayhead();
         UpdateTimelineZoomText();
+        ApplyPendingTimelineScroll();
     }
 
     private void RenderTimelineRuler(double duration, double pps, double visibleStart, double visibleEnd)
@@ -609,12 +611,25 @@ public sealed partial class EditorPage
         {
             ApplyTimelineZoom(TimelineZoomForPixelsPerSecond(ReadableTimelinePixelsPerSecond));
         }
+        _timelinePendingScrollTime = time;
+        QueueTimelineRender();
+    }
+
+    /// <summary>
+    /// Cuộn sau khi render: đổi zoom làm đổi chiều rộng nội dung, nếu cuộn
+    /// trước khi render thì ScrollViewer kẹp offset về 0.
+    /// </summary>
+    private void ApplyPendingTimelineScroll()
+    {
+        if (_timelinePendingScrollTime is not { } time || TimelineScrollViewer is null) return;
+        _timelinePendingScrollTime = null;
         var viewport = TimelineScrollViewer.ViewportWidth > 1 ? TimelineScrollViewer.ViewportWidth : TimelineScrollViewer.ActualWidth;
         if (viewport <= 1) return;
         var pps = _timelinePixelsPerSecond;
         var x = EditorTimelineLayout.XForTime(time, pps);
         var offset = Math.Clamp(x - viewport / 2, 0, Math.Max(0, EditorTimelineLayout.ContentWidth(_media?.Duration ?? 0, pps) - viewport));
         if (Math.Abs(offset - CurrentTimelineScrollOffset()) < 1) return;
+        TimelineScrollViewer.UpdateLayout();
         TimelineScrollViewer.ChangeView(offset, null, null);
     }
 

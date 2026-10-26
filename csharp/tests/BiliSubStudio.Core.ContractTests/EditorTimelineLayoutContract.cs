@@ -37,6 +37,8 @@ internal static class EditorTimelineLayoutContract
         Require(Close(EditorTimelineLayout.TimeForX(x, pps), 123.456), "pixel -> time must invert exactly");
 
         Require(Close(EditorTimelineLayout.ContentWidth(60, 10), 600), "content width follows duration * zoom");
+        Require(EditorTimelineLayout.ContentWidth(33789, 8) >= 33789 * 8,
+            "a 9.4h video must stay fully representable at readable zoom");
         Require(EditorTimelineLayout.ContentWidth(1e9, 600) == EditorTimelineLayout.MaxContentWidth,
             "content width must stay inside the canvas limit");
         Require(EditorTimelineLayout.ContentWidth(0, 10) == 1, "empty media still needs a drawable canvas");
