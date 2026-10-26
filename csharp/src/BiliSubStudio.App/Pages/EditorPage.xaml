@@ -135,12 +135,16 @@
             </Grid>
         </Grid>
 
-        <Grid x:Name="WorkspaceGrid" Grid.Row="1" ColumnSpacing="10" Visibility="Collapsed">
+        <Grid x:Name="WorkspaceGrid" Grid.Row="1" ColumnSpacing="10" RowSpacing="8" Visibility="Collapsed">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition x:Name="SourceColumn" Width="0.68*" MinWidth="120" MaxWidth="200" />
                 <ColumnDefinition x:Name="PlayerColumn" Width="2.2*" MinWidth="220" />
                 <ColumnDefinition x:Name="DetailsColumn" Width="1.22*" MinWidth="320" MaxWidth="380" />
             </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
 
             <Border Grid.Column="0" Padding="10" Background="{ThemeResource RaisedSurfaceBrush}" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="1" CornerRadius="11">
                 <Grid>
@@ -764,6 +768,65 @@
                             </StackPanel>
                         </Grid>
                     </ScrollViewer>
+                </Grid>
+            </Border>
+
+            <Border Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="3" x:Name="TimelinePanel" Height="186" Padding="8,6,8,8"
+                    Background="{ThemeResource RaisedSurfaceBrush}" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="1" CornerRadius="11"
+                    AutomationProperties.Name="Dải thời gian">
+                <Grid RowSpacing="6">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="Dải thời gian" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center" />
+                        <TextBlock Grid.Column="1" x:Name="TimelineZoomText" Style="{StaticResource MutedTextStyle}" FontSize="11" VerticalAlignment="Center" Text="—" />
+                        <Slider Grid.Column="3" x:Name="TimelineZoomSlider" Minimum="0" Maximum="100" Value="35" Width="130"
+                                ValueChanged="TimelineZoom_ValueChanged" VerticalAlignment="Center" AutomationProperties.Name="Mức thu phóng dải thời gian" />
+                        <Button Grid.Column="4" x:Name="TimelineZoomOutButton" Content="−" Click="TimelineZoomOut_Click" Padding="0" Width="30" Height="26" MinWidth="30"
+                                VerticalAlignment="Center" ToolTipService.ToolTip="Thu nhỏ" />
+                        <Button Grid.Column="5" x:Name="TimelineZoomInButton" Content="+" Click="TimelineZoomIn_Click" Padding="0" Width="30" Height="26" MinWidth="30"
+                                VerticalAlignment="Center" ToolTipService.ToolTip="Phóng to" />
+                        <Button Grid.Column="6" x:Name="TimelineFitButton" Content="Vừa khung" Click="TimelineFit_Click" Style="{StaticResource SecondaryButtonStyle}"
+                                Padding="8,3" Height="26" MinHeight="26" VerticalAlignment="Center" ToolTipService.ToolTip="Đưa toàn bộ video vào khung nhìn" />
+                    </Grid>
+
+                    <Grid Grid.Row="1" ColumnSpacing="6">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+
+                        <StackPanel Grid.Column="0" Width="72">
+                            <TextBlock Text="Thước" FontSize="9" Foreground="{ThemeResource MutedTextBrush}" Height="26" VerticalAlignment="Center" />
+                            <TextBlock x:Name="TimelineLaneEffectLabel" Text="Hiệu ứng" FontSize="10" Foreground="{ThemeResource SecondaryTextBrush}" Height="26" VerticalAlignment="Center" />
+                            <TextBlock x:Name="TimelineLaneSubtitleLabel" Text="Phụ đề" FontSize="10" Foreground="{ThemeResource SecondaryTextBrush}" Height="26" VerticalAlignment="Center" />
+                            <TextBlock x:Name="TimelineLaneVoiceLabel" Text="Voice" FontSize="10" Foreground="{ThemeResource SecondaryTextBrush}" Height="26" VerticalAlignment="Center" />
+                        </StackPanel>
+
+                        <ScrollViewer Grid.Column="1" x:Name="TimelineScrollViewer" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled"
+                                      ViewChanged="TimelineScroll_ViewChanged" SizeChanged="TimelineScroll_SizeChanged" Background="Transparent">
+                            <Canvas x:Name="TimelineContentGrid" Width="800" Height="134" Background="Transparent">
+                                <Canvas x:Name="TimelineRulerCanvas" Height="26" Width="800" Background="Transparent"
+                                        PointerPressed="TimelineRuler_PointerPressed" AutomationProperties.Name="Thước thời gian" />
+                                <Canvas x:Name="TimelineTracksCanvas" Height="105" Width="800" Background="Transparent"
+                                        PointerPressed="TimelineTracks_PointerPressed" AutomationProperties.Name="Các lane của dải thời gian" />
+                                <Rectangle x:Name="TimelinePlayhead" Width="2" Height="134" Fill="#FF4C8DFF" Canvas.Left="0" IsHitTestVisible="False" />
+                                <Rectangle x:Name="TimelineOriginMarker" Width="0" Height="0" Canvas.Left="0" IsHitTestVisible="False" Opacity="0" />
+                            </Canvas>
+                        </ScrollViewer>
+                    </Grid>
                 </Grid>
             </Border>
         </Grid>

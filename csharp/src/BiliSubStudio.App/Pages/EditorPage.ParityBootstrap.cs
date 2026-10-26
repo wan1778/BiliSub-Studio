@@ -31,6 +31,7 @@ public sealed partial class EditorPage
 
             EnsureEditorExportProgressTimer();
             StartVoiceArtifactMonitor();
+            InitializeTimeline();
             if (!EditorBusy) await ShowProjectListAsync(saveCurrent: false);
             else ShowWorkspaceSurface();
 

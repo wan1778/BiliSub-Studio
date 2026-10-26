@@ -244,6 +244,7 @@ public sealed partial class EditorPage
             SubtitleCueList.SelectedIndex = _subtitleCueSelectedIndex;
         }
         finally { _subtitleCueSyncing = wasSyncing; }
+        QueueTimelineRender();
     }
 
     private void LoadSelectedSubtitleCue()

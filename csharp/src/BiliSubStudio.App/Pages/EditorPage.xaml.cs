@@ -1339,6 +1339,7 @@ public sealed partial class EditorPage : Page
     {
         UpdateClock();
         RenderOverlays();
+        UpdateTimelinePlayhead();
         if (_playback.IsPreviewMode && !_syncingTimeline && _media is not null)
         {
             _ = _playback.SeekAsync(Math.Clamp(e.NewValue, Timeline.Minimum, Timeline.Maximum));
@@ -1952,6 +1953,7 @@ public sealed partial class EditorPage : Page
         RenderOverlays();
         if (renderInputs && _document.Selected is not null) LoadSelectedIntoInputs();
         RefreshEditorActions();
+        QueueTimelineRender();
     }
 
     private void RenderRegionList()
