@@ -1417,7 +1417,11 @@ public sealed partial class EditorPage : Page
         return [.. _document.Regions, _draftRegion];
     }
 
-    private void UpdateClock() => ClockText.Text = $"{FormatClock(Timeline.Value)} / {FormatClock(_media?.Duration ?? 0)}";
+    private void UpdateClock()
+    {
+        var duration = _media?.Duration ?? 0;
+        ClockText.Text = $"{FormatClock(Timeline.Value, duration >= 3600)} / {FormatClock(duration)}";
+    }
 
     private void WholeToggle_Toggled(object sender, RoutedEventArgs e)
     {
@@ -2556,5 +2560,11 @@ public sealed partial class EditorPage : Page
     {
         var value = TimeSpan.FromSeconds(Math.Max(0, seconds));
         return value.TotalHours >= 1 ? value.ToString(@"hh\:mm\:ss") : value.ToString(@"mm\:ss");
+    }
+
+    private static string FormatClock(double seconds, bool showHours)
+    {
+        var value = TimeSpan.FromSeconds(Math.Max(0, seconds));
+        return showHours ? value.ToString(@"hh\:mm\:ss") : value.ToString(@"mm\:ss");
     }
 }

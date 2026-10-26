@@ -238,7 +238,7 @@ public sealed partial class EditorPage
             if (!isMajor) continue;
             var label = new TextBlock
             {
-                Text = FormatClock(time),
+                Text = FormatClock(time, duration >= 3600),
                 FontSize = 9,
                 Foreground = TimelineLabelBrush,
             };
@@ -570,6 +570,10 @@ public sealed partial class EditorPage
             _subtitleSource = source with { Cues = array };
             MarkTranslatedOutputStale();
             await SaveProjectNowAsync();
+            _subtitleCueSyncing = true;
+            try { SubtitleCueList.SelectedIndex = index; }
+            finally { _subtitleCueSyncing = false; }
+            _subtitleCueSelectedIndex = index;
             LoadSelectedSubtitleCue();
             UpdateSubtitleSummary();
             RenderOverlays();
