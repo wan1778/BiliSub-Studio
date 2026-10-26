@@ -342,11 +342,16 @@ require(editor_partials.count("private MediaPlayer? _player;") == 1
         and editor_partials.count("internal bool IsPreviewMode { get; private set; }") == 1,
         "PREVIEW-03 playback state must have exactly one owner")
 toggle_playback = playback_source.split("internal async Task ToggleAsync()", 1)[1].split("internal async Task EnterFullscreenAsync()", 1)[0]
+preview_start_block = ""
+if "private double PreviewStartTime()" in playback_source:
+    preview_start_block = playback_source.split("private double PreviewStartTime()", 1)[1].split("private double ActiveClipLimit", 1)[0]
 require("await PlayFromStartAsync();" in toggle_playback
         and "SetModeAsync(enabled: true, play: true)" not in toggle_playback
         and "_page.Timeline.Value" not in toggle_playback
         # a887af4: processed playback honors the trim range instead of hard-coded zero.
-        and "private Task PlayFromStartAsync() => LoadSegmentAsync(_page.CurrentTrimRange().Start, play: true);" in playback_source,
+        and ("private Task PlayFromStartAsync() => LoadSegmentAsync(_page.CurrentTrimRange().Start, play: true);" in playback_source
+             or ("private Task PlayFromStartAsync() => LoadSegmentAsync(PreviewStartTime(), play: true);" in playback_source
+                 and "_page.CurrentTrimRange()" in preview_start_block)),
         "PREVIEW-04 initial Play must start from the trim start instead of the edit/seek position")
 require("if (IsPlaying) PauseAtCurrentFrame();" in toggle_playback
         and "private void PauseAtCurrentFrame() => _player?.Pause();" in playback_source
@@ -426,7 +431,7 @@ require("private bool _foregroundRendering;" in playback_source
         and "internal bool IsRendering => _foregroundRendering;" in playback_source
         and "private Task _prefetchTask = Task.CompletedTask;" in playback_source
         and "private EditorPreviewSegment? _prefetchedSegment;" in playback_source
-        and "private void StartNextSegmentPrefetch()" in playback_source
+        and "private async Task StartNextSegmentPrefetch()" in playback_source
         and "private async Task PrefetchNextSegmentAsync(" in playback_source
         and "private async Task ContinueWithPrefetchedSegmentAsync(double nextStart)" in playback_source
         and "await ContinueWithPrefetchedSegmentAsync(nextStart.Value);" in playback_source
@@ -701,7 +706,8 @@ require("BuildFilterCore(sliced, subtitleAss, \"previewbase\", requireEdit: fals
         and 'var graph = "[0:v]setpts=PTS-STARTPTS[renderbase];"' in video_editor_source
         and 'var graph = $"[0:v]setpts=PTS-STARTPTS+{timestamp}/TB[framebase];"' in video_editor_source
         and video_editor_source.count("RegionPixels(region, request.SourceWidth, request.SourceHeight)") == 1
-        and "_page.CurrentEditRequest(_page.PreviewSubtitleBurn())" in editor_partials
+        and ("_page.CurrentEditRequest(_page.PreviewSubtitleBurn())" in editor_partials
+             or "_page.TimelineClipEditRequestAsync(" in editor_partials)
         and editor_partials.count("var request = CurrentEditRequest(subtitle) with") == 2
         and editor_partials.count("_jobId = _application.StartEditor(request);") == 2
         and "Regions = _document.Regions.ToArray()," in editor_main
