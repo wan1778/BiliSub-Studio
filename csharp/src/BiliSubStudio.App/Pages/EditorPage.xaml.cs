@@ -1383,13 +1383,16 @@ public sealed partial class EditorPage : Page
 
     private async Task RefreshPreviewAsync(int revision, TimeSpan delay, CancellationToken cancellationToken)
     {
-        if (_path is null || _media is null || _playback.IsPreviewMode) return;
+        if (_playback.IsPreviewMode || _timelineClips.Count == 0) return;
         try
         {
             if (delay > TimeSpan.Zero) await Task.Delay(delay, cancellationToken);
+            var (clip, sourceTime, _) = LocateTimelineClip(Timeline.Value);
+            var media = await TimelineClipMediaAsync(clip, cancellationToken);
             var regions = CurrentPreviewRegions();
+            var subtitle = IsPrimaryTimelineClip(clip) ? CurrentFrameSubtitleBurn() : null;
             var bytes = await _application.GetEditorPreviewFrameJpegAsync(
-                _path, Timeline.Value, _media, regions, CurrentFrameSubtitleBurn(), cancellationToken);
+                clip.SourcePath, sourceTime, media, regions, subtitle, cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
             if (revision != _previewRevision) return;
             using var stream = new InMemoryRandomAccessStream();
@@ -1419,7 +1422,7 @@ public sealed partial class EditorPage : Page
 
     private void UpdateClock()
     {
-        var duration = _media?.Duration ?? 0;
+        var duration = TimelineDuration;
         ClockText.Text = $"{FormatClock(Timeline.Value, duration >= 3600)} / {FormatClock(duration)}";
     }
 

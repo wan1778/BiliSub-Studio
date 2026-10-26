@@ -40,6 +40,8 @@ public sealed partial class EditorPage
         private string? _previewPath;
         private double _sourceStart;
         private double _sourceDuration;
+        private EditorTimelineClip? _activeClip;
+        private double _activeClipTimelineStart;
         private FullscreenSnapshot? _fullscreenSnapshot;
         private long? _fullWindowChangedToken;
         private bool _foregroundRendering;
@@ -73,6 +75,8 @@ public sealed partial class EditorPage
             HasEnded = false;
             _sourceStart = 0;
             _sourceDuration = 0;
+            _activeClip = null;
+            _activeClipTimelineStart = 0;
             ApplyPresentation(processed: false);
             if (stalePreview is not null)
                 await _page._application.DeleteEditorPreviewSegmentAsync(stalePreview);
@@ -102,7 +106,39 @@ public sealed partial class EditorPage
 
         private void ResumeFromCurrentFrame() => _player?.Play();
 
-        private Task PlayFromStartAsync() => LoadSegmentAsync(_page.CurrentTrimRange().Start, play: true);
+        private Task PlayFromStartAsync() => LoadSegmentAsync(PreviewStartTime(), play: true);
+
+        /// <summary>Mốc bắt đầu preview trên dải ghép (tính theo thời gian dải).</summary>
+        private double PreviewStartTime()
+        {
+            var (clip, _, timelineStart) = _page.LocateTimelineClip(0);
+            if (!_page.IsPrimaryTimelineClip(clip)) return timelineStart;
+            var trim = _page.CurrentTrimRange();
+            return timelineStart + Math.Max(0, trim.Start - clip.Start);
+        }
+
+        /// <summary>Giới hạn cuối của đoạn đang phát, tính trong file nguồn của clip.</summary>
+        private double ActiveClipLimit
+        {
+            get
+            {
+                if (_activeClip is not { } clip) return _sourceStart + _sourceDuration;
+                var limit = clip.End;
+                if (_page.IsPrimaryTimelineClip(clip))
+                {
+                    var trim = _page.CurrentTrimRange();
+                    limit = Math.Min(limit, trim.End);
+                }
+                return limit;
+            }
+        }
+
+        /// <summary>Đổi thời gian trong file nguồn của clip sang thời gian trên dải ghép.</summary>
+        private double TimelinePositionForSource(double sourcePosition)
+        {
+            if (_activeClip is not { } clip) return sourcePosition;
+            return _activeClipTimelineStart + (sourcePosition - clip.Start);
+        }
 
         private Task ReplayFromStartAsync() => PlayFromStartAsync();
 
@@ -217,7 +253,8 @@ public sealed partial class EditorPage
             if (!IsPreviewMode && !IsRendering) return;
             HasEnded = false;
             var sourcePosition = IsPreviewMode
-                ? _sourceStart + Math.Clamp(_player?.PlaybackSession.Position.TotalSeconds ?? 0, 0, _sourceDuration)
+                ? TimelinePositionForSource(
+                    _sourceStart + Math.Clamp(_player?.PlaybackSession.Position.TotalSeconds ?? 0, 0, _sourceDuration))
                 : _page.Timeline.Value;
             IsPreviewMode = false;
             if (_player is not null)
@@ -280,6 +317,8 @@ public sealed partial class EditorPage
             HasEnded = false;
             _sourceStart = 0;
             _sourceDuration = 0;
+            _activeClip = null;
+            _activeClipTimelineStart = 0;
             if (!skipPresentation) ApplyPresentation(processed: false);
             var previewPath = _previewPath;
             _previewPath = null;
@@ -312,7 +351,7 @@ public sealed partial class EditorPage
                     _page.SyncShellPlayerControls();
                 }
             }
-            if (revision == _playbackRevision && IsPreviewMode) StartNextSegmentPrefetch();
+            if (revision == _playbackRevision && IsPreviewMode) await StartNextSegmentPrefetch();
         }
 
         private async Task LoadSegmentCoreAsync(
@@ -323,7 +362,7 @@ public sealed partial class EditorPage
             CancellationToken cancellationToken)
         {
             var player = _player ?? throw new InvalidOperationException("Chưa chọn video để xem bản chỉnh.");
-            if (_page._path is null || _page._media is null)
+            if (_page.TimelineClips.Count == 0)
                 throw new InvalidOperationException("Chưa chọn video để xem bản chỉnh.");
             _page._previewCancellation?.Cancel();
             var previousPath = _previewPath;
@@ -333,11 +372,16 @@ public sealed partial class EditorPage
                 _page.RefreshEditorActions();
                 if (announcePreparation)
                     _page.StatusText.Text = "Đang chuẩn bị bản xem trước tại vị trí hiện tại...";
+                var (clip, sourceTime, timelineStart) = _page.LocateTimelineClip(requestedStart);
+                _activeClip = clip;
+                _activeClipTimelineStart = timelineStart;
+                var request = await _page.TimelineClipEditRequestAsync(
+                    clip, _page.PreviewSubtitleBurn(), cancellationToken);
                 segment = await _page._application.CreateEditorPreviewSegmentAsync(
-                    _page.CurrentEditRequest(_page.PreviewSubtitleBurn()), requestedStart, cancellationToken);
+                    request, sourceTime, cancellationToken);
                 cancellationToken.ThrowIfCancellationRequested();
                 await ActivateSegmentAsync(
-                    player, segment, requestedStart, play, announcePlayback, previousPath, cancellationToken);
+                    player, segment, sourceTime, play, announcePlayback, previousPath, cancellationToken);
                 segment = null;
             }
             catch
@@ -372,6 +416,7 @@ public sealed partial class EditorPage
             cancellationToken.ThrowIfCancellationRequested();
             var segmentPosition = PositionInSegment(segment, requestedStart);
             var sourcePosition = segment.SourceStart + segmentPosition;
+            var timelinePosition = TimelinePositionForSource(sourcePosition);
             player.Pause();
             player.Source = MediaSource.CreateFromStorageFile(file);
             _previewPath = segment.Path;
@@ -381,24 +426,24 @@ public sealed partial class EditorPage
             IsPreviewMode = true;
             ApplyPresentation(processed: true);
             _page._syncingTimeline = true;
-            try { _page.Timeline.Value = Math.Clamp(sourcePosition, _page.Timeline.Minimum, _page.Timeline.Maximum); }
+            try { _page.Timeline.Value = Math.Clamp(timelinePosition, _page.Timeline.Minimum, _page.Timeline.Maximum); }
             finally { _page._syncingTimeline = false; }
             player.PlaybackSession.Position = TimeSpan.FromSeconds(segmentPosition);
             if (play) player.Play();
             if (announcePlayback)
                 _page.StatusText.Text =
-                    $"Đang xem bản chỉnh từ {FormatClock(sourcePosition)}. Preview sẽ tiếp tục đến hết khoảng giữ lại.";
+                    $"Đang xem bản chỉnh từ {FormatClock(timelinePosition)}. Preview sẽ tiếp tục đến hết khoảng giữ lại.";
             if (previousPath is not null && !string.Equals(previousPath, _previewPath, StringComparison.OrdinalIgnoreCase))
                 await _page._application.DeleteEditorPreviewSegmentAsync(previousPath);
         }
 
-        private void StartNextSegmentPrefetch()
+        private async Task StartNextSegmentPrefetch()
         {
-            if (!IsPreviewMode || _page._media is null || _page._path is null) return;
+            if (!IsPreviewMode || _activeClip is not { } clip) return;
             try
             {
                 var nextStart = VideoEditorService.NextPreviewStart(
-                    _sourceStart, _sourceDuration, _page.CurrentTrimRange().End);
+                    _sourceStart, _sourceDuration, ActiveClipLimit);
                 if (nextStart is null)
                 {
                     _prefetchTask = Task.CompletedTask;
@@ -407,7 +452,9 @@ public sealed partial class EditorPage
                 }
 
                 var revision = _playbackRevision;
-                var request = _page.CurrentEditRequest(_page.PreviewSubtitleBurn());
+                var request = await _page.TimelineClipEditRequestAsync(
+                    clip, _page.PreviewSubtitleBurn());
+                if (revision != _playbackRevision || !IsPreviewMode) return;
                 _prefetchedStart = nextStart;
                 _prefetchTask = PrefetchNextSegmentAsync(request, nextStart.Value, revision);
             }
@@ -515,10 +562,11 @@ public sealed partial class EditorPage
         private void PlayerPositionChanged(MediaPlaybackSession sender, object args)
         {
             if (_isUnloading || !IsPreviewMode) return;
-            var seconds = _sourceStart + Math.Clamp(sender.Position.TotalSeconds, 0, _sourceDuration);
+            var seconds = TimelinePositionForSource(
+                _sourceStart + Math.Clamp(sender.Position.TotalSeconds, 0, _sourceDuration));
             _page.DispatcherQueue.TryEnqueue(() =>
             {
-                if (_isUnloading || !IsPreviewMode || _page._media is null) return;
+                if (_isUnloading || !IsPreviewMode) return;
                 _page._syncingTimeline = true;
                 try { _page.Timeline.Value = Math.Clamp(seconds, _page.Timeline.Minimum, _page.Timeline.Maximum); }
                 finally { _page._syncingTimeline = false; }
@@ -537,11 +585,12 @@ public sealed partial class EditorPage
         {
             try
             {
-                if (_isUnloading || !IsPreviewMode || _page._media is null) return;
+                if (_isUnloading || !IsPreviewMode) return;
                 var nextStart = VideoEditorService.NextPreviewStart(
-                    _sourceStart, _sourceDuration, _page.CurrentTrimRange().End);
+                    _sourceStart, _sourceDuration, ActiveClipLimit);
                 if (nextStart is null)
                 {
+                    if (await ContinueWithNextClipAsync()) return;
                     await CompletePlaybackAsync();
                     return;
                 }
@@ -549,6 +598,17 @@ public sealed partial class EditorPage
             }
             catch (OperationCanceledException) { }
             catch (Exception error) { _page.StatusText.Text = "Không tiếp tục được preview: " + error.Message; }
+        }
+
+        /// <summary>Chuyển sang clip kế tiếp trên dải ghép khi đoạn hiện tại đã hết.</summary>
+        private async Task<bool> ContinueWithNextClipAsync()
+        {
+            if (_activeClip is not { } clip) return false;
+            var nextTimelineStart = _activeClipTimelineStart + clip.Duration;
+            if (nextTimelineStart >= _page.TimelineDuration - .05) return false;
+            await LoadSegmentAsync(
+                nextTimelineStart, play: true, announcePreparation: false, announcePlayback: false, foreground: false);
+            return true;
         }
 
         private async Task ContinueWithPrefetchedSegmentAsync(double nextStart)
@@ -578,7 +638,7 @@ public sealed partial class EditorPage
                     player, segment, nextStart, play: true, announcePlayback: false,
                     _previewPath, CancellationToken.None);
                 segment = null;
-                StartNextSegmentPrefetch();
+                await StartNextSegmentPrefetch();
             }
             finally
             {
@@ -593,10 +653,10 @@ public sealed partial class EditorPage
             await SetModeAsync(enabled: false, play: false);
             HasEnded = true;
             _page._syncingTimeline = true;
-            try { _page.Timeline.Value = _page.CurrentTrimRange().End; }
+            try { _page.Timeline.Value = _page.TimelineDuration; }
             finally { _page._syncingTimeline = false; }
             _page.UpdateClock();
-            _page.StatusText.Text = "Đã xem hết khoảng giữ lại. Bấm Play để phát lại từ mốc đầu.";
+            _page.StatusText.Text = "Đã xem hết dải thời gian. Bấm Play để phát lại từ mốc đầu.";
             _page.SyncShellPlayerControls();
         }
 

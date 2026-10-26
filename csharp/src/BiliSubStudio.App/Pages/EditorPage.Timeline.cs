@@ -129,6 +129,15 @@ public sealed partial class EditorPage
             fingerprint = new EditorSourceFingerprint(_path ?? string.Empty, 0, 0, _media.Width, _media.Height, _media.Duration);
         _timelineClips = EditorTimelineComposition.Resolve(_project?.Timeline, fingerprint ?? default);
         _timelineSelectedClipIndex = _timelineClips.Count > 0 ? 0 : -1;
+        SyncTimelineDuration();
+    }
+
+    /// <summary>Đồng bộ độ dài của trục thời gian với tổng thời lượng của dải ghép.</summary>
+    private void SyncTimelineDuration()
+    {
+        if (Timeline is null) return;
+        var duration = TimelineDuration > 0 ? TimelineDuration : _media?.Duration ?? 0;
+        Timeline.Maximum = Math.Max(0.1, duration);
     }
 
     /// <summary>Tổng thời lượng của dải ghép (tổng các clip).</summary>
@@ -552,8 +561,8 @@ public sealed partial class EditorPage
         for (var index = 0; index < _timelineClips.Count; index++)
         {
             var clip = _timelineClips[index];
-            if (sourceTime >= clip.Start - .0005 && sourceTime <= clip.End + .0005)
-                return starts[index] + (sourceTime - clip.Start);
+            if (!IsPrimaryTimelineClip(clip)) continue;
+            return starts[index] + (sourceTime - clip.Start);
         }
         return sourceTime;
     }
@@ -567,6 +576,7 @@ public sealed partial class EditorPage
         _timelineClips = clips;
         _timelineSelectedClipIndex = clips.Count > 0 ? Math.Clamp(_timelineSelectedClipIndex, 0, clips.Count - 1) : -1;
         if (_project is not null) _project = _project with { Timeline = new EditorTimelineProject(clips) };
+        SyncTimelineDuration();
         QueueTimelineRender();
     }
 
