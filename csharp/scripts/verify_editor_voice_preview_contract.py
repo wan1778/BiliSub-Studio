@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[2]
 XAML = ROOT / "csharp/src/BiliSubStudio.App/Pages/EditorPage.xaml"
 EDITOR = ROOT / "csharp/src/BiliSubStudio.App/Pages/EditorPage.xaml.cs"
 PLAYBACK = ROOT / "csharp/src/BiliSubStudio.App/Pages/EditorPage.Playback.cs"
+COMPOSITION = ROOT / "csharp/src/BiliSubStudio.App/Pages/EditorPage.TimelineComposition.cs"
 VIDEO_EDITOR = ROOT / "csharp/src/BiliSubStudio.Core/Editor/VideoEditorService.cs"
 
 
@@ -28,6 +29,7 @@ def read(path: Path) -> str:
 xaml = read(XAML)
 editor = read(EDITOR)
 playback = read(PLAYBACK)
+composition = read(COMPOSITION)
 video_editor = read(VIDEO_EDITOR)
 
 # VOICE-12 — Preview must play the validated Vietnamese master track.
@@ -60,9 +62,12 @@ require("_audioSettings," in current_request and "_voiceTrack," in current_reque
 load_segment = playback.split("private async Task LoadSegmentCoreAsync(", 1)[1].split(
     "private async Task ActivateSegmentAsync(", 1
 )[0]
-require("_page.CurrentEditRequest(_page.PreviewSubtitleBurn())" in load_segment
+require(("_page.CurrentEditRequest(_page.PreviewSubtitleBurn())" in load_segment
+         or "_page.TimelineClipEditRequestAsync(" in load_segment)
         and "CreateEditorPreviewSegmentAsync" in load_segment,
         "VOICE-12 processed playback must render from the current shared Preview request")
+require("_voiceTrack," in composition,
+        "VOICE-12 clip-aware Preview request must carry the Vietnamese track")
 require("ActivateSegmentAsync(" in load_segment,
         "VOICE-12 processed playback must activate the rendered segment in the player")
 
