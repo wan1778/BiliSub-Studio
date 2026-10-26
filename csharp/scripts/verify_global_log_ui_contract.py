@@ -26,14 +26,29 @@ manager_code = read("csharp/src/BiliSubStudio.Core/Jobs/JobManager.cs")
 support_code = read("csharp/src/BiliSubStudio.App/Pages/SupportPage.xaml.cs")
 subtitle_policy = read("csharp/src/BiliSubStudio.Core/Video/SubtitleTrackPolicy.cs")
 
-nav = re.findall(r'<NavigationViewItem\s+Content="([^"]+)"\s+Tag="([^"]+)"\s*/>', main_xaml)
+nav_items = re.findall(r'<NavigationViewItem\b([^>]*?)/>', main_xaml)
+nav = []
+for attributes in nav_items:
+    content = re.search(r'Content="([^"]+)"', attributes)
+    tag = re.search(r'Tag="([^"]+)"', attributes)
+    if content and tag:
+        nav.append((content.group(1), tag.group(1)))
 require(nav == [
     ("Tải media", "video"),
     ("OCR phụ đề", "ocr"),
     ("Chỉnh video", "editor"),
     ("Cài đặt", "settings"),
 ], f"production navigation drifted: {nav}")
-for forbidden in ("Hiệu năng", "Đăng nhập", "Cập nhật &amp; hỗ trợ"):
+# Rail trái gọn: mỗi mục điều hướng phải có icon để hiển thị khi pane đóng.
+for attributes in nav_items:
+    require('Icon="' in attributes,
+            "every top-level navigation item must carry an icon for the compact rail")
+require('IsPaneOpen="False"' in main_xaml,
+        "the navigation rail must start collapsed so the editor gets the full width")
+# Mỗi lần mở app phải full màn hình: giao diện editor cần player + dải thời gian.
+require('presenter.Maximize()' in main_code,
+        "the main window must open maximized")
+for forbidden in ("Hiệu năng", "Đăng nhập", "Cập nhật & hỗ trợ"):
     require(f'<NavigationViewItem Content="{forbidden}"' not in main_xaml,
             f"{forbidden} must not be a top-level navigation item")
 
