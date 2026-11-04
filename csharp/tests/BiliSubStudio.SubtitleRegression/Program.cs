@@ -99,6 +99,42 @@ internal sealed class SubtitleFixtureHandler(bool protobufFallback, bool viewBlo
             && cookies.Any(value => value.Contains("SESSDATA=fixture-session", StringComparison.Ordinal));
         var path = request.RequestUri?.AbsolutePath ?? string.Empty;
 
+        if (path == "/x/web-interface/nav")
+        {
+            // Public WBI keys Bilibili returns even for anonymous sessions; the
+            // regression only needs any two long enough stems for signing.
+            return Json("""
+                {
+                  "code":0,
+                  "message":"0",
+                  "data":{
+                    "wbi_img":{
+                      "img_url":"https://i0.hdslb.com/bfs/wbi/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png",
+                      "sub_url":"https://i0.hdslb.com/bfs/wbi/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.png"
+                    }
+                  }
+                }
+                """);
+        }
+
+        if (path == "/x/web-interface/wbi/view/detail")
+        {
+            return Json("""
+                {
+                  "code":0,
+                  "message":"0",
+                  "data":{
+                    "View":{
+                      "aid":99887766,
+                      "bvid":"BV1SubtitleFixture",
+                      "title":"Subtitle fixture",
+                      "pages":[{"page":1,"cid":11223344,"duration":10}]
+                    }
+                  }
+                }
+                """);
+        }
+
         if (path == "/x/web-interface/view")
         {
             if (viewBlocked)
@@ -117,7 +153,7 @@ internal sealed class SubtitleFixtureHandler(bool protobufFallback, bool viewBlo
                 """);
         }
 
-        if (path == "/x/player/v2")
+        if (path == "/x/player/wbi/v2" || path == "/x/player/v2")
         {
             if (protobufFallback)
             {

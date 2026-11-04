@@ -29,10 +29,17 @@ public sealed partial class BilibiliSubtitleClient
     };
 
     private readonly HttpClient _http;
-    private readonly BilibiliPlayurlClient _playurl = new();
+    private readonly BilibiliPlayurlClient _playurl;
 
     public BilibiliSubtitleClient() : this(SharedHttp) { }
-    public BilibiliSubtitleClient(HttpClient http) => _http = http;
+
+    public BilibiliSubtitleClient(HttpClient http)
+    {
+        // Callers (regression tests, alternate transports) must be able to intercept
+        // EVERY request this client makes, including the WBI-signed identity request.
+        _http = http;
+        _playurl = new BilibiliPlayurlClient(http);
+    }
 
     public async Task<IReadOnlyList<SubtitleTrack>> GetTracksAsync(
         string sourceUrl,
