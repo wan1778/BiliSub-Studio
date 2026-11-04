@@ -90,9 +90,9 @@ internal sealed class OcrCheckpointStore
         catch (Exception error) when (error is JsonException or IOException or UnauthorizedAccessException) { return null; }
     }
 
-    // Đọc ứng viên resume mà KHÔNG validate end-match (06/10, vụ padding
-    // container): caller (scanner, có tools probe stream truth) tự quyết
-    // có nhận span ngắn hơn duration không. Schema/key sai là bỏ ngay.
+    // Read a resume candidate WITHOUT end-match validation (06/10, the container padding
+    // case): the caller (scanner, has tools to probe stream truth) decides
+    // whether it accepts a span shorter than duration. Wrong schema/key is dropped immediately.
     internal async Task<OcrParallelCheckpoint?> ParseCandidateAsync(OcrScanRequest request, CancellationToken cancellationToken)
     {
         string key;
@@ -114,10 +114,10 @@ internal sealed class OcrCheckpointStore
         return null;
     }
 
-    // Chẩn đoán resume-miss 06/10 (pause xong bấm Tiếp tục báo mất
-    // checkpoint): tách từng mắt xích (file có không? đọc được không?
-    // schema/key/validity cái nào rớt?) để log nói rõ thay vì đoán.
-    // Chỉ dùng khi resume lỗi, không đụng đường nóng.
+    // Resume-miss diagnosis 06/10 (pausing then pressing Continue reported a lost
+    // checkpoint): break the chain apart (does the file exist? is it readable?
+    // which of schema/key/validity dropped?) so the log states it explicitly instead of guessing.
+    // Only used when resume fails; never touches the hot path.
     internal sealed record CheckpointResumeDiagnosis(
         string Key,
         bool MainExists,
@@ -197,13 +197,13 @@ internal sealed class OcrCheckpointStore
         finally { TryDelete(temporary); }
     }
 
-    // Hồ sơ nhận diện checkpoint theo video (06/10, vụ pause-then-resume
-    // báo mất checkpoint vì ROI/mode mặc định sau khởi động lệch với lúc
-    // quét): <key>.info.json ghi video + đúng settings đã sinh key. Pick
-    // video miss thì tra info cùng video, khôi phục ROI/mode rồi inspect
-    // lại bằng key chuẩn — resume lại chạy, không đoán mò. Best-effort:
-    // không bao giờ làm fail save/load/remove.
-    // (Kiểu public ở OcrModels để App dùng; store chỉ đọc/ghi.)
+    // Per-video checkpoint recognition profile (06/10, the pause-then-resume
+    // case reporting a lost checkpoint because default ROI/mode after startup differed from
+    // scan time): <key>.info.json records the video + exactly the settings that produced the key. A pick-video miss
+    // then looks up info for the same video, restores ROI/mode, and inspects
+    // again using the canonical key — resume works again, no guesswork. Best-effort:
+    // never fails save/load/remove.
+    // (Type is public in OcrModels so App can use it; the store only reads/writes.)
 
     private void WriteInfo(OcrScanRequest request, string key)
     {
@@ -224,9 +224,9 @@ internal sealed class OcrCheckpointStore
                 request.Duration,
                 request.ScanStartOffset,
                 DateTimeOffset.UtcNow);
-            // Thư mục con riêng: contract "đúng 1 file checkpoint" quét
-            // top-level *.json — info nằm ngoài để không phá vỡ invariant
-            // sạch của thư mục checkpoint.
+            // Separate sub-directory: the "exactly 1 checkpoint file" contract scans
+            // top-level *.json — info sits outside so it does not break the clean
+            // invariant of the checkpoint directory.
             var indexDir = Path.Combine(DirectoryPath, "index");
             Directory.CreateDirectory(indexDir);
             File.WriteAllBytes(
@@ -295,7 +295,7 @@ internal sealed class OcrCheckpointStore
         var media = ContiguousFrontier(checkpoint.Lanes);
         // Recovery export must contain only tracker-committed, lane-owned cues.
         // Active cues are useful for the live preview but are still provisional.
-        // Production call-site async: luôn truyền videoPath + ProductionPixelComparer.
+        // Async production call-site: always pass videoPath + ProductionPixelComparer.
         var (reconciled, _) = await OcrScanner.ReconcileAsync(checkpoint.Lanes, request.Path, new ProductionPixelComparer(), cancellationToken);
         var cues = reconciled
             .Where(x => x.Start <= media + 0.001)
@@ -307,11 +307,11 @@ internal sealed class OcrCheckpointStore
             cues.TakeLast(120).ToArray(), cues);
     }
 
-    // Danh sách loại trừ lúc xuất SRT (xem OcrExportExclusions): file
-    // <checkpointkey>.exclude.json cạnh checkpoint. Không thuộc checkpoint nên
-    // không ảnh hưởng key/resume/schema; thiếu/hỏng = không loại trừ, KHÔNG BAO
-    // GIỜ fail export. Xóa file là hoàn tác. RemoveAsync không xóa (quyết định
-    // của user giữ lại qua Fresh).
+    // Exclusion list at SRT export (see OcrExportExclusions): the file
+    // <checkpointkey>.exclude.json beside the checkpoint. Not part of the checkpoint so it does not
+    // affect key/resume/schema; missing/corrupt = no exclusion, NEVER
+    // fails export. Deleting the file is the undo. RemoveAsync does not delete it (the user's decision
+    // persists through Fresh).
     internal async Task<IReadOnlyList<OcrCueExclusion>> LoadExclusionsAsync(OcrScanRequest request, CancellationToken cancellationToken)
     {
         try
@@ -333,9 +333,9 @@ internal sealed class OcrCheckpointStore
         }
     }
 
-    // Thêm câu vào danh sách loại trừ (người duyệt verdict trong app).
-    // Gộp với file hiện có, bỏ trùng (Start ±1ms + Text). Ghi atomic tmp+move.
-    // Trả về số câu mới thêm. Không đụng checkpoint.
+    // Add cues to the exclusion list (the reviewer verdicts it in the app).
+    // Merges with the existing file, dropping duplicates (Start ±1ms + Text). Atomic tmp+move write.
+    // Returns the number of newly added cues. Never touches the checkpoint.
     internal async Task<int> SaveExclusionsAsync(
         OcrScanRequest request,
         IReadOnlyList<OcrCueExclusion> additions,
@@ -381,10 +381,10 @@ internal sealed class OcrCheckpointStore
         return added;
     }
 
-    // Gỡ entry loại trừ (hoàn tác xoá tay trong app, 21/09). Cùng quy tắc khớp
-    // với SaveExclusionsAsync (Start ±1ms + Text tuyệt đối) nên hoàn tác luôn
-    // trúng đúng entry mình đã ghi. Thiếu file/không khớp = 0, KHÔNG lỗi.
-    // Ghi atomic tmp+move giống append. Không đụng checkpoint.
+    // Remove exclusion entries (undo a manual deletion in the app, 21/09). Same matching rule
+    // as SaveExclusionsAsync (Start ±1ms + exact Text), so the undo always hits
+    // exactly the entry written. Missing file/no match = 0, NO error.
+    // Atomic tmp+move write like the append. Never touches the checkpoint.
     internal async Task<int> RemoveExclusionsAsync(
         OcrScanRequest request,
         IReadOnlyList<OcrCueExclusion> removals,
@@ -427,10 +427,10 @@ internal sealed class OcrCheckpointStore
         return removed;
     }
 
-    // Danh sách sửa chữ AI (xem OcrExportFixes): file <checkpointkey>.fix.json
-    // cạnh checkpoint. Luật y hệt exclusion: không thuộc checkpoint, thiếu/hỏng
-    // = không sửa, KHÔNG BAO GIỜ fail export. fix trùng (Start ±1ms + chữ cũ)
-    // thì bản sau thắng (ghi đè chữ mới). Xóa file là hoàn tác.
+    // AI text-correction list (see OcrExportFixes): the file <checkpointkey>.fix.json
+    // beside the checkpoint. Rule identical to exclusion: not part of the checkpoint, missing/corrupt
+    // = no correction, NEVER fails export. Duplicate fixes (Start ±1ms + old text)
+    // let the later one win (overwrites with the new text). Deleting the file is the undo.
     internal async Task<IReadOnlyList<OcrCueFix>> LoadFixesAsync(OcrScanRequest request, CancellationToken cancellationToken)
     {
         try
@@ -453,8 +453,8 @@ internal sealed class OcrCheckpointStore
         }
     }
 
-    // Thêm/ghi đè chữ sửa (file fix lúc quét/xuất). Gộp với file hiện có.
-    // Trả về số câu mới thêm (ghi đè không đếm). Không đụng checkpoint.
+    // Add/overwrite text corrections (the fix file during scan/export). Merges with the existing file.
+    // Returns the number of newly added cues (overwrites are not counted). Never touches the checkpoint.
     internal async Task<int> SaveFixesAsync(
         OcrScanRequest request,
         IReadOnlyList<OcrCueFix> additions,
@@ -517,10 +517,10 @@ internal sealed class OcrCheckpointStore
         }
     }
 
-    // Dọn file .bak sau khi quét xong sạch (23/09): backup chống crash chỉ cần
-    // lúc đang quét (mất điện/tắt đột ngột); xong rồi thì file chính đã đủ,
-    // giữ .bak chỉ tốn đĩa (vài chục MB). Best-effort tuyệt đối: không bao giờ
-    // throw, không đụng file chính/sổ tay. Tạm dừng/hủy/lỗi thì KHÔNG gọi.
+    // Clean up the .bak file after a scan finishes cleanly (23/09): the crash backup is only needed
+    // during a scan (power loss/abrupt shutdown); once done the main file suffices, so
+    // keeping .bak only costs disk (a few dozen MB). Absolutely best-effort: never
+    // throws, never touches the main file/notebook. Pause/cancel/error => NOT called.
     public async Task DeleteBackupAsync(OcrScanRequest request, CancellationToken cancellationToken)
     {
         try
@@ -605,8 +605,8 @@ internal sealed class OcrCheckpointStore
                 1280, 320);
         var json = JsonSerializer.SerializeToUtf8Bytes(identity, JsonOptions);
         var key = Convert.ToHexStringLower(SHA256.HashData(json));
-        // Targeted scan (offset != 0) dùng key riêng để không bao giờ đè/collide checkpoint full-scan.
-        // Offset 0 giữ nguyên key cũ byte-for-byte (backward compatible, không đụng checkpoint hiện có).
+        // Targeted scan (offset != 0) uses its own key so it never overwrites/collides with a full-scan checkpoint.
+        // Offset 0 keeps the old key byte-for-byte (backward compatible, does not touch existing checkpoints).
         if (request.ScanStartOffset != 0)
         {
             var extra = System.Text.Encoding.UTF8.GetBytes(key + "|offset:" + request.ScanStartOffset.ToString("R", System.Globalization.CultureInfo.InvariantCulture));
@@ -668,9 +668,9 @@ internal sealed class OcrCheckpointStore
                 !double.IsFinite(segment.ScanStart) || !double.IsFinite(segment.ScanEnd) ||
                 segment.CoreStart < offset - 0.001 || segment.CoreEnd <= segment.CoreStart || segment.CoreEnd > offset + duration + 0.001 ||
                 segment.ScanStart < offset - 0.001 || segment.ScanStart > segment.CoreStart ||
-                // ScanEnd-vs-CoreEnd dùng cùng tolerance ±0.001 như mọi bound check lân cận:
-                // BuildSegments tính CoreEnd = offset + duration*N/N bằng floating-point nên có thể
-                // sludge ~1e-12 trên ScanEnd (min với offset+duration); drift <= 1ms vẫn hợp lệ.
+                // ScanEnd-vs-CoreEnd uses the same ±0.001 tolerance as every neighboring bound check:
+                // BuildSegments computes CoreEnd = offset + duration*N/N in floating-point so it can
+                // sludge ~1e-12 on ScanEnd (min with offset+duration); drift <= 1ms is still valid.
                 segment.ScanEnd + 0.001 < segment.CoreEnd || segment.ScanEnd > offset + duration + 0.001 ||
                 !double.IsFinite(lane.MediaSeconds) || lane.MediaSeconds < segment.ScanStart - 0.001 || lane.MediaSeconds > segment.ScanEnd + 0.001 ||
                 lane.Frames < 0 || lane.OcrImages < 0 || lane.OcrImages > lane.Frames ||

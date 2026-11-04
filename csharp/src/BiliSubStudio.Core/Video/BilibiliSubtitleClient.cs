@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using BiliSubStudio.Core.Authentication;
 
 namespace BiliSubStudio.Core.Video;
 
@@ -18,9 +19,9 @@ public sealed partial class BilibiliSubtitleClient
         MaxConnectionsPerServer = 4,
         PooledConnectionLifetime = TimeSpan.FromMinutes(5),
         PooledConnectionIdleTimeout = TimeSpan.FromMinutes(2),
-        // Bilibili gzip trang video dù không hỏi (23/09): không giải nén là
-        // đọc ra rác nhị phân, regex aid mù tịt. Bật giải nén không ảnh hưởng
-        // JSON/protobuf trả về thường.
+        // Bilibili gzips the video page even when not asked (23/09): without decompression you read
+        // binary garbage and the aid regex finds nothing. Enabling decompression does not affect
+        // the JSON/protobuf responses normally returned.
         AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate | DecompressionMethods.Brotli,
     })
     {
@@ -29,12 +30,6 @@ public sealed partial class BilibiliSubtitleClient
 
     private readonly HttpClient _http;
     private readonly BilibiliPlayurlClient _playurl = new();
-
-    // Vân tay buvid chống chặn 412 (23/09): API sub của Bilibili khóa rủi ro
-    // khi thiếu buvid3. Lấy 1 lần/process từ finger/spi (không cần đăng nhập),
-    // hỏng thì thôi (best-effort, không bao giờ chặn metadata).
-    private static readonly SemaphoreSlim FingerGate = new(1, 1);
-    private static string? _fingerCookies;
 
     public BilibiliSubtitleClient() : this(SharedHttp) { }
     public BilibiliSubtitleClient(HttpClient http) => _http = http;
@@ -50,11 +45,11 @@ public sealed partial class BilibiliSubtitleClient
             ?? throw new InvalidOperationException("Không xác định được BVID để lấy phụ đề Bilibili.");
         var part = ExtractPart(infoId, sourceUrl);
         var cookieHeader = await ReadCookieHeaderAsync(cookieFile, cancellationToken);
-        cookieHeader = await WithFingerprintAsync(cookieHeader, bvid, cancellationToken);
+        cookieHeader = await BilibiliDeviceCookieProvider.MergeAsync(cookieHeader, _http, cancellationToken);
         (long Aid, long Cid) identity;
-        // 22/10 field: web-interface/view không ký bị Bilibili chặn 412, còn
-        // view/detail có ký WBI vẫn trả aid + cid. Dùng chính signer đã kiểm
-        // chứng của playurl client để không mất track phụ đề AI (zh).
+        // 22/10 field: the unsigned web-interface/view is blocked by Bilibili with 412, while
+        // the WBI-signed view/detail still returns aid + cid. Reuse the playurl client's already
+        // verified signer so the AI subtitle track (zh) is not lost.
         var signed = await _playurl.ResolveSignedIdentityAsync(bvid, part, cookieHeader, cancellationToken);
         if (signed is { } signedIdentity)
         {
@@ -70,8 +65,8 @@ public sealed partial class BilibiliSubtitleClient
             }
             catch (HttpRequestException viewError)
             {
-                // view hay bị chặn 412 trong khi pagelist/archive-stat thường mở:
-                // đi đường vòng lấy cid/aid, giữ nguyên lỗi gốc để báo rõ.
+                // view is often blocked with 412 while pagelist/archive-stat usually stay open:
+                // take the roundabout path for cid/aid, preserving the original error for a clear report.
                 probe?.Invoke($"identity: view HTTP {(int?)viewError.StatusCode}, thử đường vòng");
                 try
                 {
@@ -89,8 +84,8 @@ public sealed partial class BilibiliSubtitleClient
         var tracks = new List<SubtitleTrack>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        // player wbi/v2 ký trước (track URL host mới còn sống), hỏng thì
-        // player/v2 cũ (giữ tương thích fixture + video cũ).
+        // Sign player wbi/v2 first (the track URL host on the new endpoint is still alive); if it fails,
+        // fall back to the old player/v2 (keeps fixture + old video compatibility).
         try
         {
             var playerUri = await PlayerV2UriAsync(identity, bvid, cookieHeader, cancellationToken);
@@ -163,9 +158,9 @@ public sealed partial class BilibiliSubtitleClient
         string cookieHeader,
         CancellationToken cancellationToken)
     {
-        // Đường vòng khi view bị chặn: pagelist cho cid từng phần (200 đã kiểm
-        // chứng), HTML trang video cho aid (__NEXT_DATA__, archive/stat đã
-        // chết 404). Cả hai thường mở không cần ký.
+        // The roundabout path when view is blocked: pagelist gives the cid of each part (200 verified),
+        // and the video page HTML gives the aid (__NEXT_DATA__; archive/stat is dead with 404).
+        // Both usually respond without signing.
         using var pages = await SendJsonAsync(
             new Uri("https://api.bilibili.com/x/player/pagelist?bvid=" + Uri.EscapeDataString(bvid) + "&jsonp=jsonp"),
             cookieHeader,
@@ -191,9 +186,9 @@ public sealed partial class BilibiliSubtitleClient
             throw new InvalidDataException($"Đường vòng pagelist không thấy phần {part}.");
         var cid = selected.GetProperty("cid").GetInt64();
 
-        // AID chỉ cần cho endpoint phụ đề AI; player/v2 (phụ đề thường + AI
-        // legacy) chỉ cần cid. Trang video có thể bị chặn rủi ro nên không có
-        // AID vẫn phải lấy được danh sách track qua player/v2.
+        // The AID is only needed for the AI subtitle endpoint; player/v2 (normal subtitles + legacy
+        // AI) needs only the cid. The video page may be blocked as a risk, so without an
+        // AID the track list must still be obtainable via player/v2.
         var aid = 0L;
         try
         {
@@ -448,70 +443,10 @@ public sealed partial class BilibiliSubtitleClient
         .Split(';', StringSplitOptions.RemoveEmptyEntries)
         .Any(part => part.TrimStart().StartsWith(name + "=", StringComparison.OrdinalIgnoreCase));
 
-    private async Task<string> WithFingerprintAsync(string cookieHeader, string bvid, CancellationToken cancellationToken)
-    {
-        var finger = await FingerCookiesAsync(cancellationToken);
-        if (string.IsNullOrWhiteSpace(finger)) return cookieHeader;
-        foreach (var part in finger.Split(';', StringSplitOptions.RemoveEmptyEntries))
-        {
-            var trimmed = part.Trim();
-            var split = trimmed.IndexOf('=');
-            if (split <= 0) continue;
-            var name = trimmed[..split].Trim();
-            if (name.Length == 0 || ContainsCookie(cookieHeader, name)) continue;
-            cookieHeader = string.IsNullOrWhiteSpace(cookieHeader) ? trimmed : cookieHeader + "; " + trimmed;
-        }
-        return cookieHeader;
-    }
-
-    private async Task<string> FingerCookiesAsync(CancellationToken cancellationToken)
-    {
-        if (_fingerCookies is not null) return _fingerCookies;
-        await FingerGate.WaitAsync(cancellationToken);
-        try
-        {
-            if (_fingerCookies is not null) return _fingerCookies;
-            var cookies = string.Empty;
-            try
-            {
-                using var request = new HttpRequestMessage(HttpMethod.Get,
-                    new Uri("https://api.bilibili.com/x/frontend/finger/spi"));
-                request.Headers.TryAddWithoutValidation("Referer", "https://www.bilibili.com/");
-                request.Headers.TryAddWithoutValidation("User-Agent", BilibiliPlayurlClient.BrowserUserAgent);
-                using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-                if (response.IsSuccessStatusCode)
-                {
-                    using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
-                    var root = document.RootElement;
-                    if (root.TryGetProperty("code", out var code) && code.ValueKind == JsonValueKind.Number
-                        && code.GetInt32() == 0 && root.TryGetProperty("data", out var data)
-                        && data.ValueKind == JsonValueKind.Object)
-                    {
-                        var parts = new List<string>();
-                        if (data.TryGetProperty("b_3", out var b3) && b3.ValueKind == JsonValueKind.String
-                            && !string.IsNullOrWhiteSpace(b3.GetString())) parts.Add("buvid3=" + b3.GetString());
-                        if (data.TryGetProperty("b_4", out var b4) && b4.ValueKind == JsonValueKind.String
-                            && !string.IsNullOrWhiteSpace(b4.GetString())) parts.Add("buvid4=" + b4.GetString());
-                        cookies = string.Join("; ", parts);
-                    }
-                }
-            }
-            catch
-            {
-            }
-            _fingerCookies = cookies;
-            return cookies;
-        }
-        finally
-        {
-            FingerGate.Release();
-        }
-    }
-
-    // WBI ký cho player (theo yt-dlp 2026): nav -> wbi_img img/sub key ->
-    // mixin 64 số -> w_rid=md5(query đã sắp xếp + wts + mixin). Endpoint không
-    // ký trả track URL host cũ đã chết; bản ký trả host mới. Không ký được thì
-    // null để caller dùng đường cũ.
+    // WBI signing for the player (as in yt-dlp 2026): nav -> wbi_img img/sub key ->
+    // mixin of 64 digits -> w_rid=md5(sorted query + wts + mixin). The unsigned
+    // endpoint returns track URLs on an old, dead host; the signed one returns the new host. If signing
+    // fails, return null so the caller uses the old path.
     private static readonly int[] WbiMixinTable =
     [
         46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49,

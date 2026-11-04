@@ -2,8 +2,8 @@ using BiliSubStudio.Core.Ocr;
 
 namespace BiliSubStudio.Core.ContractTests;
 
-// Dấu AI trên bảng live: verdict khớp Start (±1ms) + Text -> hậu tố hàng.
-// Không verdict/unsure -> rỗng. Pure, test trực tiếp.
+// AI badge on the live table: a verdict matching Start (±1ms) + Text -> a row suffix.
+// No verdict/unsure -> empty. Pure, tested directly.
 internal static class OcrJudgeBadgeContract
 {
     public static Task RunAsync()
@@ -23,7 +23,7 @@ internal static class OcrJudgeBadgeContract
 
     private static void KeepShowsNothing()
     {
-        // Câu giữ hiện nothing cho sạch bảng (câu nào cũng ✓ thì hiện làm gì).
+        // A keep cue shows nothing to keep the table clean (if every row had ✓, showing it would be pointless).
         var map = OcrJudgeBadge.BuildMap([Verdict(26.233, "店", "keep")]);
         Check(OcrJudgeBadge.For(Cue(26.233, "店"), map) == string.Empty, "keep phải rỗng");
         var fixMap = OcrJudgeBadge.BuildMap([Verdict(10.0, "变", "fix", "遍")]);
@@ -32,10 +32,10 @@ internal static class OcrJudgeBadgeContract
 
     private static void DropMark()
     {
-        // CHỈ drop mới hiện badge (cho biết dòng nào sẽ bị loại khỏi SRT).
+        // Only a drop shows a badge (so the user knows which row will be removed from the SRT).
         var map = OcrJudgeBadge.BuildMap([Verdict(26.233, "店", "drop")]);
         Check(OcrJudgeBadge.For(Cue(26.233, "店"), map) == "  🗑 xóa", "drop phải dấu xóa");
-        // Không còn chữ AI nào trong badge (không dùng AI nữa).
+        // No AI wording remains in the badge (AI is no longer used).
         foreach (var text in new[] { OcrJudgeBadge.For(Cue(26.233, "店"), map) })
             Check(!text.Contains("AI", StringComparison.Ordinal), "badge không được nhắc AI");
     }
@@ -47,7 +47,7 @@ internal static class OcrJudgeBadgeContract
         Check(OcrJudgeBadge.For(Cue(2.0, "嗯"), map) == string.Empty, "chưa chấm phải rỗng");
         Check(OcrJudgeBadge.For(Cue(2.0, "嗯"), null) == string.Empty, "map null phải rỗng");
         Check(OcrJudgeBadge.For(null, map) == string.Empty, "cue null phải rỗng");
-        // Khác chữ / lệch giờ quá 1ms -> không khớp.
+        // Different text / time drift beyond 1ms -> no match.
         Check(OcrJudgeBadge.For(Cue(1.0, "嗯"), map) == string.Empty, "khác chữ phải rỗng");
         var far = OcrJudgeBadge.BuildMap([Verdict(1.002, "啊", "keep")]);
         Check(OcrJudgeBadge.For(Cue(1.0, "啊"), far) == string.Empty, "lệch giờ phải rỗng");
@@ -57,7 +57,7 @@ internal static class OcrJudgeBadgeContract
     {
         var map = OcrJudgeBadge.BuildMap([
             Verdict(5.0, "好", "keep"),
-            Verdict(5.0, "好", "drop"), // chấm lại: bản sau thắng
+            Verdict(5.0, "好", "drop"), // re-marked: the later entry wins
             new OcrCueVerdict(-1.0, "x", "keep", "t", "m", "d"),
             new OcrCueVerdict(6.0, null!, "keep", "t", "m", "d"),
         ]);

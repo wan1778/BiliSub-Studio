@@ -60,7 +60,6 @@ public sealed class VideoDownloadService
         if (string.IsNullOrWhiteSpace(request.Url)) throw new ArgumentException("URL rỗng.", nameof(request));
         var outputDirectory = string.IsNullOrWhiteSpace(request.OutputDirectory) ? _paths.DefaultDownloads : Path.GetFullPath(request.OutputDirectory.Trim());
         Directory.CreateDirectory(outputDirectory);
-        await _tools.EnsureYtDlpAsync(cancellationToken);
         var ffmpeg = await _tools.EnsureFfmpegAsync(cancellationToken);
 
         job.Set("resolving", 0, "Đang lấy stream Bilibili...");
@@ -261,9 +260,9 @@ public sealed class VideoDownloadService
             {
                 rangeError = error;
             }
-            // Stall = tuyến + refresh đã cạn mà không thêm byte nào: thử lại 1
-            // kết nối hay yt-dlp fallback cũng chỉ bò trên cùng mạng chết —
-            // fail nhanh với câu rõ ràng thay vì treo vô hạn.
+            // Stall = the route and refresh options are exhausted with no new bytes: retrying with 1
+            // connection or the yt-dlp fallback only crawls on the same dead network —
+            // fail fast with a clear message instead of hanging forever.
             catch (DownloadStalledException) { throw; }
             catch (Exception error)
             {
@@ -390,7 +389,9 @@ public sealed class VideoDownloadService
 
         cancellationToken.ThrowIfCancellationRequested();
         var extension = string.Equals(request.Container, "mkv", StringComparison.OrdinalIgnoreCase) ? ".mkv" : ".mp4";
-        var baseName = FileNamePolicy.Sanitize(selection.Title, FileNamePolicy.Sanitize(selection.Id, "BiliSub_Video"));
+        var baseName = FileNamePolicy.Sanitize(
+            string.IsNullOrWhiteSpace(request.OutputName) ? selection.Title : request.OutputName,
+            FileNamePolicy.Sanitize(selection.Id, "BiliSub_Video"));
         var output = FileNamePolicy.UniquePath(Path.Combine(outputDirectory, baseName + extension));
         var temporary = output + ".muxing" + extension;
         TryDelete(temporary);
@@ -514,8 +515,8 @@ public sealed class VideoDownloadService
         }
     }
 
-    // yt-dlp fallback từng chấp nhận mọi file Length>0 nên file thiếu vẫn đi
-    // mux. Đối chiếu với metadata playurl, cùng biên độ với Range probe.
+    // The yt-dlp fallback used to accept any file with Length>0, so truncated files still went to
+    // mux. Cross-check against the playurl metadata, using the same margin as the Range probe.
     private static void ValidateFallbackSize(StreamKind kind, long actualBytes, long expectedBytes)
     {
         if (expectedBytes <= 0 || actualBytes <= 0) return;
@@ -527,7 +528,7 @@ public sealed class VideoDownloadService
     private static long StreamPlanningSize(ResolvedStream? stream) =>
         stream is null ? 0 : stream.Size > 0 ? stream.Size : stream.EstimatedSize;
 
-    // Gate cuối trước mux: DASH audio/video cùng playurl phải gần bằng nhau.
+    // Final gate before mux: DASH audio/video from the same playurl must be close in duration.
     // A large difference in either direction indicates a wrong or truncated stream.
     private static void ValidateMuxDurations(double videoSeconds, double audioSeconds)
     {
@@ -562,9 +563,9 @@ public sealed class VideoDownloadService
         _ => $"{bytesPerSecond:0} B/s",
     };
 
-    // Field 2026-09-24: luồng tải chết vì 412 (hết phiên Bilibili) nhưng message
-    // yt-dlp thô không nói user phải làm gì. Gắn hướng dẫn đúng 1 lần; message
-    // không dính 412 đi qua nguyên vẹn.
+    // Field 2026-09-24: the download flow dies from 412 (expired Bilibili session) but the raw
+    // yt-dlp message does not tell the user what to do. Attach the guidance exactly once; messages
+    // without 412 pass through untouched.
     internal static string WithBilibiliSessionGuidance(string message)
     {
         if (string.IsNullOrEmpty(message) || !message.Contains("412", StringComparison.Ordinal)) return message;
@@ -573,10 +574,10 @@ public sealed class VideoDownloadService
         return message + " · " + guidance;
     }
 
-    // 01/10 (vụ 720p về 480p): Bilibili khóa bản cao khi phiên hết hạn, còn
-    // downloader vẫn chạy "đúng" (best trong những gì thấy được) nên user chỉ
-    // phát hiện sau khi tải xong. Báo ngay khi xin best/cao mà chỉ được tối
-    // đa 480p; tải vẫn tiếp tục.
+    // 01/10 (the 720p-to-480p incident): Bilibili locks the high versions once the session expires, while the
+    // downloader still runs "correctly" (best of what it can see), so users only
+    // notice after the download finishes. Report immediately when best/high is requested but only
+    // 480p is granted; the download still continues.
     private static void WarnIfSessionCappedQuality(AppJob job, VideoDownloadRequest request, int selectedHeight)
     {
         if (selectedHeight <= 0 || selectedHeight > 480) return;
@@ -588,10 +589,10 @@ public sealed class VideoDownloadService
             ". Đăng nhập lại ở trang Đăng nhập (QR) rồi tải lại để lấy 720p+; video giới hạn VIP thì đây đã là mức tối đa.");
     }
 
-    // Field 2026-09-06: output fallback hoàn chỉnh cũ (audio_fallback.m4a
-    // thiếu 43,9 MB) nằm lại work dir; yt-dlp --no-overwrites sẽ tái dùng nó
-    // thay vì tải mới, khiến lần sau vẫn hỏng dù cache đã lành. Đầu mỗi
-    // fallback phải xóa output cũ, nhưng giữ .part/.ytdl cho --continue resume.
+    // Field 2026-09-06: an old complete fallback output (audio_fallback.m4a missing
+    // 43.9 MB) stayed in the work dir; yt-dlp --no-overwrites reuses it
+    // instead of downloading fresh, so the next run is still broken even though the cache is healthy. Every
+    // fallback must delete old output first, but keep .part/.ytdl for --continue resume.
     private static void PurgeStaleFallbackOutputs(string prefix)
     {
         var directory = Path.GetDirectoryName(prefix);

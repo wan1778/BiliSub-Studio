@@ -23,6 +23,7 @@ public sealed partial class EditorPage : Page
 {
     private enum DragKind { None, Create, Move, North, South, East, West, NorthEast, NorthWest, SouthEast, SouthWest }
     private enum InspectorMode { Subtitle, Effect, Audio, Image, Export }
+    private sealed record RegionListItem(string Display, string Details);
 
     private readonly BiliSubApplication _application;
     private readonly IFilePickerService _picker;
@@ -40,16 +41,16 @@ public sealed partial class EditorPage : Page
     private string? _jobId;
     private string? _asrJobId;
     private string? _ttsJobId;
-    // 08/10 (user): nút Tạm dừng dừng job TTS nhưng giữ toàn bộ câu đã đọc
-    // (clip cache theo hash trong Cache/Editor/TTS) nên bấm Tạo voice sẽ chạy
-    // tiếp từ chỗ dừng thay vì làm lại từ đầu. Cờ này để poll job giữ lại
-    // hướng dẫn chạy tiếp khi job dừng mà không ra result.
+    // 08/10 (user): the Pause button stops the TTS job but keeps every sentence
+    // already read (clips cached by hash in Cache/Editor/TTS), so pressing Create
+    // voice continues from where it stopped instead of starting over. This flag
+    // lets the job poll keep the resume hint when the job stops without a result.
     private bool _ttsPausedByUser;
     private bool _asrPausedByUser;
     private const string AsrPausedResumeHint = "Đã tạm dừng phân tích nhịp. Nhịp đã xong được giữ lại; bấm «Phân tích nhịp» hoặc «Tạo voice» để chạy tiếp từ chỗ dừng.";
     private const string TtsPausedResumeHint = "Đã tạm dừng tạo voice. Các câu đọc xong được giữ lại; bấm «Tạo voice» để chạy tiếp từ chỗ dừng.";
-    // EDIT-CANCEL-OWNERSHIP: id còn "sống" (đang cancel/dọn dẹp) nhưng đã tách khỏi
-    // poll UI sau watchdog. Busy-state vẫn phải giữ cho tới khi job terminal thật.
+    // EDIT-CANCEL-OWNERSHIP: ids still "alive" (being cancelled/cleaned up) but
+    // already detached from the UI poll after the watchdog. Busy state must be kept until the job is truly terminal.
     private readonly HashSet<string> _cleanupDetachedJobIds = new(StringComparer.Ordinal);
     private IReadOnlyList<EditorCueSpeechTiming> _cueSpeechTiming = [];
     private EditorVoiceTrack? _voiceTrack;
@@ -86,6 +87,8 @@ public sealed partial class EditorPage : Page
     {
         _voiceTrack = null;
         _voiceCueWindows = new Dictionary<string, EditorTtsCueWindow>(StringComparer.Ordinal);
+        _voiceWaveform = null;
+        _voiceWaveformSource = null;
     }
 
     public EditorPage(BiliSubApplication application, IFilePickerService picker)
@@ -95,6 +98,7 @@ public sealed partial class EditorPage : Page
         _playback = new EditorPlaybackController(this);
         InitializeComponent();
         InitializeProjectList();
+        InitializeEditorShortcuts();
         ApplySubtitleStyleToUi(_subtitleStyle);
         // Page-lifetime observation of our own control covers ASR, TTS, sample,
         // resets and completion without adding another progress owner or timer.
@@ -121,11 +125,16 @@ public sealed partial class EditorPage : Page
         SubtitleModeButton.IsChecked = mode == InspectorMode.Subtitle;
         EffectModeButton.IsChecked = mode == InspectorMode.Effect;
         AudioModeButton.IsChecked = mode == InspectorMode.Audio;
+        // NAV-02: Voice is a sixth tool of the same strip. Skipping it here left
+        // the Voice tab lit and the Voice panel open once another tool opened,
+        // so the strip showed two active tabs and the wrong panel.
+        VoiceModeButton.IsChecked = false;
         ExportModeButton.IsChecked = mode == InspectorMode.Export;
         if (_imageModeButton is not null) _imageModeButton.IsChecked = mode == InspectorMode.Image;
         SubtitleInspectorPanel.Visibility = mode == InspectorMode.Subtitle ? Visibility.Visible : Visibility.Collapsed;
         EffectInspectorPanel.Visibility = mode == InspectorMode.Effect ? Visibility.Visible : Visibility.Collapsed;
         AudioInspectorPanel.Visibility = mode == InspectorMode.Audio ? Visibility.Visible : Visibility.Collapsed;
+        VoiceInspectorPanel.Visibility = Visibility.Collapsed;
         ExportInspectorPanel.Visibility = mode == InspectorMode.Export ? Visibility.Visible : Visibility.Collapsed;
         if (_imageInspectorPanel is not null) _imageInspectorPanel.Visibility = mode == InspectorMode.Image ? Visibility.Visible : Visibility.Collapsed;
         RenderOverlays();
@@ -141,8 +150,8 @@ public sealed partial class EditorPage : Page
             throw new InvalidOperationException("Editor phải cho phép chọn SRT Việt và giọng đọc trước khi chọn video.");
         if (GenerateTtsButton.IsEnabled)
             throw new InvalidOperationException("Editor không được cho tạo voice khi chưa có video nguồn.");
-        if (!string.Equals(SelectedVoiceModel(), "ngoc_huyen", StringComparison.Ordinal))
-            throw new InvalidOperationException("Editor phải mặc định chọn model voice Ngọc Huyền local.");
+        if (!string.Equals(SelectedVoiceModel(), BiliSubStudio.Core.Editor.TtsVoiceCatalog.DefaultVoice, StringComparison.Ordinal))
+            throw new InvalidOperationException("Editor phải mặc định chọn preset voice VieNeu Ngọc Huyền.");
         if (_voiceSampleButton is null || !_voiceSampleButton.IsEnabled)
             throw new InvalidOperationException("Editor phải cho nghe thử giọng local trước khi chọn video/SRT.");
         if (!string.Equals(PlayerPlayPauseButton.Content?.ToString(), "▶", StringComparison.Ordinal))
@@ -157,6 +166,11 @@ public sealed partial class EditorPage : Page
             var visible = new[] { SubtitleInspectorPanel, EffectInspectorPanel, AudioInspectorPanel, _imageInspectorPanel, ExportInspectorPanel }
                 .Count(panel => panel?.Visibility == Visibility.Visible);
             if (visible != 1) throw new InvalidOperationException("Editor tool state phải có đúng một inspector.");
+            // NAV-02: exactly one tool of the strip may read as active, otherwise a
+            // stale tab stays lit next to the tool that actually opens its panel.
+            var activeTools = new[] { SubtitleModeButton, EffectModeButton, AudioModeButton, VoiceModeButton, ImageModeButton, ExportModeButton }
+                .Count(tool => tool.IsChecked == true);
+            if (activeTools != 1) throw new InvalidOperationException("Editor tool state phải có đúng một tab đang sáng.");
         }
         SetInspectorMode(InspectorMode.Subtitle);
         return Task.CompletedTask;
@@ -176,7 +190,8 @@ public sealed partial class EditorPage : Page
             {
                 CleanupEditorParity();
                 await _playback.UnloadAsync();
-                try { await SaveImageSidecarAsync(); } catch { }
+                try { await SaveImageSidecarAsync(); }
+                catch (Exception error) { Services.StartupDiagnostics.WriteException("editor-unload-image-sidecar", error); }
                 await SaveProjectNowAsync();
             }
             finally
@@ -192,13 +207,31 @@ public sealed partial class EditorPage : Page
 
     private async void OpenVideo_Click(object sender, RoutedEventArgs e)
     {
-        try { await OpenVideoAsync(); }
+        try
+        {
+            var picked = await _picker.PickVideosAsync();
+            if (picked.Count == 0) return;
+            await OpenVideoSetAsync(picked);
+        }
         catch (OperationCanceledException) { }
         catch (Exception error)
         {
             StatusText.Text = "Không mở được video: " + error.Message;
             RefreshEditorActions();
         }
+    }
+
+    /// <summary>
+    /// Opens the first video as the project and appends the rest to its timeline.
+    /// This is the editor-style import: choose all episodes once instead of
+    /// pressing "add video" once per file.
+    /// </summary>
+    private async Task OpenVideoSetAsync(IReadOnlyList<string> paths)
+    {
+        if (paths.Count == 0) return;
+        await OpenVideoPathAsync(paths[0]);
+        if (paths.Count > 1 && _project is not null)
+            await AppendVideosAsync(paths.Skip(1).ToArray());
     }
 
     private async Task OpenVideoAsync()
@@ -213,9 +246,9 @@ public sealed partial class EditorPage : Page
         if (string.IsNullOrWhiteSpace(pickedPath)) pickedPath = await _picker.PickVideoAsync();
         if (string.IsNullOrWhiteSpace(pickedPath)) return;
 
-        // EDIT-SWITCH: tự dọn busy-state kẹt (job hủy dở, preview dở) để chuyển
-        // video không bao giờ đòi restart app. Đặt sau pick để bấm Hủy file
-        // không làm mất tác vụ đang chạy.
+        // EDIT-SWITCH: clean up stuck busy state (half-cancelled jobs, half-built
+        // previews) itself so switching videos never demands an app restart. Placed
+        // after the pick so pressing Cancel in the file picker does not kill a running task.
         await ResetEditorBusyStateForSourceSwitchAsync();
 
         var candidatePath = EditorSourceSelection.NormalizeCandidatePath(pickedPath);
@@ -295,7 +328,16 @@ public sealed partial class EditorPage : Page
             UpdateSubtitleSummary();
             SubtitleStatusText.Text = "Đã gắn SRT Việt vào video; có thể tạo voice hoặc xuất video.";
         }
-        else await RestoreSubtitleAsync(_project.Subtitle);
+        else
+        {
+            // A saved project keeps its own validated SRT; a brand-new project
+            // picks up the Vietnamese SRT sitting beside the video.
+            if (await TryAttachSidecarSubtitleAsync(candidatePath))
+            {
+                // Sidecar SRT beside the video is now the primary subtitle.
+            }
+            else await RestoreSubtitleAsync(_project.Subtitle);
+        }
         await SyncSubtitleCueEditorAsync();
         await RestoreSpeechAndVoiceAsync();
         await EnsureImageProjectLoadedAsync();
@@ -303,12 +345,13 @@ public sealed partial class EditorPage : Page
         Timeline.Maximum = Math.Max(0.1, _media.Duration);
         Timeline.Value = trim.Start;
         ResetTimelineForNewSource();
+        await RestoreClipSubtitlesAsync();
         PathText.Text = candidatePath;
         MediaText.Text = $"{_media.Width}×{_media.Height} · {_media.Duration:0.0}s · {_media.Codec} · preview xử lý dùng cùng pipeline FFmpeg với export";
         _syncingInputs = true;
         try
         {
-            StartBox.Maximum = EndBox.Maximum = _media.Duration;
+            RefreshRegionTimeLimits();
             EndBox.Value = _media.Duration;
             _trimRangeValid = true;
         }
@@ -350,9 +393,9 @@ public sealed partial class EditorPage : Page
         await UpdateFrameAsync();
     }
 
-    // RELINK (kiểu Adobe): video nguồn mất khỏi đường dẫn cũ thì báo và cho
-    // user chỉ lại file. Giữ nguyên toàn bộ project, chỉ trỏ nguồn sang chỗ
-    // mới. Trả true khi nối xong và đã lưu.
+    // RELINK (Adobe style): when the source video is missing from its old path,
+    // report it and let the user point to the file again. The entire project is
+    // preserved, only the source is repointed. Returns true once relinked and saved.
     internal async Task<bool> RelinkMissingEditorSourceAsync()
     {
         if (_project is null || string.IsNullOrWhiteSpace(_path)) return false;
@@ -378,7 +421,7 @@ public sealed partial class EditorPage : Page
         }
         catch (Exception error)
         {
-            // File lạ (khác kích thước/thời lượng): báo rõ để user chọn lại.
+            // A foreign file (different size/duration): report it clearly so the user can pick again.
             StatusText.Text = "Không nối được file: " + error.Message;
             return false;
         }
@@ -607,7 +650,11 @@ public sealed partial class EditorPage : Page
         // SUB-02 / SUB-04: picker cancel is a no-op and works before a video exists.
         var path = await _picker.PickSubtitleAsync();
         if (string.IsNullOrWhiteSpace(path)) return;
+        await ImportSubtitlePathAsync(path);
+    }
 
+    private async Task ImportSubtitlePathAsync(string path)
+    {
         // SUB-05: fully validate the candidate before replacing the current SRT state.
         EditorSubtitleSource candidate;
         try
@@ -830,7 +877,8 @@ public sealed partial class EditorPage : Page
     private async void AnalyzeTiming_Click(object sender, RoutedEventArgs e)
     {
         if (EditorBusy || _playback.IsPreviewMode) return;
-        await EnsureVoiceTimingAsync(force: true);
+        try { await EnsureVoiceTimingAsync(force: true); }
+        catch (Exception error) { ReportEditorCommandFailure("phân tích timing voice", error); }
     }
 
     private async Task<bool> EnsureVoiceTimingAsync(bool force = false)
@@ -890,9 +938,9 @@ public sealed partial class EditorPage : Page
             VoiceStatusText.Text = snapshot.Message;
             if (snapshot.Done)
             {
-                // EDIT-SWITCH: khối xử lý kết quả nằm sau Done nhưng trước khi xóa
-                // id theo dõi. Mọi exception ở đây từng làm cờ busy kẹt vĩnh viễn
-                // (nút Mở video chết, phải restart app), nên bắt buộc try/finally.
+                // EDIT-SWITCH: the result-handling block sits after Done but before the
+                // tracked id is cleared. Every exception here once made the busy flag stick
+                // forever (the Open video button died, requiring an app restart), so try/finally is mandatory.
                 var applied = false;
                 try
                 {
@@ -924,7 +972,7 @@ public sealed partial class EditorPage : Page
                         UpdateSubtitleSummary();
                         AsrStatusText.Text = $"Whisper timing hoàn tất · {result.WordCount} từ · {result.Device.ToUpperInvariant()}/{result.ComputeType} · benchmark {result.ProbeRealtimeFactor:0.00}×.";
                         VoiceStatusText.Text = continueVoice
-                            ? "Đã có word timing. Đang tiếp tục tạo voice Ngọc Huyền và canh theo timecode..."
+                            ? "Đã có word timing. Đang tiếp tục tạo voice VieNeu và canh theo timecode..."
                             : "Đã cập nhật nhịp thoại. Có thể tạo lại voice theo timing mới.";
                         RenderOverlays();
                         await SaveProjectNowAsync();
@@ -1001,6 +1049,9 @@ public sealed partial class EditorPage : Page
                 VoiceStatusText.Text = "Video hoặc SRT đã thay đổi khi đang chuẩn bị voice; hãy tạo lại.";
                 return;
             }
+            var voiceSourceRevision = _editorSourceRevision;
+            _ttsTargetClipId = null;
+            _ttsLastJobApplied = false;
             _ttsJobId = _application.StartEditorTts(new EditorTtsRequest(
                 project.Id,
                 path,
@@ -1014,6 +1065,8 @@ public sealed partial class EditorPage : Page
             VoiceStatusText.Text = $"Đang chuẩn bị voice {selectedVoice} local; model tự canh nhịp đọc nguyên câu theo thoại gốc...";
             RefreshEditorActions();
             await PollTtsJobAsync();
+            if (_ttsLastJobApplied && _editorSourceRevision == voiceSourceRevision)
+                await RunClipTtsQueueAsync(selectedVoice);
         }
         catch (Exception error)
         {
@@ -1051,7 +1104,7 @@ public sealed partial class EditorPage : Page
             VoiceStatusText.Text = snapshot.Message;
             if (snapshot.Done)
             {
-                // EDIT-SWITCH: xem chú thích try/finally ở PollAsrJobAsync.
+                // EDIT-SWITCH: see the try/finally note in PollAsrJobAsync.
                 var applied = false;
                 try
                 {
@@ -1059,31 +1112,42 @@ public sealed partial class EditorPage : Page
                         && string.Equals(_ttsJobId, jobId, StringComparison.Ordinal)
                         && snapshot.Result is EditorTtsResult result && _project is not null)
                     {
-                        EnsureCurrentSubtitleFingerprint();
-                        _voiceTrack = result.VoiceTrack with { Gain = _voiceGain };
-                        _voiceCueWindows = result.CueWindows.ToDictionary(window => window.Id, StringComparer.Ordinal);
-                        _project = _project with
+                        if (_ttsTargetClipId is { } targetClipId)
                         {
-                            Tts = new EditorTtsProject(
-                                "complete",
-                                result.Engine,
-                                result.EngineVersion,
-                                result.Voice,
-                                result.Voice,
-                                result.ManifestPath,
-                                result.ManifestSha256,
-                                _voiceTrack,
-                                result.Cues.Count,
-                                result.ReviewCount,
-                                result.CueWindows,
-                                _voiceGain),
-                        };
-                        VoiceStatusText.Text = result.ReviewCount == 0
-                            ? $"Voice Việt hoàn tất · {result.Cues.Count} câu khớp thời lượng thoại gốc · đã vào Xem bản chỉnh."
-                            : $"Voice Việt đã canh thời lượng · {result.ReviewCount} câu cần nghe lại do nhịp model hoặc fallback timecode SRT.";
-                        await SaveProjectNowAsync();
-                        if (sourceRevision == _editorSourceRevision
-                            && string.Equals(_ttsJobId, jobId, StringComparison.Ordinal)) QueuePreviewRefresh();
+                            await ApplyClipTtsResultAsync(targetClipId, result);
+                            _ttsLastJobApplied = true;
+                        }
+                        else
+                        {
+                            EnsureCurrentSubtitleFingerprint();
+                            _voiceTrack = result.VoiceTrack with { Gain = _voiceGain };
+                            _voiceCueWindows = result.CueWindows.ToDictionary(window => window.Id, StringComparer.Ordinal);
+                            _project = _project with
+                            {
+                                Tts = new EditorTtsProject(
+                                    "complete",
+                                    result.Engine,
+                                    result.EngineVersion,
+                                    result.Voice,
+                                    result.Voice,
+                                    result.ManifestPath,
+                                    result.ManifestSha256,
+                                    _voiceTrack,
+                                    result.Cues.Count,
+                                    result.ReviewCount,
+                                    result.CueWindows,
+                                    _voiceGain),
+                            };
+                            VoiceStatusText.Text = result.ShortenedCues > 0
+                                ? $"Voice Việt hoàn tất · {result.Cues.Count} câu · đọc đủ chữ {result.Cues.Count - result.ShortenedCues} · tràn vào khoảng lặng {result.SpilledCues} · ⚠ {result.ShortenedCues} câu bị rút gọn lời (xem Nhật ký để sửa timecode SRT)"
+                                : result.ReviewCount == 0
+                                    ? $"Voice Việt hoàn tất · {result.Cues.Count} câu khớp thời lượng thoại gốc · đã vào Xem bản chỉnh."
+                                    : $"Voice Việt đã canh thời lượng · {result.Cues.Count} câu · đọc đủ chữ toàn bộ · {result.ReviewCount} câu cần nghe lại do nhịp model hoặc fallback timecode SRT.";
+                            await SaveProjectNowAsync();
+                            if (sourceRevision == _editorSourceRevision
+                                && string.Equals(_ttsJobId, jobId, StringComparison.Ordinal)) QueuePreviewRefresh();
+                            _ttsLastJobApplied = true;
+                        }
                         applied = true;
                     }
                 }
@@ -1117,9 +1181,9 @@ public sealed partial class EditorPage : Page
 
     private void PauseVoice_Click(object sender, RoutedEventArgs e)
     {
-        // Tạm dừng kiểu giữ-chỗ (giống TTS): hủy job nhưng giữ checkpoint,
-        // chạy lại tiếp từ frontier. ASR resume được vì TranscribeAsync đọc
-        // checkpoint dở (không phải clip-resume như TTS nhưng cùng pattern).
+        // Hold-the-slot style pause (like TTS): cancels the job but keeps the
+        // checkpoint and resumes from the frontier. ASR can resume because
+        // TranscribeAsync reads the partial checkpoint (not a clip-resume like TTS, but the same pattern).
         if (_ttsJobId is { } tts)
         {
             _ttsPausedByUser = true;
@@ -1147,9 +1211,9 @@ public sealed partial class EditorPage : Page
             : "Đang dừng Whisper và thu hồi Python/FFmpeg; checkpoint timing đã hoàn tất vẫn được giữ.";
     }
 
-    // EDIT-SWITCH: tab Edit là singleton nên mọi cờ busy kẹt đều khóa nút
-    // Mở video cho tới khi restart app. Watchdog này chỉ tách theo dõi ở
-    // phía UI; job toàn cục vẫn tự dọn dưới nền và poll thường sẽ thấy Done.
+    // EDIT-SWITCH: the Edit tab is a singleton, so every stuck busy flag locks the
+    // Open video button until the app is restarted. This watchdog only detaches the
+    // tracking on the UI side; the global job still cleans itself up in the background and the regular poll will see Done.
     private static readonly TimeSpan StuckCancellingLimit = TimeSpan.FromSeconds(30);
 
     private bool IsCleanupDetached(string jobId) => _cleanupDetachedJobIds.Contains(jobId);
@@ -1192,7 +1256,7 @@ public sealed partial class EditorPage : Page
         _cleanupDetachedJobIds.RemoveWhere(id =>
         {
             try { return _application.Jobs.GetSnapshot(id).Done; }
-            catch { return true; } // Job đã rời JobManager coi như terminal.
+            catch { return true; } // a job that has left the JobManager counts as terminal.
         });
     }
 
@@ -1216,22 +1280,23 @@ public sealed partial class EditorPage : Page
         {
             if (id is null) continue;
             try { if (!_application.Jobs.GetSnapshot(id).Done) return false; }
-            catch { } // Job không còn tồn tại coi như đã xong.
+            catch { } // a job that no longer exists counts as done.
         }
         return true;
     }
 
-    // EDIT-SWITCH: chuyển video tự dọn busy-state (hủy job tab Edit theo dõi,
-    // hủy preview, chờ bounded rồi tách) để không bao giờ kẹt ở video cũ.
-    // EDIT-CANCEL-OWNERSHIP: id chỉ bị bỏ khi job terminal; job còn dọn dẹp
-    // chuyển sang detached set để observer giữ ownership tới khi xong.
+    // EDIT-SWITCH: switching videos cleans up busy state itself (cancelling jobs
+    // tracked by the Edit tab, cancelling the preview, waiting a bounded time then
+    // detaching) so it never gets stuck on the old video. EDIT-CANCEL-OWNERSHIP:
+    // an id is only dropped when the job is terminal; a job still cleaning up moves to the detached set so the observer keeps ownership until it finishes.
     private async Task ResetEditorBusyStateForSourceSwitchAsync()
     {
         ++_editorSourceRevision;
         foreach (var id in new[] { _jobId, _asrJobId, _ttsJobId })
         {
             if (id is null) continue;
-            try { _application.CancelJob(id); } catch { }
+            try { _application.CancelJob(id); }
+            catch (Exception error) { System.Diagnostics.Debug.WriteLine("editor-source-switch-cancel: " + error); }
         }
         try { await DisposePreviewForSourceChangeAsync(); } catch { }
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(8);
@@ -1350,15 +1415,35 @@ public sealed partial class EditorPage : Page
 
     private void Timeline_ValueChanged(object sender, Microsoft.UI.Xaml.Controls.Primitives.RangeBaseValueChangedEventArgs e)
     {
+        var value = e.NewValue;
+        var userDriven = !_syncingTimeline && _media is not null;
+        // When the user scrubs by hand, the playhead snaps to the media's frame grid
+        // (snap time = frame index / fps), not a free real value.
+        if (userDriven)
+        {
+            var snapped = SnapTimelinePlayhead(value);
+            if (Math.Abs(snapped - value) > 1e-9)
+            {
+                _syncingTimeline = true;
+                try { Timeline.Value = snapped; }
+                finally { _syncingTimeline = false; }
+                // The slider may adjust the value itself: always use the real value.
+                value = Timeline.Value;
+            }
+        }
         UpdateClock();
         RenderOverlays();
         UpdateTimelinePlayhead();
-        if (_playback.IsPreviewMode && !_syncingTimeline && _media is not null)
+        if (!userDriven) return;
+        FollowTimelinePlayhead(value);
+        // The user scrubbed: save the playhead position per project (debounced, background write).
+        SchedulePlayheadSave();
+        if (_playback.IsPreviewMode)
         {
-            _ = _playback.SeekAsync(Math.Clamp(e.NewValue, Timeline.Minimum, Timeline.Maximum));
+            _ = _playback.SeekAsync(Math.Clamp(value, Timeline.Minimum, Timeline.Maximum));
             return;
         }
-        if (!_playback.IsPreviewMode && !_syncingTimeline && _media is not null) QueuePreviewRefresh();
+        QueuePreviewRefresh();
     }
 
     private async Task UpdateFrameAsync()
@@ -1381,18 +1466,28 @@ public sealed partial class EditorPage : Page
         _ = RefreshPreviewAsync(revision, TimeSpan.FromMilliseconds(140), cancellation.Token);
     }
 
+    private const double PreviewFrameTailGuardSeconds = .05;
+
     private async Task RefreshPreviewAsync(int revision, TimeSpan delay, CancellationToken cancellationToken)
     {
         if (_playback.IsPreviewMode || _timelineClips.Count == 0) return;
         try
         {
             if (delay > TimeSpan.Zero) await Task.Delay(delay, cancellationToken);
-            var (clip, sourceTime, _) = LocateTimelineClip(Timeline.Value);
+            var (clip, sourceTime, timelineStart) = LocateTimelineClip(Timeline.Value);
             var media = await TimelineClipMediaAsync(clip, cancellationToken);
-            var regions = CurrentPreviewRegions();
-            var subtitle = IsPrimaryTimelineClip(clip) ? CurrentFrameSubtitleBurn() : null;
+            // Stopping at the very end of the clip leaves no frame to read: pull back
+            // before the end of the file so the preview still shows the last frame.
+            var previewTime = Math.Clamp(
+                sourceTime,
+                0,
+                Math.Max(0, Math.Min(media.Duration, clip.End) - PreviewFrameTailGuardSeconds));
+            // Effect regions are mapped onto the clip being shown, so a region
+            // that spans the boundary still applies while previewing segment 2.
+            var regions = PreviewRegionsForClip(clip, timelineStart);
+            var subtitle = IsPrimaryTimelineClip(clip) ? CurrentFrameSubtitleBurn() : ClipFrameSubtitleBurn(clip.Id, sourceTime);
             var bytes = await _application.GetEditorPreviewFrameJpegAsync(
-                clip.SourcePath, sourceTime, media, regions, subtitle, cancellationToken);
+                clip.SourcePath, previewTime, media, regions, subtitle, cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
             if (revision != _previewRevision) return;
             using var stream = new InMemoryRandomAccessStream();
@@ -1414,16 +1509,31 @@ public sealed partial class EditorPage : Page
         }
     }
 
-    private IReadOnlyList<EditRegion> CurrentPreviewRegions()
+    private IReadOnlyList<EditRegion> PreviewRegionsForClip(EditorTimelineClip clip, double timelineStart)
     {
-        if (_draftRegion is null) return _document.Regions.ToArray();
-        return [.. _document.Regions, _draftRegion];
+        if (_draftRegion is null) return RegionsForTimelineClip(clip, timelineStart);
+        return MapRegionsToTimelineClip(clip, timelineStart, _document.Regions.Append(_draftRegion));
     }
 
+    /// <summary>
+    /// The clock reports the REAL total length (the composed clips, else the
+    /// media duration). The strip works over the doubled span so its empty tail
+    /// stays usable, but that working span must never be printed as the video's
+    /// length: a 5h video showing a 10h total is a lie the user cannot act on.
+    /// </summary>
     private void UpdateClock()
     {
-        var duration = TimelineDuration;
+        var duration = TimelineDuration > 0 ? TimelineDuration : _media?.Duration ?? 0;
         ClockText.Text = $"{FormatClock(Timeline.Value, duration >= 3600)} / {FormatClock(duration)}";
+    }
+
+    private void RefreshRegionTimeLimits()
+    {
+        if (StartBox is null || EndBox is null) return;
+        var maximum = Math.Max(0, RegionTimeLimit());
+        if (maximum <= 0) return;
+        StartBox.Maximum = maximum;
+        EndBox.Maximum = maximum;
     }
 
     private void WholeToggle_Toggled(object sender, RoutedEventArgs e)
@@ -1431,7 +1541,9 @@ public sealed partial class EditorPage : Page
         if (!IsLoaded || _syncingInputs) return;
         if (!WholeToggle.IsOn && _media is not null && _document.Selected is null)
         {
-            var range = EditorRegionTimeScope.CreateDefaultTimedRange(Timeline.Value, _media.Duration);
+            var limit = RegionTimeLimit();
+            var current = Math.Clamp(RegionTimeForTimeline(Timeline.Value) ?? 0, 0, limit);
+            var range = EditorRegionTimeScope.CreateDefaultTimedRange(current, limit);
             _syncingInputs = true;
             try
             {
@@ -1452,7 +1564,16 @@ public sealed partial class EditorPage : Page
     private void SetTimedBoundaryFromCurrent(bool setStart)
     {
         if (_media is null || WholeToggle.IsOn || EditorBusy || _playback.IsPreviewMode) return;
-        var value = Math.Clamp(Timeline.Value, 0, _media.Duration);
+        // Effect regions are anchored to the primary clip's source file, while the
+        // current position is in composed-timeline coordinates. A point inside
+        // segment 2 therefore maps past the primary video's duration.
+        var sourceTime = RegionTimeForTimeline(Timeline.Value);
+        if (sourceTime is not { } value0)
+        {
+            StatusText.Text = "Chưa xác định được clip gốc của dự án để đặt mốc vùng hiệu ứng.";
+            return;
+        }
+        var value = Math.Clamp(value0, 0, RegionTimeLimit());
         _syncingInputs = true;
         try
         {
@@ -1644,7 +1765,7 @@ public sealed partial class EditorPage : Page
         _draftRegion = null;
         if (_document.Selected is not null) LoadSelectedIntoInputs();
         else SetCoordinateBoxes(0, 0, 0, 0);
-        DocumentChanged("Đã hoàn tác.");
+        DocumentChanged("Đã hoàn tác thay đổi vùng hiệu ứng.");
         return true;
     }
 
@@ -1660,7 +1781,7 @@ public sealed partial class EditorPage : Page
         _draftRegion = null;
         if (_document.Selected is not null) LoadSelectedIntoInputs();
         else SetCoordinateBoxes(0, 0, 0, 0);
-        DocumentChanged("Đã làm lại.");
+        DocumentChanged("Đã làm lại thay đổi vùng hiệu ứng.");
         return true;
     }
 
@@ -1747,23 +1868,103 @@ public sealed partial class EditorPage : Page
         var media = _media ?? throw new InvalidOperationException("Chưa đọc được video.");
         EnsureCurrentSourceFingerprint();
         if (subtitle is not null || _voiceTrack is not null) EnsureCurrentSubtitleFingerprint();
+        // A single primary clip is the only case that reaches a non-composed
+        // export; map the regions onto that clip so their times stay within the
+        // source file even after a region was extended across segments earlier.
+        var regions = _timelineClips.Count > 0 && IsPrimaryTimelineClip(_timelineClips[0])
+            ? RegionsForTimelineClip(_timelineClips[0], 0)
+            : _document.Regions.ToArray();
         return new VideoEditRequest(
             path,
-            _application.Config.OutputDirectory,
+            _application.Config.EditorOutputDirectory,
             _project?.FileName ?? "video_edited.mp4",
             media.Width,
             media.Height,
             media.Duration,
-            _document.Regions.ToArray(),
+            regions,
             subtitle,
             _audioSettings,
             _voiceTrack,
             Trim: CurrentTrimRange());
     }
 
+    /// <summary>
+    /// Export request for a multi-segment composed timeline. The project's original
+    /// segment carries subtitles, the trimmed range and the voice track; effect
+    /// regions are mapped onto every segment they cover.
+    /// </summary>
+    private async Task<VideoEditRequest> CurrentComposedEditRequestAsync(EditorSubtitleBurn? subtitle)
+    {
+        var request = CurrentEditRequest(subtitle);
+        if (!TimelineNeedsComposedExport()) return request;
+        var trim = CurrentTrimRange();
+        var starts = EditorTimelineComposition.Starts(_timelineClips);
+        var segments = new List<VideoEditSegment>(_timelineClips.Count);
+        for (var index = 0; index < _timelineClips.Count; index++)
+        {
+            var clip = _timelineClips[index];
+            var media = await TimelineClipMediaAsync(clip);
+            var primary = IsPrimaryTimelineClip(clip);
+            var start = clip.SourceIn;
+            var end = clip.End;
+            if (primary)
+            {
+                start = Math.Max(clip.SourceIn, trim.Start);
+                end = Math.Min(clip.End, trim.End);
+                if (end - start < .1)
+                {
+                    start = clip.SourceIn;
+                    end = clip.End;
+                }
+            }
+            segments.Add(new VideoEditSegment(
+                clip.SourcePath,
+                media.Duration,
+                start,
+                end,
+                media.Width,
+                media.Height,
+                RegionsForTimelineClip(clip, starts[index]),
+                primary ? subtitle : null,
+                primary ? _voiceTrack : null));
+        }
+        if (!NeedsClipEnrichment()) return request with { Segments = segments };
+        var enriched = new List<VideoEditSegment>(segments.Count);
+        for (var index = 0; index < segments.Count; index++)
+        {
+            var clip = _timelineClips[index];
+            var segment = segments[index];
+            if (!IsPrimaryTimelineClip(clip))
+            {
+                if (HasClipSubtitle(clip.Id))
+                {
+                    EnsureClipSubtitleFingerprint(clip);
+                    segment = segment with { Subtitle = ClipCompletedSubtitleBurn(clip.Id) };
+                }
+                var clipVoice = ClipVoiceTrack(clip.Id);
+                if (clipVoice is not null) segment = segment with { VoiceTrack = clipVoice };
+            }
+            enriched.Add(segment);
+        }
+        return request with { Segments = enriched };
+    }
+
+    /// <summary>
+    /// When the current timeline differs from the project's source file, the export
+    /// must follow the composed timeline. If the user removed the original clip
+    /// from the timeline, the remaining timeline must still be exported as a timeline, and must not silently fall back to exporting the old source file.
+    /// </summary>
+    private bool TimelineNeedsComposedExport()
+    {
+        if (_timelineClips.Count == 0) return false;
+        if (_timelineClips.Count > 1) return true;
+        return !IsPrimaryTimelineClip(_timelineClips[0]);
+    }
+
     private async void Render_Click(object sender, RoutedEventArgs e)
     {
-        await RenderProjectAsync();
+        try { await RenderProjectAsync(); }
+        catch (Exception error) { ReportEditorCommandFailure("xuất video", error); }
     }
 
     private void Cancel_Click(object sender, RoutedEventArgs e)
@@ -1865,7 +2066,12 @@ public sealed partial class EditorPage : Page
         RenderDocument(renderInputs: false);
     }
 
-    private void Overlay_PointerReleased(object sender, PointerRoutedEventArgs e) => FinishDrag(e, commit: true);
+    private void Overlay_PointerReleased(object sender, PointerRoutedEventArgs e)
+    {
+        FinishDrag(e, commit: true);
+        FocusEditorKeyboardSurface();
+    }
+
     private void Overlay_PointerCanceled(object sender, PointerRoutedEventArgs e) => FinishDrag(e, commit: false);
 
     private void FinishDrag(PointerRoutedEventArgs e, bool commit)
@@ -1939,24 +2145,90 @@ public sealed partial class EditorPage : Page
 
     private void Page_KeyDown(object sender, KeyRoutedEventArgs e)
     {
-        if (_inspectorMode != InspectorMode.Effect || EditorBusy) return;
-        if (FocusManager.GetFocusedElement(XamlRoot) is TextBox) return;
+        if (HandleEditorRegionShortcut(e)) return;
+        HandleEditorShortcut(e);
+    }
+
+    /// <summary>
+    /// Shortcuts specific to effect regions (undo/redo/delete effect region). Effect
+    /// regions share keys with the timeline, so this part runs first: in effect
+    /// mode Delete removes the selected effect region. Undo/redo always prefer the
+    /// TIMELINE HISTORY: only when the timeline history has no step left to undo
+    /// does it fall back to the region history. When there is no selected effect
+    /// region, Delete falls through to the timeline's clip delete shortcut.
+    /// </summary>
+    private bool HandleEditorRegionShortcut(KeyRoutedEventArgs e)
+    {
+        if (_inspectorMode != InspectorMode.Effect || EditorBusy || _playback.IsPreviewMode) return false;
+        if (IsEditorTextInputFocused()) return false;
         var controlDown = (InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Control) & CoreVirtualKeyStates.Down) != 0;
         var shiftDown = (InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Shift) & CoreVirtualKeyStates.Down) != 0;
         if (e.Key == VirtualKey.Z && controlDown && !shiftDown)
         {
-            if (TryUndoDocument()) e.Handled = true;
-            return;
+            if (_timelineHistory.CanUndo)
+            {
+                e.Handled = true;
+                _ = RunTimelineHistoryCommandAsync(UndoTimelineAsync);
+                return true;
+            }
+            if (!TryUndoDocument()) return false;
+            e.Handled = true;
+            return true;
         }
         var redoShortcut = controlDown &&
             (e.Key == VirtualKey.Y && !shiftDown || e.Key == VirtualKey.Z && shiftDown);
         if (redoShortcut)
         {
-            if (TryRedoDocument()) e.Handled = true;
-            return;
+            if (_timelineHistory.CanRedo)
+            {
+                e.Handled = true;
+                _ = RunTimelineHistoryCommandAsync(RedoTimelineAsync);
+                return true;
+            }
+            if (!TryRedoDocument()) return false;
+            e.Handled = true;
+            return true;
         }
-        if (e.Key is not (VirtualKey.Delete or VirtualKey.Back)) return;
-        if (TryDeleteSelectedRegion()) e.Handled = true;
+        if (e.Key is VirtualKey.Left or VirtualKey.Right or VirtualKey.Up or VirtualKey.Down)
+        {
+            var stepX = e.Key switch
+            {
+                VirtualKey.Left => -1,
+                VirtualKey.Right => 1,
+                _ => 0,
+            };
+            var stepY = e.Key switch
+            {
+                VirtualKey.Up => -1,
+                VirtualKey.Down => 1,
+                _ => 0,
+            };
+            if (TryNudgeSelectedRegion(stepX, stepY, shiftDown))
+            {
+                e.Handled = true;
+                return true;
+            }
+            return false;
+        }
+        if (e.Key is not (VirtualKey.Delete or VirtualKey.Back)) return false;
+        if (!TryDeleteSelectedRegion()) return false;
+        e.Handled = true;
+        return true;
+    }
+
+    private bool TryNudgeSelectedRegion(int stepX, int stepY, bool largeStep)
+    {
+        if (_document.Selected is not { } selected) return false;
+        var step = largeStep ? .02 : .005;
+        var updated = selected with
+        {
+            X = Math.Clamp(selected.X + stepX * step, 0, Math.Max(0, 1 - selected.Width)),
+            Y = Math.Clamp(selected.Y + stepY * step, 0, Math.Max(0, 1 - selected.Height)),
+        };
+        if (updated == selected) return false;
+        _document.ReplaceSelected(updated);
+        DocumentChanged($"Đã di chuyển vùng {_document.SelectedIndex + 1}.");
+        return true;
     }
 
     private void DocumentChanged(string status)
@@ -1985,7 +2257,9 @@ public sealed partial class EditorPage : Page
             for (var index = 0; index < _document.Regions.Count; index++)
             {
                 var region = _document.Regions[index];
-                RegionList.Items.Add($"{index + 1}. {EffectLabel(region.Effect)} · x={region.X:P0} y={region.Y:P0} w={region.Width:P0} h={region.Height:P0} · {(region.WholeVideo ? "toàn video" : $"{region.Start:0.0}-{region.End:0.0}s")}");
+                var scope = region.WholeVideo ? "toàn video" : $"{region.Start:0.0}-{region.End:0.0}s";
+                var details = $"Vị trí trên khung: x={region.X:P0} y={region.Y:P0} w={region.Width:P0} h={region.Height:P0} · phạm vi: {scope}";
+                RegionList.Items.Add(new RegionListItem($"{index + 1}. {EffectLabel(region.Effect)} · {scope}", details));
             }
             RegionList.SelectedIndex = _document.SelectedIndex;
             if (_document.SelectedIndex >= 0) RegionList.ScrollIntoView(RegionList.Items[_document.SelectedIndex]);
@@ -1999,11 +2273,17 @@ public sealed partial class EditorPage : Page
         if (_media is null) return;
         var video = VideoRect();
         if (video.Width <= 0 || video.Height <= 0) return;
+        // Effect regions are anchored to the primary clip's source file but may
+        // continue across clip boundaries: map them to the active clip before
+        // deciding whether they are active at the current playhead.
+        var (activeClip, activeSourceTime, activeClipStart) = LocateTimelineClip(Timeline.Value);
+        if (PrimaryTimelineAnchor() is null) return;
         for (var index = 0; index < _document.Regions.Count; index++)
         {
             var region = _document.Regions[index];
+            if (MapRegionToTimelineClip(region, activeClip, activeClipStart) is not { } mapped) continue;
             var selected = index == _document.SelectedIndex;
-            var active = VideoEditorService.IsActiveAt(region, Timeline.Value);
+            var active = VideoEditorService.IsActiveAt(mapped, activeSourceTime);
             var rectangle = RegionRectangle(region, video,
                 selected ? ColorHelper.FromArgb(255, 49, 142, 242) : active ? ColorHelper.FromArgb(230, 70, 200, 220) : ColorHelper.FromArgb(190, 130, 140, 150),
                 selected ? ColorHelper.FromArgb(52, 49, 142, 242) : active ? ColorHelper.FromArgb(30, 70, 200, 220) : ColorHelper.FromArgb(18, 130, 140, 150),
@@ -2015,7 +2295,9 @@ public sealed partial class EditorPage : Page
             Overlay.Children.Add(RegionRectangle(_draftRegion, video,
                 ColorHelper.FromArgb(255, 255, 190, 60), ColorHelper.FromArgb(38, 255, 190, 60), 2));
         }
-        if (_inspectorMode == InspectorMode.Effect && _document.Selected is { } selectedRegion) RenderHandles(selectedRegion, video);
+        if (_inspectorMode == InspectorMode.Effect && _document.Selected is { } selectedRegion
+            && MapRegionToTimelineClip(selectedRegion, activeClip, activeClipStart) is not null)
+            RenderHandles(selectedRegion, video);
         if (_subtitleSource is not null) RenderSubtitlePlacement(video);
     }
 
@@ -2288,8 +2570,11 @@ public sealed partial class EditorPage : Page
     private void ValidateRegion(EditRegion region)
     {
         if (_media is null) throw new InvalidOperationException("Chưa chọn video.");
-        var normalized = EditorRegionTimeScope.Normalize(region, _media.Duration);
-        _ = VideoEditorService.BuildFilter(new VideoEditRequest(_path ?? "x", ".", "x.mp4", _media.Width, _media.Height, _media.Duration, [normalized]));
+        // A timed region may continue past the primary video into the following
+        // clips, so validation uses the project timeline's region limit.
+        var limit = RegionTimeLimit();
+        var normalized = EditorRegionTimeScope.Normalize(region, limit);
+        _ = VideoEditorService.BuildFilter(new VideoEditRequest(_path ?? "x", ".", "x.mp4", _media.Width, _media.Height, limit, [normalized]));
     }
 
     private void LoadSelectedIntoInputs()
@@ -2393,6 +2678,7 @@ public sealed partial class EditorPage : Page
     {
         StopProjectSaveTimer();
         _pendingProjectSave = null;
+        ClearPlayheadSave();
     }
 
     private async void ProjectSaveTimer_Tick(Microsoft.UI.Dispatching.DispatcherQueueTimer sender, object args)
@@ -2475,6 +2761,29 @@ public sealed partial class EditorPage : Page
         Audio = _audioSettings,
         Trim = _project.Trim,
         Timeline = _timelineClips.Count > 0 ? new EditorTimelineProject(_timelineClips) : _project.Timeline,
+        PlayheadSeconds = Timeline.Value,
+        ClipSubtitles = _clipSubtitleSources.Count == 0
+            ? null
+            : _clipSubtitleSources.ToDictionary(
+                item => item.Key,
+                item => new EditorSubtitleProject(
+                    item.Value.Path,
+                    item.Value.Size,
+                    item.Value.LastWriteUtcTicks,
+                    item.Value.Sha256,
+                    item.Value.Cues,
+                    _subtitlePlacement,
+                    string.Empty,
+                    string.Empty,
+                    string.Empty,
+                    KaraokeToggle.IsOn,
+                    EditorSubtitleDocument.DirectVietnamesePolicyKey,
+                    _subtitleStyle,
+                    _subtitleVisible),
+                StringComparer.Ordinal),
+        ClipTts = _clipTts.Count == 0
+            ? null
+            : new Dictionary<string, EditorTtsProject>(_clipTts, StringComparer.Ordinal),
         UpdatedUtc = DateTimeOffset.UtcNow,
     };
 
@@ -2494,14 +2803,16 @@ public sealed partial class EditorPage : Page
         RemoveRegionButton.IsEnabled = editable && _document.Selected is not null;
         UndoButton.IsEnabled = editable && _document.CanUndo;
         RedoButton.IsEnabled = editable && _document.CanRedo;
+        RefreshTimelineClipTools();
 
         var subtitleReady = _subtitleSource is { Cues.Count: > 0 } && _subtitleSource.Cues.All(x => !string.IsNullOrWhiteSpace(x.VietnameseText));
         var audioChanged = _audioSettings.SourceMode != "keep";
         var trimChanged = hasMedia && _trimRangeValid
             && EditorProjectStore.HasTrim(_project?.Trim, _media!.Duration);
         var hasImages = _imageFeatureInitialized && _imageOverlays.Count > 0;
+        var timelineEdited = TimelineNeedsComposedExport();
         RenderButton.IsEnabled = editable && !cleanupPending && _trimRangeValid && !_subtitleManualDirty && _path is not null
-            && (_document.Regions.Count > 0 || subtitleReady || audioChanged || _voiceTrack is not null || hasImages || trimChanged)
+            && (_document.Regions.Count > 0 || subtitleReady || audioChanged || _voiceTrack is not null || hasImages || trimChanged || timelineEdited)
             && !string.IsNullOrWhiteSpace(_project?.FileName);
         CancelButton.IsEnabled = _jobId is not null;
         Timeline.IsEnabled = idle && hasMedia;
@@ -2525,10 +2836,10 @@ public sealed partial class EditorPage : Page
         GenerateTtsButton.IsEnabled = voiceBlockReason is null;
         if (idle && voiceBlockReason is not null) VoiceStatusText.Text = voiceBlockReason;
         CancelVoiceButton.IsEnabled = _asrJobId is not null || _ttsJobId is not null;
-        // 08/10 (user) + 10/10: lúc rảnh 1 nút Tạo voice; lúc bận LUÔN 2 nút
-        // Tạm dừng + Hủy cạnh nhau, không ẩn/hiện, không co/giãn cột giữa chừng
-        // (nhảy layout). Tạm dừng dùng được cho cả TTS (giữ clip) lẫn ASR (giữ
-        // checkpoint frontier, chạy lại tiếp từ chỗ dừng).
+        // 08/10 (user) + 10/10: while idle there is one Create voice button; while busy
+        // there are always two Pause + Cancel buttons side by side, never shown/hidden
+        // or stretching/shrinking the column mid-flight (a layout jump). Pause works for
+        // both TTS (keeps clips) and ASR (keeps the checkpoint frontier, resuming from where it stopped).
         var voiceBusy = _asrJobId is not null || _ttsJobId is not null;
         GenerateTtsButton.Visibility = voiceBusy ? Visibility.Collapsed : Visibility.Visible;
         VoiceBusyButtons.Visibility = voiceBusy ? Visibility.Visible : Visibility.Collapsed;

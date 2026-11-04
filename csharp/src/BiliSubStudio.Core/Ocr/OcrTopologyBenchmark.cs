@@ -10,13 +10,13 @@ internal static class OcrTopologyBenchmark
     // (worker protocol + BatchCoalesceCap parity). Growth is VRAM-gated per
     // scan (ShouldGrowSmallTier); never assumed from topology alone.
     internal const int SmallTierMaxWorkers = 4;
-    // VRAM free còn lại sau pool small ấm mới được grow (đo thật +100MB/worker
-    // idle, +~380MB lúc inference batch4 — bar 1GB dư biên ~2x).
-    // 28/09 KHẨN: 16 lane NVDEC (~1.2GB) + 4 worker OOM trên card 4GB (storm
-    // 16:18, kẹt 0.01×, VRAM còn 61MB) — nâng bar lên 3GB để small-tier KHÔNG
-    // bao giờ grow trên card 4GB: về behaviour 2 worker ổn định đã chạy xong
-    // 11222 cue. Tính toán ngân sách VRAM theo lane (NVDEC/lane) làm sau khi
-    // máy ổn định, không mổ benchmark lúc này.
+    // Free VRAM remaining after a small pool has warmed up before growing (measured +100MB/worker
+    // idle, +~380MB at batch-4 inference — a 1GB bar leaves ~2x margin).
+    // 28/09 URGENT: 16 NVDEC lanes (~1.2GB) + 4 workers OOM on a 4GB card (storm
+    // at 16:18, stuck at 0.01×, VRAM left 61MB) — raised the bar to 3GB so small-tier NEVER
+    // grows on a 4GB card: back to the stable 2-worker behavior that completed
+    // 11222 cues. Per-lane VRAM budgeting (NVDEC/lane) comes after the
+    // machine is stable, not by surgery on the benchmark right now.
     internal const long SmallTierGrowReserveBytes = 3L * 1024 * 1024 * 1024;
 
     // 22/10 field: the grow decision is taken before the FFmpeg lanes hold
@@ -33,10 +33,10 @@ internal static class OcrTopologyBenchmark
     internal static int SmallTierWorkerTarget(int lanes) =>
         Math.Min(SmallTierMaxWorkers, Math.Max(1, lanes));
 
-    // Chỉ grow khi lane <= 8 (28/09: 16 lane NVDEC ~1.2GB VRAM + 4 worker là
-    // tràn card 4GB dù lúc commit còn trống — storm 16:18, kẹt 0.01×. Tổng việc
-    // OCR không tăng theo lane (lane chia đoạn, worker mới là nút cổ chai) nên
-    // 16 lane + 2 worker vẫn xong như 8 lane, chỉ chậm hơn grow; đổi lại sống.)
+    // Only grow when lanes <= 8 (28/09: 16 NVDEC lanes ~1.2GB VRAM + 4 workers overflows
+    // a 4GB card even though it looked free at commit — storm 16:18, stuck at 0.01×. Total OCR
+    // work does not grow with lanes (lanes split the segment, workers are the bottleneck) so
+    // 16 lanes + 2 workers still finish like 8 lanes, just slower than growing; in exchange it lives.)
     internal const int SmallTierMaxGrowLanes = 8;
 
     internal static bool ShouldGrowSmallTier(

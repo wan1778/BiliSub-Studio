@@ -6,7 +6,7 @@ def require(condition, message):
     if not condition: raise SystemExit("FAIL: " + message)
 
 service = read("csharp/src/BiliSubStudio.Core/Editor/LocalTtsService.cs")
-worker = read("internal/tts/worker.py")
+worker = read("internal/vieneu/worker.py")
 editor = read("csharp/src/BiliSubStudio.App/Pages/EditorPage.xaml.cs")
 application = read("csharp/src/BiliSubStudio.Core/Application/BiliSubApplication.cs")
 job = read("csharp/src/BiliSubStudio.Core/Jobs/AppJob.cs")

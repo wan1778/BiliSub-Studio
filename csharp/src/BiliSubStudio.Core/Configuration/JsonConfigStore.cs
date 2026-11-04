@@ -7,10 +7,10 @@ public sealed class JsonConfigStore(AppPaths paths) : IConfigStore, IDisposable
     private readonly SemaphoreSlim _gate = new(1, 1);
     private AppConfig _current = AppConfigNormalizer.Normalize(new AppConfig(), paths);
     private bool _disposed;
-    // Chốt vụ mất config 16/09: Update trước Initialize (snapshot còn mặc định)
-    // mà cho ghi là xóa sạch cấu hình user. Từ nay Update tự nạp file trước
-    // (dưới cùng gate) nên không bao giờ ghi đè defaults lên cấu hình có sẵn.
-    // _initialized chỉ là cache (đã nạp thì bỏ qua), không phải gate hành vi.
+    // Fix for the config loss issue 16/09: Update before Initialize (snapshot still default) yet
+    // allowing a save wiped all user configuration. From now on Update loads the file first
+    // (under the same gate) so it never overwrites existing configuration with defaults.
+    // _initialized is only a cache (skip once loaded), not a behavior gate.
     private bool _initialized;
 
     public AppConfig Snapshot => Volatile.Read(ref _current);
@@ -81,8 +81,8 @@ public sealed class JsonConfigStore(AppPaths paths) : IConfigStore, IDisposable
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            // Vụ mất config 16/09: nạp trước dưới cùng gate — Update không bao giờ
-            // ghi đè defaults lên file có sẵn, kể cả gọi trước Initialize.
+            // Config loss issue 16/09: load first under the same gate — Update never
+            // overwrites defaults onto an existing file, even when called before Initialize.
             await EnsureInitializedLockedAsync(cancellationToken).ConfigureAwait(false);
             var next = AppConfigNormalizer.Normalize(update(Snapshot), paths);
             // Match appstate.UpdateConfig: the in-memory snapshot changes before persistence.

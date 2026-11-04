@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using BiliSubStudio.Core.Authentication;
 
 namespace BiliSubStudio.Core.Video;
 
@@ -58,7 +59,8 @@ public sealed partial class BilibiliPlayurlClient
         var bvid = ExtractBvid(infoId) ?? ExtractBvid(sourceUrl)
             ?? throw new InvalidOperationException("Không xác định được BVID để lấy CDN backup.");
         var part = ExtractPart(infoId, sourceUrl);
-        var cookieHeader = await ReadCookieHeaderAsync(cookieFile, cancellationToken);
+        var cookieHeader = await BilibiliDeviceCookieProvider.MergeAsync(
+            await ReadCookieHeaderAsync(cookieFile, cancellationToken), _http, cancellationToken);
         var cid = await ResolveCidAsync(bvid, part, cookieHeader, cancellationToken);
         using var document = await LoadPlayurlAsync(bvid, cid, cookieHeader, cancellationToken);
         var dash = document.RootElement.GetProperty("data").GetProperty("dash");
@@ -78,9 +80,9 @@ public sealed partial class BilibiliPlayurlClient
             StringComparer.OrdinalIgnoreCase);
     }
 
-    // Fallback metadata: một vòng WBI (view/detail + playurl) khi yt-dlp không
-    // parse được trang. view/detail là đúng endpoint yt-dlp gọi sau khi thiếu
-    // __INITIAL_STATE__; view thường bị 412 nên bắt buộc ký WBI + cookie phiên.
+    // Fallback metadata: one WBI round (view/detail + playurl) when yt-dlp cannot
+    // parse the page. view/detail is exactly the endpoint yt-dlp calls when
+    // __INITIAL_STATE__ is missing; view is usually blocked with 412, so WBI signing + a session cookie are mandatory.
     public async Task<BilibiliNativeInfo> GetNativeInfoAsync(
         string sourceUrl,
         string infoId,
@@ -90,7 +92,8 @@ public sealed partial class BilibiliPlayurlClient
         var bvid = ExtractBvid(infoId) ?? ExtractBvid(sourceUrl)
             ?? throw new InvalidOperationException("Không xác định được BVID để lấy metadata Bilibili.");
         var part = ExtractPart(infoId, sourceUrl);
-        var cookieHeader = await ReadCookieHeaderAsync(cookieFile, cancellationToken);
+        var cookieHeader = await BilibiliDeviceCookieProvider.MergeAsync(
+            await ReadCookieHeaderAsync(cookieFile, cancellationToken), _http, cancellationToken);
         var mixinKey = await ResolveMixinKeyAsync(bvid, cookieHeader, cancellationToken);
         var view = await LoadViewDetailAsync(bvid, part, mixinKey, cookieHeader, cancellationToken);
         using var document = await LoadPlayurlAsync(bvid, view.Cid, cookieHeader, cancellationToken, mixinKey);
@@ -518,6 +521,57 @@ public sealed partial class BilibiliPlayurlClient
             }
         }
         return 1;
+    }
+
+    /// <summary>
+    /// Every part of a BV collection, in Bilibili's own order (the same
+    /// pagelist payload ResolveCidAsync already reads). A video without parts,
+    /// a non-Bilibili URL or a blocked request yields an empty list instead of
+    /// failing the metadata check: one part must keep downloading as before.
+    /// </summary>
+    public async Task<IReadOnlyList<VideoPart>> GetPartsAsync(
+        string sourceUrl,
+        string infoId,
+        string? cookieFile,
+        CancellationToken cancellationToken)
+    {
+        var bvid = ExtractBvid(infoId) ?? ExtractBvid(sourceUrl);
+        if (bvid is null) return [];
+        try
+        {
+            var uri = new Uri("https://api.bilibili.com/x/player/pagelist?bvid=" + Uri.EscapeDataString(bvid) + "&jsonp=jsonp");
+            using var document = await SendJsonAsync(uri, cookieFile ?? string.Empty, cancellationToken);
+            var root = document.RootElement;
+            if (!root.TryGetProperty("code", out var codeElement) || !codeElement.TryGetInt32(out var code) || code != 0 ||
+                !root.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array)
+                return [];
+
+            var parts = new List<VideoPart>();
+            var index = 0;
+            foreach (var entry in data.EnumerateArray())
+            {
+                if (entry.ValueKind != JsonValueKind.Object) continue;
+                index++;
+                var page = entry.TryGetProperty("page", out var pageElement) && pageElement.TryGetInt32(out var pageNumber) && pageNumber > 0
+                    ? pageNumber
+                    : index;
+                var title = entry.TryGetProperty("part", out var partElement) && partElement.ValueKind == JsonValueKind.String
+                    ? partElement.GetString() ?? string.Empty
+                    : string.Empty;
+                if (title.Trim().Length == 0) title = "Phần " + page.ToString(CultureInfo.InvariantCulture);
+                var duration = entry.TryGetProperty("duration", out var durationElement) && durationElement.ValueKind == JsonValueKind.Number &&
+                    durationElement.TryGetDouble(out var seconds) && seconds > 0
+                        ? seconds
+                        : 0;
+                parts.Add(new VideoPart(page, title.Trim(), duration));
+            }
+            return parts.Count == 0 ? [] : parts;
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            // The parts list only enables batch download; never fail a source check for it.
+            return [];
+        }
     }
 
     private static string? ExtractFormatId(string? url)

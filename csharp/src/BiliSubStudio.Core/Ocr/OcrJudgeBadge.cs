@@ -1,9 +1,9 @@
 namespace BiliSubStudio.Core.Ocr;
 
-// Dấu lọc trên bảng live: CHỈ hiện "🗑 xóa" cho câu bị loại khỏi SRT
-// (để biết bộ lọc đã làm việc; câu giữ hiện nothing cho sạch bảng).
-// Pure: cue + verdict khớp Start (±1ms) + Text -> hậu tố hàng. Không verdict /
-// keep / unsure -> rỗng.
+// Filter badge on the live table: only shows "🗑 xóa" for cues removed from the SRT
+// (so you can see the filter worked; kept cues show nothing to keep the table clean).
+// Pure: cue + verdict matching Start (±1ms) + Text -> row suffix. No verdict /
+// keep / unsure -> empty.
 public static class OcrJudgeBadge
 {
     public const double StartToleranceSeconds = 0.001;
@@ -27,8 +27,8 @@ public static class OcrJudgeBadge
         {
             if (verdict is null || verdict.CueText is null) continue;
             if (!double.IsFinite(verdict.CueStart) || verdict.CueStart < 0) continue;
-            // Khớp ±1ms như journal: chuẩn hóa key về mili-giây để tra O(1).
-        // Entry trùng (chấm lại) thì bản sau thắng.
+            // Match ±1ms like the journal: normalize the key to milliseconds for O(1) lookup.
+        // Duplicate entries (re-judged) -> the later one wins.
         map[Key(verdict.CueStart, verdict.CueText)] = verdict;
         }
         return map;

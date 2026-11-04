@@ -153,34 +153,42 @@ public sealed partial class EditorPage
 
     private async void ImageGeometry_ValueChanged(NumberBox sender, NumberBoxValueChangedEventArgs args)
     {
-        if (_syncingImageInputs || !TryGetSelectedImage(out var image) || _imageXBox is null || _imageYBox is null || _imageWidthBox is null || _imageHeightBox is null) return;
-        var x = _imageXBox.Value / 100;
-        var y = _imageYBox.Value / 100;
-        var width = _imageWidthBox.Value / 100;
-        var height = _imageHeightBox.Value / 100;
-        if (!double.IsFinite(x) || !double.IsFinite(y) || !double.IsFinite(width) || !double.IsFinite(height)
-            || width < .02 || height < .02 || x < 0 || y < 0 || x + width > 1.0001 || y + height > 1.0001)
+        try
         {
-            if (_imageStatusText is not null) _imageStatusText.Text = "Tọa độ ảnh/logo phải nằm hoàn toàn trong video và kích thước tối thiểu 2%.";
-            return;
+            if (_syncingImageInputs || !TryGetSelectedImage(out var image) || _imageXBox is null || _imageYBox is null || _imageWidthBox is null || _imageHeightBox is null) return;
+            var x = _imageXBox.Value / 100;
+            var y = _imageYBox.Value / 100;
+            var width = _imageWidthBox.Value / 100;
+            var height = _imageHeightBox.Value / 100;
+            if (!double.IsFinite(x) || !double.IsFinite(y) || !double.IsFinite(width) || !double.IsFinite(height)
+                || width < .02 || height < .02 || x < 0 || y < 0 || x + width > 1.0001 || y + height > 1.0001)
+            {
+                if (_imageStatusText is not null) _imageStatusText.Text = "Tọa độ ảnh/logo phải nằm hoàn toàn trong video và kích thước tối thiểu 2%.";
+                return;
+            }
+            _imageOverlays[_selectedImageIndex] = image with { X = x, Y = y, Width = width, Height = height };
+            var saveError = await SaveImageSidecarSafeAsync();
+            RenderImageOverlays();
+            NotifyEditorCompositeChanged();
+            if (_imageStatusText is not null)
+                _imageStatusText.Text = saveError is null
+                    ? "Đã cập nhật vị trí/kích thước ảnh/logo."
+                    : "Đã cập nhật vị trí/kích thước trên preview nhưng chưa lưu được project: " + saveError.Message;
         }
-        _imageOverlays[_selectedImageIndex] = image with { X = x, Y = y, Width = width, Height = height };
-        var saveError = await SaveImageSidecarSafeAsync();
-        RenderImageOverlays();
-        NotifyEditorCompositeChanged();
-        if (_imageStatusText is not null)
-            _imageStatusText.Text = saveError is null
-                ? "Đã cập nhật vị trí/kích thước ảnh/logo."
-                : "Đã cập nhật vị trí/kích thước trên preview nhưng chưa lưu được project: " + saveError.Message;
+        catch (Exception error) { ReportEditorCommandFailure("cập nhật vị trí ảnh/logo", error); }
     }
 
     private async void ImageOpacity_ValueChanged(object sender, Microsoft.UI.Xaml.Controls.Primitives.RangeBaseValueChangedEventArgs e)
     {
-        if (_syncingImageInputs || !TryGetSelectedImage(out var image) || _imageOpacitySlider is null) return;
-        _imageOverlays[_selectedImageIndex] = image with { Opacity = Math.Clamp(_imageOpacitySlider.Value / 100, .05, 1) };
-        await SaveImageSidecarSafeAsync();
-        RenderImageOverlays();
-        NotifyEditorCompositeChanged();
+        try
+        {
+            if (_syncingImageInputs || !TryGetSelectedImage(out var image) || _imageOpacitySlider is null) return;
+            _imageOverlays[_selectedImageIndex] = image with { Opacity = Math.Clamp(_imageOpacitySlider.Value / 100, .05, 1) };
+            await SaveImageSidecarSafeAsync();
+            RenderImageOverlays();
+            NotifyEditorCompositeChanged();
+        }
+        catch (Exception error) { ReportEditorCommandFailure("đổi độ mờ ảnh/logo", error); }
     }
 
     private void ImageOverlay_PointerPressed(object sender, PointerRoutedEventArgs e)
@@ -218,27 +226,36 @@ public sealed partial class EditorPage
         RenderImageOverlays();
     }
 
-    private async void ImageOverlay_PointerReleased(object sender, PointerRoutedEventArgs e) => await FinishImageDragAsync(e, commit: true);
+    private async void ImageOverlay_PointerReleased(object sender, PointerRoutedEventArgs e)
+    {
+        await FinishImageDragAsync(e, commit: true);
+        FocusEditorKeyboardSurface();
+    }
+
     private async void ImageOverlay_PointerCanceled(object sender, PointerRoutedEventArgs e) => await FinishImageDragAsync(e, commit: false);
 
     private async Task FinishImageDragAsync(PointerRoutedEventArgs e, bool commit)
     {
-        if (_imageDragStart is null || _imageOverlayCanvas is null) return;
-        if (!commit && _imageDragOriginal is not null && _selectedImageIndex >= 0 && _selectedImageIndex < _imageOverlays.Count)
-            _imageOverlays[_selectedImageIndex] = _imageDragOriginal;
-        _imageOverlayCanvas.ReleasePointerCapture(e.Pointer);
-        _imageDragStart = null;
-        _imageDragOriginal = null;
-        _imageDragKind = DragKind.None;
-        var saveError = commit ? await SaveImageSidecarSafeAsync() : null;
-        LoadSelectedImageIntoInputs();
-        RenderImageOverlays();
-        if (_imageStatusText is not null)
-            _imageStatusText.Text = !commit
-                ? "Đã hủy thay đổi ảnh/logo."
-                : saveError is null
-                    ? "Đã lưu vị trí/kích thước ảnh/logo."
-                    : "Đã cập nhật vị trí ảnh/logo trên preview nhưng chưa lưu được project: " + saveError.Message;
+        try
+        {
+            if (_imageDragStart is null || _imageOverlayCanvas is null) return;
+            if (!commit && _imageDragOriginal is not null && _selectedImageIndex >= 0 && _selectedImageIndex < _imageOverlays.Count)
+                _imageOverlays[_selectedImageIndex] = _imageDragOriginal;
+            _imageOverlayCanvas.ReleasePointerCapture(e.Pointer);
+            _imageDragStart = null;
+            _imageDragOriginal = null;
+            _imageDragKind = DragKind.None;
+            var saveError = commit ? await SaveImageSidecarSafeAsync() : null;
+            LoadSelectedImageIntoInputs();
+            RenderImageOverlays();
+            if (_imageStatusText is not null)
+                _imageStatusText.Text = !commit
+                    ? "Đã hủy thay đổi ảnh/logo."
+                    : saveError is null
+                        ? "Đã lưu vị trí/kích thước ảnh/logo."
+                        : "Đã cập nhật vị trí ảnh/logo trên preview nhưng chưa lưu được project: " + saveError.Message;
+        }
+        catch (Exception error) { ReportEditorCommandFailure("kéo ảnh/logo", error); }
     }
 
     private (int Index, DragKind Kind) HitTestImage(Point point)
@@ -416,7 +433,10 @@ public sealed partial class EditorPage
             await EnsureBitmapLoadedAsync(path);
             DispatcherQueue.TryEnqueue(RenderImageOverlays);
         }
-        catch { }
+        catch (Exception error)
+        {
+            BiliSubStudio.App.Services.StartupDiagnostics.WriteException("editor-image-bitmap", error);
+        }
     }
 
     private void RenderImageList()
@@ -613,9 +633,10 @@ public sealed partial class EditorPage
         RenderImageOverlays();
     }
 
-    // ETA render (dự đoán thời gian còn lại từ % tiến trình, làm mượt trung
-    // bình trượt cho số khỏi nhảy loạn; % đã quy đổi toàn cục 0-100 nên 1 công
-    // thức đúng cho cả 2 giai đoạn dựng).
+    // ETA rendering: estimate remaining time from percent complete, smoothed
+    // with a sliding average so the number does not jump randomly. The percent
+    // is already normalized to a global 0-100 scale, so one formula is correct
+    // for both render stages.
     private DateTime _renderEtaStartUtc = DateTime.UtcNow;
     private double _renderEtaSmoothSeconds = double.NaN;
 
@@ -709,7 +730,8 @@ public sealed partial class EditorPage
         var subtitle = CompletedSubtitleBurn();
         var trim = CurrentTrimRange();
         var trimChanged = EditorProjectStore.HasTrim(trim, _media.Duration);
-        var hasBaseEdit = _document.Regions.Count > 0 || subtitle is not null || _audioSettings.SourceMode != "keep" || _voiceTrack is not null || trimChanged;
+        var hasComposedClips = TimelineNeedsComposedExport();
+        var hasBaseEdit = _document.Regions.Count > 0 || subtitle is not null || _audioSettings.SourceMode != "keep" || _voiceTrack is not null || trimChanged || hasComposedClips;
         var hasImages = _imageOverlays.Count > 0;
         if (!hasBaseEdit && !hasImages)
         {
@@ -728,7 +750,8 @@ public sealed partial class EditorPage
 
             if (!hasImages)
             {
-                var request = CurrentEditRequest(subtitle) with
+                var composed = await CurrentComposedEditRequestAsync(subtitle);
+                var request = composed with
                 {
                     OutputDirectory = outputTarget.Directory,
                     FileName = outputTarget.FileName,
@@ -784,7 +807,8 @@ public sealed partial class EditorPage
                     "h264", "high", null, null,
                     outputTarget.Settings.PreferHardwareAcceleration,
                     outputTarget.Settings.AudioBitrateKbps);
-                var request = CurrentEditRequest(subtitle) with
+                var composedBase = await CurrentComposedEditRequestAsync(subtitle);
+                var request = composedBase with
                 {
                     OutputDirectory = temporaryDirectory,
                     FileName = temporaryName,
@@ -842,7 +866,7 @@ public sealed partial class EditorPage
                 image.Path, image.X, image.Y, image.Width, image.Height, image.Opacity)).ToArray();
             var renderTask = composer.RenderAsync(
                 imageJob, composerInput, outputTarget.Directory, outputTarget.FileName,
-                _media.Width, _media.Height, trimChanged ? trim.Duration : _media.Duration, specs,
+                _media.Width, _media.Height, ComposedExportDuration(trim), specs,
                 copyAudio: hasBaseEdit, exportSettings: outputTarget.Settings);
             DateTime? imageCancellingSinceUtc = null;
             while (!renderTask.IsCompleted)

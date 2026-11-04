@@ -4,8 +4,8 @@ using BiliSubStudio.Core.Ocr;
 
 namespace BiliSubStudio.Core.ContractTests;
 
-// Đối chiếu tai-mắt (17/09): Whisper nghe gì vs OCR thấy gì. Test bằng số liệu
-// thật đo từ video 0916 (faster-whisper-small, CPU int8).
+// Ear-eye corroboration (17/09): what Whisper hears vs what OCR sees. Tested with real
+// measurements taken from video 0916 (faster-whisper-small, CPU int8).
 internal static class OcrSpeechMatchContract
 {
     public static Task RunAsync()
@@ -62,26 +62,26 @@ internal static class OcrSpeechMatchContract
 
     private static void TimelineMarksSpeechAndSilence()
     {
-        // 2 đoạn thoại 56.5-58.6 và 59.0-61.5, pad ±0.5s.
+        // 2 speech segments 56.5-58.6 and 59.0-61.5, pad ±0.5s.
         var timeline = OcrSpeechMatch.BuildTimeline(
             [Seg(56.54, 58.66, "a"), Seg(59.08, 61.56, "b")], 97.0);
         Check(timeline.At(57.0) == VadFlag.HasSub, "giữa thoại phải HasSub");
         Check(timeline.At(10.0) == VadFlag.NoSub, "im lặng phải NoSub");
-        // Pad: 56.54-0.5=56.04 -> 56.0 vẫn HasSub; 55.0 ngoài pad -> NoSub.
+        // Pad: 56.54-0.5=56.04 -> 56.0 still HasSub; 55.0 outside pad -> NoSub.
         Check(timeline.At(56.2) == VadFlag.HasSub, "pad trước phải phủ");
         Check(timeline.At(55.0) == VadFlag.NoSub, "ngoài pad phải NoSub");
     }
 
     private static void CorroboratedDialogueScoresHigh()
     {
-        // Cue 33 vs tai nghe: khác 1 chữ (cô/anh) -> giống ~0.9 -> giữ.
+        // Cue 33 vs the ear: 1 character differs (cô/anh) -> similarity ~0.9 -> keep.
         var overlapping = OcrSpeechMatch.OverlappingSegments(
             [Seg(56.54, 58.66, "对他的未来没有帮助")], 56.566, 58.133);
         Check(overlapping.Count == 1, "phải chồng lấn");
         var similarity = OcrSpeechMatch.MaxSimilarity("对她的未来没有帮助", overlapping);
         Check(similarity >= OcrSpeechMatch.StrongSimilarity,
             $"thoại thật phải khớp mạnh (được {similarity:0.00})");
-        // Cue 32: tai nghe thiếu đầu câu nhưng lõi giống -> trên ngưỡng drop.
+        // Cue 32: the ear misses the sentence head but the core is similar -> above the drop threshold.
         var overlapping2 = OcrSpeechMatch.OverlappingSegments(
             [Seg(55.0, 56.54, "作为做饭做家务")], 53.666, 56.400);
         var similarity2 = OcrSpeechMatch.MaxSimilarity("龙王在她眼里只会做饭做家务", overlapping2);
@@ -91,8 +91,8 @@ internal static class OcrSpeechMatchContract
 
     private static void SceneTextScoresLow()
     {
-        // Cue 34-36 (chữ trên sách 休书): tai nghe "第二"/"冷氏集团..." ở cùng
-        // thời gian nhưng chữ khác hẳn -> giống thấp -> drop.
+        // Cue 34-36 (text on the book 休书): the ear hears "第二"/"冷氏集团..." at the
+        // same time but the characters are entirely different -> low similarity -> drop.
         var segs = new[]
         {
             Seg(56.54, 58.66, "对他的未来没有帮助"),
@@ -110,25 +110,25 @@ internal static class OcrSpeechMatchContract
     private static void SilenceGapMeasuresDistance()
     {
         var segs = new[] { Seg(10.0, 12.0, "a"), Seg(20.0, 22.0, "b") };
-        // Cue trong im lặng sâu (15s, cách thoại 3s) -> gap lớn -> drop.
+        // Cue in deep silence (15s, 3s from speech) -> large gap -> drop.
         Check(OcrSpeechMatch.SilenceGap(15.0, 15.5, segs) >= 3.0, "gap im lặng sai");
-        // Cue chồng thoại -> gap 0.
+        // Cue overlapping speech -> gap 0.
         Check(OcrSpeechMatch.SilenceGap(10.5, 11.5, segs) == 0, "chồng thoại phải gap 0");
-        // Cue kề thoại (khe 0.2s) -> gap nhỏ -> không drop.
+        // Cue adjacent to speech (0.2s gap) -> small gap -> no drop.
         Check(OcrSpeechMatch.SilenceGap(12.2, 12.5, segs) < OcrSpeechMatch.SilenceDropGapSeconds,
             "khe thoại không được drop");
-        // Không segment nào -> vô cực (fail-open ở caller).
+        // No segments -> infinity (fail-open at the caller).
         Check(double.IsPositiveInfinity(OcrSpeechMatch.SilenceGap(5.0, 6.0, [])),
             "rỗng phải vô cực");
     }
 
     private static void TrimRefusesHanTrailing()
     {
-        // ĐỔI SPEC 18/09 (luật thép chống xén oan, harness 8778 cue thật chứng
-        // minh guards cũ không cứu được: 后世之人→世之, 龙王逃课→王逃...): nhát
-        // cắt dính chữ Hán thì TỪ CHỐI, kể cả ca rác Hán thật. Rác Hán dính rìa
-        // (hiếm) sửa tay; không đoán.
-        // Cue 31 cũ ("…龙王而你，"): cắt "而你，" là cắt Hán -> từ chối.
+        // SPEC CHANGE 18/09 (iron rule against wrongful trimming; the 8778-real-cue harness
+        // proves the old guards could not save these: 后世之人→世之, 龙王逃课→王逃...): a cut
+        // edge touching Han characters is REFUSED, even for genuinely Han garbage. Han garbage touching an
+        // edge (rare) is fixed by hand; no guessing.
+        // Old cue 31 ("…龙王而你，"): cutting "而你，" cuts Han -> refuse.
         var words = new[]
         {
             W("她", 61.53, 62.01, 0.87), W("觉得", 62.22, 62.4), W("自己", 62.4, 62.66),
@@ -137,7 +137,7 @@ internal static class OcrSpeechMatchContract
         };
         var trimmed = OcrSpeechMatch.TrimEdges("她觉得自己和龙王而你，", 62.1, 63.3, words);
         Check(trimmed is null, $"đuôi Hán không được cắt (được '{trimmed}')");
-        // Cue 32 cũ ("…的人而作"): cắt "而作" là cắt Hán -> từ chối.
+        // Old cue 32 ("…的人而作"): cutting "而作" cuts Han text -> reject.
         var words2 = new[]
         {
             W("已经", 63.2, 63.42), W("不是", 63.42, 63.72), W("一个", 63.72, 63.98),
@@ -149,7 +149,7 @@ internal static class OcrSpeechMatchContract
 
     private static void TrimRefusesHanLeading()
     {
-        // "人第一" + tai nghe "第一": cắt "人" là cắt Hán -> TỪ CHỐI (spec mới).
+        // "人第一" + the ear hears "第一": cutting "人" cuts Han -> REFUSE (new spec).
         var words = new[] { W("第", 52.8, 52.95, 0.95), W("一", 52.95, 53.1, 0.95) };
         var trimmed = OcrSpeechMatch.TrimEdges("人第一", 52.8, 53.1, words);
         Check(trimmed is null, $"đầu Hán không được cắt (được '{trimmed}')");
@@ -157,7 +157,7 @@ internal static class OcrSpeechMatchContract
 
     private static void TrimKeepsCleanCue()
     {
-        // Cue sạch khớp hết tai nghe -> null (không đụng).
+        // Clean cue fully matching the ear -> null (untouched).
         var words = new[]
         {
             W("冷", 59.37, 59.81), W("氏", 59.81, 59.99), W("集", 59.99, 60.15),
@@ -170,18 +170,18 @@ internal static class OcrSpeechMatchContract
     private static void TrimRefusesUnsafe()
     {
         var words = new[] { W("你好", 10.0, 10.5) };
-        // Tai điếc (tin thấp) -> từ chối.
+        // Deaf ear (low confidence) -> refuse.
         var deaf = new[] { W("你好", 10.0, 10.5, 0.5) };
         Check(OcrSpeechMatch.TrimEdges("你好啊啊", 10.0, 10.5, deaf) is null, "tai điếc không được cắt");
-        // Không word nào -> null.
+        // No words -> null.
         Check(OcrSpeechMatch.TrimEdges("你好啊啊", 10.0, 10.5, []) is null, "rỗng phải null");
-        // Rác quá nửa cue -> không cắt (để drop-logic xử, tránh xén oan).
+        // Garbage over half the cue -> no cut (leave it to the drop logic, avoid wrongful trimming).
         var trimmed = OcrSpeechMatch.TrimEdges("甲乙丙丁戊己", 10.0, 11.0, words);
         Check(trimmed is null, "rác đa số không được cắt");
     }
 
-    // Bug cue 36 (18/09): OCR đúng 没有之一, tai cửa sổ hẹp chỉ nghe 之一
-    // nhưng tai lân cận RỘNG có nói 没有 (lệch timing) -> cấm cắt.
+    // Cue 36 bug (18/09): OCR reads 没有之一 correctly; a narrow-window ear hears only 之一
+    // but the nearby WIDE ear does say 没有 (timing offset) -> forbid cutting.
     private static void TrimRefusesWhenCutHeardNearby()
     {
         var words = new[]
@@ -194,8 +194,8 @@ internal static class OcrSpeechMatchContract
         Check(trimmed is null, $"tai lân cận có 没有 thì không được cắt (được '{trimmed}')");
     }
 
-    // Tai bắt đầu muộn hẳn so với đầu cue -> không có bằng chứng rìa đầu là
-    // rác (từ thật của tai có thể nằm ngoài cửa sổ) -> cấm cắt đầu.
+    // Ear starts much later than the cue start -> no evidence that the leading edge is
+    // garbage (the ear's real words may lie outside the window) -> forbid trimming the head.
     private static void TrimRefusesWhenEarStartsLate()
     {
         var words = new[]
@@ -209,8 +209,8 @@ internal static class OcrSpeechMatchContract
         Check(trimmed is null, $"tai bắt đầu muộn thì không được cắt đầu (được '{trimmed}')");
     }
 
-    // Tai chỉ phủ thưa (~0.62 < 0.75) thời lượng cue -> tai sót chữ, không đủ
-    // chắc để cắt.
+    // Ear covers the cue duration only sparsely (~0.62 < 0.75) -> the ear misses words, not
+    // confident enough to cut.
     private static void TrimRefusesSparseCoverage()
     {
         var words = new[] { W("之", 135.7, 136.0), W("一", 136.0, 136.3) };
@@ -219,9 +219,9 @@ internal static class OcrSpeechMatchContract
         Check(trimmed is null, $"phủ thưa thì không được cắt (được '{trimmed}')");
     }
 
-    // Bẫy độ dài (18/09): cue ngắn 好的 nằm nguyên văn trong segment dài
-    // 好的我们开始吧 nhưng sim Levenshtein chỉ 0.25 < ngưỡng drop 0.3 — tai
-    // CÓ nói đúng chữ đó nên cấm drop theo sim.
+    // Length trap (18/09): the short cue 好的 sits verbatim inside the long segment
+    // 好的我们开始吧 but Levenshtein similarity is only 0.25 < drop threshold 0.3 — the
+    // ear DID say exactly that text, so dropping by similarity is forbidden.
     private static void VerbatimContainedExemptsShortCue()
     {
         var overlapping = OcrSpeechMatch.OverlappingSegments(
@@ -232,7 +232,7 @@ internal static class OcrSpeechMatchContract
         Check(OcrSpeechMatch.IsVerbatimContained("好的", overlapping), "nguyên văn phải miễn drop");
     }
 
-    // Chữ tai không hề nói thì không miễn.
+    // Text the ear never said gets no exemption.
     private static void VerbatimRejectsUnheard()
     {
         var overlapping = OcrSpeechMatch.OverlappingSegments(
@@ -243,9 +243,10 @@ internal static class OcrSpeechMatchContract
         Check(!OcrSpeechMatch.IsVerbatimContained("好的", null!), "null không miễn");
     }
 
-    // Luật chung 18/09: tai PHỦ KÍN cue bằng chữ TỰ TIN mới là bằng chứng để
-    // buộc tội (mâu thuẫn dương tính). Hàm này chỉ đo độ phủ — chữ giống hay
-    // khác do sim/containment quyết ở ngoài. Phủ kín tin cao -> true.
+    // General rule 18/09: only an ear that COVERS the cue fully with CONFIDENT words is
+    // evidence to convict (positive contradiction). This function only measures coverage —
+    // whether the characters match or differ is decided outside by sim/containment.
+    // Dense high-confidence coverage -> true.
     private static void EarCoversDenseSpan()
     {
         var words = new[] { W("啊", 10.0, 10.5), W("啊", 10.5, 11.0) };
@@ -254,31 +255,31 @@ internal static class OcrSpeechMatchContract
         Check(OcrSpeechMatch.EarCoversSpan(10.0, 11.0, edge), "đúng ngưỡng 0.75 phải true");
     }
 
-    // Tai thưa (20%) thì không phải bằng chứng — dù chữ có khác hẳn.
+    // A sparse ear (20%) is not evidence — even if the characters are entirely different.
     private static void EarSparseIsNotEvidence()
     {
         var words = new[] { W("啊", 10.0, 10.2) };
         Check(!OcrSpeechMatch.EarCoversSpan(10.0, 11.0, words), "phủ thưa không được buộc tội");
     }
 
-    // Phủ kín nhưng tin thấp (tai nghe bừa) thì không phải bằng chứng.
+    // Dense but low confidence (an ear hearing at random) is not evidence either.
     private static void EarLowConfIsNotEvidence()
     {
         var words = new[] { W("啊", 10.0, 10.5, 0.5), W("啊", 10.5, 11.0, 0.5) };
         Check(!OcrSpeechMatch.EarCoversSpan(10.0, 11.0, words), "tin thấp không được buộc tội");
     }
 
-    // Không words thì không có gì để buộc tội (fail-closed về giữ).
+    // With no words there is nothing to convict with (fail-closed toward keep).
     private static void EarEmptyIsNotEvidence()
     {
         Check(!OcrSpeechMatch.EarCoversSpan(10.0, 11.0, []), "rỗng phải false");
         Check(!OcrSpeechMatch.EarCoversSpan(10.0, 11.0, null!), "null phải false");
     }
 
-    // ĐỔI SPEC 18/09 (luật thép chống xén oan): tường chữ HÁN thì KHÔNG gỡ,
-    // kể cả tai vắng mặt (tai sót tên riêng là chuyện thường; harness 8778 cue
-    // thật: 陆鸣同学→同学, 纯阳之体→之体, 别绷太紧→太紧...). Tường Hán cần quét
-    // lại có cổng màu hoặc sửa tay.
+    // SPEC CHANGE 18/09 (iron rule against wrongful trimming): a wall of HAN characters is
+    // NOT stripped, even when the ear is absent (the ear missing proper names is common;
+    // the 8778-real-cue harness: 陆鸣同学→同学, 纯阳之体→之体, 别绷太紧→太紧...). A Han wall
+    // needs a rescan with the color gate or a manual fix.
     private static void PeelRefusesHanFlood()
     {
         var words = new[]
@@ -295,7 +296,7 @@ internal static class OcrSpeechMatchContract
         Check(peeled is null, $"tường Hán không được gỡ (được '{peeled}')");
     }
 
-    // Thoại lặp thật (完了×3, tai nghe đủ 3) -> cấm gỡ (spokenFamCount > 0).
+    // Genuine repeated speech (完了×3, the ear hears all 3) -> stripping forbidden (spokenFamCount > 0).
     private static void PeelRefusesGenuineTriple()
     {
         var words = new[]
@@ -307,7 +308,7 @@ internal static class OcrSpeechMatchContract
         Check(peeled is null, $"lặp thật tai nghe đủ thì giữ (được '{peeled}')");
     }
 
-    // Tai nghe nguyên văn cả cue (kể cả tile) -> không có gì để gỡ.
+    // The ear hears the entire cue verbatim (including the tiles) -> nothing to strip.
     private static void PeelRefusesFullEcho()
     {
         var words = new[]
@@ -320,7 +321,7 @@ internal static class OcrSpeechMatchContract
         Check(peeled is null, $"tai nghe hết thì giữ (được '{peeled}')");
     }
 
-    // Biến thể Hán (陪/赔) cũng KHÔNG gỡ (luật thép: không gỡ chữ Hán).
+    // Han variants (陪/赔) are also NOT stripped (iron rule: never strip Han characters).
     private static void PeelRefusesHanVariant()
     {
         var words = new[]
@@ -334,8 +335,8 @@ internal static class OcrSpeechMatchContract
         Check(peeled is null, $"họ biến thể Hán không được gỡ (được '{peeled}')");
     }
 
-    // SPEC MỚI 19/09 (user duyệt gỡ tile Hán khi tai im): tường danmaku
-    // 陪一支×3 + lõi thoại tai có nghe (云烟) -> gỡ tường giữ lõi.
+    // NEW SPEC 19/09 (user approved stripping Han tiles when the ear is silent): a danmaku
+    // wall 陪一支×3 + a speech core the ear did hear (云烟) -> strip the wall, keep the core.
     private static void PeelStripsHanWallMixedCore()
     {
         var words = new[] { W("云", 10.05, 10.25), W("烟", 10.25, 10.45) };
@@ -345,8 +346,8 @@ internal static class OcrSpeechMatchContract
         Check(peeled == "云烟", $"tường Hán + lõi tai-nghe phải gỡ giữ lõi (được '{peeled}')");
     }
 
-    // Tường Hán THUẦN (không lõi) -> null fail-closed (judge mâu thuẫn drop
-    // khi có tiếng / F2 gắn cờ khi im — peel không bịa lõi).
+    // A PURE Han wall (no core) -> null fail-closed (the contradiction judge drops it
+    // when there is speech / F2 flags it when silent — peel never fabricates a core).
     private static void PeelPureHanWallStaysForJudge()
     {
         var words = new[] { W("他", 10.05, 10.45) };
@@ -355,8 +356,8 @@ internal static class OcrSpeechMatchContract
         Check(peeled is null, $"tường thuần phải null cho judge xử (được '{peeled}')");
     }
 
-    // R3 (video Cả Lớp 19/09 cue 3617 "A…2…35?"): token lẫn chữ+số ở rìa
-    // (A2, p01) cấm cắt — cắt là đổi nghĩa/mất mã.
+    // R3 (Cả Lớp video 19/09 cue 3617 "A…2…35?"): a letter+digit token at the edge
+    // (A2, p01) forbids trimming — cutting changes the meaning / loses the code.
     private static void TrimProtectsAlnumToken()
     {
         var words = new[]
@@ -368,7 +369,7 @@ internal static class OcrSpeechMatchContract
         Check(trimmed is null, $"token lai A2 cấm cắt (được '{trimmed}')");
     }
 
-    // Đối chứng R3: cụm THUẦN số (482) vẫn cắt như cũ (R1/R2 quyết).
+    // R3 counter-check: a PURE digit group (482) is still trimmed as before (R1/R2 decide).
     private static void TrimStillCutsPureDigitAffix()
     {
         var words = new[]
@@ -384,8 +385,8 @@ internal static class OcrSpeechMatchContract
         double start, double end, string text, IReadOnlyList<EditorWordTiming> words) =>
         new(start, end, text, -0.2, 0.0, words, "uncertain", 0, 0);
 
-    // Tai sửa 1 chữ (VD 5137.7s): cue 云烟很天 vs tai 昨晚云烟很大, word tin
-    // cao -> 云烟很大.
+    // Ear corrects 1 character (e.g. 5137.7s): cue 云烟很天 vs ear 昨晚云烟很大, high-confidence
+    // words -> 云烟很大.
     private static void CorrectSingleCharPositive()
     {
         var words = new[]
@@ -398,7 +399,7 @@ internal static class OcrSpeechMatchContract
         Check(fixedText == "云烟很大", $"phải sửa 1 chữ (được '{fixedText}')");
     }
 
-    // Từ chối sửa: 2 chữ khác / tai điếc / giản-phồn / cue ngắn.
+    // Refuses correction: 2 characters differ / deaf ear / traditional-simplified / short cue.
     private static void CorrectSingleCharRefusals()
     {
         var words = new[]
@@ -421,7 +422,7 @@ internal static class OcrSpeechMatchContract
             "rỗng words không sửa");
     }
 
-    // Tai điếc / không words -> từ chối (fail-closed).
+    // Deaf ear / no words -> refuse (fail-closed).
     private static void PeelRefusesDeafEar()
     {
         var deaf = new[] { W("陪一支", 12407.8, 12408.0, 0.5), W("我心里", 12408.0, 12408.5, 0.5) };
@@ -431,8 +432,8 @@ internal static class OcrSpeechMatchContract
             "rỗng words không gỡ");
     }
 
-    // Dấu câu kẹp tile không-Hán: gỡ tile, giữ dấu + lõi (bản đồ rune).
-    // Tile "ab"/"cd" lặp + lõi "hi" tai-xác-nhận + dấu kẹp.
+    // Punctuation surrounded by non-Han tiles: strip the tiles, keep the punctuation + core (rune map).
+    // Repeated tiles "ab"/"cd" + an ear-confirmed core "hi" + the enclosing punctuation.
     private static void PeelKeepsInternalPunct()
     {
         var words = new[]
@@ -445,8 +446,8 @@ internal static class OcrSpeechMatchContract
         Check(peeled == "hi", $"tile không-Hán phải gỡ (được '{peeled}')");
     }
 
-    // Tile dài 5 chữ (团支书画画×2 ở cue 397 thật): max cũ 4 mù tile này,
-    // rớt xuống edge-trim cho ra "hither" sai; max 6 gỡ đúng giữ space lõi.
+    // Long 5-character tile (团支书画画×2 in real cue 397): the old max of 4 misses this tile and
+    // falls through to edge-trim yielding the wrong "hither"; max 6 strips it correctly, keeping the core space.
     private static void PeelLongTileKeepsSpacedCore()
     {
         var words = new[]
@@ -460,9 +461,9 @@ internal static class OcrSpeechMatchContract
         Check(peeled == "hi there", $"tile dài phải gỡ sạch giữ space (được '{peeled}')");
     }
 
-    // Hóa thạch 18/09 (start=368.63 file user): OCR 有9成概率, tai 有九成概率
-    // (chữ số vs chữ Hán). Code cũ cắt thành 成概率; fold số-chữ khiến veto
-    // bắt được (有9 ⊆ 有9成) nên giữ nguyên.
+    // Fossil 18/09 (start=368.63, user file): OCR 有9成概率, ear 有九成概率
+    // (digit vs Han character). The old code cut it to 成概率; digit-character folding makes the
+    // veto catch it (有9 ⊆ 有9成) so it is left intact.
     private static void DigitFoldVetoProtectsRealNumber()
     {
         var words = new[]
@@ -473,15 +474,15 @@ internal static class OcrSpeechMatchContract
         const string nearby = "有九成概率";
         var trimmed = OcrSpeechMatch.TrimEdges("有9成概率", 10.0, 11.0, words, nearby);
         Check(trimmed is null, $"số thật phải giữ (được '{trimmed}')");
-        // Đầu Hán + số (人…): nhát cắt dính Hán thì cấm luôn (luật thép) —
-        // sửa tay, không đoán.
+        // Han head + digit (人…): any cut edge touching Han is forbidden outright (iron rule) —
+        // fix by hand, do not guess.
         var trimmed2 = OcrSpeechMatch.TrimEdges("人有9成概率", 10.0, 11.0, words, nearby);
         Check(trimmed2 is null, $"đầu Hán không được cắt (được '{trimmed2}')");
     }
 
-    // Vụ 那 2 (18/09, số liệu tai thật): tai nghe 那 nhưng chỉ tin 76% (<0.8).
-    // Nhát cắt không-chữ-Hán (số/dấu) được nới xuống 0.75; cắt chữ Hán thì vẫn
-    // đòi 0.8 (chống cue-36).
+    // Case 那 2 (18/09, real ear numbers): the ear hears 那 but only at 76% confidence (<0.8).
+    // A non-Han cut edge (digits/punctuation) is relaxed to 0.75; cutting Han characters still
+    // demands 0.8 (guards against cue 36).
     private static void WeakEarTrimsNonHanCut()
     {
         var words = new[]
@@ -493,8 +494,8 @@ internal static class OcrSpeechMatchContract
         Check(trimmed == "那", $"số rác phải cắt dù tai 76% (được '{trimmed}')");
     }
 
-    // Đối chứng: cùng tai yếu, nhát cắt chữ Hán thì cấm (luật thép — giờ cấm
-    // tuyệt đối chứ không chỉ khi tai yếu).
+    // Counter-check: same weak ear, but a cut edge on Han characters is forbidden (iron rule — now
+    // forbidden outright, not only when the ear is weak).
     private static void WeakEarRefusesHanCut()
     {
         var words = new[] { W("好", 10.0, 10.8, 0.76) };
@@ -503,10 +504,10 @@ internal static class OcrSpeechMatchContract
         Check(trimmed is null, $"tai yếu không được cắt chữ Hán (được '{trimmed}')");
     }
 
-    // Biên số (18/09, hóa thạch user: OCR 18岁那年, tai 八岁那年 — thật/giả
-    // không phân biệt được): tách cụm số (cắt "1" chừa "8") và nuốt số tai
-    // xác nhận (cắt "18" trong khi tai nói 8) đều TỪ CHỐI — giữ nguyên an toàn
-    // hơn (18→8 hay 18→∅ đều đổi/mất sự thật).
+    // Digit boundary (18/09, user fossil: OCR 18岁那年, ear 八岁那年 — real/fake cannot be
+    // distinguished): splitting the digit group (cut "1", keep "8") and swallowing an
+    // ear-confirmed digit (cut "18" while the ear says 8) are both REFUSED — keeping it intact is
+    // safer (18→8 or 18→∅ both change or lose the truth).
     private static void DigitBoundaryRefusesValueChange()
     {
         var words = new[]
@@ -519,7 +520,7 @@ internal static class OcrSpeechMatchContract
         Check(trimmed is null, $"không được đổi giá trị số (được '{trimmed}')");
     }
 
-    // Đối chứng: số rác không dính số thật (kept không số) thì vẫn cắt.
+    // Counter-check: garbage digits not touching a real digit (kept has no digits) are still trimmed.
     private static void DigitAffixWithoutDigitKeptTrims()
     {
         var words = new[]
@@ -531,36 +532,36 @@ internal static class OcrSpeechMatchContract
         Check(trimmed == "狗主播", $"số rác phải cắt (được '{trimmed}')");
     }
 
-    // Cổng áp dụng fix-cắt (18/09): strong/review/tin-thấp cho qua mọi nhát;
-    // cue tin cao tai-vừa chỉ cho qua nhát gỡ số/dấu/latin (không xén Hán).
+    // Gate applying the trim fix (18/09): strong/review/low-confidence lets every cut through;
+    // a high-confidence cue with a mid ear only lets digit/punctuation/Latin cuts through (no Han trimming).
     private static void ApplyGateLocksHanCuts()
     {
-        // Nhát cắt Hán trên cue tin cao -> cấm (dù lõi khớp).
+        // A Han cut edge on a high-confidence cue -> forbidden (even if the core matches).
         Check(!OcrSpeechMatch.ShouldApplyTrimFix(false, false, 0.99, "没有之一", "之一"),
             "cắt Hán cue tin cao phải cấm");
-        // Dấu câu thuần trên cue tin cao -> cấm (giữ giọng câu).
+        // Pure punctuation on a high-confidence cue -> forbidden (preserve sentence intonation).
         Check(!OcrSpeechMatch.ShouldApplyTrimFix(false, false, 0.99, "你好，", "你好"),
             "cắt dấu cue tin cao phải cấm");
-        // Bằng nhau/rỗng -> cấm.
+        // Equal/empty -> forbidden.
         Check(!OcrSpeechMatch.ShouldApplyTrimFix(false, false, 0.99, "AB", "AB"), "bằng nhau phải cấm");
         Check(!OcrSpeechMatch.ShouldApplyTrimFix(false, false, 0.99, "AB", ""), "rỗng phải cấm");
     }
 
     private static void ApplyGateOpensDigitCuts()
     {
-        // Nhát cắt số/dấu/latin trên cue tin cao -> cho qua.
+        // A digit/punctuation/Latin cut edge on a high-confidence cue -> allowed.
         Check(OcrSpeechMatch.ShouldApplyTrimFix(false, false, 0.99, "AB 12", "AB"),
             "cắt số cue tin cao phải cho qua");
         Check(OcrSpeechMatch.ShouldApplyTrimFix(false, false, 0.99, "那 2", "那"),
             "cắt số cue tin cao phải cho qua");
-        // Cổng cũ vẫn mở: strong/review/tin-thấp.
+        // The old gate still opens: strong/review/low-confidence.
         Check(OcrSpeechMatch.ShouldApplyTrimFix(true, false, 0.99, "ABx", "AB"), "strong phải mở");
         Check(OcrSpeechMatch.ShouldApplyTrimFix(false, true, 0.99, "ABx", "AB"), "review phải mở");
         Check(OcrSpeechMatch.ShouldApplyTrimFix(false, false, 0.7, "ABx", "AB"), "tin thấp phải mở");
     }
 
-    // Phương án A (18/09): khe im 90s (> 60s) -> vùng quét kỹ (Suspicious),
-    // nhưng lõi thoại + pad giữ HasSub.
+    // Option A (18/09): a 90s silence gap (> 60s) -> a full-scan zone (Suspicious),
+    // but the speech core + pad keep HasSub.
     private static void LongSilence90sMarkedFullScan()
     {
         var segs = new[] { Seg(0.0, 10.0, "a"), Seg(100.0, 110.0, "b") };
@@ -574,19 +575,19 @@ internal static class OcrSpeechMatchContract
         Check(timeline.At(105.0) == VadFlag.HasSub, "lõi thoại sau phải giữ HasSub");
     }
 
-    // Khe im 30s (< 60s) -> vẫn NoSub (skip như cũ, nhanh).
+    // A 30s silence gap (< 60s) -> still NoSub (skip as before, fast).
     private static void ShortSilence30sStaysSkippable()
     {
         var segs = new[] { Seg(0.0, 10.0, "a"), Seg(40.0, 50.0, "b") };
         var zones = OcrSpeechMatch.FindLongSilences(segs, 200.0);
-        // Khe giữa 30s không bắt; khe cuối 150s bắt.
+        // The middle 30s gap is not caught; the trailing 150s gap is.
         Check(zones.Count == 1, $"chỉ khe cuối dài được bắt (được {zones.Count})");
         var timeline = OcrSpeechMatch.BuildTimeline(segs, 200.0);
         OcrSpeechMatch.MarkLongSilences(timeline, zones);
         Check(timeline.At(25.0) == VadFlag.NoSub, "khe 30s vẫn skip được");
     }
 
-    // Video câm hoàn toàn 120s -> 1 vùng quét kỹ cả video.
+    // A fully mute 120s video -> 1 full-scan zone for the whole video.
     private static void FullyMuteVideoMarkedFullScan()
     {
         var zones = OcrSpeechMatch.FindLongSilences([], 120.0);
@@ -596,14 +597,14 @@ internal static class OcrSpeechMatchContract
         Check(timeline.At(0.0) == VadFlag.Suspicious, "đầu video câm phải quét kỹ");
         Check(timeline.At(60.0) == VadFlag.Suspicious, "giữa video câm phải quét kỹ");
         Check(timeline.At(119.9) == VadFlag.Suspicious, "cuối video câm phải quét kỹ");
-        // Rác đầu vào -> rỗng, không nổ.
+        // Garbage input -> empty, no crash.
         Check(OcrSpeechMatch.FindLongSilences(null, 120.0).Count == 1, "null speech như câm");
         Check(OcrSpeechMatch.FindLongSilences([], 0).Count == 0, "duration 0 phải rỗng");
         Check(OcrSpeechMatch.FindLongSilences([], 30.0).Count == 0, "video ngắn hơn ngưỡng phải rỗng");
     }
 
-    // Mẫu trong vùng quét kỹ (đứng yên + neo trắng) -> council vẫn KHÔNG skip
-    // (vote Suspicious, không phải NoSub).
+    // A still frame inside a full-scan zone (motionless + white anchor) -> the council still does NOT skip
+    // (votes Suspicious, not NoSub).
     private static void NoSkipInsideFullScanZone()
     {
         var segs = new[] { Seg(0.0, 10.0, "a"), Seg(100.0, 110.0, "b") };

@@ -4,22 +4,22 @@ using System.Threading.Channels;
 
 namespace BiliSubStudio.Core.Ocr;
 
-// Giám khảo THỜI GIAN đi SAU ocr lúc quét (user chốt 17/09): câu nào chốt là
-// chấm ngay bằng logic thời gian — sub cứng thật ĐỨNG YÊN qua nhiều frame
-// (vị trí cố định), chữ trong video (trang sách/bối cảnh bị camera lia) DI
-// CHUYỂN liên tục:
-// - chữ di chuyển giữa các khung probe -> DROP: ghi file .exclude.json ->
-//   xóa khỏi SRT lúc xuất. Xóa file đó là hoàn tác.
-// - chữ đứng yên -> KEEP: giữ nguyên, qua câu tiếp.
-// Quy tắc thép:
-// - KHÔNG BAO GIỜ chặn đường quét: enqueue là TryWrite (đầy là bỏ + đếm).
-// - Chỉ chấm câu đã CHỐT (committed tail), không chấm câu live đang mở.
-// - Ghi xóa TRƯỚC, ghi nhật ký SAU: lưu hỏng thì lần quét sau chấm lại
-//   (không mất quyết định âm thầm).
-// - Hủy: dừng êm, số còn lại hoãn (lượt sau chấm tiếp).
-// - Tắt toggle: dùng bản Disabled (no-op), đường quét y hệt.
-// Mở rộng theo lane (8 nay, 16 sau): số luồng chấm = ceil(lanes/4), tối đa 4.
-// KHÔNG VLM, KHÔNG server, KHÔNG key — OCR qua worker pool có sẵn.
+// TIME-based judge running BEHIND OCR during a scan (locked by user 17/09): as soon as a cue closes it is
+// judged immediately by time logic — a real hardcoded sub STAYS STILL across many frames
+// (fixed position), while text inside the video (book pages/background panned by the camera) MOVES
+// continuously:
+// - text moving between probe frames -> DROP: write the .exclude.json file ->
+//   removed from the SRT at export. Deleting that file undoes it.
+// - text standing still -> KEEP: keep as-is, move to the next cue.
+// Iron rules:
+// - NEVER block the scan path: enqueue is TryWrite (when full, drop + count).
+// - Only judge CLOSED cues (committed tail), never judge an open live cue.
+// - Write deletions FIRST, write the journal AFTER: if a save fails, the next scan judges again
+//   (no silent loss of decisions).
+// - Cancel: stop cleanly, the remainder is deferred (judged next round).
+// - Toggle off: use the Disabled implementation (no-op), identical scan path.
+// Scale by lane (8 now, 16 later): judging threads = ceil(lanes/4), max 4.
+// NO VLM, NO server, NO key — OCR via the existing worker pool.
 public sealed class OcrTrailingJudge : IAsyncDisposable
 {
     public const int DefaultMaxQueue = 200;
@@ -40,7 +40,7 @@ public sealed class OcrTrailingJudge : IAsyncDisposable
         long Keeps,
         long Deleted);
 
-    // Co giãn theo lane: 1-4 lane -> 1 luồng, 5-8 -> 2, 9-12 -> 3, 13+ -> 4.
+    // Scale by lane: 1-4 lanes -> 1 thread, 5-8 -> 2, 9-12 -> 3, 13+ -> 4.
     public static int WorkersForLanes(int laneCount) =>
         Math.Clamp((Math.Max(1, laneCount) + 3) / 4, 1, MaxWorkers);
 
@@ -54,10 +54,10 @@ public sealed class OcrTrailingJudge : IAsyncDisposable
     private readonly string _journalPath;
     private readonly int _frameWidth;
     private readonly int _frameHeight;
-    // Warmup tai-mắt: 10 cue đầu chỉ thống kê độ khớp (không drop theo chữ) để
-    // phát hiện video lệch ngôn ngữ (tai-mắt khác nhau toàn bộ -> tắt drop-chữ,
-    // tránh xóa oan cả video). Drop-im-lặng đã bỏ 18/09 (sub-không-tiếng là
-    // thật) — chữ nền tĩnh do guard banner ở finish bắt.
+    // Ear-eye warmup: the first 10 cues only gather match rates (no text-based dropping) to
+    // detect language-mismatched videos (ear and eye completely different -> disable text-drop,
+    // avoiding wrongly deleting the whole video). Silence-drop was removed 18/09 (soundless subs are
+    // real) — static background text is caught by the banner guard at finish.
     private long _asrChecked;
     private long _asrAgreed;
     private readonly CancellationTokenSource _stop = new();
@@ -122,7 +122,7 @@ public sealed class OcrTrailingJudge : IAsyncDisposable
             _loops[index] = Task.Run(LoopAsync);
     }
 
-    // Bản TEMPORAL cho tests: queue/journal plumbing với temporal OCR giả.
+    // TEMPORAL implementation for tests: queue/journal plumbing with a fake temporal OCR.
     public static OcrTrailingJudge CreateTemporal(
         Func<double, CancellationToken, Task<byte[]?>> grabFrame,
         Func<IReadOnlyList<byte[]>, CancellationToken, Task<IReadOnlyList<OcrResult>>> temporalOcr,
@@ -140,13 +140,13 @@ public sealed class OcrTrailingJudge : IAsyncDisposable
             journalPath, "temporal", maxQueue, workers, enabled: true,
             frameWidth: frameWidth, frameHeight: frameHeight, speech: speech);
 
-    // Bản TEMPORAL live cho scanner (user chốt 17/09): KHÔNG VLM, KHÔNG server,
-    // KHÔNG key. Chấm từng ca nghi bằng logic thời gian: chụp 3 khung phủ ca,
-    // OCR lại qua worker pool có sẵn, so khớp chữ + vị trí:
-    // - chữ DI CHUYỂN giữa các khung (trôi > 5% khung) -> DROP (chữ bối cảnh
-    //   chạy theo camera: trang sách/tít qua, không phải sub) -> .exclude.json.
-    // - chữ ĐỨNG YÊN (trôi ≤ 5%) -> KEEP (sub thật).
-    // frameWidth/Height từ input health (độ phân giải thật) để chuẩn hóa drift.
+    // Live TEMPORAL implementation for the scanner (locked by user 17/09): NO VLM, NO server,
+    // NO key. Judge each suspicious cue with time logic: capture 3 frames covering the cue,
+    // re-OCR via the existing worker pool, compare text + position:
+    // - text MOVING between frames (drift > 5% of frame) -> DROP (background text
+    //   panning with the camera: book pages/credits passing by, not a sub) -> .exclude.json.
+    // - text STILL (drift ≤ 5%) -> KEEP (real sub).
+    // frameWidth/Height from input health (real resolution) to normalize drift.
     public static OcrTrailingJudge CreateTemporalLive(
         BiliSubStudio.Core.Tools.ToolManager tools,
         BiliSubStudio.Core.Processes.ProcessRunner processes,
@@ -184,7 +184,7 @@ public sealed class OcrTrailingJudge : IAsyncDisposable
             catch (OperationCanceledException) { throw; }
             catch { return null; }
         }
-        // OCR qua worker pool có sẵn (batch 3 khung, trong giới hạn worker 4).
+        // OCR via the existing worker pool (batch 3 frames, within the worker limit of 4).
         async Task<IReadOnlyList<OcrResult>> OcrBatch(IReadOnlyList<byte[]> frames, CancellationToken token)
         {
             var images = frames.Select(Convert.ToBase64String).ToList();
@@ -206,8 +206,8 @@ public sealed class OcrTrailingJudge : IAsyncDisposable
             speech: speech);
     }
 
-    // Bản tắt: mọi gọi no-op, stats 0. Dùng khi tắt toggle —
-    // đường quét không cần rẽ nhánh null.
+    // Disabled implementation: every call is a no-op, stats 0. Used when the toggle is off —
+    // the scan path needs no null branch.
     public static OcrTrailingJudge Disabled(
         Func<double, CancellationToken, Task<byte[]?>>? grabFrame = null,
         string journalPath = "") =>
@@ -221,10 +221,10 @@ public sealed class OcrTrailingJudge : IAsyncDisposable
             workers: 1,
             enabled: false);
 
-    // Chấm TẤT CẢ cue đã chốt (KHÔNG lọc ca nghi kiểu VLM — chữ bối cảnh
-    // (tít/trang sách) đọc TIN CẬY nên bộ lọc ca-nghi cũ (dài/garbled/thấp-tin/
-    // cờ) bỏ sót đúng ca cần xóa). Không block: đầy hàng là bỏ + đếm.
-    // Trả (nhận, bỏ qua) để caller cộng telemetry. Tắt/dispose -> (0,0).
+    // Judge ALL closed cues (NO VLM-style suspicious-cue filtering — background text
+    // (credits/book pages) is read CONFIDENTLY, so the old suspicious-cue filter (long/garbled/low-confidence/
+    // flagged) missed exactly the cues that should be deleted). Non-blocking: a full queue means drop + count.
+    // Returns (accepted, skipped) so the caller can add telemetry. Disabled/disposed -> (0,0).
     public (int Accepted, int Skipped) EnqueueCues(IEnumerable<OcrCue> cues)
     {
         if (!Enabled || _disposed) return (0, 0);
@@ -299,9 +299,9 @@ public sealed class OcrTrailingJudge : IAsyncDisposable
                     catch (OperationCanceledException) { return; }
                     catch
                     {
-                        // Lưới cuối: loop TUYỆT ĐỐI không chết lặng — bỏ task,
-                        // chạy tiếp. Phát hiện bằng stats (judged đứng yên
-                        // trong khi enqueue tăng).
+                        // Last-resort net: the loop absolutely must not deadlock — drop the task,
+                        // keep going. Detected via stats (judged stays still
+                        // while enqueue increases).
                         Interlocked.Increment(ref _deferred);
                     }
                 }
@@ -345,37 +345,37 @@ public sealed class OcrTrailingJudge : IAsyncDisposable
                 return;
             }
         }
-        // TEMPORAL (user chốt 17/09): đường chấm DUY NHẤT — chụp 3 khung phủ ca,
-        // OCR lại qua worker pool, so khớp chữ + vị trí -> keep/drop.
+        // TEMPORAL (locked by user 17/09): the ONLY judging path — capture 3 frames covering the cue,
+        // re-OCR via the worker pool, compare text + position -> keep/drop.
         await JudgeOneTemporalAsync(task);
     }
 
-    // Chấm 1 ca bằng logic thời gian (user chốt 17/09): chụp 3 khung phủ ca
-    // (rìa ±0.3s khuếch đại drift), OCR batch, so khớp chữ + vị trí:
-    // - DI CHUYỂN (trôi > 5% khung) -> DROP (ghi .exclude.json, xóa khỏi SRT).
-    // - ĐỨNG YÊN -> KEEP (sub thật, qua câu tiếp).
-    // Fail-open: không đủ khung/OCR lỗi -> KEEP (không drop oan), chỉ đếm grab fail.
+    // Judge one cue with time logic (locked by user 17/09): capture 3 frames covering the cue
+    // (±0.3s margins to amplify drift), batch OCR, compare text + position:
+    // - MOVING (drift > 5% of frame) -> DROP (write .exclude.json, remove from SRT).
+    // - STILL -> KEEP (real sub, move to the next cue).
+    // Fail-open: too few frames/OCR error -> KEEP (no wrongful drop), only count grab failures.
     private async Task JudgeOneTemporalAsync(JudgeTask task)
     {
         var temporalOcr = _temporalOcr;
         if (temporalOcr is null) return;
-        // Đối chiếu tai-mắt (Whisper, 18/09 — luật chung user chốt): tai nghe gì
-        // vs mắt thấy gì. IM LẶNG THÌ GIỮ, NÓI KHÁC HẲN MỚI XÓA:
-        // - KHÔNG còn drop khi thiếu thoại chồng lấn: đoạn sub-không-tiếng là
-        //   thật với video user (im lặng -> để mắt quyết qua probe bên dưới).
-        //   Chữ nền tĩnh trong đoạn im do guard banner ở finish bắt
-        //   (OcrBannerGuard), không phải việc của judge.
-        // - Tai nghe khác hẳn -> DROP, nhưng "khác hẳn" phải là MÂU THUẪN DƯƠNG
-        //   TÍNH: sim < 0.3 + sau warmup + cue KHÔNG nằm nguyên văn trong tai +
-        //   tai PHỦ KÍN cue bằng chữ tự tin. Tai thưa/không phủ (khe im, tai sót)
-        //   thì không đủ bằng chứng — để lọc vị trí quyết, tuyệt đối không drop
-        //   vì "tai không nghe thấy". Ngoại lệ cứu tai-trễ: tai nói cùng nội
-        //   dung trong ±1.5s (sub hiện trễ/tracker tách) thì không mâu thuẫn.
-        // - Tai nghe khớp mạnh (≥ 0.6) -> kiểm tra cắt đuôi thừa rồi KEEP sớm
-        //   (khỏi chụp khung).
-        // - Còn lại (gồm cả không có thoại chồng lấn) -> để lọc vị trí quyết.
-        //   Không bao giờ sửa chữ ở đây (fix chỉ ở fallback/trim bên dưới,
-        //   có guard riêng).
+        // Ear-eye cross-check (Whisper, 18/09 — the user's pinned general rule): what the ear hears
+        // vs what the eye sees. SILENCE MEANS KEEP, ONLY A CLEAR POSITIVE CONTRADICTION DELETES:
+        // - no more dropping when overlapping speech is missing: soundless-sub segments are
+        //   real in user videos (silence -> let the eye decide via the probe below).
+        //   Static background text during silence is caught by the banner guard at finish
+        //   (OcrBannerGuard), not the judge's job.
+        // - The ear hears clearly differently -> DROP, but "clearly different" must be a POSITIVE
+        //   CONTRADICTION: sim < 0.3 + after warmup + the cue not appearing verbatim in the ear +
+        //   the ear FULLY COVERS the cue with confident text. A sparse/non-covering ear (silence gaps, ear misses)
+        //   is insufficient evidence — let the position filter decide, and never drop
+        //   because "the ear didn't hear it". Late-ear rescue exception: the ear says the same
+        //   content within ±1.5s (late subs/tracker splitting) means no contradiction.
+        // - Strong ear match (≥ 0.6) -> check for trailing junk trim then KEEP early
+        //   (avoids capturing frames).
+        // - The rest (including no overlapping speech at all) -> let the position filter decide.
+        //   Never correct text here (fixes only in the fallback/trim below,
+        //   which have their own guards).
         var speech = _speech;
         var asrSim = -1.0;
         IReadOnlyList<BiliSubStudio.Core.Editor.EditorSpeechSegment> overlapping = [];
@@ -396,13 +396,13 @@ public sealed class OcrTrailingJudge : IAsyncDisposable
                         $"tai-mắt khớp ({asrSim:0.00}) — thoại thật");
                     return;
                 }
-                // Mâu thuẫn dương tính (luật chung 18/09): sim thấp + cue KHÔNG nằm
-                // nguyên văn trong tai + tai PHỦ KÍN cue bằng chữ tự tin mới được
-                // buộc tội. Trước khi buộc tội phải cứu tai-trễ: sub hiện trễ
-                // hoặc tracker tách cue khiến tai nói cùng nội dung nằm ngoài
-                // ±0.3s (field 2408.1: tai nói xong trước 0.75s mà cue mới hiện)
-                // — tai nói cùng nội dung trong ±1.5s thì KHÔNG mâu thuẫn, để
-                // probe mắt quyết. Im lặng/thưa thì giữ (không đủ bằng chứng).
+                // Positive contradiction (general rule 18/09): low sim + the cue not appearing
+                // verbatim in the ear + the ear FULLY COVERS the cue with confident text is required to
+                // accuse. Before accusing, rescue late ears: a late-displaying sub
+                // or tracker cue splitting can put the ear saying the same content outside
+                // ±0.3s (field 2408.1: the ear finished 0.75s earlier while the cue only then appeared)
+                // — if the ear says the same content within ±1.5s there is NO contradiction, leave it for the
+                // eye probe to decide. Silence/sparse means keep (insufficient evidence).
                 var contradicted = false;
                 if (asrSim < OcrSpeechMatch.MinSimilarity && SpeechTextCheckReady()
                     && !OcrSpeechMatch.IsVerbatimContained(task.Text, overlapping))
@@ -423,12 +423,12 @@ public sealed class OcrTrailingJudge : IAsyncDisposable
                 }
             }
         }
-        // Tít/credit (chức danh/ngày tháng/bản quyền) — drop KHÔNG cần chụp
-        // khung, NHƯNG chỉ khi tai KHÔNG nói chữ đó (18/09: lùi sau tai-nghe;
-        // trước đây drop ngay đầu đã xóa oan thoại xưng hô "导演，你听我说",
-        // nhân vật nói ngày tháng, thoại nhắc 版权). Credit phim thật chiếu
-        // trên nền im lặng hoặc nền thoại khác (tai không nói) -> vẫn drop.
-        // Tai có nói (khớp mạnh hoặc nguyên văn) -> rơi xuống probe mắt quyết.
+        // Titles/credits (role names/dates/copyright) — drop WITHOUT capturing
+        // frames, but ONLY when the ear does not speak that text (18/09: moved to after the ear-listening rule;
+        // previously dropping immediately wrongly removed address dialogue "导演，你听我说",
+        // characters speaking dates, dialogue mentioning 版权). Real film credits display
+        // over silence or over other speech (the ear doesn't speak them) -> still drop.
+        // If the ear speaks it (strong match or verbatim) -> fall through to the eye probe to decide.
         if (OcrTemporalFilter.IsCreditTitle(task.Text))
         {
             var spoken = overlapping.Count > 0
@@ -440,14 +440,14 @@ public sealed class OcrTrailingJudge : IAsyncDisposable
                 return;
             }
         }
-        // Tai PHÁT HIỆN 1 chữ mắt đọc sai (video Cả Lớp 19/09 + replay Ăn Mày:
-        // 21 divergences tai-mắt căn giờ khớp, nhưng đối chiếu sub gốc chỉ 2
-        // là đọc sai thật, 19 là thoại paraphrase cố ý trên màn hình) — máy
-        // KHÔNG thể phân biệt đọc-sai/paraphrase offline, và sửa chữ mắt theo
-        // tai sẽ PHÁ sub paraphrase (đổi chữ đúng thành chữ tai). Nên: KHÔNG
-        // sửa text (tai không sửa chữ — cùng luật "tai không đẻ chữ"), chỉ gắn
-        // cờ review qua fix giữ-nguyên-chữ, lý do mang gợi ý để người duyệt
-        // quyết (hiện ở tooltip ⚠️ trên list).
+        // The ear DETECTS one character the eye misread (video Ca Lop 19/09 + An May replay:
+        // 21 time-aligned ear-eye divergences, but comparing the original subs only 2
+        // were real misreads, 19 were deliberate on-screen paraphrases) — a machine
+        // CANNOT distinguish misread/paraphrase offline, and correcting eye text per the
+        // ear would BREAK paraphrase subs (changing correct text into the ear's words). Therefore: do NOT
+        // correct text (the ear does not correct characters — same rule as "the ear never generates text"), only attach
+        // a review flag via a text-preserving fix, with the reason carrying a hint for the human reviewer
+        // to decide (shown in the ⚠️ tooltip on the list).
         if (overlapping.Count > 0 && SpeechTextCheckReady())
         {
             var corrected = OcrSpeechMatch.TryCorrectSingleChar(
@@ -464,11 +464,11 @@ public sealed class OcrTrailingJudge : IAsyncDisposable
                 return;
             }
         }
-        // LUÔN dùng window RỘNG phủ ngoài ca (±1s): ca ngắn 0.27s mà chỉ quét
-        // trong ca thì window 0.16s — drift không bao giờ vượt ngưỡng (bug đã
-        // sửa 17/09). Khớp chữ theo đúng CHỮ CA nên không dính sub kế (chữ
-        // khác không match); cùng chữ kéo dài (sub dài tách ca) thì cùng vị
-        // trí -> keep đúng.
+        // ALWAYS use a WIDE window covering outside the cue (±1s): a 0.27s cue scanned only
+        // inside itself gives a 0.16s window — drift never crosses the threshold (bug
+        // fixed 17/09). Text matching by exact CUE TEXT means no bleed into the next sub (different
+        // text does not match); the same text spread out (a long sub split into cues) shares a
+        // position -> correct keep.
         var duration = Math.Max(0, task.End - task.Start);
         var mid = task.Start + duration * 0.5;
         double[] times =
@@ -484,8 +484,8 @@ public sealed class OcrTrailingJudge : IAsyncDisposable
             for (var attempt = 0; attempt < 3 && frame is null; attempt++)
             {
                 try { frame = await _grabFrame(time, _stop.Token); }
-                // Hủy giữa chừng = ca chưa chấm xong -> hoãn cho lượt sau
-                // (đường VLM cũ cũng cộng deferred, không nuốt lặng).
+                // Cancelled midway = the cue was not fully judged -> defer to the next round
+                // (the old VLM path also counted deferred, never silently swallowed).
                 catch (OperationCanceledException) { Interlocked.Increment(ref _deferred); return; }
                 catch { }
             }
@@ -497,7 +497,7 @@ public sealed class OcrTrailingJudge : IAsyncDisposable
             Interlocked.Increment(ref _grabFailed);
             return;
         }
-        // OCR từng khung có ảnh; khung lỗi -> null (OcrTemporalFilter bỏ qua, fail-open).
+        // OCR each frame that has an image; a failed frame -> null (OcrTemporalFilter skips it, fail-open).
         var ocrFrames = new List<OcrResult?>(times.Length);
         for (var index = 0; index < frames.Count; index++)
         {
@@ -525,11 +525,11 @@ public sealed class OcrTrailingJudge : IAsyncDisposable
             await ApplyVerdictAsync(task, "drop", verdict.Reason);
             return;
         }
-        // Fallback đọc lại (17/09): ca đáng ngờ (⚠️/tin thấp) mà chữ ĐỨNG YÊN
-        // nhưng có thể bị artifact đè (vệt sáng laser di chuyển theo frame) ->
-        // đọc lại khung lân cận SÁT trong ca, chọn bản tin cao nhất. Chỉ FIX
-        // khi bản mới CHẮC CHẮN hơn hẳn (≥0.88 và hơn ≥0.08) và khác chữ —
-        // không bao giờ "sửa" chữ đúng thành chữ sai.
+        // Re-read fallback (17/09): a suspicious cue (⚠️/low confidence) whose text is STILL
+        // but may be obscured by artifacts (a laser flare sweeping across frames) ->
+        // re-read closely adjacent frames within the cue, pick the highest-confidence read. Only FIX
+        // when the new read is CLEARLY better (≥0.88 and ahead by ≥0.08) and the text differs —
+        // never "correct" correct text into wrong text.
         if (task.NeedsReview || task.Confidence < OcrTemporalFilter.FallbackTriggerConfidence)
         {
             if (await TryFixFromNeighborsAsync(task, mid, duration))
@@ -539,20 +539,20 @@ public sealed class OcrTrailingJudge : IAsyncDisposable
         }
         else
         {
-            // Cue tin cao probe-giữ (18/09): chỉ thử cắt rìa (rẻ, thuần logic),
-            // KHÔNG đọc lại frame lân cận, KHÔNG peel tường (nặng). Áp dụng
-            // khi nhát cắt số/dấu/latin (ShouldApplyTrimFix) — chữ Hán tin cao
-            // và dấu câu thuần không bao giờ bị đụng ở đây.
+            // High-confidence probe-keep cue (18/09): only try edge trimming (cheap, pure logic),
+            // NO re-reading of neighbouring frames, NO wall peeling (expensive). Applies
+            // when the trim is digits/marks/latin only (ShouldApplyTrimFix) — confident Han
+            // characters and pure punctuation are never touched here.
             if (await TryTrimByEarAsync(task, asrSim, peelAllowed: false))
                 return;
         }
-        // Chữ cảnh nghi vấn (video Cả Lớp 19/09: sổ tay/biển/tường tai không hề
-        // nói — frame 731/347/12410): probe đã giữ (đứng yên) mà cue cách MỌI
-        // đoạn thoại > 1.5s thì gắn cờ review qua fix giữ-nguyên-chữ (fix
-        // OldText==NewText + FlagReview; export/list hiện ⚠️). GIỮ cue, không
-        // xóa (quyết xóa 18/09 thuộc về banner/user). Cần tai tồn tại + qua
-        // warmup (tai điếc/lệch ngôn ngữ thì mọi cue đều "im" — cấm gắn cờ
-        // hàng loạt). Đặt SAU probe để không chặn đường drift-drop.
+        // Suspicious context text (video Ca Lop 19/09: notes/signs/walls the ear never
+        // speaks — frames 731/347/12410): if the probe kept it (still) but the cue is > 1.5s from EVERY
+        // speech segment, attach a review flag via a text-preserving fix (fix
+        // OldText==NewText + FlagReview; export/list shows ⚠️). KEEP the cue, do not
+        // delete (per 18/09, deletion belongs to banner/user). Requires the ear to exist + after
+        // warmup (a deaf/language-mismatched ear makes every cue "silent" — bulk flagging
+        // is forbidden). Placed AFTER the probe so it does not block the drift-drop path.
         if (speech is { Count: > 0 } && SpeechTextCheckReady()
             && OcrSpeechMatch.SilenceGap(task.Start, task.End, speech) > OcrSpeechMatch.SilenceFlagGapSeconds)
         {
@@ -566,9 +566,9 @@ public sealed class OcrTrailingJudge : IAsyncDisposable
     {
         var temporalOcr = _temporalOcr;
         if (temporalOcr is null) return false;
-        // Khung lân cận SÁT trong ca (artifact di chuyển theo frame, sub đứng
-        // yên): ±min(0.2s, 25% duration), kẹp ≥ 0. Khác wide probe (±1s ngoài
-        // ca, sub khác nhau) — ở đây cần CÙNG sub đọc khác.
+        // Closely adjacent frames within the cue (artifacts sweeping across frames, sub stands
+        // still): ±min(0.2s, 25% duration), clamped ≥ 0. Unlike the wide probe (±1s outside
+        // the cue, different subs) — here we need the SAME sub read differently.
         var delta = Math.Clamp(duration * 0.25, 0.05, 0.2);
         double[] times = [Math.Max(0, mid - delta), mid + delta];
         (string Text, double Confidence)? best = null;
@@ -600,8 +600,8 @@ public sealed class OcrTrailingJudge : IAsyncDisposable
             $"đọc lại khung lân cận rõ hơn (tin {confidence:0.00} > {task.Confidence:0.00})");
     }
 
-    // Words tai trong cửa sổ hẹp cue ± OverlapPadSeconds (cùng cửa sổ trim
-    // dùng): nguyên liệu cho EarCoversSpan ở đường drop-mismatch.
+    // Ear words within the cue's narrow window ± OverlapPadSeconds (the same window the trim
+    // path uses): raw material for EarCoversSpan on the drop-mismatch path.
     private static List<BiliSubStudio.Core.Editor.EditorWordTiming> CollectNarrowWords(
         IReadOnlyList<BiliSubStudio.Core.Editor.EditorSpeechSegment>? speech,
         double cueStart, double cueEnd)
@@ -623,25 +623,25 @@ public sealed class OcrTrailingJudge : IAsyncDisposable
         return words;
     }
 
-    // Cắt đầu/đuôi thừa theo tai nghe (17/09): chữ OCR dính thêm chữ cảnh ở
-    // rìa mà tai nghe không có counterpart -> cắt, giữ phần khớp.
-    // peelAllowed=false (cue tin cao, 18/09): chỉ thử cắt rìa (rẻ), bỏ qua gỡ
-    // tường lặp (nặng, dành cho ca đáng ngờ). Áp dụng fix qua cổng chung
-    // ShouldApplyTrimFix (strong/review/tin-thấp, hoặc nhát cắt số/dấu/latin).
-    // Thuần logic + tai nghe, KHÔNG đoán chữ mới (an toàn hơn sửa chữ).
+    // Trim leading/trailing junk per the ear (17/09): OCR text sticking extra context text at
+    // the edges with no ear counterpart -> trim, keep the matching part.
+    // peelAllowed=false (high-confidence cue, 18/09): only try edge trimming (cheap), skip
+    // repeat-wall removal (expensive, for suspicious cues). Apply the fix through the shared gate
+    // ShouldApplyTrimFix (strong/review/low-confidence, or a digits/marks/latin trim).
+    // Pure logic + ear listening, NEVER guess new text (safer than correcting text).
     private async Task<bool> TryTrimByEarAsync(JudgeTask task, double asrSim, bool peelAllowed = true)
     {
         var speech = _speech;
         if (speech is null || speech.Count == 0) return false;
-        // Chỉ cắt sau warmup (chống cắt oan video lệch ngôn ngữ/tai điếc —
-        // cùng cổng với drop-chữ).
+        // Only trim after warmup (against wrongly trimming language-mismatched/deaf-ear videos —
+        // the same gate as text-drop).
         if (!SpeechTextCheckReady()) return false;
         var from = task.Start - OcrSpeechMatch.OverlapPadSeconds;
         var to = task.End + OcrSpeechMatch.OverlapPadSeconds;
         var words = new List<BiliSubStudio.Core.Editor.EditorWordTiming>();
-        // Chữ tai LÂN CẬN RỘNG làm veto cho TrimEdges (bug cue 36 没有之一
-        // 18/09): từ thật có thể nằm ngoài cửa sổ words hẹp do lệch timing
-        // sub-vs-tiếng — chữ định cắt mà tai có nói gần đó thì cấm cắt.
+        // Widely-adjacent ear text vetoes TrimEdges (bug with cue 36 没有之一
+        // 18/09): real words may lie outside the narrow words window due to sub-vs-audio timing
+        // drift — text to trim that the ear speaks nearby is forbidden to trim.
         var nearbyHeard = new System.Text.StringBuilder();
         var vetoFrom = task.Start - OcrSpeechMatch.TrimNearbyVetoSeconds;
         var vetoTo = task.End + OcrSpeechMatch.TrimNearbyVetoSeconds;
@@ -671,14 +671,14 @@ public sealed class OcrTrailingJudge : IAsyncDisposable
                 task.NeedsReview, task.Confidence, task.Text, trimmed))
             return await ApplyFixAsync(task, trimmed, "cắt đầu/đuôi thừa theo tai nghe");
         if (!peelAllowed) return false;
-        // Trim rìa không với tới tường lặp (chiếm đa số cue) -> thử gỡ tường.
+        // Edge trimming cannot reach a repeat wall (occupying most of the cue) -> try wall removal.
         return await TryPeelRepeatTilesAsync(task, words, nearbySpoken);
     }
 
-    // Gỡ tường chữ lặp nền (danmaku 陪一支 18/09, cue 5348): tile lặp mà tai
-    // không hề nói thì gỡ, giữ lõi tai có nói. Chạy SAU TrimEdges (rác rìa ít
-    // chữ) — tường lặp chiếm đa số cue nên TrimEdges không với tới. Cùng cổng
-    // warmup + guards tai, KHÔNG đoán chữ mới.
+    // Remove repeated background text walls (danmaku 陪一支 18/09, cue 5348): repeated tiles the ear
+    // never speaks are removed, keeping the core the ear does speak. Runs AFTER TrimEdges (edge junk is few
+    // characters) — repeat walls occupy most of the cue so TrimEdges cannot reach them. Same
+    // warmup gate + ear guards, NEVER guess new text.
     private async Task<bool> TryPeelRepeatTilesAsync(
         JudgeTask task,
         IReadOnlyList<BiliSubStudio.Core.Editor.EditorWordTiming> words,
@@ -691,7 +691,7 @@ public sealed class OcrTrailingJudge : IAsyncDisposable
         return await ApplyFixAsync(task, peeled, "gỡ chữ lặp nền theo tai nghe");
     }
 
-    // Ghi fix TRƯỚC, nhật ký SAU (lưu hỏng thì lần sau chấm lại).
+    // Write fixes FIRST, journal AFTER (if the save fails, judge again next round).
     private async Task<bool> ApplyFixAsync(JudgeTask task, string fixedText, string reason, bool flagReview = false)
     {
         try
@@ -711,8 +711,8 @@ public sealed class OcrTrailingJudge : IAsyncDisposable
         return true;
     }
 
-    // Vị trí chữ khác nhau duy nhất giữa 2 text cùng độ dài rune (kèm chữ
-    // cũ/mới) — phục vụ gợi ý review. Null khi không đúng 1 điểm khác.
+    // The unique differing character position between 2 texts of equal rune length (with old and new
+    // characters) — supports the review hint. Null when there is not exactly one differing position.
     private static (string Old, string New)? SingleCharSuggestion(string from, string to)
     {
         var left = from.EnumerateRunes().ToArray();
@@ -729,9 +729,9 @@ public sealed class OcrTrailingJudge : IAsyncDisposable
         return (left[at].ToString(), right[at].ToString());
     }
 
-    // Cổng warmup tai-mắt: đủ 10 cue so được + tỷ lệ khớp ≥ 0.4 mới cho drop
-    // theo chữ. Dưới ngưỡng = video lệch ngôn ngữ hoặc tai điếc -> chỉ giữ +
-    // lọc vị trí (không xóa oan cả video).
+    // Ear-eye warmup gate: 10 comparable cues + match rate ≥ 0.4 are required before text-based
+    // dropping. Below the threshold means a language-mismatched video or a deaf ear -> keep only +
+    // position filtering (do not wrongly delete the whole video).
     private bool SpeechTextCheckReady()
     {
         var @checked = Interlocked.Read(ref _asrChecked);
@@ -742,8 +742,8 @@ public sealed class OcrTrailingJudge : IAsyncDisposable
     private async Task ApplyDropAsync(JudgeTask task, string reason) =>
         await ApplyVerdictAsync(task, "drop", reason);
 
-    // Ghi quyết định keep/drop: xóa ghi .exclude TRƯỚC, nhật ký SAU (lưu hỏng
-    // thì lần sau chấm lại, không mất quyết định âm thầm).
+    // Record keep/drop decisions: deletions written to .exclude FIRST, journal AFTER (if the save fails,
+    // judge again next round, no silent loss of decisions).
     private async Task ApplyVerdictAsync(JudgeTask task, string decision, string reason)
     {
         var applied = true;
@@ -781,12 +781,12 @@ public sealed class OcrTrailingJudge : IAsyncDisposable
         try { await Task.WhenAll(_loops); } catch (OperationCanceledException) { } catch { }
         lock (_sync)
         {
-            // Hàng còn lại hoãn cho lượt sau (dedup reset theo scan mới).
+            // The remaining queue is deferred to the next round (dedup resets with each new scan).
             var leftovers = 0;
             while (_queue.Reader.TryRead(out _)) leftovers++;
             Interlocked.Add(ref _deferred, leftovers);
-            // Vụ 16/09: job quét 0 giây (dừng ngay) mà vẫn SaveJournal thì ghi đè
-            // file nhật ký cũ thành rỗng. Chỉ lưu khi đã nạp (đã chấm thật).
+            // Case 16/09: a 0-second scan job (stopped immediately) that still calls SaveJournal overwrites
+            // the old journal file with empty content. Only save after loading (real judging happened).
             if (_journalLoaded)
                 SaveJournal();
         }

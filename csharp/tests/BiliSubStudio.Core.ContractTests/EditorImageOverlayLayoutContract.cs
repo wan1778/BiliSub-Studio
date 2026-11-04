@@ -2,9 +2,10 @@ using BiliSubStudio.Core.Editor;
 
 namespace BiliSubStudio.Core.ContractTests;
 
-// Field bug 23/10: ảnh chuẩn bị đúng 16:9 bị thu về 18% khung khi thêm vào
-// video 16:9. Ảnh cùng tỉ lệ khung phải phủ vừa khung ngay; ảnh logo khác tỉ lệ
-// vẫn giữ mặc định nhỏ ở góc phải. Nút "Vừa khung" luôn contain, không méo ảnh.
+// Field bug 23/10: an image prepared exactly at 16:9 was shrunk to 18% of the frame when added
+// to a 16:9 video. An image with the same aspect ratio must fill the frame exactly; a logo image
+// with a different ratio keeps its small default in the top-right corner. The "fit frame" button
+// always uses contain and never distorts the image.
 internal static class EditorImageOverlayLayoutContract
 {
     public static Task RunAsync()

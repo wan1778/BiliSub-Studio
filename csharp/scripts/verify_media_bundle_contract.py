@@ -210,4 +210,21 @@ require("128L * 1024 * 1024" in subtitle, "long-video subtitle cap must remain 1
 require("for (var attempt = 1; attempt <= 4; attempt++)" in subtitle, "subtitle HTTP retry contract is missing")
 require("value.TotalHours" in subtitle, "SRT rendering must support durations beyond 24 hours")
 
-print("PASS: CDN/WBI failover + Bilibili normal/AI subtitle fallback + default-all/separate-assets + long-media Range/resume contracts")
+# MULTIPART: one checked source can download a whole collection, part by part.
+require("VideoPart" in models and "IReadOnlyList<VideoPart>? Parts = null" in models,
+        "metadata must be able to carry the collection's parts")
+require("GetPartsAsync" in playurl and "pagelist?bvid=" in playurl,
+        "raw endpoint discovery must enumerate every part of the collection")
+require("GetPartsAsync(url, info.Id, cookieFile, cancellationToken)" in resolver,
+        "metadata must enrich itself with the collection parts")
+require("request.OutputName" in download and "string.IsNullOrWhiteSpace(request.OutputName)" in download,
+        "each batched part must keep its own file name")
+require("BilibiliPartUrl.WithPart" in page and "request with" in page,
+        "the media UI must enqueue one download per ticked part")
+require("BundleThumbnail = isFirstPart && downloadThumbnail" in page,
+        "a multi-part collection must bundle the thumbnail only into the FIRST part job, "
+        "not one thumbnail per part")
+require("PartsSelectAllButton" in xaml and "PartsListPanel" in xaml and "PartsSummaryText" in xaml,
+        "the media UI must let the user tick the parts to download")
+
+print("PASS: CDN/WBI failover + Bilibili normal/AI subtitle fallback + default-all/separate-assets + long-media Range/resume + collection multi-part contracts")

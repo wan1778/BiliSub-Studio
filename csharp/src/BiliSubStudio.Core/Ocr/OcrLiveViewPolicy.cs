@@ -1,12 +1,12 @@
 namespace BiliSubStudio.Core.Ocr;
 
-// Pure policy cho live cue list UI (không dependency WinUI — testable):
-// - auto-follow tail khi viewport đang ở cuối,
-// - incremental render: chỉ update rows từ first-changed index (tail merge/append),
-//   prefix giữ nguyên nên ListView virtualization không realize lại hàng nghìn containers.
+// Pure policy for the live cue list UI (no WinUI dependency — testable):
+// - auto-follow the tail while the viewport sits at the end,
+// - incremental render: only update rows from the first-changed index (tail merge/append),
+//   the prefix is unchanged so ListView virtualization does not re-realize thousands of containers.
 public static class OcrLiveViewPolicy
 {
-    // Ngưỡng "gần cuối" theo pixel (~2 rows 32px). Viewport ngắn hơn ngưỡng vẫn follow.
+    // "Near the end" threshold in pixels (~2 rows of 32px). A viewport shorter than the threshold still follows.
     public const double FollowThresholdPx = 64.0;
 
     public static bool IsNearEnd(double verticalOffset, double viewportHeight, double scrollableHeight, double thresholdPx = FollowThresholdPx)
@@ -16,9 +16,9 @@ public static class OcrLiveViewPolicy
         return verticalOffset + viewportHeight >= scrollableHeight - thresholdPx;
     }
 
-    // Số cue đầu IDENTICAL (Start/End/Text ordinal) giữa 2 lần render.
-    // Cố ý KHÔNG dùng record equality: confidence/support/review thay đổi không được
-    // coi là row đổi (tránh rebuild vô ích). Text khác HOẶC Start/End khác => đổi.
+    // Number of leading cues IDENTICAL (Start/End/Text ordinal) between two renders.
+    // Deliberately NOT record equality: changes to confidence/support/review must not
+    // count as a changed row (avoids useless rebuilds). Different Text OR different Start/End => changed.
     public static int CommonCuePrefixLength(IReadOnlyList<OcrCue> oldCues, IReadOnlyList<OcrCue> newCues)
     {
         var count = Math.Min(oldCues.Count, newCues.Count);
@@ -35,9 +35,9 @@ public static class OcrLiveViewPolicy
         return index;
     }
 
-    // Overload cho dòng đã qua pipeline chung (OcrExportRow: live-quét-xong =
-    // SRT): cùng semantics Start/End/Text, tên khác để không ambiguous với
-    // overload OcrCue ở call-site collection-expression.
+    // Overload for rows already through the shared pipeline (OcrExportRow: live-scan-done =
+    // SRT): same Start/End/Text semantics, different name so it is not ambiguous with
+    // the OcrCue overload at the collection-expression call-site.
     public static int CommonRowPrefixLength(IReadOnlyList<OcrExportRow> oldRows, IReadOnlyList<OcrExportRow> newRows)
     {
         var count = Math.Min(oldRows.Count, newRows.Count);

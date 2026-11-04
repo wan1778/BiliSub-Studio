@@ -85,11 +85,15 @@ tts = project_store.split(" static EditorTtsProject? NormalizeTts(", 1)[1].split
 for token in (
     "LocalTtsInstaller.Engine",
     "LocalTtsInstaller.EngineVersion",
-    "LocalTtsInstaller.Voice",
-    "LocalTtsInstaller.VieneuEngine",
-    "LocalTtsInstaller.VieneuEngineVersion",
+    "LocalTtsInstaller.VoiceRevision",
+    "TtsVoiceCatalog.IsVieneuVoice",
+    "LegacyNghiEngine",
+    "LegacyNghiEngineVersion",
+    "LegacyNghiVoice",
+    "LegacyNghiVoiceRevision",
 ):
-    require(token in tts, f"VOICE-15 TTS reopen lost pinned runtime/profile check: {token}")
+    require(token in tts or (token == "LegacyNghiVoiceRevision" and token in project_store),
+            f"VOICE-15 TTS reopen lost pinned runtime/profile check: {token}")
 require("!File.Exists(manifest)" in tts
         and "!FileShaMatches(manifest, tts.ManifestSha256)" in tts,
         "VOICE-15 TTS result manifest must exist and match persisted SHA")

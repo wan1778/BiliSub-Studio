@@ -63,10 +63,17 @@ public sealed partial class SettingsPage : Page
             return;
         }
 
-        if (await ViewModel.SetThemeAsync(theme))
+        try
         {
-            ThemeRequested?.Invoke(ViewModel.Theme);
-            _log.Info("Cài đặt", $"Đã đổi theme sang {ViewModel.Theme}.");
+            if (await ViewModel.SetThemeAsync(theme))
+            {
+                ThemeRequested?.Invoke(ViewModel.Theme);
+                _log.Info("Cài đặt", $"Đã đổi theme sang {ViewModel.Theme}.");
+            }
+        }
+        catch (Exception error)
+        {
+            _log.Error("Cài đặt", "Đổi theme lỗi: " + error.Message);
         }
         SyncControlsFromViewModel();
     }
@@ -78,8 +85,15 @@ public sealed partial class SettingsPage : Page
             return;
         }
 
-        await ViewModel.SetUpdateCheckAsync(AutoUpdateToggle.IsOn);
-        _log.Info("Cài đặt", $"Tự kiểm tra cập nhật: {(AutoUpdateToggle.IsOn ? "bật" : "tắt")}.");
+        try
+        {
+            await ViewModel.SetUpdateCheckAsync(AutoUpdateToggle.IsOn);
+            _log.Info("Cài đặt", $"Tự kiểm tra cập nhật: {(AutoUpdateToggle.IsOn ? "bật" : "tắt")}.");
+        }
+        catch (Exception error)
+        {
+            _log.Error("Cài đặt", "Đổi tự kiểm tra cập nhật lỗi: " + error.Message);
+        }
         SyncControlsFromViewModel();
     }
 

@@ -1,14 +1,14 @@
 namespace BiliSubStudio.Core.Ocr;
 
-// Raw pixel metrics cho cùng SharedCrop, gray8 buffers. Deterministic, không resize riêng.
-// Chưa có threshold Same/Different ở đây. Null = không đủ evidence / invalid input.
+// Raw pixel metrics for the same SharedCrop, gray8 buffers. Deterministic, no separate resize.
+// No Same/Different threshold here yet. Null = not enough evidence / invalid input.
 public static class OcrPixelMetrics
 {
     private const double DynamicRange = 255.0;
     private const double K1 = 0.01;
     private const double K2 = 0.03;
 
-    // Gaussian 1D kernel sigma=1.5, radius=5 (window 11). Chuẩn SSIM, không phải merge threshold.
+    // Gaussian 1D kernel sigma=1.5, radius=5 (window 11). Standard SSIM, not a merge threshold.
     private static readonly double[] GaussianKernel = CreateGaussianKernel(1.5, 5);
 
     private static double[] CreateGaussianKernel(double sigma, int radius)
@@ -133,7 +133,7 @@ public static class OcrPixelMetrics
         }
     }
 
-    // Foreground mask bằng Otsu trên gray (adaptive, không hardcode ngưỡng). Chữ phụ đề sáng trên nền tối.
+    // Foreground mask via Otsu on gray (adaptive, no hardcoded threshold). Bright subtitle text on a dark background.
     public static double? ForegroundIoU(byte[] a, byte[] b, int width, int height)
     {
         if (a is null || b is null || a.Length != b.Length) return null;
@@ -177,7 +177,7 @@ public static class OcrPixelMetrics
         return mask;
     }
 
-    // Edge mask bằng Sobel (|Gx|+|Gy|), ngưỡng Otsu trên magnitude. Không resize/recenter riêng.
+    // Edge mask via Sobel (|Gx|+|Gy|), Otsu threshold on magnitude. No separate resize/recenter.
     public static double? EdgeIoU(byte[] a, byte[] b, int width, int height)
     {
         if (a is null || b is null || a.Length != b.Length) return null;

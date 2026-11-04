@@ -68,7 +68,7 @@ internal static class EditorAsrVoiceRuntimeContract
         Check(tts.Cues.Count == source.Cues.Count && File.Exists(tts.VoiceTrack.Path), "public TTS job accepts real ASR provenance and produces a master");
         using (var manifest = JsonDocument.Parse(await File.ReadAllTextAsync(tts.ManifestPath)))
             Check(manifest.RootElement.GetProperty("cues").EnumerateArray().All(cue => !cue.GetProperty("cache_hit").GetBoolean()),
-                "first public Voice run synthesized every whole cue with real Piper");
+                "first public Voice run synthesized every whole cue with real VieNeu");
         var warm = await Wait<EditorTtsResult>(app.StartEditorTts(request));
         using (var manifest = JsonDocument.Parse(await File.ReadAllTextAsync(warm.ManifestPath)))
             Check(manifest.RootElement.GetProperty("cues").EnumerateArray().All(cue => cue.GetProperty("cache_hit").GetBoolean()),

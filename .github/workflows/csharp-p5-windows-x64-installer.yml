@@ -9,7 +9,6 @@ on:
       - "csharp/**"
       - "internal/ocr/worker.py"
       - "internal/asr/**"
-      - "internal/tts/**"
       - "internal/vieneu/**"
       - "internal/translation/**"
       - "update/release-notes.json"
@@ -24,7 +23,6 @@ on:
       - "csharp/**"
       - "internal/ocr/worker.py"
       - "internal/asr/**"
-      - "internal/tts/**"
       - "internal/vieneu/**"
       - "internal/translation/**"
       - "update/release-notes.json"
@@ -105,9 +103,6 @@ jobs:
 
       - name: Verify long-media bundle contracts
         run: python csharp/scripts/verify_media_bundle_contract.py
-
-      - name: Verify embedded browser login contract
-        run: python csharp/scripts/verify_browser_login_contract.py
 
       - name: Verify local translation model and skill contracts
         run: python csharp/scripts/verify_translation_skill_contract.py

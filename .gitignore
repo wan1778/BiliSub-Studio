@@ -13,3 +13,14 @@ csharp/publish-backup/
 apm.yml
 (disabled)
 **/*.bak
+
+# Local-only test artifacts / personal identity - never public
+trunc-key.json
+trunc-key.wav
+.env
+*.log
+*.db
+*.sqlite
+*.pfx
+*.p12
+secrets.json

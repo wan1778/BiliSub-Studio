@@ -1,14 +1,14 @@
 namespace BiliSubStudio.Core.Editor;
 
 /// <summary>
-/// Toán học cho dải thời gian ghép nhiều video: ánh xạ thời gian dải về
-/// (clip, thời gian trong file nguồn) và ngược lại.
+/// Math for a timeline composed of multiple videos: mapping timeline time to
+/// (clip, time within the source file) and back.
 /// </summary>
 public static class EditorTimelineComposition
 {
     public const string PrimaryClipId = "source";
 
-    /// <summary>Clip của dự án; dự án cũ (chưa có timeline) dùng video nguồn làm một clip duy nhất.</summary>
+    /// <summary>Clips of the project; an old project (with no timeline) uses the source video as a single clip.</summary>
     public static IReadOnlyList<EditorTimelineClip> Resolve(EditorTimelineProject? timeline, EditorSourceFingerprint? source)
     {
         if (timeline?.Clips is { Count: > 0 } clips && clips.All(c => c.Duration > 0)) return clips;
@@ -21,7 +21,7 @@ public static class EditorTimelineComposition
     public static double TotalDuration(IEnumerable<EditorTimelineClip> clips)
         => clips.Sum(clip => Math.Max(0, clip.Duration));
 
-    /// <summary>Vị trí (bắt đầu trên dải) của từng clip theo thứ tự.</summary>
+    /// <summary>Position (start on the timeline) of each clip, in order.</summary>
     public static IReadOnlyList<double> Starts(IEnumerable<EditorTimelineClip> clips)
     {
         var starts = new List<double>();
@@ -34,7 +34,7 @@ public static class EditorTimelineComposition
         return starts;
     }
 
-    /// <summary>Clip chứa thời gian trên dải ghép, kèm thời gian tương ứng trong file nguồn.</summary>
+    /// <summary>Clip containing the timeline time, together with the corresponding time in the source file.</summary>
     public static (EditorTimelineClip Clip, double SourceTime, double TimelineStart) Locate(
         IReadOnlyList<EditorTimelineClip> clips,
         double timelineTime)
@@ -47,13 +47,13 @@ public static class EditorTimelineComposition
         {
             var clip = clips[index];
             var start = starts[index];
-            if (time >= start || index == 0) return (clip, clip.Start + (time - start), start);
+            if (time >= start || index == 0) return (clip, clip.SourceIn + (time - start), start);
         }
         var first = clips[0];
-        return (first, first.Start, 0);
+        return (first, first.SourceIn, 0);
     }
 
-    /// <summary>Tách clip tại thời gian nguồn, trả về danh sách clip mới.</summary>
+    /// <summary>Splits a clip at a source time, returning the new list of clips.</summary>
     public static IReadOnlyList<EditorTimelineClip> SplitAtSourceTime(
         IReadOnlyList<EditorTimelineClip> clips,
         int clipIndex,
@@ -61,13 +61,14 @@ public static class EditorTimelineComposition
     {
         if (clipIndex < 0 || clipIndex >= clips.Count) return clips;
         var clip = clips[clipIndex];
-        var offset = sourceTime - clip.Start;
+        var offset = sourceTime - clip.SourceIn;
         if (offset <= .05 || offset >= clip.Duration - .05) return clips;
-        var left = clip with { End = sourceTime };
+        var left = clip with { Duration = offset };
         var right = clip with
         {
             Id = $"{clip.Id}-split-{Guid.NewGuid().ToString("N")[..6]}",
-            Start = sourceTime,
+            SourceIn = sourceTime,
+            Duration = clip.Duration - offset,
             Label = clip.Label,
         };
         var result = new List<EditorTimelineClip>(clips.Count + 1);
@@ -84,7 +85,7 @@ public static class EditorTimelineComposition
         return result;
     }
 
-    /// <summary>Bỏ một clip khỏi dải ghép.</summary>
+    /// <summary>Removes one clip from the composition.</summary>
     public static IReadOnlyList<EditorTimelineClip> RemoveAt(IReadOnlyList<EditorTimelineClip> clips, int clipIndex)
     {
         if (clipIndex < 0 || clipIndex >= clips.Count) return clips;
@@ -94,5 +95,31 @@ public static class EditorTimelineComposition
             if (index != clipIndex) result.Add(clips[index]);
         }
         return result;
+    }
+
+    /// <summary>
+    /// Largest effect-region time that can be stored for the project. Region
+    /// times stay anchored to the primary clip's source file, so a timed region
+    /// dragged past the end of the primary video continues into the following
+    /// clips in composed-timeline seconds. Keeping the source duration as the
+    /// floor preserves regions that live in the trimmed-out tail of the source.
+    /// </summary>
+    public static double RegionTimeLimit(
+        EditorTimelineProject? timeline,
+        string sourcePath,
+        double sourceDuration)
+    {
+        var duration = Math.Max(0, sourceDuration);
+        if (timeline?.Clips is not { Count: > 0 } clips) return duration;
+        var starts = Starts(clips);
+        var total = TotalDuration(clips);
+        for (var index = 0; index < clips.Count; index++)
+        {
+            var clip = clips[index];
+            if (clip.Id != PrimaryClipId
+                && !string.Equals(clip.SourcePath, sourcePath, StringComparison.OrdinalIgnoreCase)) continue;
+            return Math.Max(duration, clip.SourceIn + Math.Max(0, total - starts[index]));
+        }
+        return duration;
     }
 }

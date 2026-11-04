@@ -4,19 +4,19 @@ using BiliSubStudio.Core.Ocr;
 
 namespace BiliSubStudio.Core.ContractTests;
 
-// PROPERTY TEST generic boundary: thuật toán KHÔNG được phụ thuộc vocabulary.
-// Sinh chuỗi rune ARBITRARY (bao gồm CJK, dash-lookalike, punctuation, number, surrogate pair),
-// mutate ngẫu nhiên (sub 1-3 rune / delete / insert / punct / duplicate rune) rồi assert:
-//   temporal+spatial dính + Pixel Same            => collapse bất kể ký tự cụ thể;
-//   arbitrary text + Pixel Different              => không merge;
-//   same text + blank > micro-gap (0.25s)         => không merge, comparer không được hỏi;
-//   byte-identical + micro-gap (<=0.25s)          => pixel quyết định (field flicker-split 0.133s);
-//   relabel toàn bộ rune set (A->X bijection)     => quyết định merge/collapse KHÔNG đổi
-//                                                    (structure-invariance: không lệch chữ cụ thể).
-// LƯU Ý hiệu chuẩn: blank thật có field evidence là 0.55s+/0.667s; không có evidence nào cho
-// blank thật 0.12-0.25s giữa hai caption giống hệt (ở độ phân giải đó flicker-split và blank
-// thật không phân biệt được bằng thời gian; viewer cũng không cảm nhận được). P3 vì vậy chỉ
-// pin từ 0.30s trở lên; khe micro identical-text do pixel verdict quyết định.
+// PROPERTY TEST for the generic boundary: the algorithm MUST NOT depend on vocabulary.
+// Generates ARBITRARY rune strings (including CJK, dash-lookalike, punctuation, number, surrogate pair),
+// randomly mutates them (substitute 1-3 runes / delete / insert / punct / duplicate rune) then asserts:
+//   temporal+spatial touching + Pixel Same           => collapse regardless of the specific characters;
+//   arbitrary text + Pixel Different                 => no merge;
+//   same text + blank > micro-gap (0.25s)            => no merge, the comparer must not be asked;
+//   byte-identical + micro-gap (<=0.25s)             => the pixel decides (field flicker-split 0.133s);
+//   relabel the entire rune set (A->X bijection)     => the merge/collapse decision does NOT change
+//                                                     (structure-invariance: no bias toward specific characters).
+// CALIBRATION NOTE: real blanks with field evidence are 0.55s+/0.667s; there is no evidence for a
+// real 0.12-0.25s blank between two identical captions (at that resolution flicker-splits and real
+// blanks cannot be distinguished by time; the viewer does not perceive them either). P3 therefore pins
+// only from 0.30s up; the micro identical-text gap is decided by the pixel verdict.
 internal static class OcrGenericBoundaryProperty
 {
     private static readonly OcrRegion TestRoi = new(0.05, 0.65, 0.90, 0.29);
@@ -25,7 +25,7 @@ internal static class OcrGenericBoundaryProperty
     private static long _spts = 70000000;
     private const double Window = 0.1;
 
-    // Vocab lớn, hỗn tạp: CJK, CJK punct, ASCII punct, digits, Latin, dash variants, surrogate pairs, một số rune trùng hình.
+    // A large mixed vocabulary: CJK, CJK punct, ASCII punct, digits, Latin, dash variants, surrogate pairs, some lookalike runes.
     private static readonly int[] Vocab =
     [
         0x4E00, 0x6C5F, 0x5927, 0x6A4B, 0x9AD8, 0x901F, 0x516C, 0x8DEF, 0x8F66, 0x7AD9,
@@ -34,12 +34,12 @@ internal static class OcrGenericBoundaryProperty
         0x2014, 0x2013, 0x2010, 0x2212, 0x2018, 0x2019, 0x201C, 0x201D, 0x3001, 0x3002,
         0xFF0C, 0xFF01, 0xFF1F, 0xFF1A, 0xFF1B, 0xFF08, 0xFF09, 0x0021, 0x002C, 0x002E,
         0x0030, 0x0031, 0x0032, 0x0039, 0x0041, 0x005A, 0x4E00 /*一 (dash-confusable)*/, 0x4E59,
-        /* surrogate pairs test riêng qua SurrogatePairs; 0xD83D không phải scalar Rune */
+        /* surrogate pairs are tested separately via SurrogatePairs; 0xD83D is not a scalar Rune */
     ];
 
     private static readonly string[] SurrogatePairs = ["\U0001F600", "\U0001F525", "\U0001F3B5"];
 
-    private static readonly Random Rng = new(20260904); // seed cố định = reproducible
+    private static readonly Random Rng = new(20260904); // fixed seed = reproducible
 
     private static string ArbitraryText(int minLen, int maxLen)
     {
@@ -117,7 +117,7 @@ internal static class OcrGenericBoundaryProperty
             new PixelObservation(e, new OcrBox(10, 10, 200, 40), TestRoi, TestGeo, s2, TestTb));
     }
 
-    // Fragment A tại frame f (Pts=f), fragment B tại frame f (touching; B.First cùng Pts => Same per verdict).
+    // Fragment A at frame f (Pts=f), fragment B at frame f (touching; B.First shares the Pts => Same per verdict).
     private static (OcrCue A, OcrCue B) Instance(double start, double mid, double end, string textA, string textB, int supA, int supB)
         => (Prov(start, mid, textA, 0.99, supA), Prov(mid, end, textB, 0.98, supB));
 
@@ -125,11 +125,11 @@ internal static class OcrGenericBoundaryProperty
     {
         var ct = CancellationToken.None;
 
-        // P1 (50 trials): temporal+spatial+Same => collapse bất kể ký tự; canonical = evidence mạnh hơn.
+        // P1 (50 trials): temporal+spatial+Same => collapse regardless of characters; canonical = the stronger evidence.
         for (var trial = 0; trial < 50; trial++)
         {
-            // Text phải normalize-PASS (rune ngoài contract bị production filter drop cue —
-            // hành vi filter riêng, không thuộc generic boundary) và khác nhau sau normalize.
+            // The text must normalize-PASS (runes outside the contract make the production filter drop the cue —
+            // that filter behavior is separate and does not belong to the generic boundary) and differ after normalize.
             string baseText, mutated;
             do
             {
@@ -150,15 +150,15 @@ internal static class OcrGenericBoundaryProperty
             Check(merged.Count == 1, $"P1 trial {trial}: touching same-frame pair must collapse (got {merged.Count}) text='{baseText}'/'{mutated}'");
             Check(!merged[0].NeedsReview, $"P1 trial {trial}: Same merge must not flag review");
             Check(merged[0].Start == 10.0 && merged[0].End == 11.0, $"P1 trial {trial}: span must extend 10-11");
-            // Canonical theo support (confident trước): fragment ổn định (support cao) luôn thắng
-            // bất kể nó đứng A hay B. So qua normalized text vì pipeline normalize trước merge
-            // (strip rune ngoài CJK/punct contract) — không biến text bằng DashNormalize.
+            // Canonical by support (confident first): the stable fragment (high support) always wins
+            // whether it sits at A or B. Compared via normalized text because the pipeline normalizes before merging
+            // (stripping runes outside the CJK/punct contract) — it does not rewrite text with DashNormalize.
             Check(merged[0].Text == ChineseNormalized(baseText),
                 $"P1 trial {trial}: canonical must be the higher-support (stable) fragment");
             Check(same.Calls == 1, $"P1 trial {trial}: one boundary one pixel call (calls={same.Calls})");
         }
 
-        // P2 (50 trials): arbitrary text + Different => giữ tách + NeedsReview cả hai.
+        // P2 (50 trials): arbitrary text + Different => kept split + NeedsReview on both.
         for (var trial = 0; trial < 50; trial++)
         {
             string tA, tB;
@@ -177,9 +177,9 @@ internal static class OcrGenericBoundaryProperty
                 $"P2 trial {trial}: Different must not rewrite text");
         }
 
-        // P3 (40 trials): same text, blank > micro-gap => không merge, comparer KHÔNG được hỏi.
-        // Blank thật có field evidence 0.55s+/0.667s; dải [0.30, 0.92] pin invariant này.
-        // Khe identical-text <= 0.25s thuộc micro-gap: pixel quyết định (xem OcrExactGapRegression 9-11).
+        // P3 (40 trials): same text, blank > micro-gap => no merge, the comparer MUST NOT be asked.
+        // Real blanks have field evidence 0.55s+/0.667s; the [0.30, 0.92] band pins this invariant.
+        // An identical-text gap <= 0.25s belongs to the micro-gap: the pixel decides (see OcrExactGapRegression 9-11).
         for (var trial = 0; trial < 40; trial++)
         {
             string t;
@@ -194,8 +194,8 @@ internal static class OcrGenericBoundaryProperty
             Check(counting.Calls == 0, $"P3 trial {trial}: blank beyond window must not reach comparer (calls={counting.Calls})");
         }
 
-        // P4 (30 trials) structure-invariance: relabel rune set bằng bijection A->X,
-        // quyết định collapse/split phải y hệt (không phụ thuộc chữ cụ thể).
+        // P4 (30 trials) structure-invariance: relabel the rune set with an A->X bijection,
+        // the collapse/split decision must be identical (independent of the specific characters).
         for (var trial = 0; trial < 30; trial++)
         {
             string baseText, variant;
@@ -217,8 +217,8 @@ internal static class OcrGenericBoundaryProperty
             var relabeled = await OcrCueReconciler.MergeTouchingIdenticalAsync(Relabel(chain), "v.mp4", sameB, ct, Window);
             Check(original.Count == relabeled.Count,
                 $"P4 trial {trial}: relabel must not change decision count ({original.Count} vs {relabeled.Count})");
-            // Policy 21/09: fast path byte-identical merge is text-dependent, call count
-            // invariance under relabel no longer holds. Chỉ kiểm tra quyết định merge/split.
+            // Policy 21/09: the byte-identical merge fast path is text-dependent, so call-count
+            // invariance under relabel no longer holds. Only the merge/split decision is checked.
             for (var i = 0; i < Math.Min(original.Count, relabeled.Count); i++)
                 Check(original[i].NeedsReview == relabeled[i].NeedsReview
                     && Math.Abs(original[i].Start - relabeled[i].Start) < 1e-9
@@ -255,7 +255,7 @@ internal static class OcrGenericBoundaryProperty
     private static string? ChineseNormalized(string text) =>
         BiliSubStudio.Core.Ocr.ChineseSubtitleNormalizer.TryNormalize(text, out var normalized) ? normalized : null;
 
-    // Bijection ổn định rune->rune khác vocabulary: relabel cả text mà không đổi số rune.
+    // A stable rune->rune bijection to a different vocabulary entry: relabels the whole text without changing the rune count.
     private static OcrCue[] Relabel(OcrCue[] cues)
     {
         var map = new Dictionary<int, int>();
@@ -266,7 +266,7 @@ internal static class OcrGenericBoundaryProperty
             {
                 if (!map.TryGetValue(rune.Value, out var mapped))
                 {
-                    // Chọn rune khác hệt trong vocab, bijection theo insertion order (deterministic).
+                    // Pick a different rune from the vocab, bijection by insertion order (deterministic).
                     mapped = Vocab[(map.Count * 7 + 13) % Vocab.Length];
                     if (mapped == rune.Value) mapped = Vocab[(map.Count * 7 + 29) % Vocab.Length];
                     map[rune.Value] = mapped;

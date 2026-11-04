@@ -12,25 +12,26 @@ internal sealed partial class LocalTtsService
     private const long MaxSentenceGroupGapFrames = 5512;
     private const long MaxSentenceGroupOverlapFrames = 5512;
     private const long MaxSentenceGroupDurationFrames = 6615000;
-    // Luật pace (01/10 + micro-band 02/10 2.0x, user 07/10 nghe thử mở
-    // 2.5x, user 25/10 mở 3.0x, chỉ VieNeu): tăng tốc không vượt 1.5x mọi đường, NGOẠI TRỪ
-    // cue micro (khung <1.1s) được 3.0x; cue rộng stretch tối đa 1.4x
-    // thời lượng (pace không dưới 1/1.4). Trần record nới 0.01
-    // (1.51 / micro 3.01) để trừ FIT_HEADROOM + margin retry của worker.
-    // Mirror y hệt worker theo window, comment lý do.
+    // Pace rule (01/10 + micro-band 02/10 2.0x; the user tried 07/10 and
+    // raised it to 2.5x, the user 25/10 raised it to 3.0x): speeding up may never exceed 1.5x on any path, EXCEPT
+    // a micro cue (window <1.1s) which may go to 3.0x; a wide cue stretches at most 1.4x
+    // of its duration (pace not below 1/1.4). The record ceiling is widened by 0.01
+    // (1.51 / micro 3.01) to subtract the worker's FIT_HEADROOM + retry margin.
+    // Mirror the worker exactly by window, with the reason commented.
     private const double VieneuMaxTempoFactor = 1.51;
     private const double VieneuMicroMaxTempoFactor = 3.01;
     private const long VieneuMicroWindowFrames = 24255; // 1.1s @22050 Hz
     // Overflow tran khung (user duyet cho cue don qua dai: doc nguyen cau toi
-    // tran window-cap, de len 1-2 cue sau, khong doi timeline). Mirror worker
-    // OVERFLOW_MAX_FRAMES; validation chi mo khi worker khai OverflowFrames.
+    // tran window-cap, chi de len khe trong THAT toi cue ke). Day la tran tuyet
+    // doi; ReadResultAsync con kiem tra ClipEndSample <= cue ke (mirror worker
+    // overflow_budget_frames) de khong bao gio chap nhan doc lap.
     private const long OverflowBudgetFrames = 66150; // 3.0s @22050 Hz
     private const double VieneuMinTempoFactor = 1.0 / 1.4;
 
     private static double VieneuMaxFactorFor(long targetFrames) =>
         targetFrames is > 0 and < VieneuMicroWindowFrames ? VieneuMicroMaxTempoFactor : VieneuMaxTempoFactor;
 
-    private static bool ValidateNativeSynthesis(TtsWorkerCue cue, long targetFrames, bool naturalSample, int sampleRate, bool isVieneu, int index)
+    private static bool ValidateNativeSynthesis(TtsWorkerCue cue, long targetFrames, bool naturalSample, int sampleRate, int index)
     {
         // Silence quarantine: no speech could be synthesized for this cue (garbage text or an
         // unfillable window). The timeline stays intact because every sample is real silence of
@@ -49,38 +50,36 @@ internal sealed partial class LocalTtsService
         var precisionPaddingBudget = Math.Max(1L, Math.Min((long)Math.Round(.04 * sampleRate), targetFrames / 50));
         var relativeScale = cue.LengthScale / cue.BaseLengthScale;
         var sentenceGroup = cue.TimingSource == "sentence-group";
-        var atempoMethod = isVieneu ? "vieneu-atempo" : "piper-atempo";
+        const string atempoMethod = "vieneu-atempo";
         var tempoFallback = cue.FitMethod == atempoMethod;
         const double minimumScale = .30;
-        if (cue.FitMethod is not ("piper-length-scale" or "piper-atempo" or "vieneu-natural" or "vieneu-atempo")
+        if (cue.FitMethod is not ("vieneu-natural" or "vieneu-atempo")
             || !double.IsFinite(cue.BaseLengthScale) || cue.BaseLengthScale <= 0
             || !double.IsFinite(cue.LengthScale) || !double.IsFinite(relativeScale) || relativeScale < minimumScale || relativeScale > 1.20
             || cue.SourceFrames <= 0 || cue.GeneratedFrames <= 0 || cue.GeneratedFrames > cue.Frames
             || cue.TrimmedSilenceFrames < 0 || cue.TrimmedSilenceFrames >= cue.SourceFrames
             || cue.PaddingFrames < 0 || cue.PaddingFrames >= targetFrames || cue.GeneratedFrames != cue.Frames - cue.PaddingFrames
             || cue.SynthesisAttempts < 1 || cue.SynthesisAttempts > 12
-            // 10/10-11/10 vụ rớt master oan (cue 3996 calls 17/5, cue 1274
-            // calls 11/1, cue 5841 calls 13/1): synthesis_calls KHÔNG phải số
-            // infer như tên gọi — nó đếm mọi vòng lặp on_attempt, kể cả vòng
-            // tái dùng batch không tổng hợp mới (Phase-2 condense: batch một
-            // lần rồi loop vẫn đếm từng variant). Mọi bound đặt trên nó (tuyệt
-            // đối +10, tỉ lệ 6x, cả hai dạng) đều là mò mẫm theo từng ca rớt:
-            // ca sau luôn phá bound của ca trước (13/1 lọt mọi bound mà cue
-            // lỗi cũ 13-35/1 cũng lọt). Bỏ chặn trên hẳn, chỉ giữ chặn dưới
-            // (tổng vòng lặp không thể ít hơn attempts phase cuối) + attempts
-            // trong 1..12 + cache-hit thì calls==0. Chống chạy vô hạn thực sự
-            // nằm ở worker (mọi vòng retry đều có trần, assertion
-            // phase_calls==attempts raise RuntimeError khi đếm lệch), còn đúng
-            // sai AUDIO đã có frames/SHA/pace/tempo/speed/review bounds độc lập
-            // bao phủ — chưa từng có ca audio hỏng nào mà chỉ mỗi bound calls
-            // này bắt được.
+            // 10/10-11/10 cases of falsely failed masters (cue 3996 calls 17/5, cue 1274
+            // calls 11/1, cue 5841 calls 13/1): synthesis_calls is NOT the number of
+            // inferences as its name suggests — it counts every on_attempt loop, including the loops
+            // that reuse a batch without new synthesis (Phase-2 condense: the batch is condensed once
+            // and the loop still counts each variant). Every upper bound placed on it (absolute
+            // +10, the 6x ratio, both forms) is guesswork fitted case by case:
+            // each new case breaks the previous case's bound (13/1 slipped past every bound, and the
+            // earlier failing cues of 13-35/1 also slipped past). Drop the upper bound entirely, keep only the lower
+            // bound (the total loop count cannot be less than the final phase's attempts) + attempts
+            // within 1..12 + cache-hit means calls==0. Genuine protection against
+            // runaway loops lives in the worker (every retry loop has a ceiling, and the assertion
+            // phase_calls==attempts raises RuntimeError when counts disagree), while AUDIO
+            // correctness is already covered by independent frames/SHA/pace/tempo/speed/review bounds
+            // — no case of corrupt audio has ever been caught by this calls
+            // bound alone.
             || (cue.CacheHit ? cue.SynthesisCalls != 0 : cue.SynthesisCalls < cue.SynthesisAttempts)
             || (naturalSample && cue.TimingSource != "sample"))
-            throw new InvalidDataException($"Voice không có metadata nhịp đọc Piper hợp lệ; không nhận master này (cue {index} {cue.Id}).");
+            throw new InvalidDataException($"Voice không có metadata nhịp đọc VieNeu hợp lệ; không nhận master này (cue {index} {cue.Id}).");
         if (cue.NativeReferenceFrames <= 0 || !double.IsFinite(cue.ActualSpeedFactor)
-            || (isVieneu
-                ? cue.ActualSpeedFactor < VieneuMinTempoFactor - 1e-9 || cue.ActualSpeedFactor > VieneuMaxFactorFor(targetFrames)
-                : cue.ActualSpeedFactor < 1 || cue.ActualSpeedFactor > 100)
+            || cue.ActualSpeedFactor < VieneuMinTempoFactor - 1e-9 || cue.ActualSpeedFactor > VieneuMaxFactorFor(targetFrames)
             || (sentenceGroup
                 ? cue.GroupNativeFrames != cue.NativeReferenceFrames
                 : cue.GroupNativeFrames != 0
@@ -89,21 +88,16 @@ internal sealed partial class LocalTtsService
         if (cue.SynthesisAttempts == 1
             && (cue.LengthScale != cue.BaseLengthScale
                 || Math.Abs(cue.RawDuration - cue.SourceFrames / (double)sampleRate) > 1e-9
-                // 30/09 (vụ cue5 VieNeu im oan): atempo ngay lượt 1 chỉ xảy ra
-                // khi không có vòng scale (VieNeu) — native != generated ở record
-                // tempo là trung thực. Miễn CHỈ cho vieneu-atempo; Piper giữ
-                // nghiêm byte-for-byte như cũ (với Piper là unreachable).
-                || (!sentenceGroup && !(isVieneu && cue.FitMethod == atempoMethod) && cue.NativeReferenceFrames != cue.GeneratedFrames)))
-            throw new InvalidDataException($"Voice lượt tự nhiên không có metadata Piper gốc hợp lệ (cue {index} {cue.Id}).");
+                // 30/09 (cue5 VieNeu falsely silent case): atempo on the very first pass only happens
+                // when there is no scale loop — native != generated at the tempo record
+                // is honest. Exempt ONLY for vieneu-atempo.
+                || (!sentenceGroup && cue.FitMethod != atempoMethod && cue.NativeReferenceFrames != cue.GeneratedFrames)))
+            throw new InvalidDataException($"Voice lượt tự nhiên không có metadata VieNeu gốc hợp lệ (cue {index} {cue.Id}).");
         if (tempoFallback
             ? cue.TempoInputFrames != cue.SourceFrames - cue.TrimmedSilenceFrames
-                || (isVieneu
-                    ? cue.TempoInputFrames <= 0
-                    : cue.TempoInputFrames <= cue.GeneratedFrames)
+                || cue.TempoInputFrames <= 0
                 || !double.IsFinite(cue.TempoFactor)
-                || (isVieneu
-                    ? cue.TempoFactor < VieneuMinTempoFactor - 1e-9 || cue.TempoFactor > VieneuMaxFactorFor(targetFrames)
-                    : cue.TempoFactor <= 1)
+                || cue.TempoFactor < VieneuMinTempoFactor - 1e-9 || cue.TempoFactor > VieneuMaxFactorFor(targetFrames)
                 || Math.Abs(cue.TempoInputFrames / (double)cue.GeneratedFrames - cue.TempoFactor) > 1e-9
                 || cue.TempoAttempts is < 1 or > 6
             : cue.TempoFactor != 0 || cue.TempoInputFrames != 0 || cue.TempoAttempts != 0
@@ -116,8 +110,7 @@ internal sealed partial class LocalTtsService
     private static void ValidateSentenceGroupWindows(
         IReadOnlyList<TtsWorkerCue> actual,
         IReadOnlyList<TtsCueManifest> expected,
-        int sampleRate,
-        bool isVieneu)
+        int sampleRate)
     {
         for (var first = 0; first < actual.Count;)
         {
@@ -161,10 +154,8 @@ internal sealed partial class LocalTtsService
                 generatedFrames = checked(generatedFrames + actual[item].GeneratedFrames);
             }
             var measuredSpeed = actual[first].GroupNativeFrames / (double)generatedFrames;
-            var speedLow = isVieneu ? VieneuMinTempoFactor - 1e-9 : 1.0;
-            var speedHigh = isVieneu ? VieneuMaxFactorFor(groupEnd - groupStart) : 100.0;
             if (Math.Abs(measuredSpeed - actual[first].ActualSpeedFactor) > 1e-9
-                || measuredSpeed < speedLow || measuredSpeed > speedHigh)
+                || measuredSpeed < VieneuMinTempoFactor - 1e-9 || measuredSpeed > VieneuMaxFactorFor(groupEnd - groupStart))
                 throw new InvalidDataException("Nhóm câu TTS vượt giới hạn tốc độ đọc rõ.");
             first = last + 1;
         }

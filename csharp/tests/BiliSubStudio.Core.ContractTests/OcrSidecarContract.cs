@@ -2,10 +2,10 @@ using BiliSubStudio.Core.Ocr;
 
 namespace BiliSubStudio.Core.ContractTests;
 
-// Sidecar trong Data app, cấm cạnh video (28/09, theo lệnh user): probe/VAD/pxv
-// tính 1 lần xài nhiều scan. Alongside chỉ đọc di sản, mọi Save mới vào Data.
-// Quy tắc thép test ở đây: mismatch/hỏng/version lệch => bỏ qua lặng lẽ (null), scan
-// tính lại đường cũ; xóa file không sao; thư mục khóa ghi thì fallback Data.
+// Sidecar in the app's Data folder, never next to the video (28/09, per user request): probe/VAD/pxv
+// computed once, reused across scans. Alongside is legacy read-only, every new Save goes to Data.
+// The ironclad rules tested here: mismatch/corrupt/version skew => silently ignored (null), the scan
+// recomputes the old way; deleting the file is harmless; an unwritable directory falls back to Data.
 internal static class OcrSidecarContract
 {
     public static async Task RunAsync()
@@ -17,7 +17,7 @@ internal static class OcrSidecarContract
         Check(OcrSidecar.ToProbe(OcrSidecar.FromProbe(probe) with { V = 999 }) is null, "probe version mismatch must miss");
         Check(OcrSidecar.ToProbe(OcrSidecar.FromProbe(probe) with { Width = 0 }) is null, "probe bad dims must miss");
 
-        // 2. VAD bitpack round-trip cả 3 cờ + hỏng.
+        // 2. VAD bitpack round-trip of all 3 flags + corruption.
         var flags = new[] { VadFlag.NoSub, VadFlag.Suspicious, VadFlag.HasSub, VadFlag.NoSub, VadFlag.Suspicious };
         var timeline = new VadTimeline(0.2, flags);
         var vadBack = OcrSidecar.ToTimeline(OcrSidecar.FromTimeline(timeline));
@@ -30,7 +30,7 @@ internal static class OcrSidecarContract
         try { OcrSidecar.UnpackVadFlags(badBits, 1); Check(false, "vad corrupt bits must throw"); }
         catch (InvalidDataException) { }
 
-        // 3. PXV: Same/Different persist, Unavailable bỏ, rect hỏng bỏ, verdict lạ bỏ.
+        // 3. PXV: Same/Different persist, Unavailable dropped, bad rect dropped, unknown verdict dropped.
         var crop = new System.Drawing.Rectangle(10, 20, 100, 40);
         Check(OcrSidecar.ToEntry(1, 2, crop, PixelCheckResult.Same)?.Verdict == 0, "Same must persist as 0");
         Check(OcrSidecar.ToEntry(1, 2, crop, PixelCheckResult.Different)?.Verdict == 1, "Different must persist as 1");
@@ -40,19 +40,19 @@ internal static class OcrSidecarContract
         Check(OcrSidecar.FromEntry(new OcrSidecar.PixelEntry(1, 2, 10, 20, 110, 60, 7)) is null, "pxv bad verdict must miss");
         Check(OcrSidecar.FromEntry(new OcrSidecar.PixelEntry(1, 2, 50, 20, 10, 60, 0)) is null, "pxv inverted rect must miss");
 
-        // 4. Identity: khớp size+mtime, path chỉ để hiển thị (đổi tên/chuyển ổ vẫn trúng).
+        // 4. Identity: matches size+mtime, path is display-only (renaming/moving drives still hits).
         var id = new OcrSidecar.FileIdentity("E:\\a\\v.mp4", 100, 200);
         Check(id.Matches(new OcrSidecar.FileIdentity("D:\\b\\v.mp4", 100, 200)), "identity must ignore path");
         Check(!id.Matches(new OcrSidecar.FileIdentity("E:\\a\\v.mp4", 101, 200)), "identity must reject size change");
         Check(!id.Matches(new OcrSidecar.FileIdentity("E:\\a\\v.mp4", 100, 201)), "identity must reject mtime change");
         Check(OcrSidecar.FileIdentity.FromFile("Z:\\__no_dir__\\__no_file__.mp4") is null, "missing file must have no identity");
 
-        // 5. Parse hỏng => null, không throw.
+        // 5. Corrupt parse => null, no throw.
         Check(OcrSidecar.Parse("") is null, "empty file must parse as null");
         Check(OcrSidecar.Parse("{oops") is null, "truncated JSON must parse as null");
         Check(OcrSidecar.Parse("{}") is null, "identity-less doc must parse as null");
 
-        // 6. Store qua temp dirs: save→load, mismatch, fallback ổ khóa.
+        // 6. Store via temp dirs: save→load, mismatch, unwritable-drive fallback.
         var root = Path.Combine(Path.GetTempPath(), "sidecar-test-" + Guid.NewGuid().ToString("N"));
         var appData = Path.Combine(root, "data");
         var videos = Path.Combine(root, "videos");
@@ -76,7 +76,7 @@ internal static class OcrSidecarContract
             var moved = await store.LoadAsync(video, new OcrSidecar.FileIdentity(identity.Path, 1025, identity.ModUnixNano), CancellationToken.None);
             Check(moved is null, "size-changed file must miss sidecar");
 
-            // Ổ khóa ghi (Z: không tồn tại) => fallback Data, lần 2 đọc trúng fallback.
+            // Unwritable drive (Z: does not exist) => fallback to Data, the second read hits the fallback.
             var lockedVideo = "Z:\\__no_drive__\\v.mp4";
             var lockedId = new OcrSidecar.FileIdentity(lockedVideo, 100, 200);
             var lockedDoc = new OcrSidecar.SidecarDocument(lockedId, null, null, null);
@@ -90,7 +90,7 @@ internal static class OcrSidecarContract
             try { Directory.Delete(root, recursive: true); } catch { }
         }
 
-        // 7. Comparer Seed→Snapshot (không FFmpeg): Same/Different vào, Unavailable + trùng bỏ.
+        // 7. Comparer Seed→Snapshot (no FFmpeg): Same/Different stored, Unavailable + duplicates dropped.
         var comparer = new ProductionPixelComparer();
         var seeded = comparer.Seed("v.mp4", [
             (1L, 2L, new System.Drawing.Rectangle(0, 0, 50, 20), PixelCheckResult.Same),

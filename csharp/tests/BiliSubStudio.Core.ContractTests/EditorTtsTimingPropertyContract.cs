@@ -234,7 +234,7 @@ internal static class EditorTtsTimingPropertyContract
         .GetMethod("BuildWholeCue", BindingFlags.Static | BindingFlags.NonPublic)!;
 
     private static object InvokeBuild(MethodInfo build, EditorSubtitleCue cue, EditorCueSpeechTiming timing) =>
-        build.Invoke(null, [cue, "ngoc_huyen", timing])!;
+        build.Invoke(null, [cue, "vieneu_ngoc_huyen", timing])!;
 
     private static void ExpectInvalid(MethodInfo build, EditorSubtitleCue cue, EditorCueSpeechTiming timing, string label)
     {
@@ -305,9 +305,9 @@ internal static class EditorTtsTimingPropertyContract
 
     private static Task VerifyWorkerFailureMessageAsync()
     {
-        // Vụ 13:17 27/09: worker chết không traceback, C# chỉ báo "không có
-        // chi tiết lỗi". Message mới phải mang exit/ready/complete/cue dở để
-        // lần sau biết đường repro thay vì đoán mò.
+        // Incident 13:17 on 27/09: the worker died without a traceback and C# only reported "no
+        // error detail". The new message must carry exit/ready/complete and half-finished cues so the
+        // next time there is a way to reproduce instead of guessing.
         var service = Type.GetType("BiliSubStudio.Core.Editor.LocalTtsService, BiliSubStudio.Core")
             ?? throw new InvalidOperationException("missing LocalTtsService type");
         var method = service.GetMethod("BuildWorkerFailureMessage",

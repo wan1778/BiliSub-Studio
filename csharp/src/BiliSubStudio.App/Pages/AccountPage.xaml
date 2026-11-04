@@ -29,6 +29,8 @@
                     <Border Padding="11,8" Background="{ThemeResource RaisedSurfaceBrush}" CornerRadius="8">
                         <TextBlock x:Name="QrStatusText" TextAlignment="Center" Style="{StaticResource MutedTextStyle}" Text="Mở Bilibili trên điện thoại để quét." AutomationProperties.LiveSetting="Polite" />
                     </Border>
+                    <Button x:Name="OpenLoginPageButton" HorizontalAlignment="Center" Click="OpenLoginPage_Click" Content="Mở trang đăng nhập trên trình duyệt" Style="{StaticResource SecondaryButtonStyle}" />
+                    <TextBlock FontSize="11" Style="{StaticResource MutedTextStyle}" Text="Mã QR chỉ quét được bằng app Bilibili. Nếu không dùng app, hãy đăng nhập bằng SMS/mật khẩu trên trình duyệt rồi dán cookie SESSDATA ở ô bên phải." TextWrapping="Wrap" />
                 </StackPanel>
             </Border>
 
@@ -54,42 +56,17 @@
                 <Border Style="{StaticResource CardBorderStyle}">
                     <StackPanel Spacing="10">
                         <StackPanel Spacing="2">
-                            <TextBlock Style="{StaticResource CardTitleStyle}" Text="Đồng bộ phiên từ Chrome" />
-                            <TextBlock Style="{StaticResource MutedTextStyle}" Text="Lấy đúng phiên Bilibili bạn đã đăng nhập trong Chrome. Cần cài extension BiliSub Bridge một lần; sau đó app tự đọc cookie phiên Bilibili (SESSDATA và cookie thiết bị), xác minh và lưu bằng Windows DPAPI." TextWrapping="Wrap" />
-                        </StackPanel>
-                        <StackPanel Orientation="Horizontal" Spacing="8">
-                            <Button x:Name="ChromeSyncButton" Click="ChromeSync_Click" Content="Đăng nhập / Đồng bộ từ Chrome" />
-                            <Button x:Name="ChromeExtensionButton" Click="ChromeExtension_Click" Content="Mở thư mục extension" Style="{StaticResource SecondaryButtonStyle}" />
-                        </StackPanel>
-                        <Border Padding="11,8" Background="{ThemeResource RaisedSurfaceBrush}" CornerRadius="8">
-                            <TextBlock FontSize="11" Style="{StaticResource MutedTextStyle}" Text="Lần đầu: mở thư mục extension → chrome://extensions → bật Developer mode → Load unpacked → chọn thư mục đó. Sau khi cập nhật app, bấm Reload trên extension. Extension phải được bật trong đúng profile Chrome đang đăng nhập Bilibili." TextWrapping="Wrap" />
-                        </Border>
-                    </StackPanel>
-                </Border>
-
-                <Border Style="{StaticResource CardBorderStyle}">
-                    <StackPanel Spacing="10">
-                        <StackPanel Spacing="2">
-                            <TextBlock Style="{StaticResource CardTitleStyle}" Text="Đăng nhập bằng trình duyệt" />
-                            <TextBlock Style="{StaticResource MutedTextStyle}" Text="Mở trang đăng nhập Bilibili chính thức (passport.bilibili.com). Bạn tự đăng nhập bằng tài khoản thật; app tự lấy cookie phiên Bilibili (SESSDATA và cookie thiết bị), xác minh và lưu bằng Windows DPAPI." TextWrapping="Wrap" />
-                        </StackPanel>
-                        <Button x:Name="BrowserLoginButton" HorizontalAlignment="Left" Click="BrowserLogin_Click" Content="Đăng nhập Bilibili trong Chrome" />
-                        <Border Padding="11,8" Background="{ThemeResource RaisedSurfaceBrush}" CornerRadius="8">
-                            <TextBlock FontSize="11" Style="{StaticResource MutedTextStyle}" Text="Trang passport.bilibili.com mở thành tab Chrome. Extension BiliSub Bridge tự gửi phiên về app sau khi đăng nhập; app không mở cửa sổ đăng nhập nhúng." TextWrapping="Wrap" />
-                        </Border>
-                    </StackPanel>
-                </Border>
-
-                <Border Style="{StaticResource CardBorderStyle}">
-                    <StackPanel Spacing="10">
-                        <StackPanel Spacing="2">
                             <TextBlock Style="{StaticResource CardTitleStyle}" Text="Nhập cookie thủ công" />
                             <TextBlock Style="{StaticResource MutedTextStyle}" Text="Chỉ lưu sau khi endpoint Bilibili xác nhận phiên hợp lệ; giá trị cookie không được ghi vào nhật ký." />
                         </StackPanel>
-                        <PasswordBox x:Name="CookieBox" PlaceholderText="SESSDATA hoặc chuỗi Cookie" PasswordChanged="CookieBox_PasswordChanged" AutomationProperties.Name="Cookie Bilibili" />
-                        <Button x:Name="SaveCookieButton" HorizontalAlignment="Left" Click="SaveCookie_Click" Content="Xác minh và lưu DPAPI" IsEnabled="False" />
-                        <Border Padding="11,8" Background="{ThemeResource WarningSoftBrush}" BorderBrush="{ThemeResource WarningBrush}" BorderThickness="1" CornerRadius="8">
-                            <TextBlock FontSize="11" Foreground="{ThemeResource WarningBrush}" Text="Không dán cookie vào báo lỗi hoặc ảnh chụp nhật ký." TextWrapping="Wrap" />
+                        <PasswordBox x:Name="CookieBox" PlaceholderText="SESSDATA hoặc chuỗi Cookie" PasswordChanged="CookieBox_PasswordChanged" KeyDown="CookieBox_KeyDown" AutomationProperties.Name="Cookie Bilibili" />
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Button x:Name="SaveCookieButton" HorizontalAlignment="Left" Click="SaveCookie_Click" Content="Xác minh và lưu DPAPI" IsEnabled="False" />
+                            <Button x:Name="ImportBrowserCookieButton" Click="ImportBrowserCookie_Click" Content="Lấy phiên từ trình duyệt"
+                                    ToolTipService.ToolTip="Đọc phiên Bilibili bạn đã đăng nhập trong Chrome/Edge/Firefox trên máy này" Style="{StaticResource SecondaryButtonStyle}" />
+                        </StackPanel>
+                        <Border Padding="11,8" Background="{ThemeResource RaisedSurfaceBrush}" CornerRadius="8">
+                            <TextBlock FontSize="11" Style="{StaticResource MutedTextStyle}" Text="Lấy cookie trên Chrome: đăng nhập bilibili.com → F12 → Application → Cookies → https://www.bilibili.com → SESSDATA → copy giá trị → dán vào ô trên. Hoặc: tab Network → chọn một request → Request Headers → Cookie (dán cả dòng). Nhấn Enter để lưu. Dán sau cùng: Bilibili xoay vòng phiên mỗi khi bạn đăng nhập lại trên web, nên cookie cũ sẽ hết hiệu lực." TextWrapping="Wrap" />
                         </Border>
                     </StackPanel>
                 </Border>

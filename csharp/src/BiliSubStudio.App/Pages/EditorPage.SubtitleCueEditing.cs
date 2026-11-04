@@ -89,12 +89,24 @@ public sealed partial class EditorPage
     {
         // SUB-06: cue navigation targets the compact Player seek position; no large timeline is required.
         if (_media is null) return;
-        var target = Math.Clamp(sourceTime, Timeline.Minimum, Timeline.Maximum);
+        await SeekEditorToTimelineAsync(TimelineTimeForSource(sourceTime));
+    }
+
+    /// <summary>Moves the playhead to a time mark on the composed timeline (not a source-file time).</summary>
+    private async Task SeekEditorToTimelineAsync(double timelineTime)
+    {
+        if (_media is null) return;
+        // The playhead always lies on the frame grid of the media being scrubbed.
+        var snapped = SnapTimelinePlayhead(timelineTime);
+        var target = Math.Clamp(snapped, Timeline.Minimum, Timeline.Maximum);
         _syncingTimeline = true;
         try { Timeline.Value = target; }
         finally { _syncingTimeline = false; }
         UpdateClock();
         RenderOverlays();
+        FollowTimelinePlayhead(target);
+        // The user's scrub command: save the playhead position per project (debounced).
+        SchedulePlayheadSave();
         if (_playback.IsPreviewMode) await _playback.SeekAsync(target);
         else await UpdateFrameAsync();
     }
@@ -195,7 +207,7 @@ public sealed partial class EditorPage
         await SaveCurrentSubtitleCueAsync();
         if (_subtitleSource is null || _subtitleSource.Cues.Any(c => string.IsNullOrWhiteSpace(c.VietnameseText)))
             throw new InvalidOperationException("Cần có lời Việt cho tất cả câu trước khi lưu SRT Việt.");
-        var directory = _application.Config.OutputDirectory;
+        var directory = _application.Config.EditorOutputDirectory;
         Directory.CreateDirectory(directory);
         var name = FileNamePolicy.Sanitize(Path.GetFileNameWithoutExtension(_subtitleSource.Path) + ".vi.srt", "BiliSub.vi.srt");
         if (!name.EndsWith(".srt", StringComparison.OrdinalIgnoreCase)) name += ".srt";

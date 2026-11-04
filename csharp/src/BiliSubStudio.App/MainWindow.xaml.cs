@@ -72,16 +72,18 @@ public sealed partial class MainWindow : Window
         _application.Jobs.AttachLog(_globalLog);
         try
         {
-            // Discord presence theo job thật (không bắt buộc): Discord tắt hay
-            // lỗi thì service tự lặng lẽ thử lại, không bao giờ chặn khởi động.
+            // Discord presence driven by real jobs (optional): if Discord is
+            // closed or errors, the service quietly retries on its own and never
+            // blocks startup.
             _discordPresence = new DiscordPresenceService(_application, "1553667078077030430", _globalLog);
         }
         catch { }
         try
         {
-            // Phiên trước có thể đã bị tắt đột ngột/crash, để lại Python/FFmpeg
-            // mồ côi giữ VRAM. Dọn ngay khi khởi động để checkpoint cũ Tiếp tục
-            // được; lúc này instance mới chưa sở hữu worker nào nên an toàn.
+            // The previous session may have been cut off suddenly or crashed,
+            // leaving orphaned Python/FFmpeg processes holding VRAM. Clean them
+            // up immediately at startup so an old checkpoint can be resumed; at
+            // this point the new instance owns no workers yet, so it is safe.
             var orphans = _application.ReapOrphanOcrProcesses();
             if (orphans > 0)
                 _globalLog.Warning("Ứng dụng", $"Đã dọn {orphans} process OCR/FFmpeg mồ côi từ phiên trước; checkpoint cũ (nếu còn) vẫn có thể Tiếp tục.");
@@ -168,7 +170,7 @@ public sealed partial class MainWindow : Window
                 report.Add("soak-player-deleted");
                 await Task.Delay(1500);
             }
-            // Đảo tab đúng kiểu user: OCR -> các tab khác -> về OCR, lặp 3 vòng.
+            // Switch tabs the way a user would: OCR -> the other tabs -> back to OCR, for 3 rounds.
             var order = new[] { "video", "editor", "settings", "ocr" };
             async Task CycleTabsAsync(int rounds, string tag)
             {
@@ -304,12 +306,12 @@ public sealed partial class MainWindow : Window
 
     private void Navigation_SelectionChanged(Microsoft.UI.Xaml.Controls.NavigationView sender, Microsoft.UI.Xaml.Controls.NavigationViewSelectionChangedEventArgs args)
     {
-        // Bỏ qua sự kiện do máy tự trả thanh chọn về (resync): không phải ý user.
+        // Ignore events raised by the machine putting the nav selection back (resync): not the user's intent.
         if (_resyncingNavigation) return;
         if (args.SelectedItemContainer?.Tag is not string tag || !_pages.TryGetValue(tag, out var page)) return;
         try
         {
-            // Discord presence bám tab: có job chạy thì job thắng, không thì hiện tab.
+            // Discord presence follows the tab: a running job wins over it, otherwise the tab is shown.
             _discordPresence?.SetLocation(tag switch
             {
                 "video" => "Tải video",
@@ -321,14 +323,16 @@ public sealed partial class MainWindow : Window
         }
         catch { }
         if (ReferenceEquals(ContentFrame.Content, page) && !_navigating) return;
-        // Tab mới nhất thắng; đổi xong mới qua đó, không chen ngang lúc đang dỡ trang.
+        // The newest tab wins; only move to it once the switch completes, never
+        // interleave while the old page is being torn down.
         _pendingNavigationTag = tag;
         _navigationRetries = 0;
         StartupDiagnostics.Write("nav-select", tag);
         if (_navigating) return;
         _navigating = true;
-        // Đổi trang sau 1 nhịp để khung hình cũ dỡ xong hẳn rồi mới lắp trang mới;
-        // lắp ngay trong nhịp bấm chính là chỗ hay bị thư viện màn hình hủy (E_ABORT).
+        // Swap the page one tick later so the old frame finishes tearing down
+        // before the new page is mounted; mounting right inside the click tick
+        // is exactly where the compositor tends to cancel (E_ABORT).
         DispatcherQueue.TryEnqueue(ProcessPendingNavigation);
     }
 
@@ -348,10 +352,12 @@ public sealed partial class MainWindow : Window
         try
         {
             StartupDiagnostics.Write("nav-swap", tag);
-            // 09/10 vụ xác trang cũ đè trang mới: dỡ 2 nhịp — nhịp 1 gỡ trang
-            // cũ cho cây hình dỡ hẳn (kèm gỡ surface player OCR đang ngậm
-            // video), nhịp sau mới lắp trang mới. Lắp ngay trong nhịp bấm
-            // chính là chỗ hay bị thư viện màn hình hủy (E_ABORT).
+            // The 09/10 issue where the old page's surface overlapped the new
+            // one: tear down over 2 ticks — tick 1 removes the old page so the
+            // visual tree tears down fully (including releasing the OCR player
+            // surface that is holding video), and the next tick mounts the new
+            // page. Mounting right inside the click tick is exactly where the
+            // compositor tends to cancel (E_ABORT).
             if (ContentFrame.Content is Pages.OcrPage outgoing)
                 outgoing.PrepareForTabSwitch();
             if (ContentFrame.Content is not null)
@@ -366,8 +372,9 @@ public sealed partial class MainWindow : Window
         catch (Exception error)
         {
             const int operationAborted = unchecked((int)0x80004004);
-            // Khung hình cũ chưa dỡ xong: lùi lại thử sau ~120ms cho cây hình ổn
-            // định (tối đa 3 lần) thay vì chen ngay nhịp sau rồi gãy tiếp.
+            // The old frame has not finished tearing down: back off and retry
+            // after ~120ms so the visual tree stabilizes (at most 3 times)
+            // instead of forcing it into the next tick and breaking again.
             if (error.HResult == operationAborted && _navigationRetries < 3)
             {
                 _navigationRetries++;
@@ -385,7 +392,7 @@ public sealed partial class MainWindow : Window
             _pendingNavigationTag = null;
         }
         _navigating = false;
-        // Tab bấm dồn trong lúc đổi: qua nốt tab mới nhất, xong mới đồng bộ thanh chọn.
+        // Tab clicks queue up during a switch: finish the newest tab first, then resync the nav selection.
         if (_pendingNavigationTag is { } pending
             && !string.Equals(pending, tag, StringComparison.Ordinal)
             && _pages.ContainsKey(pending))
@@ -400,8 +407,9 @@ public sealed partial class MainWindow : Window
 
     private void SyncNavigationSelection()
     {
-        // Chỉ sửa hiển thị thanh chọn cho khớp trang đang hiện; chỗ này tuyệt đối
-        // không được nổ (nổ ở đây từng kéo gãy native ngay sau đó).
+        // Only adjust the nav selection's appearance to match the page being
+        // shown; this spot must never throw (throwing here once dragged native
+        // into a crash right afterward).
         try
         {
             _resyncingNavigation = true;
@@ -446,7 +454,7 @@ public sealed partial class MainWindow : Window
 
         GlobalLogEntries.Add(new GlobalLogItem(entry));
         while (GlobalLogEntries.Count > 500) GlobalLogEntries.RemoveAt(0);
-        // Cuộn list là việc trang trí: kẹt layout (E_ABORT) thì bỏ qua, không được gãy app.
+        // Scrolling the list is cosmetic: if layout hangs (E_ABORT), ignore it, never break the app.
         try
         {
             if (GlobalLogEntries.Count > 0) GlobalLogList.ScrollIntoView(GlobalLogEntries[^1]);
@@ -464,8 +472,9 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Rail trái gọn: mỗi mục điều hướng dùng icon Segoe Fluent Icons nên khi
-    /// pane đóng vẫn nhận ra mục đang chọn (nhãn chữ nằm trong tooltip).
+    /// A compact left rail: every navigation item uses Segoe Fluent Icons so
+    /// the selected item is still recognizable when the pane is closed (the
+    /// text label lives in the tooltip).
     /// </summary>
     private void ApplyNavigationIcons()
     {
@@ -537,11 +546,13 @@ public sealed partial class MainWindow : Window
     {
         var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
         var windowId = Win32Interop.GetWindowIdFromWindow(hwnd);
-        // Vụ 07-08/10: máy 2 màn (màn 2 tắt nhưng Windows vẫn giữ) — mở app
-        // là lọt sang màn ma ở x=1529, user không thấy gì. DisplayArea
-        // (Primary/GetFromWindowId/GetFromPoint) đều không tin được lúc khởi
-        // động lạnh (trả màn ma/tọa độ ma thất thường). Dùng GetSystemMetrics
-        // (kích thước màn CHÍNH, không bao giờ race) + kẹp chặt trong màn hình.
+        // The 07-08/10 issue: a two-monitor setup (monitor 2 powered off but
+        // Windows still keeping it) — opening the app dropped it onto a ghost
+        // monitor at x=1529, and the user saw nothing. DisplayArea
+        // (Primary/GetFromWindowId/GetFromPoint) are all untrustworthy during
+        // cold startup (they return the ghost monitor/ghost coordinates
+        // inconsistently). Use GetSystemMetrics (the PRIMARY monitor's size,
+        // which never races) plus a hard clamp to the screen.
         var primaryWidth = GetSystemMetrics(0);
         var primaryHeight = GetSystemMetrics(1);
         if (primaryWidth < 800 || primaryHeight < 600)
@@ -555,8 +566,9 @@ public sealed partial class MainWindow : Window
         var x = Math.Max(0, (primaryWidth - width) / 2);
         var y = Math.Max(0, (primaryHeight - height) / 2);
         var appWindow = AppWindow.GetFromWindowId(windowId);
-        // Mặc định mở full màn hình: khung 1500x900 che mất player + dải
-        // thời gian trên màn hình lớn. Vẫn kẹp trong màn chính như cũ.
+        // Open full-screen by default: a 1500x900 frame hides the player and
+        // the timeline on large screens. Still clamp to the primary monitor as
+        // before.
         if (appWindow.Presenter is OverlappedPresenter overlapped)
         {
             overlapped.Maximize();
@@ -610,15 +622,17 @@ public sealed partial class MainWindow : Window
             _closing = false;
             FooterStatus.Text = "Từ chối đóng để bảo toàn dữ liệu: " + error.Message;
             _globalLog.Error("Ứng dụng", "Từ chối đóng để bảo toàn dữ liệu: " + error.Message);
-            // EDIT-CLOSE: chặn im lặng khiến user tưởng app treo. Báo bằng hộp
-            // thoại và cho lối thoát chủ động thay vì bắt restart/mò log.
+            // EDIT-CLOSE: silently blocking makes the user think the app is
+            // frozen. Report it with a dialog and offer a deliberate way out
+            // instead of forcing a restart or log hunting.
             await ShowCloseRefusedDialogAsync(error.Message);
         }
     }
 
-    // RELINK (kiểu Adobe): mất file nguồn thì báo rõ và cho user chọn lại
-    // đường dẫn thay vì chặn im lặng. Nối xong thì thoát tiếp; vẫn có lối
-    // bỏ project khi user không cần giữ.
+    // RELINK (Adobe style): if the source file is missing, state it clearly
+    // and let the user pick the new path instead of blocking silently. Once
+    // relinked, continue exiting; there is still an option to drop the project
+    // when the user does not want to keep it.
     private async Task ShowCloseRefusedDialogAsync(string reason)
     {
         var editorHasOpenProject = _pages.TryGetValue("editor", out var editorElement)
@@ -676,7 +690,7 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    // Discord presence: page đẩy tên video/project đang làm (best-effort).
+    // Discord presence: pages push the name of the video/project being worked on (best-effort).
     public void SetPresenceContext(string? video, string? project)
     {
         try { _discordPresence?.SetContext(video, project); } catch { }

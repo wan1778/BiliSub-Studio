@@ -2,11 +2,10 @@ using BiliSubStudio.Core.Ocr;
 
 namespace BiliSubStudio.Core.ContractTests;
 
-// Hàng chờ OCR (09/10: quét nhiều video nối tiếp, mỗi video setup riêng,
-// lỗi bỏ qua chạy tiếp, chỉ sống trong phiên app). Hợp đồng: FIFO đúng thứ
-// tự, một scan tại một thời điểm, mục Paused được resume trước, mục Failed
-// không chặn hàng, chỉ Waiting mới lên/xuống/xóa, request giữ nguyên setup
-// riêng từng video.
+// OCR queue (09/10: scan several videos back to back, each with its own setup,
+// an error is skipped and scanning continues, it lives only for the app session). Contract: exact FIFO
+// ordering, one scan at a time, a Paused item is resumed first, a Failed item
+// does not block the queue, only Waiting items can move up/down/be removed, a request keeps its own per-video setup.
 internal static class OcrScanQueueContract
 {
     public static Task RunAsync()
@@ -14,7 +13,7 @@ internal static class OcrScanQueueContract
         var regionA = new OcrRegion(0.05, 0.65, 0.90, 0.29);
         var regionB = new OcrRegion(0.10, 0.70, 0.80, 0.25);
 
-        // 1. FIFO đúng thứ tự thêm + số thứ tự 1..N.
+        // 1. FIFO in add order + queue numbers 1..N.
         var queue = new OcrScanQueue();
         var first = queue.Enqueue("a.mp4", regionA, "accurate", "gpu", "8", 100);
         var second = queue.Enqueue("b.mp4", regionB, "fast", "cpu", "4", 200);
@@ -25,11 +24,11 @@ internal static class OcrScanQueueContract
         Check(ReferenceEquals(queue.TakeNext(), first), "TakeNext must return first Waiting (FIFO)");
         Check(first.Status == OcrQueueItemStatus.Scanning, "taken item must be Scanning");
 
-        // 2. Đang có Scanning thì TakeNext trả null (một scan tại một thời điểm).
+        // 2. While something is Scanning, TakeNext returns null (one scan at a time).
         Check(queue.TakeNext() is null, "TakeNext must refuse while one item is Scanning");
         Check(second.Status == OcrQueueItemStatus.Waiting, "second item must stay Waiting");
 
-        // 3. Xong là rời hàng ngay, số còn lại dồn lên; Failed không chặn hàng.
+        // 3. Done leaves the queue at once, the rest renumber; Failed does not block the queue.
         queue.MarkDone(first.Id, "a_Chinese.srt", "xong");
         Check(queue.Items.Count == 2, "done item must leave the queue immediately");
         Check(second.QueueNumber == 1 && third.QueueNumber == 2, "remaining items must renumber after one leaves");
@@ -38,21 +37,21 @@ internal static class OcrScanQueueContract
         Check(second.Status == OcrQueueItemStatus.Failed, "failed item must be Failed");
         Check(ReferenceEquals(queue.TakeNext(), third), "after Failed, TakeNext must skip to third (lỗi bỏ qua, chạy tiếp)");
 
-        // 4. Paused được resume trước Waiting mới.
+        // 4. Paused is resumed before freshly Waiting items.
         queue.MarkPaused(third.Id);
         var fourth = queue.Enqueue("d.mp4", regionA, "fast", "cpu", "2", 400);
         Check(ReferenceEquals(queue.TakeNext(), third), "TakeNext must resume Paused item before new Waiting items");
         queue.MarkCancelled(third.Id, "user hủy");
         Check(third.Status == OcrQueueItemStatus.Cancelled, "cancelled item must be Cancelled");
 
-        // 5. Request giữ setup riêng từng video.
+        // 5. The request keeps its own per-video setup.
         var request = fourth.ToRequest();
         Check(request.Path == "d.mp4" && request.Region.Equals(regionA)
             && request.Mode == "fast" && request.Device == "cpu" && request.Parallelism == "2"
             && request.Duration == 400 && request.Sensitivity == 1,
             "ToRequest must carry the per-video setup");
 
-        // 6. Chỉ Waiting mới lên/xuống; Scanning không xóa được.
+        // 6. Only Waiting items can move; a Scanning item cannot be removed.
         var queue2 = new OcrScanQueue();
         var w1 = queue2.Enqueue("w1.mp4", regionA, "fast", "cpu", "2", 10);
         var w2 = queue2.Enqueue("w2.mp4", regionA, "fast", "cpu", "2", 10);
@@ -65,13 +64,13 @@ internal static class OcrScanQueueContract
         Check(!queue2.Remove(w1.Id), "must not remove the Scanning item");
         Check(queue2.Remove(w2.Id), "must remove a Waiting item");
 
-        // 7. ClearFinished chỉ dọn Failed/Cancelled (Done đã tự rời), số reset.
+        // 7. ClearFinished only clears Failed/Cancelled (Done already left itself), numbers reset.
         Check(queue.ClearFinished() == 2, "ClearFinished must remove 2 failed/cancelled items");
         Check(queue.WaitingCount == 1 && ReferenceEquals(queue.Items[0], fourth)
             && fourth.QueueNumber == 1, "only the Waiting item must remain, renumbered to 1");
 
-        // 8. Ma kẹt (15/10: mục còn Scanning nhưng job chết, cả hàng đứng im
-        // câm lặng): RequeueStuck đưa về Paused để TakeNext resume được.
+        // 8. Stuck ghost (15/10: an item still Scanning but its job died, the whole queue sits
+        // silently frozen): RequeueStuck returns it to Paused so TakeNext can resume it.
         var queue3 = new OcrScanQueue();
         var s1 = queue3.Enqueue("s1.mp4", regionA, "balanced", "gpu", "8", 100);
         var s2 = queue3.Enqueue("s2.mp4", regionA, "balanced", "gpu", "8", 200);

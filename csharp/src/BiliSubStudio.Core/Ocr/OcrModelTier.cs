@@ -1,10 +1,10 @@
 namespace BiliSubStudio.Core.Ocr;
 
 // Model tier per scan mode: Accurate keeps Medium for maximum fidelity,
-// untouched; Balanced/Fast run Mobile (nhỏ nhất, theo lệnh user 28/09).
+// untouched; Balanced/Fast run Mobile (the smallest, per user order 28/09).
 // Aliases mirror OcrCheckpointStore.ModeFor so tier and sampling policy never
 // disagree; unknown modes fall to Mobile like ModeFor falls to Balanced.
-// Checkpoint key ăn tên model nên đổi tier là checkpoint cũ vô hiệu (quét mới).
+// The checkpoint key includes the model name, so changing tier invalidates old checkpoints (rescan).
 internal static class OcrModelTier
 {
     public static string DetectionModel(string scanMode) =>

@@ -5,7 +5,7 @@ namespace BiliSubStudio.Core.ContractTests;
 
 // Scan-mode to model-tier mapping: only Accurate-family modes run Medium
 // (untouched); everything else (Balanced default, Fast, unknown) runs Mobile
-// nhỏ nhất (28/09, theo lệnh user). Aliases must mirror
+// smallest tier (28/09, per user request). Aliases must mirror
 // OcrCheckpointStore.ModeFor so sampling policy and model tier never disagree
 // about which mode is which.
 internal static class OcrModelTierContract

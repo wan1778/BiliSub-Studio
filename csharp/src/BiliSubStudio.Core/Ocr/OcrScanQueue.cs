@@ -2,8 +2,8 @@ using System.ComponentModel;
 
 namespace BiliSubStudio.Core.Ocr;
 
-// Trạng thái mục trong hàng chờ OCR (09/10: quét nhiều video nối tiếp,
-// mỗi video setup riêng, lỗi bỏ qua chạy tiếp, chỉ sống trong phiên app).
+// State of an item in the OCR wait queue (09/10: scans many videos back to back,
+// each video has its own setup, errors are skipped and scanning continues, lives only within the app session).
 public enum OcrQueueItemStatus
 {
     Waiting,
@@ -46,8 +46,8 @@ public sealed class OcrQueueItem : INotifyPropertyChanged
         }
     }
 
-    // Số thứ tự trong hàng (1-based), hàng tự dồn/rereset mỗi khi có video
-    // vào/ra — user nhìn là biết vị trí xử lý. Chỉ OcrScanQueue được gán.
+    // Ordinal in the queue (1-based), the queue compacts/re-resets whenever a video
+    // enters/leaves — the user sees the processing position. Only OcrScanQueue assigns this.
     private int _queueNumber;
 
     public int QueueNumber
@@ -145,9 +145,9 @@ public sealed class OcrQueueItem : INotifyPropertyChanged
     private void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
 }
 
-// Hàng chờ FIFO chạy tuần tự, một scan tại một thời điểm (khớp guard
-// _activeProcesses của OcrScanner). Mục lỗi không chặn hàng: driver đánh
-// Failed rồi lấy mục Waiting kế tiếp. Single-thread (UI thread) sở hữu.
+// FIFO wait queue runs sequentially, one scan at a time (matching the
+// _activeProcesses guard of OcrScanner). A failed item does not block the queue: the driver flags
+// Failed then takes the next Waiting item. Single-threaded (owned by the UI thread).
 public sealed class OcrScanQueue
 {
     private readonly List<OcrQueueItem> _items = new();
@@ -221,8 +221,8 @@ public sealed class OcrScanQueue
         return true;
     }
 
-    // Lấy mục Waiting đầu tiên (ưu tiên mục Paused resume trước) và đánh
-    // Scanning. Trả null khi đang có mục Scanning hoặc hết việc.
+    // Take the first Waiting item (Paused items resume first) and mark
+    // Scanning. Returns null when an item is already Scanning or there is no work.
     public OcrQueueItem? TakeNext()
     {
         if (ActiveItem is not null) return null;
@@ -244,9 +244,9 @@ public sealed class OcrScanQueue
         return null;
     }
 
-    // Video xong là rời khỏi hàng ngay (user: xong thì mất, số còn lại dồn
-    // lên, hết hàng là reset từ 1). Driver giữ path/message từ kết quả quét
-    // để báo cáo, không cần mục ở lại.
+    // A finished video leaves the queue immediately (user rule: once done it disappears, the rest
+    // shift up, an empty queue resets to 1). The driver keeps path/message from the scan result
+    // for reporting, no need for the item to stay.
     public void MarkDone(Guid id, string? outputSrtPath, string message)
     {
         var index = _items.FindIndex(item => item.Id == id);
@@ -282,9 +282,9 @@ public sealed class OcrScanQueue
         Changed?.Invoke();
     }
 
-    // Ma kẹt (mục còn Scanning nhưng không còn job OCR nào sống, ví dụ kẹt
-    // giữa chừng): đưa về Paused để TakeNext resume được, thay vì cả hàng
-    // đứng im câm lặng. Caller phải xác minh không còn job OCR sống trước.
+    // Deadlock pin (an item still Scanning but no OCR job is alive anymore, e.g. stuck
+    // mid-run): move it back to Paused so TakeNext can resume it, instead of the whole queue
+    // standing silently frozen. The caller must verify no live OCR job remains first.
     public bool RequeueStuck(Guid id)
     {
         var item = Find(id);
@@ -296,7 +296,7 @@ public sealed class OcrScanQueue
 
     public int ClearFinished()
     {
-        // Done đã tự rời hàng ở MarkDone; đây dọn mục lỗi/hủy còn sót.
+        // Done already left the queue in MarkDone; this cleans up leftover failed/cancelled items.
         var removed = _items.RemoveAll(item =>
             item.Status is OcrQueueItemStatus.Failed
                 or OcrQueueItemStatus.Cancelled);
@@ -308,7 +308,7 @@ public sealed class OcrScanQueue
         return removed;
     }
 
-    // Đánh lại số thứ tự 1..N theo đúng thứ tự hàng hiện tại.
+    // Re-renumber 1..N in the exact order of the current queue.
     private void Renumber()
     {
         for (var index = 0; index < _items.Count; index++)

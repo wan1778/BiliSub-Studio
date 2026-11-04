@@ -1,8 +1,8 @@
 namespace BiliSubStudio.Core.Editor;
 
-// Bố cục mặc định cho ảnh/logo vừa thêm vào editor. Ảnh chuẩn bị đúng tỉ lệ
-// khung video (16:9, 9:16…) phải phủ vừa khung ngay từ lần thêm đầu; ảnh logo
-// khác tỉ lệ vẫn giữ mặc định nhỏ ở góc phải như trước.
+// Default placement for a newly added editor image/logo. An image already at the
+// video frame aspect (16:9, 9:16, ...) must fill the frame on first add; a
+// differently-shaped logo keeps the previous small corner default.
 public static class EditorImageOverlayLayout
 {
     private const double AspectMatchTolerance = .005;
@@ -34,7 +34,7 @@ public static class EditorImageOverlayLayout
         return (Math.Max(0, 1 - width - Margin), Margin, width, height);
     }
 
-    // Ảnh lớn nhất có thể mà không méo và không tràn khung, canh giữa.
+    // Largest possible image without distortion or overflowing the frame, centered.
     public static (double X, double Y, double Width, double Height) FitInside(
         uint imageWidth, uint imageHeight, double videoWidth, double videoHeight)
     {

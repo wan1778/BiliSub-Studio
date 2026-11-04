@@ -50,7 +50,7 @@ internal static class OcrLaneReconcileFullerTextRegression
 
         var shortCue = new OcrCue(9.9, 10.3, "吃我的喝我", .98);
         var completeCue = new OcrCue(10.0, 10.4, "吃我的喝我的", .84);
-        // Không provenance/pixel => cross-lane candidate giữ tách + NeedsReview (safe-fail, không merge).
+        // No provenance/pixel => the cross-lane candidate stays split + NeedsReview (safe-fail, no merge).
         foreach (var output in new[] { Reconcile(shortCue, completeCue), Reconcile(completeCue, shortCue) })
         {
             if (output.Count != 2 || !output.All(x => x.NeedsReview))

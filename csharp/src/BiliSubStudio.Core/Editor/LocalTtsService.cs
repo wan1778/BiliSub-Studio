@@ -30,7 +30,10 @@ public sealed record EditorTtsRequest(
     EditorSubtitleSource Subtitle,
     string SpeechAnalysisPath,
     string SpeechAnalysisSha256,
-    string Voice = "ngoc_huyen");
+    string Voice = TtsVoiceCatalog.DefaultVoice,
+    // A clip SRT already owns every reading window, so no Whisper analysis is
+    // required. The voice is synthesized from the SRT timecodes directly.
+    bool SrtOnly = false);
 public sealed record EditorTtsResult(
     string ManifestPath,
     string ManifestSha256,
@@ -40,13 +43,22 @@ public sealed record EditorTtsResult(
     string Engine,
     string EngineVersion,
     string Voice,
-    IReadOnlyList<EditorTtsCueWindow> CueWindows);
+    IReadOnlyList<EditorTtsCueWindow> CueWindows)
+{
+    // F1 (17/11): the voice quality report the user needs after every run. A cue
+    // that cannot fit its own SRT window at the permitted pace reads the whole
+    // sentence into the real silence after it (spilled); a cue with words cut is a
+    // defect, so the count must never be hidden - the app reports it by id and
+    // timecode so the SRT timecode can be fixed.
+    public int SpilledCues { get; init; }
+    public int ShortenedCues { get; init; }
+    public IReadOnlyList<string> ShortenedNotes { get; init; } = Array.Empty<string>();
+}
 
 internal sealed partial class LocalTtsService : IDisposable
 {
     private const int ManifestSchema = 2;
     private const int VoiceSampleRate = 22050;
-    private const string TimingAlgorithm = LocalTtsInstaller.TimingAlgorithm;
     private readonly SemaphoreSlim _generationGate = new(1, 1);
     private readonly AppPaths _paths;
     private readonly LocalTtsInstaller _installer;
@@ -71,6 +83,7 @@ internal sealed partial class LocalTtsService : IDisposable
 
     public async Task<EditorTtsResult> GenerateAsync(AppJob job, EditorTtsRequest request)
     {
+        if (request.SrtOnly) return await GenerateSrtOnlyAsync(job, request);
         ValidateRequest(request);
         var sourceInfo = new FileInfo(Path.GetFullPath(request.SourcePath));
         var expectedSourceKey = EditorSpeechAnalysisDocument.SourceKey(sourceInfo.FullName, sourceInfo.Length,
@@ -82,18 +95,18 @@ internal sealed partial class LocalTtsService : IDisposable
         // Collapse only proven OCR flicker runs (for example A/B/A with a
         // sub-250 ms frame) before speech mapping. The subtitle document stays
         // untouched; the voice must not read the same live-caption frame twice.
-        // Vá cửa sổ voice hẹp sau gộp flicker (23/09): mảnh <0.15s không giọng
-        // nào đọc vừa -> worker giữ im lặng oan. Chỉ nới khung/gộp mảnh trùng
-        // y hệt, không đụng chữ, không lấn câu khác.
+        // Patch narrow voice windows after the flicker merge (23/09): a sliver <0.15s cannot be
+        // read by any voice -> the worker keeps an unfair silence. Only widen the window/merge exactly
+        // identical slivers, never touching text or encroaching on another line.
         var voiceCues = EditorVoiceCuePlanner.RemoveUnspeakable(
             EditorVoiceCuePlanner.RepairVoiceWindows(
                 EditorVoiceCuePlanner.Build(request.Subtitle.Cues)));
         if (voiceCues.Count == 0)
             throw new InvalidDataException("Không có cue chứa chữ hoặc số để tạo voice.");
         var voice = ResolveVoice(request.Voice);
-        // Nới cue chật bằng khe im kề (01/10, chỉ VieNeu): trị gốc thay vì ép
-        // voice. Chạy trước MapToCues để timing/manifest/validator thấy khung
-        // đã nới là ground truth.
+        // Widen a tight cue using the adjacent silence (01/10, VieNeu only): fix the cause instead of
+        // forcing the voice. Runs before MapToCues so timing/manifest/validator see the
+        // widened window as ground truth.
         voiceCues = EditorVoiceCuePlanner.WidenTightWindows(voiceCues, voice, request.Duration);
         if (voiceCues.Count == 0)
             throw new InvalidDataException("Không có cue chứa chữ hoặc số để tạo voice.");
@@ -108,12 +121,35 @@ internal sealed partial class LocalTtsService : IDisposable
         return await GenerateCuesAsync(job, request.ProjectId, request.Duration, voice, cues, cueTiming);
     }
 
+    // The clip SRT is the sole timing owner: every cue is read over its own SRT
+    // window, so there is no Whisper dependency and no per-cue analysis pass.
+    // This makes extra timeline clips cheap to voice while keeping exactly the
+    // same worker, planner, validation and master format as the primary clip.
+    private async Task<EditorTtsResult> GenerateSrtOnlyAsync(AppJob job, EditorTtsRequest request)
+    {
+        ValidateRequest(request);
+        var voiceCues = EditorVoiceCuePlanner.RemoveUnspeakable(
+            EditorVoiceCuePlanner.RepairVoiceWindows(
+                EditorVoiceCuePlanner.Build(request.Subtitle.Cues)));
+        if (voiceCues.Count == 0)
+            throw new InvalidDataException("Không có cue chứa chữ hoặc số để tạo voice.");
+        var voice = ResolveVoice(request.Voice);
+        voiceCues = EditorVoiceCuePlanner.WidenTightWindows(voiceCues, voice, request.Duration);
+        if (voiceCues.Count == 0)
+            throw new InvalidDataException("Không có cue chứa chữ hoặc số để tạo voice.");
+        var cueTiming = voiceCues.ToDictionary(
+            cue => cue.Id,
+            cue => new EditorCueSpeechTiming(
+                cue.Id, cue.Start, cue.End, cue.Start, cue.End, 0, 0, [], [], "uncertain", 0, 0),
+            StringComparer.Ordinal);
+        var cues = voiceCues.Select(cue => BuildWholeCue(cue, voice, cueTiming[cue.Id])).ToArray();
+        return await GenerateCuesAsync(job, request.ProjectId, request.Duration, voice, cues, cueTiming);
+    }
+
     public Task<EditorTtsResult> GenerateSampleAsync(AppJob job, string voice)
     {
         voice = ResolveVoice(voice);
-        var sampleText = IsVieneuVoice(voice)
-            ? $"Xin chào, đây là giọng đọc thử {TtsVoiceCatalog.DisplayLabel(voice)}. Chúc bạn một ngày thật bình an."
-            : "Xin chào, đây là giọng Ngọc Huyền. Chúc bạn một ngày thật bình an.";
+        var sampleText = $"Xin chào, đây là giọng đọc thử {TtsVoiceCatalog.DisplayLabel(voice)}. Chúc bạn một ngày thật bình an.";
         var cue = new TtsCueManifest("voice-demo-cue", 0, 10, voice,
             sampleText, 0, 10, "sample");
         // A text-only sample uses real synthesis, without a fabricated source or Whisper analysis.
@@ -149,26 +185,14 @@ internal sealed partial class LocalTtsService : IDisposable
         return value;
     }
 
-    // Engine theo giọng (VieNeu pilot chạy song song NGHI): mọi pin
-    // engine/version/revision/timing suy từ voice id, không hardcode NGHI.
-    private static bool IsVieneuVoice(string voice) => LocalTtsInstaller.IsVieneuVoice(voice);
-    private static string EngineFor(string voice) =>
-        IsVieneuVoice(voice) ? LocalTtsInstaller.VieneuEngine : LocalTtsInstaller.Engine;
-    private static string EngineVersionFor(string voice) =>
-        IsVieneuVoice(voice) ? LocalTtsInstaller.VieneuEngineVersion : LocalTtsInstaller.EngineVersion;
-    private static string VoiceRevisionFor(string voice) =>
-        IsVieneuVoice(voice) ? LocalTtsInstaller.VieneuVoiceRevision : LocalTtsInstaller.VoiceRevision;
-    private static string TimingAlgorithmFor(string voice) =>
-        IsVieneuVoice(voice) ? LocalTtsInstaller.VieneuTimingAlgorithm : TimingAlgorithm;
-
-    // Cue chật/worker chết đột ngột không được giết cả job (vụ 13:17 27/09:
-    // worker tắt không traceback, C# chỉ thấy exit + stderr trống): mỗi lần
-    // fail giữ hiện trường (failed-runs, tối đa 3) + báo đủ chi tiết (exit,
-    // ready/complete, cue đang làm dở). Luật cứng của user: KHÔNG bỏ cue nào
-    // (không im lặng thay voice) -> tự chạy lại toàn bộ tối đa 1 lần từ cache
-    // (cue xong rồi ăn ngay, cue chết chạy lại; chết tiếp ở cùng chỗ thì lỗi
-    // thẳng có chẩn đoán). Fail ở nạp model (chưa có cue dở) cũng chạy lại 1
-    // lần vì có thể do tranh tài nguyên thoáng qua.
+    // A tight cue or an abruptly dying worker must not kill the whole job (the 13:17 27/09 case:
+    // the worker exited with no traceback; C# only saw an exit code + empty stderr): on every
+    // failure keep the crime scene (failed-runs, at most 3) and report enough detail (exit code,
+    // ready/complete, the cue left half-done). The user's hard rule: NEVER drop any cue
+    // (no silence substituted for voice) -> retry the whole run automatically at most once from the cache
+    // (a finished cue is consumed immediately, a dead cue is retried; if it dies again at the same spot,
+    // fail with a diagnosis). A failure during model loading (no cue half-done) also retries once
+    // because it may be a momentary resource contention.
     private const int MaxAutoRetries = 1;
 
     private sealed class TtsWorkerFailedException(string message, int lastIndex, int total, string? lastId)
@@ -243,12 +267,11 @@ internal sealed partial class LocalTtsService : IDisposable
         await using var processes = new OwnedProcessGroup();
         try
         {
-                var manifest = new TtsInputManifest(ManifestSchema, EngineVersionFor(voice),
-                    voice, TimingAlgorithmFor(voice), duration, cues);
+                var manifest = new TtsInputManifest(ManifestSchema, LocalTtsInstaller.EngineVersion,
+                    voice, LocalTtsInstaller.TimingAlgorithm, duration, cues);
                 await WriteAtomicJsonAsync(inputPath, manifest, job.CancellationToken);
-                job.Set("tts-generate", 37, IsVieneuVoice(voice)
-                    ? $"Đang tạo {voice} (VieNeu GPU) · {cues.Count} câu · mỗi cue đọc nguyên câu..."
-                    : $"Đang tạo Ngọc Huyền local · {cues.Count} câu · mỗi cue đọc nguyên câu...");
+                job.Set("tts-generate", 37,
+                    $"Đang tạo {TtsVoiceCatalog.DisplayLabel(voice)} (VieNeu GPU) · {cues.Count} câu · mỗi cue đọc nguyên câu...");
                 var ready = false;
                 var completed = false;
                 var reportedResult = string.Empty;
@@ -284,7 +307,7 @@ internal sealed partial class LocalTtsService : IDisposable
                                 var root = parsed.RootElement;
                                 var kind = GetString(root, "event");
                                 if (kind == "ready")
-                                    ready = GetString(root, "voice_revision") == VoiceRevisionFor(voice)
+                                    ready = GetString(root, "voice_revision") == LocalTtsInstaller.VoiceRevision
                                         && GetString(root, "voice") == voice && GetInt(root, "model_loads") == 1;
                                 else if (kind == "attempt")
                                 {
@@ -375,14 +398,37 @@ internal sealed partial class LocalTtsService : IDisposable
                     : $"Voice Việt đã canh theo SRT · {parsedResult.ReviewCount} câu cần nghe lại; câu chật được tăng tốc động, không cắt chữ.");
                 accepted = true;
                 PruneOldRunsInBackground(outputRoot);
+                // F1 (17/11): quality report. A cue the worker had to spill into
+                // the following silence keeps every word (spoken_text == the
+                // displayed text); a cue whose spoken text has FEWER words than
+                // the subtitle actually dropped words - list it so the user can
+                // fix the SRT timecode instead of hearing a sentence cut short.
+                var spilledCues = parsedResult.Cues.Count(cue => cue.OverflowFrames > 0);
+                var shortenedNotes = new List<string>();
+                for (var index = 0; index < parsedResult.Cues.Count && index < cues.Count; index++)
+                {
+                    var cue = parsedResult.Cues[index];
+                    if (string.IsNullOrWhiteSpace(cue.SpokenText)) continue;
+                    var expected = cues[index];
+                    if (CountWords(cue.SpokenText) >= CountWords(expected.Text)) continue;
+                    shortenedNotes.Add(
+                        $"Cue #{index + 1} {expected.Id} ({expected.CueStart:0.00}s): doc \"{cue.SpokenText}\" - sub \"{expected.Text}\"");
+                }
+                foreach (var note in shortenedNotes)
+                    job.Log($"Voice thieu chu: {note}");
                 return new EditorTtsResult(resultPath, manifestSha,
                     new EditorVoiceTrack(masterPath, 0, duration), cueResults, parsedResult.ReviewCount,
-                    parsedResult.Engine, parsedResult.EngineVersion, parsedResult.Voice, cueWindows);
+                    parsedResult.Engine, parsedResult.EngineVersion, parsedResult.Voice, cueWindows)
+                {
+                    SpilledCues = spilledCues,
+                    ShortenedCues = shortenedNotes.Count,
+                    ShortenedNotes = shortenedNotes,
+                };
             }
             finally
             {
-                // Giữ hiện trường TRƯỚC khi dọn (vụ 13:17 27/09: cleanup xóa
-                // sạch input/result nên chết không để lại gì để repro).
+                // Preserve the crime scene BEFORE cleanup (the 13:17 27/09 case: cleanup wiped
+                // input/result, so a death left nothing to reproduce from).
                 if (!accepted)
                     QuarantineFailedRun(outputRoot, Path.GetFileName(runRoot), inputPath,
                         File.Exists(resultPath) ? resultPath : null,
@@ -394,9 +440,9 @@ internal sealed partial class LocalTtsService : IDisposable
             }
     }
 
-    // Hiện trường fail TTS: input manifest + result dở + chẩn đoán, giữ tối đa
-    // 3 lần gần nhất trong cache project (không phải thư mục xuất). Best-effort
-    // tuyệt đối: lỗi ở đây không được đè lên lỗi gốc của worker.
+    // TTS failure evidence: input manifest + partial result + diagnostics, keeping at most the
+    // 3 most recent runs in the project cache (not the export directory). Strictly best-effort:
+    // an error here must never mask the worker's original error.
     private static void QuarantineFailedRun(
         string outputRoot, string runId, string inputPath, string? partialResultPath,
         string diagnostics, string stderrTail)
@@ -431,11 +477,11 @@ internal sealed partial class LocalTtsService : IDisposable
         }
     }
 
-    // Tự tỉa cache voice sau mỗi job thành công (user duyệt 05/10, luật
-    // giữ-3-bản): giữ 3 result mới nhất + master của chúng + clip chúng
-    // tham chiếu; xóa result/master cũ hơn và clip mồ côi (không result nào
-    // giữ dùng tới). Chạy nền best-effort tuyệt đối: cấm fail job, cấm đụng
-    // file còn mới hơn result mới nhất (job retry/fail vừa xong còn dùng).
+    // Prune the voice cache automatically after every successful job (the user reviewed 05/10, the
+    // keep-3-versions rule): keep the 3 newest results + their masters + the clips they
+    // reference; delete older results/masters and orphaned clips (no kept result
+    // uses them). Runs as a strictly best-effort background task: never fail the job, never touch
+    // files newer than the newest result (a retry/failed job may still be using them).
     private static void PruneOldRunsInBackground(string outputRoot)
     {
         _ = Task.Run(() =>
@@ -552,11 +598,11 @@ internal sealed partial class LocalTtsService : IDisposable
         var result = await JsonSerializer.DeserializeAsync<TtsWorkerResult>(stream, _json, cancellationToken)
             ?? throw new InvalidDataException("Result TTS rỗng.");
         if (result.Schema != ManifestSchema || result.Cues is null || result.Master is null
-            || result.Engine != EngineFor(voice) || result.EngineVersion != EngineVersionFor(voice)
-            || result.VoiceRevision != VoiceRevisionFor(voice) || result.Voice != voice
+            || result.Engine != LocalTtsInstaller.Engine || result.EngineVersion != LocalTtsInstaller.EngineVersion
+            || result.VoiceRevision != LocalTtsInstaller.VoiceRevision || result.Voice != voice
             || result.SampleRate != expectedSampleRate || result.Cues.Count != expectedCues.Count)
             throw new InvalidDataException("Result TTS sai schema/model/voice/cue count.");
-        ValidateSentenceGroupWindows(result.Cues, expectedCues, expectedSampleRate, IsVieneuVoice(voice));
+        ValidateSentenceGroupWindows(result.Cues, expectedCues, expectedSampleRate);
         for (var index = 0; index < expectedCues.Count; index++)
         {
             var cue = result.Cues[index];
@@ -569,7 +615,13 @@ internal sealed partial class LocalTtsService : IDisposable
             var usedSentenceGroup = cue.TimingSource == "sentence-group" && expected.TimingSource != "sample";
             if (cue.TimingSource != expected.TimingSource && !usedSrtFallback && !usedSentenceGroup)
                 throw new InvalidDataException("Worker TTS tự đổi nguồn timing không hợp lệ.");
-            var effectiveStart = usedSrtFallback ? expected.CueStart : expected.VoiceStart;
+            // F1 (17/11): the srt-fallback pin follows the planned window (VoiceStart),
+            // not the raw subtitle time. EditorVoiceCuePlanner may have borrowed up to
+            // TtsTimingLimits.MaxLeadSeconds of the preceding silence so a sentence is
+            // never cut short; the worker mirrors the same cap in its manifest validation.
+            // Everything that reads CueStart (the 1-second misalignment guard below)
+            // still bounds how far the voice may drift from the subtitle.
+            var effectiveStart = expected.VoiceStart;
             var effectiveEnd = usedSrtFallback ? expected.CueEnd : expected.VoiceEnd;
             var startSample = usedSentenceGroup
                 ? cue.ClipStartSample
@@ -587,16 +639,23 @@ internal sealed partial class LocalTtsService : IDisposable
             var allowOverflow = overflow > 0 && overflow <= OverflowBudgetFrames
                 && cue.Status == "review" && cue.TimingSource != "sentence-group" && cue.TimingSource != "sample";
             var wantFrames = targetFrames + (allowOverflow ? overflow : 0);
+            // Mirror the worker gap cap: overflow may only consume real silence
+            // before the next cue starts. Without this, tail-of-A + head-of-B is
+            // accepted and sounds like the reported repeat-reading bug.
+            var nextStartSample = index + 1 < expectedCues.Count
+                ? checked((long)Math.Round(expectedCues[index + 1].CueStart * expectedSampleRate))
+                : checked((long)Math.Round(duration * expectedSampleRate));
+            var overflowFitsGap = !allowOverflow || cue.ClipEndSample <= nextStartSample;
             if (targetFrames <= 0 || cue.TargetFrames != targetFrames
                 || cue.Frames <= 0 || cue.Clipped is not false || cue.ClipStartSample != startSample
                 || cue.ClipEndSample != startSample + cue.Frames || cue.ClipEndSample > startSample + wantFrames
-                || cue.Frames != wantFrames
+                || cue.Frames != wantFrames || !overflowFitsGap
                 || Math.Abs(cue.FittedDuration - cue.Frames / (double)expectedSampleRate) > 1e-9)
                 throw new InvalidDataException("Voice chưa khớp đủ thời lượng thoại gốc hoặc bị cắt đuôi; không nhận master này.");
-            var needsReview = ValidateNativeSynthesis(cue, targetFrames, naturalSample, expectedSampleRate, IsVieneuVoice(voice), index)
+            var needsReview = ValidateNativeSynthesis(cue, targetFrames, naturalSample, expectedSampleRate, index)
                 || cue.TimingSource is "srt-fallback" or "sentence-group"
-                // 28/09: rút gọn chữ đọc luôn review (worker khai spoken_text) —
-                // khớp worker native_record_valid, không lệch status.
+                // 28/09: the text read is shortened only for review (the worker declares spoken_text) —
+                // matching the worker's native_record_valid, without status drift.
                 || !string.IsNullOrEmpty(cue.SpokenText);
             if ((cue.Status == "review") != needsReview || cue.VoiceReview != needsReview)
                 throw new InvalidDataException("Result TTS báo sai trạng thái fit/review.");
@@ -607,15 +666,15 @@ internal sealed partial class LocalTtsService : IDisposable
                 || ReadClipFrames(cue.ClipPath, expectedSampleRate) != cue.Frames)
                 throw new InvalidDataException("WAV voice thực tế không khớp SHA/số mẫu đã báo.");
         }
-        // Kiểm tra khớp giờ voice-sub (08/10, user bắt buộc): mọi cue (kể cả
-        // nhóm/overflow/sample) phải bắt đầu trong ±1s quanh giờ sub hiển thị,
-        // nếu không master này lệch là cho rớt thẳng kèm danh sách để sửa
-        // SRT/timing, không bao giờ để lọt voice sớm/trễ hàng giây xuống
-        // video. Validator cũ chỉ khớp khung/giây tuyệt đối từng cue nên
-        // lệch tương đối (sớm 1.8s/trễ 4s) vẫn lọt — nay chặn ở đây.
-        // Ngưỡng 1s (không phải 0): tròn mili-giây + biên làm tròn frame nằm
-        // trong ~0.05s; luật van worker (trễ 0/sớm 0) mới là enforcing chính,
-        // đây là lưới phòng thủ cuối cho video sau.
+        // Check the voice-subtitle time match (08/10, user-mandated): every cue (including
+        // group/overflow/sample) must start within ±1s around the displayed subtitle time,
+        // otherwise this master is off and fails outright with a list of entries to fix in the
+        // SRT/timing, never letting voice that is seconds early/late slip into the
+        // video. The old validator only matched each cue's frame/absolute second, so
+        // relative drift (1.8s early / 4s late) still slipped through — now blocked here.
+        // The 1s threshold (not 0): millisecond rounding plus the frame-rounding margin sits
+        // within ~0.05s; the worker's valve rule (late 0 / early 0) is the real enforcement,
+        // this is the final safety net for the video.
         const double MaxVoiceSubOffsetSeconds = 1.0;
         var misaligned = new List<string>();
         for (var index = 0; index < expectedCues.Count; index++)
@@ -674,7 +733,8 @@ internal sealed partial class LocalTtsService : IDisposable
             || request.Subtitle.Cues.Any(cue => string.IsNullOrWhiteSpace(cue.Id) || !double.IsFinite(cue.Start)
                 || !double.IsFinite(cue.End) || cue.Start < 0 || cue.End <= cue.Start || cue.End > request.Duration))
             throw new InvalidDataException("Cue voice bị trùng ID hoặc nằm ngoài thời lượng video.");
-        if (request.SpeechAnalysisSha256.Length != 64 || request.SpeechAnalysisSha256.Any(x => !Uri.IsHexDigit(x)))
+        if (!request.SrtOnly
+            && (request.SpeechAnalysisSha256.Length != 64 || request.SpeechAnalysisSha256.Any(x => !Uri.IsHexDigit(x))))
             throw new InvalidDataException("SHA-256 Whisper timing không hợp lệ.");
         var canonicalVoice = LocalTtsInstaller.CanonicalVoiceId(request.Voice ?? string.Empty);
         if (!string.IsNullOrWhiteSpace(request.Voice) && !LocalTtsInstaller.AvailableVoices.Contains(canonicalVoice, StringComparer.Ordinal))
@@ -712,6 +772,34 @@ internal sealed partial class LocalTtsService : IDisposable
     private static string? TryGetString(JsonElement root, string name) => root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
     private static double? TryGetDouble(JsonElement root, string name) => root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number && value.TryGetDouble(out var result) && double.IsFinite(result) ? result : null;
     private static string LastLine(string? text) => string.IsNullOrWhiteSpace(text) ? "không có chi tiết lỗi" : text.Trim().Split('\n', StringSplitOptions.RemoveEmptyEntries)[^1].Trim();
+
+    // Word count of a spoken/displayed line, punctuation-insensitive: the worker's
+    // text normalizer keeps token counts in the 1:1 range (digits -> one word each),
+    // so a strictly smaller count is a reliable "words were dropped" signal, while a
+    // same-count honest flag (a repeat-suspect render reading the full subtitle)
+    // never trips it.
+    private static int CountWords(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return 0;
+        var count = 0;
+        var inWord = false;
+        foreach (var character in text)
+        {
+            if (char.IsLetterOrDigit(character))
+            {
+                if (!inWord)
+                {
+                    count++;
+                    inWord = true;
+                }
+            }
+            else
+            {
+                inWord = false;
+            }
+        }
+        return count;
+    }
     private static async Task<string> HashAsync(string path, CancellationToken cancellationToken)
     {
         await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1024 * 1024,

@@ -6,18 +6,19 @@ using BiliSubStudio.Core.Ocr;
 
 namespace BiliSubStudio.Core.ContractTests;
 
-// Ứng viên 2 luminance (spec khóa 16/09; luật nhới + enforce 21/09): chữ ký
-// sáng từng dòng (trắng>=200 + tối<64). Thoại đo thật: sáng 12-19%; giấy/mờ/
-// nền/mực-cảnh: 0% sáng. Luật nhới (user chốt 21/09 "thà giữ rác hơn xén
-// thoại"): chỉ đòi phe sáng — sub nền sáng viền mỏng không bị xén oan.
-// Enforce ngay ở tầng frame; mọi lỗi decode/box -> passthrough nguyên,
-// không bao giờ giết chữ oan.
+// Luminance candidate gate 2 (spec locked 16/09; lenient rule + enforcement 21/09): per-line
+// bright signature (white>=200 + dark<64). Measured real dialogue: 12-19% bright; paper/blurry/
+// background/scene ink: 0% bright. The lenient rule (user confirmed 21/09, "better to keep garbage
+// than trim dialogue"): requires only the bright side — a bright-background subtitle with a thin
+// outline is not trimmed wrongly.
+// Enforcement happens right at the frame layer; every decode/box error -> untouched passthrough,
+// never kills text wrongly.
 [SupportedOSPlatform("windows7.0")]
 internal static class OcrLuminanceGateContract
 {
     public static async Task RunAsync()
     {
-        // Enforce pin (21/09): đã proof trên khung tổng hợp + user duyệt.
+        // Enforce pin (21/09): proof on a composite frame + user approved.
         Check(OcrLineLuminance.EnforceDefault, "luminance phải enforce (luật nhới 21/09: chỉ đòi phe sáng)");
 
         ClassifyOperatingPoints();
@@ -33,21 +34,21 @@ internal static class OcrLuminanceGateContract
 
     private static void ClassifyOperatingPoints()
     {
-        // Điểm đo thật 16/09 (khung thoại video Phần 1+2/0915).
+        // Real measured points 16/09 (dialogue frames from the Part 1+2/0915 video).
         Check(OcrLineLuminance.KeepLine(new OcrLineLuminance.LineLuminance(0.15, 0.45)), "thoại mẫu 1 phải giữ");
         Check(OcrLineLuminance.KeepLine(new OcrLineLuminance.LineLuminance(0.12, 0.54)), "thoại mẫu 2 phải giữ");
         Check(OcrLineLuminance.KeepLine(new OcrLineLuminance.LineLuminance(0.19, 0.39)), "thoại mẫu 3 phải giữ");
-        // Giấy sách / chữ mờ / nền (0% sáng).
+        // Book paper / blurry text / background (0% bright).
         Check(!OcrLineLuminance.KeepLine(new OcrLineLuminance.LineLuminance(0.0, 0.2)), "giấy sách phải bỏ");
         Check(!OcrLineLuminance.KeepLine(new OcrLineLuminance.LineLuminance(0.0, 0.1)), "chữ mờ phải bỏ");
         Check(!OcrLineLuminance.KeepLine(new OcrLineLuminance.LineLuminance(0.0, 0.0)), "nền trơn phải bỏ");
-        // Tuyết/nền sáng chói (sáng mà thiếu phe tối) -> GIỮ (luật nhới 21/09:
-        // sub trắng viền mỏng trên nền sáng cũng mang chữ ký này; xén là mất
-        // thoại thật. Blob trắng ma nếu lọt thì judge/reconcile lo tiếp).
+        // Snow/glaring bright background (bright but missing the dark side) -> KEEP (lenient rule 21/09:
+        // a white thin-outline subtitle on a bright background also carries this signature; trimming
+        // loses real dialogue. If a phantom white blob slips through, the judge/reconcile handles it).
         Check(OcrLineLuminance.KeepLine(new OcrLineLuminance.LineLuminance(0.9, 0.0)), "tuyết/nền sáng phải giữ (nhới 21/09)");
-        // Chữ vàng (sáng + viền tối) -> giữ ở đây (cổng chroma lo vàng riêng).
+        // Yellow text (bright + dark outline) -> kept here (the chroma gate drops yellow separately).
         Check(OcrLineLuminance.KeepLine(new OcrLineLuminance.LineLuminance(0.9, 0.4)), "chữ vàng phải giữ");
-        // Biên ngưỡng (cách xa dust float).
+        // Threshold boundary (kept away from the dust float).
         Check(OcrLineLuminance.KeepLine(new OcrLineLuminance.LineLuminance(0.08, 0.15)), "trên ngưỡng phải giữ");
         Check(!OcrLineLuminance.KeepLine(new OcrLineLuminance.LineLuminance(0.04, 0.5)), "dưới ngưỡng sáng phải bỏ");
         Check(OcrLineLuminance.KeepLine(new OcrLineLuminance.LineLuminance(0.5, 0.05)), "sáng đủ dù thiếu tối vẫn giữ (nhới 21/09)");
@@ -70,7 +71,7 @@ internal static class OcrLuminanceGateContract
     {
         if (!OperatingSystem.IsWindows()) return;
         await Task.Yield();
-        // Chữ trắng trên nền đen: 3 vệt ngang mô phỏng glyph (trắng+viền tối).
+        // White text on a black background: 3 horizontal strokes simulating a glyph (white + dark outline).
         var dialogue = EncodeJpeg(graphics =>
         {
             graphics.Clear(Color.Black);
@@ -105,7 +106,7 @@ internal static class OcrLuminanceGateContract
         Check(measured[0]!.BrightFraction > 0.05 && measured[0]!.DarkFraction > 0.3,
             "chữ ký thoại tổng hợp sai hình (sáng+tối)");
 
-        // Giấy xám chữ tối (sách): nền xám, vệt tối — thiếu phe sáng.
+        // Grey paper with dark text (a book): grey background, dark strokes — missing the bright side.
         var paper = EncodeJpeg(graphics =>
         {
             graphics.Clear(Color.FromArgb(110, 110, 110));
@@ -117,14 +118,14 @@ internal static class OcrLuminanceGateContract
         Check(paperMeasured is not null && paperMeasured[0] is not null, "decode giấy hỏng");
         Check(!OcrLineLuminance.KeepLine(paperMeasured![0]!), "chữ tối trên giấy phải bỏ");
 
-        // Nền trơn (không chữ): thiếu cả 2 phe.
+        // Flat background (no text): missing both sides.
         var blank = EncodeJpeg(graphics => graphics.Clear(Color.FromArgb(30, 30, 30)));
         var blankMeasured = OcrLineLuminance.Measure(blank, lines, 640, 80);
         Check(blankMeasured is not null && blankMeasured[0] is not null, "decode nền hỏng");
         Check(!OcrLineLuminance.KeepLine(blankMeasured![0]!), "nền trơn phải bỏ");
 
-        // Scale box: canvas 1280x320 -> jpeg 640x160 (tỉ lệ 0.5). Hộp RỘNG hơn
-        // vệt trắng (như box worker thật ôm cả nền quanh glyph).
+        // Scale box: canvas 1280x320 -> jpeg 640x160 (ratio 0.5). The box is WIDER than
+        // the white stroke (like a real worker box that also includes the background around the glyph).
         var scaled = EncodeJpeg(graphics =>
         {
             graphics.Clear(Color.Black);
@@ -141,7 +142,7 @@ internal static class OcrLuminanceGateContract
     {
         var result = new OcrResult(true, true, "你好", 0.99,
             [new OcrLine("你好", 0.99, [0, 0, 100, 40])]);
-        // Decode hỏng / rỗng / không Windows-guard đều passthrough nguyên.
+        // Broken decode / empty / no Windows-guard all pass through untouched.
         foreach (var bad in new byte[][] { [], [1, 2, 3], new byte[16] })
         {
             var (kept, stats) = OcrLineLuminance.Apply(bad, result, 1280, 320, enforce: true);
@@ -154,7 +155,7 @@ internal static class OcrLuminanceGateContract
         var failed = new OcrResult(false, false, "", 0, []);
         var (failedKept, _) = OcrLineLuminance.Apply(new byte[] { 1 }, failed, 1280, 320, enforce: true);
         Check(ReferenceEquals(failedKept, failed), "result lỗi phải passthrough");
-        // Box suy biến (r<=l): fail-open giữ dòng.
+        // Degenerate box (r<=l): fail-open keeps the line.
         var weird = new OcrResult(true, true, "x", 0.5, [new OcrLine("x", 0.5, [10, 10, 10, 10])]);
         var okJpeg = EncodeJpegOrSkip();
         if (okJpeg is not null)
@@ -192,12 +193,12 @@ internal static class OcrLuminanceGateContract
             using var brush = new SolidBrush(Color.FromArgb(40, 40, 40));
             graphics.FillRectangle(brush, 40, 8, 220, 26);
         });
-        // Trộn: dòng thoại + dòng giấy trong 1 result (mô phỏng dán sách-thoại).
+        // Mixed: a dialogue line + a paper line in 1 result (simulating paper-dialogue pasting).
         var mixed = new OcrResult(true, true, "dialogue\npaper", 0.9,
             [new OcrLine("dialogue", 0.95, [0, 0, 640, 80]),
              new OcrLine("paper", 0.85, [0, 0, 640, 80])]);
-        // Không thể đo 2 ảnh khác nhau trong 1 Apply — đo riêng rồi dựng tay.
-        // Ở đây kiểm ngữ nghĩa rebuild bằng cách gọi Apply trên từng ảnh:
+        // Two different images cannot be measured in 1 Apply — measure them separately then assemble by hand.
+        // Here the rebuild semantics are checked by calling Apply on each image:
         var (keptDialog, _) = OcrLineLuminance.Apply(dialogue,
             new OcrResult(true, true, "dialogue", 0.95, [new OcrLine("dialogue", 0.95, [0, 0, 640, 80])]),
             640, 80, enforce: true);
@@ -258,25 +259,25 @@ internal static class OcrLuminanceGateContract
         if (!valid) throw new InvalidOperationException(message);
     }
 
-    // Ứng viên màu sắc (user chốt 18/09: sub luôn TRẮNG, chữ màu loại luôn).
-    // Quy tắc giữ dòng: CÓ điểm trắng (sáng-không-màu) HOẶC thiếu điểm màu.
-    // Chữ trắng trên trời xanh (nền màu bão hòa!) vẫn giữ nhờ cổng trắng —
-    // case nguy hiểm nhất, ghim ở đây.
+    // Color chroma candidate gate (user confirmed 18/09: subtitles are always WHITE, colored text
+    // is always rejected). The keep-line rule: HAS white points (bright-no-color) OR lacks colored points.
+    // White text on a blue sky (a saturated color background!) is still kept thanks to the white gate —
+    // the most dangerous case, pinned here.
     private static void ChromaOperatingPoints()
     {
         Check(OcrLineChroma.KeepLine(new OcrLineChroma.LineChroma(0.15, 0.02)), "chữ trắng phải giữ");
-        // Trắng 12% + màu 50% (trời xanh sau chữ): cổng trắng cứu — KHÔNG bỏ.
+        // White 12% + color 50% (blue sky behind the text): the white gate rescues it — NOT dropped.
         Check(OcrLineChroma.KeepLine(new OcrLineChroma.LineChroma(0.12, 0.50)), "trắng trên nền trời phải giữ");
-        // Danmaku xanh (0% trắng, 60% màu) -> bỏ.
+        // Blue danmaku (0% white, 60% color) -> drop.
         Check(!OcrLineChroma.KeepLine(new OcrLineChroma.LineChroma(0.0, 0.60)), "chữ xanh phải bỏ");
-        // Tuyết/nền trắng (nhiều trắng, không màu) -> giữ.
+        // Snow/white background (lots of white, no color) -> keep.
         Check(OcrLineChroma.KeepLine(new OcrLineChroma.LineChroma(0.90, 0.0)), "nền trắng phải giữ");
-        // Tối (thiếu cả 2) -> giữ (fail-open).
+        // Dark (missing both) -> keep (fail-open).
         Check(OcrLineChroma.KeepLine(new OcrLineChroma.LineChroma(0.0, 0.02)), "tối thiếu màu phải giữ");
-        // Chữ vàng (trắng 0, màu cao) -> BỎ (đổi chính sách 18/09 theo yêu cầu
-        // user: sub luôn trắng; cổng luminance vẫn giữ vàng, chroma thì không).
+        // Yellow text (white 0, high color) -> DROP (18/09 policy change per user
+        // request: subtitles are always white; the luminance gate still keeps yellow, chroma does not).
         Check(!OcrLineChroma.KeepLine(new OcrLineChroma.LineChroma(0.0, 0.80)), "chữ vàng phải bỏ (chính sách mới)");
-        // Biên ngưỡng (cách xa dust float).
+        // Threshold boundary (kept away from the dust float).
         Check(OcrLineChroma.KeepLine(new OcrLineChroma.LineChroma(0.04, 0.90)), "đúng ngưỡng trắng phải giữ");
         Check(!OcrLineChroma.KeepLine(new OcrLineChroma.LineChroma(0.039, 0.90)), "dưới ngưỡng trắng phải bỏ");
         Check(!OcrLineChroma.KeepLine(new OcrLineChroma.LineChroma(0.0, 0.15)), "đúng ngưỡng màu phải bỏ");
@@ -295,14 +296,14 @@ internal static class OcrLuminanceGateContract
             graphics.FillRectangle(brush, 120, 44, 260, 24);
         }
         var lines = new[] { FullBox("你好世界") };
-        // Chữ trắng trên nền đen: giữ, trắng nhiều, màu ~0.
+        // White text on a black background: keep, lots of white, color ~0.
         var dialogue = EncodeJpeg(graphics => { graphics.Clear(Color.Black); Bars(graphics, Color.White); });
         var measured = OcrLineChroma.Measure(dialogue, lines, 640, 80);
         Check(measured is not null && measured[0] is not null, "decode thoại hỏng");
         Check(OcrLineChroma.KeepLine(measured![0]!), "trắng nền đen phải giữ");
         Check(measured[0]!.WhiteFraction > 0.05, "trắng thoại phải đo được");
         Check(measured[0]!.ColoredFraction < 0.15, "trắng không được đo ra màu");
-        // Danmaku xanh (màu vụ 陪一支): vệt xanh trên nền tối -> bỏ.
+        // Blue danmaku (陪一支 color block): a blue stroke on a dark background -> drop.
         var danmaku = EncodeJpeg(graphics =>
         {
             graphics.Clear(Color.FromArgb(20, 20, 20));
@@ -313,7 +314,7 @@ internal static class OcrLuminanceGateContract
         Check(!OcrLineChroma.KeepLine(danmakuMeasured![0]!), "chữ xanh phải bỏ");
         Check(danmakuMeasured[0]!.WhiteFraction < 0.04 && danmakuMeasured[0]!.ColoredFraction >= 0.15,
             "chữ ký danmaku sai hình (thiếu trắng + thừa màu)");
-        // Trắng trên TRỜI XANH (nền màu bão hòa): cổng trắng phải cứu.
+        // White on a BLUE SKY (saturated color background): the white gate must rescue it.
         var sky = EncodeJpeg(graphics =>
         {
             graphics.Clear(Color.FromArgb(135, 206, 235));
@@ -323,7 +324,7 @@ internal static class OcrLuminanceGateContract
         Check(skyMeasured is not null && skyMeasured[0] is not null, "decode trời hỏng");
         Check(skyMeasured![0]!.ColoredFraction > 0.2, "nền trời phải đo ra màu (test mới có ý nghĩa)");
         Check(OcrLineChroma.KeepLine(skyMeasured![0]!), "trắng trên trời xanh phải giữ (nguy hiểm nhất)");
-        // Chữ vàng -> bỏ (chính sách mới 18/09).
+        // Yellow text -> drop (new policy 18/09).
         var yellow = EncodeJpeg(graphics =>
         {
             graphics.Clear(Color.Black);
@@ -337,7 +338,7 @@ internal static class OcrLuminanceGateContract
     private static void ChromaApplySemantics()
     {
         if (!OperatingSystem.IsWindows()) return;
-        // Trộn 2 dòng khác box: trắng giữ, xanh bỏ, chữ ráp lại.
+        // Mix 2 lines with different boxes: white kept, blue dropped, text stitched back together.
         var mixed = EncodeJpeg(graphics =>
         {
             graphics.Clear(Color.Black);
@@ -352,8 +353,8 @@ internal static class OcrLuminanceGateContract
         var (kept, stats) = OcrLineChroma.Apply(mixed, result, 640, 80, enforce: true);
         Check(kept.Detected && kept.Text == "sub" && kept.Lines.Count == 1, "enforce giữ đúng dòng trắng");
         Check(stats.WouldDropLines == 1 && stats.MeasuredLines == 2, "đếm sai");
-        // Toàn xanh -> trắng kết quả (không còn gì trắng). 3 vệt cho đủ mật
-        // độ màu (1 vệt nhỏ trong hộp rộng thì fail-open giữ — đúng luật).
+        // All blue -> blank result (nothing white left). 3 strokes give enough color
+        // density (a single small stroke in a wide box is fail-open kept — the correct rule).
         var blue = EncodeJpeg(graphics =>
         {
             graphics.Clear(Color.Black);
@@ -366,7 +367,7 @@ internal static class OcrLuminanceGateContract
             new OcrResult(true, true, "spam", 0.9, [new OcrLine("spam", 0.9, [0, 0, 640, 80])]),
             640, 80, enforce: true);
         Check(!allBlue.Detected && allBlue.Text == "" && allBlue.Lines.Count == 0, "toàn xanh phải trắng");
-        // Decode hỏng -> passthrough + đếm.
+        // Broken decode -> passthrough + count.
         var bad = new OcrResult(true, true, "x", 0.9, [new OcrLine("x", 0.9, [0, 0, 100, 40])]);
         var (keptBad, badStats) = OcrLineChroma.Apply([1, 2, 3], bad, 640, 80, enforce: true);
         Check(keptBad.Text == "x" && badStats.DecodeFails == 1, "decode hỏng phải passthrough");

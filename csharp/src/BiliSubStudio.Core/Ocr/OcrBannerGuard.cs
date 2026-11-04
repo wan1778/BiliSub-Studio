@@ -1,36 +1,36 @@
 namespace BiliSubStudio.Core.Ocr;
 
-// Guard chữ nền tĩnh (banner/watermark/logo có chữ), chạy ở FINISH sau
-// Reconcile (18/09, khóa plan): fix #1 bỏ drop-im-lặng thì chữ nền tĩnh đứng
-// yên trong đoạn im sẽ lọt (drift không bắt được, tai thì im). Guard này lấp
-// đúng cái lỗ đó — và CHỈ soi cue mắt-giữ-trong-im-lặng:
-// - Cue nào tai từng khớp (MaxSimilarity >= 0.3 ở bất kỳ instance nào trong
-//   nhóm) thì MIỄN VĨNH VIỄN — thoại dài, caption có đọc kèm, chorus... thoát
-//   hết. Tương tác với mọi fix tai-mắt = 0 theo cấu trúc.
-// - Gom nhóm theo FUZZY (>= 0.85, tái dùng TextSimilarity): watermark nhấp
-//   nháy bị OCR đọc ra 2-3 biến thể vẫn gộp chung, không né được.
-// - Ngưỡng TẦNG theo độ dài video (vá video ngắn): video >= 60s cần tỷ lệ
-//   >= 50% VÀ cộng dồn >= 20s; video < 60s cần tỷ lệ >= 85%; mọi độ dài: 1
-//   mạch liên tục >= 45s là banner (không thoại nào giữ nguyên 45s).
-// Thuần logic, fail-open: thiếu dữ liệu là giữ hết. Drop ghi lý do có số để
-// người duyệt thấy (không xóa âm thầm). Ghi vào .exclude.json như judge drop
-// nên list cuối = SRT theo đúng đường cũ.
+// Guard for static background text (banner/watermark/logo with text), running at FINISH after
+// Reconcile (18/09, plan lock): fix #1 removed drop-on-silence, so static background text standing
+// still through a silent stretch would slip through (drift never catches it, the ear is silent). This guard fills
+// exactly that hole — and only inspects cues the eye kept during silence:
+// - Any cue the ear ever matched (MaxSimilarity >= 0.3 on any instance in
+//   the group) is EXEMPT FOREVER — long dialogue, captions read aloud, chorus... all
+//   escape. Interacts with every ear-eye fix = 0 by structure.
+// - Groups by FUZZY match (>= 0.85, reusing TextSimilarity): a flickering watermark read by OCR as
+//   2-3 variants still merges together, it cannot dodge.
+// - TIERED thresholds by video length (patches short videos): video >= 60s needs a share
+//   >= 50% AND cumulative >= 20s; video < 60s needs a share >= 85%; any length: 1
+//   continuous run >= 45s is a banner (no dialogue stays unchanged for 45s).
+// Pure logic, fail-open: missing data means keep everything. Drops record a reasoned, numbered cause so
+// the reviewer can see it (not deleted silently). Written to .exclude.json like a judge drop,
+// so the final list = the SRT via exactly the old path.
 public static class OcrBannerGuard
 {
-    // Video dài mới xét tỷ lệ 50% (video ngắn 50% dễ dính caption thật).
+    // Only long videos consider a 50% share (short videos at 50% easily catch a real caption).
     public const double LongVideoSeconds = 60;
     public const double ShareThresholdLong = 0.5;
     public const double MinCumulativeSecondsLong = 20;
-    // Video ngắn: chỉ banner phủ gần hết mới dính.
+    // Short video: only a banner covering almost the whole thing gets caught.
     public const double ShareThresholdShort = 0.85;
-    // 1 mạch liên tục dài cỡ này thì không thể là thoại.
+    // A continuous run this long cannot be dialogue.
     public const double MaxContinuousSeconds = 45;
-    // Gom biến thể OCR của cùng 1 chữ nền (thiếu/thừa 1 ký tự).
+    // Groups OCR variants of the same background text (one character missing/extra).
     public const double GroupSimilarity = 0.85;
-    // Miễn guard: tai từng nghe na ná ở bất kỳ instance nào (hướng AN TOÀN —
-    // miễn chỉ nghĩa là guard này bỏ qua, cue vẫn qua mọi filter khác).
+    // Guard exemption: the ear once heard something close on any instance (SAFETY-oriented —
+    // exempt only means this guard skips it, the cue still goes through every other filter).
     public const double EarExemptSimilarity = 0.3;
-    // Nối mạch hiển thị: watermark nhấp nháy tắt 0.2s vẫn tính 1 mạch.
+    // Joins display runs: a watermark flickering off for 0.2s still counts as one run.
     public const double RunJoinGapSeconds = 1.0;
 
     public sealed record BannerDrop(double Start, string Text, string Reason);
@@ -48,7 +48,7 @@ public static class OcrBannerGuard
             .ToArray();
         if (list.Length == 0 || !(durationSeconds > 0) || !double.IsFinite(durationSeconds))
             return [];
-        // Gom nhóm fuzzy theo chữ chuẩn hóa (union-find, ngưỡng 0.85).
+        // Fuzzy grouping by normalized text (union-find, threshold 0.85).
         var parent = new int[list.Length];
         for (var index = 0; index < parent.Length; index++) parent[index] = index;
         int Find(int value)
@@ -93,7 +93,7 @@ public static class OcrBannerGuard
         var drops = new List<BannerDrop>();
         foreach (var members in groups.Values)
         {
-            // Miễn vĩnh viễn: tai từng khớp na ná ở bất kỳ instance nào.
+            // Permanently exempt: the ear once matched something close on any instance.
             if (EarHeard(speech, members)) continue;
             var (cumulative, maxRun) = Measure(members);
             var share = cumulative / durationSeconds;
@@ -123,8 +123,8 @@ public static class OcrBannerGuard
         return drops;
     }
 
-    // Tai từng nghe na ná nhóm này? (bất kỳ cue nào trong nhóm khớp >= 0.3
-    // với đoạn thoại chồng lấn nó). Không speech = không miễn.
+    // Did the ear ever hear something close for this group? (any cue in the group matching >= 0.3
+    // with the speech segment overlapping it). No speech = no exemption.
     internal static bool EarHeard(
         IReadOnlyList<BiliSubStudio.Core.Editor.EditorSpeechSegment>? speech,
         IReadOnlyList<OcrCue> members)
@@ -141,8 +141,8 @@ public static class OcrBannerGuard
         return false;
     }
 
-    // Cộng dồn (hợp các khoảng chồng) + mạch dài nhất (nối gap <= 1s để bắt
-    // watermark nhấp nháy).
+    // Cumulative (union of overlapping spans) + longest run (joining gaps <= 1s to catch a
+    // flickering watermark).
     internal static (double Cumulative, double MaxRun) Measure(IReadOnlyList<OcrCue> members)
     {
         var spans = members

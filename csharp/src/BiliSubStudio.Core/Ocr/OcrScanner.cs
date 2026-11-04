@@ -23,16 +23,16 @@ public sealed class OcrScanner
     // ~0.001-0.007. Steady windows keep the strict 0.02 bar. Caps are unchanged.
     private const double AdaptiveTransitionChangeThreshold = .015;
     private const int MaxLaneRecoveryAttempts = 2;
-    // Thang NVDEC-retry (17/10, lỗi crawl 0,08x): ffmpeg lane chết giữa đường
-    // (ExitCode != 0, decode hỏng/driver hiccup) trước đây rơi VĨNH VIỄN về
-    // software cho tới hết segment — 4/8 lane CPU hóa trên video 7h39m.
-    // Nay: tối đa MaxNvdecLaneAttempts lần NVDEC nối tiếp (mỗi lần resume từ
-    // checkpoint an toàn, backoff 1.5/3/6s cho driver hồi), hết thang mới
-    // software lần đầu tiên + telemetry đếm rõ để nhìn thấy.
+    // NVDEC-retry ladder (17/10, 0.08x crawl failure): an ffmpeg lane dying mid-stream
+    // (ExitCode != 0, decode corruption/driver hiccup) previously dropped PERMANENTLY to
+    // software until the end of the segment — 4/8 lanes CPU-ized on a 7h39m video.
+    // Now: up to MaxNvdecLaneAttempts consecutive NVDEC retries (each resuming from a
+    // safe checkpoint, backoff 1.5/3/6s for the driver to recover), and only when the ladder is exhausted
+    // software falls back for the first time + telemetry counts clearly to make it visible.
     private const int MaxNvdecLaneAttempts = 3;
     private const double NvdecRetryBackoffSeconds = 1.5;
-    // Spawn 8 lane cách quãng tránh pha đua giành NVDEC session lúc start/resume
-    // (8 decoder + 2 CUDA worker context sinh cùng nhịp từng là dỏng hỏng session).
+    // Spawn 8 lanes staggered to avoid the race for NVDEC sessions at start/resume
+    // (8 decoders + 2 CUDA worker contexts being created at the same beat used to break sessions).
     private const int LaneSpawnStaggerMs = 150;
     private static readonly TimeSpan CheckpointInterval = TimeSpan.FromSeconds(30);
     private readonly ToolManager _tools;
@@ -43,8 +43,8 @@ public sealed class OcrScanner
     private readonly OcrSidecarStore _sidecars;
     private readonly string _appDataDir;
     private OwnedProcessGroup? _activeProcesses;
-    // Probe/sidecar cache app-lifetime: metadata video tĩnh, key = vân file
-    // (đổi file là miss). Null chỉ cache memory (lỗi thoáng không poison disk).
+    // App-lifetime probe/sidecar cache: video metadata is static, key = file hash
+    // (changing the file is a miss). Null is memory-cache only (a transient error does not poison disk).
     private readonly ConcurrentDictionary<string, VideoProbe?> _probeCache = new();
     private readonly ConcurrentDictionary<string, OcrSidecar.SidecarDocument?> _sidecarDocs = new();
 
@@ -117,8 +117,8 @@ public sealed class OcrScanner
 
     internal int ActiveProcessCount => Volatile.Read(ref _activeProcesses)?.ActiveCount ?? 0;
 
-    // Scope vét batch của scan đang chạy (ambient theo async-flow: lane/canary/audit
-    // đều chảy từ RunCoreAsync nên thấy; scan khác không thấy). Null = đi đường cũ.
+    // Batch scavenging scope of the running scan (ambient along the async-flow: lane/canary/audit
+    // all flow from RunCoreAsync so they see it; other scans do not). Null = old path.
     private static readonly AsyncLocal<OcrManager.OcrBatchScope?> _ambientBatchScope = new();
 
     private async Task<OcrScanResult> RunCoreAsync(
@@ -128,8 +128,8 @@ public sealed class OcrScanner
         OcrScanStartMode startMode,
         OwnedProcessGroup processes)
     {
-        // Scope vét batch theo scan (cap=1 lúc này = đường cũ y hệt; mở 8 sau parity).
-        // Dispose cuối scan (sau lane). finally dọn ambient để scan sau không thấy scope chết.
+        // Per-scan batch scavenging scope (cap=1 right now = exactly the old path; opens to 8 after parity).
+        // Dispose at the end of the scan (after the lanes). The finally cleans the ambient so the next scan does not see a dead scope.
         await using var batchScope = _ocr.CreateBatchScope(job.CancellationToken);
         _ambientBatchScope.Value = batchScope;
         try
@@ -153,8 +153,8 @@ public sealed class OcrScanner
         var source = Path.GetFullPath(request.Path.Trim());
         if (!File.Exists(source) || new FileInfo(source).Length <= 0) throw new FileNotFoundException("Thiếu video nguồn.", source);
         if (request.Duration <= 0) throw new ArgumentException("Thiếu thời lượng video.");
-        // Sidecar identity: vân file cho probe/VAD/pxv cache (đổi file là miss).
-        // Doc sidecar cập nhật dần trong scan (probe → VAD → pxv), lưu best-effort.
+        // Sidecar identity: file hash for the probe/VAD/pxv caches (changing the file is a miss).
+        // Read the sidecar progressively during the scan (probe → VAD → pxv), saved best-effort.
         var fileIdentity = OcrSidecar.FileIdentity.FromFile(source);
         OcrSidecar.SidecarDocument? sidecarDoc = null;
         long sidecarProbeHits = 0;
@@ -173,9 +173,9 @@ public sealed class OcrScanner
         if (startMode == OcrScanStartMode.Fresh)
         {
             await _checkpoints.RemoveAsync(keyRequest, token);
-            // Lọc thời gian: Fresh = chấm lại từ đầu — xóa journal cũ (verdict
-            // của lần trước/logic cũ không được dedup chặn chấm lại). Xóa cả
-            // appdata mới lẫn alongside di sản cạnh video.
+            // Time filter: Fresh = judge from scratch — delete the old journal (verdicts
+            // from the previous run/old logic must not be blocked from re-judging by dedup). Delete both
+            // the new appdata and the legacy alongside file beside the video.
             try { File.Delete(OcrVerdictJournal.JournalPath(source, string.Empty)); } catch { }
             try { File.Delete(OcrVerdictJournal.AppDataPath(source, _appDataDir)); } catch { }
         }
@@ -195,7 +195,7 @@ public sealed class OcrScanner
         }
         if (startMode == OcrScanStartMode.Resume && saved is null)
         {
-            // Vụ 06/10: chẩn đoán chi tiết rồi mới báo (đừng để user đoán mò).
+            // Case 06/10: run detailed diagnostics before reporting (do not leave the user guessing).
             var diagnosis = await _checkpoints.DiagnoseResumeAsync(keyRequest, CancellationToken.None);
             job.Error($"Resume OCR mất checkpoint: key {diagnosis.Key[..12]}... · "
                 + $"file chính {(diagnosis.MainExists ? "CÓ" : "KHÔNG")} · backup {(diagnosis.BackupExists ? "CÓ" : "KHÔNG")} · "
@@ -205,9 +205,9 @@ public sealed class OcrScanner
             throw new InvalidOperationException("Không còn checkpoint OCR phù hợp để tiếp tục. Hãy Quét từ đầu.");
         }
 
-        // Tai nghe Whisper đã bỏ khỏi đường quét (22/09: tốn ~1 tiếng/phim mà
-        // chỉ bỏ được ~2% lượt đọc). Quét thuần bằng mắt; các chỗ ăn theo
-        // (gộp trùng, banner, judge, cảnh báo sót) tự chạy luật mắt.
+        // Whisper ear listening was removed from the scan path (22/09: cost ~1 hour per film while
+        // only dropping ~2% of reads). Purely eye-based scanning; the dependent steps
+        // (duplicate merging, banner, judge, missing-sub warning) follow eye rules themselves.
         IReadOnlyList<EditorSpeechSegment> speechSegments = [];
 
         // A Hybrid request may have explicitly fallen back to GPU. Resume the
@@ -224,10 +224,10 @@ public sealed class OcrScanner
                  && !string.Equals(_ocr.Status.ActiveMode, "hybrid", StringComparison.OrdinalIgnoreCase))
             job.Warn(_ocr.Status.Error ?? "Hybrid không sẵn sàng; lượt này đã chuyển sang GPU.");
 
-        // Model tier theo chế độ quét: Accurate = Medium (không đụng),
-        // Balanced/Fast = Mobile nhỏ nhất (28/09, theo lệnh user). Dựng pool
-        // đúng tier trước khi khóa topology; checkpoint key ăn tên model nên
-        // resume không lẫn (checkpoint small cũ vô hiệu, quét mới).
+        // Model tier by scan mode: Accurate = Medium (untouched),
+        // Balanced/Fast = the smallest Mobile (28/09, per user order). Build the pool
+        // with the right tier before locking topology; the checkpoint key includes the model name so
+        // resume cannot mix tiers (an old small checkpoint is void, rescan).
         var tierDet = OcrModelTier.DetectionModel(request.Mode);
         var tierRec = OcrModelTier.RecognitionModel(request.Mode);
         await _ocr.EnsureModelTierAsync(tierDet, tierRec, token);
@@ -272,8 +272,8 @@ public sealed class OcrScanner
         }
         var configuredWorkers = _ocr.Status.Workers;
         var configuredWorkerKinds = _ocr.Status.WorkerKinds;
-        // Small tier có thể đã grown 2→4 từ session resume trước: chấp nhận
-        // khoảng [base, cap] thay vì bằng tuyệt đối (base = luật cũ).
+        // Small tier may already have grown 2→4 from a previous resumed session: accept
+        // the interval [base, cap] rather than an absolute value (base = old rule).
         var expectedBase = OcrTopologyBenchmark.WorkerTarget(_ocr.Status.ActiveMode, selected);
         var expectedCap = await _ocr.EffectiveWorkerTargetAsync(_ocr.Status.ActiveMode, selected, token);
         if (configuredWorkers < expectedBase || configuredWorkers > expectedCap)
@@ -287,24 +287,24 @@ public sealed class OcrScanner
         if (checkpoint.Lanes.Count != selected)
             throw new InvalidDataException($"OCR checkpoint topology không hợp lệ: {checkpoint.Lanes.Count}/{selected} lane.");
         // Small-tier scale-up (26/09): VRAM-gated grow 2→4 workers sau khi
-        // topology đã khóa, trước khi lane chạy (chưa có traffic nên rebuild
-        // availability an toàn). Không đủ VRAM/bị ghim OOM thì giữ nguyên.
+        // topology already locked, before the lanes run (no traffic yet so the rebuild
+        // safety window is available). With insufficient VRAM/OOM-pinned, keep as-is.
         var grownWorkers = await _ocr.TryGrowSmallTierAsync(selected, token);
         if (grownWorkers != configuredWorkers)
             job.Log($"OCR Small tier mở rộng worker {configuredWorkers} → {grownWorkers} (VRAM cho phép).");
         else if (_ocr.SmallTierGrowReason.Length > 0)
             job.Log($"OCR Small tier giữ {configuredWorkers} worker: {_ocr.SmallTierGrowReason}");
-        // Sức mạnh runtime thật (27/09, vụ balanced 4h: grow 2→4 xong nhưng
-        // mọi đường runtime/recovery/telemetry vẫn dùng configuredWorkers=2 —
-        // lane retry rebuild pool về 2, giết worker đã grow, cả lượt quét còn
-        // lại chạy nửa công suất). configuredWorkers giữ nguyên cho checkpoint
-        // + validation resume (pre-grow mới resume được khi grow bị chặn);
-        // effectiveWorkers cho mọi thứ runtime.
+        // Real runtime strength (27/09, the balanced 4h case: grow 2→4 succeeded but
+        // every runtime/recovery/telemetry path still used configuredWorkers=2 —
+        // a lane retry rebuilt the pool back to 2, killing the grown workers, leaving the rest of the
+        // scan at half capacity). configuredWorkers is preserved for the checkpoint
+        // + resume validation (resume only works pre-grow when growth is blocked);
+        // effectiveWorkers is used for everything runtime.
         var effectiveWorkers = grownWorkers;
-        // Tự nhận diện kiểu sub (16/09, khỏi gạt tay): chụp khung cách đều, cắt
-        // đúng ROI, worker đo vành chữ -> vote mức lọc cho CẢ lượt quét. Mọi lỗi
-        // -> "off" (y hệt cũ, không mất chữ). Mỗi lượt GÁN LẠI từ đầu nên không
-        // rò sang lượt khác.
+        // Auto-detect the subtitle style (16/09, no manual switch): sample frames evenly, crop
+        // to the exact ROI, the worker measures the text ring -> vote on a filter level for the WHOLE scan. Every error
+        // -> "off" (exactly as before, no lost text). Each scan RE-ASSIGNS from scratch so it does not
+        // leak into another scan.
         var styleMode = await ProbeSubtitleStyleAsync(job, ffmpeg, source, request, token);
         OcrWorkerClient.AmbientStyleFilter.Value = styleMode == "off" ? null : styleMode;
         job.Log(styleMode == "off"
@@ -350,15 +350,15 @@ public sealed class OcrScanner
         }
         if (configuredWorkers != checkpoint.Workers)
             throw new InvalidDataException($"OCR checkpoint yêu cầu {selected} lane nhưng worker pool đang có {configuredWorkers}.");
-        // E.5 VAD NỀN (vụ sidecar chặn phiên 20:34 15/9): decode audio KHÔNG chặn lane nữa.
-        // Miss sidecar -> decode chạy nền song song, lane chạy trước với vad=null
-        // (vote=Suspicious = đúng luật thiếu-tín-hiệu, council không skip khi chưa có tai);
-        // xong tự gắn vào council + lưu sidecar. Hit sidecar -> dùng ngay như cũ.
-        // Hủy scan -> nền tự chết theo token, không níu. Không tiếng -> nghỉ (E.0 đã báo).
+        // E.5 BACKGROUND VAD (the sidecar case blocking the 20:34 session on 15/9): audio decoding no longer blocks lanes.
+        // Sidecar miss -> decode runs in the background in parallel, lanes run ahead with vad=null
+        // (vote=Suspicious = the correct missing-signal rule, council does not skip when no ear is available yet);
+        // when done, it attaches to the council automatically + saves the sidecar. Sidecar hit -> use immediately as before.
+        // Cancel scan -> the background dies via its token, no lingering. No audio -> rest (E.0 already reported).
         VadTimeline? vadSnapshot = null;
         Func<VadTimeline?> vadSource = () => Volatile.Read(ref vadSnapshot);
-        // Không tai nghe: sidecar/energy như cũ (timeline không có cờ HasSub
-        // nên council skip tắt sẵn — quét thuần bằng mắt).
+        // No ear listening: sidecar/energy as before (the timeline has no HasSub flag
+        // so council skip is off by default — purely eye-based scanning).
         if (inputHealth.HasAudio)
         {
             vadSnapshot = OcrSidecar.ToTimeline(sidecarDoc?.Vad);
@@ -385,7 +385,7 @@ public sealed class OcrScanner
                         job.Log($"VAD nền xong trong {vadWatch.Elapsed.TotalSeconds:0.0}s: {background.Flags.Length} khung 0.2s — council đã gắn, lưu sidecar.");
                         if (fileIdentity is not null)
                         {
-                            // Best-effort: copy Pixel hiện tại để không chà đè verdict pxv của phiên.
+                            // Best-effort: copy the current Pixel state so it does not overwrite this session's pxv verdicts.
                             var updated = new OcrSidecar.SidecarDocument(
                                 sidecarDoc?.Identity ?? fileIdentity, sidecarDoc?.Probe,
                                 OcrSidecar.FromTimeline(background), sidecarDoc?.Pixel);
@@ -407,7 +407,7 @@ public sealed class OcrScanner
         // phase above also flows through the same manager/queue counters.
         var telemetry = new OcrScanTelemetryCounters();
         telemetry.Touch();
-        // Sidecar hits xảy ra TRƯỚC khi telemetry ra đời (padding/VAD): dồn vào đây.
+        // Sidecar hits happen BEFORE telemetry exists (padding/VAD): funnel them here.
         Interlocked.Add(ref telemetry.SidecarProbeHits, sidecarProbeHits);
         Interlocked.Add(ref telemetry.SidecarVadHits, sidecarVadHits);
         var inferenceBefore = _ocr.GetInferenceTelemetry();
@@ -439,21 +439,21 @@ public sealed class OcrScanner
             .ToArray();
         Exception? laneFailure = null;
         using var laneCancellation = CancellationTokenSource.CreateLinkedTokenSource(token);
-        // Live incremental reconcile: tail committed cues được pixel-gate ngay trong lúc scan,
-        // preview thay tail sạch không đợi Pause. Final ReconcileAsync bên dưới vẫn chạy safety pass.
-        // Khai báo trước RunGuardedLaneAsync để local function capture hợp lệ.
+        // Live incremental reconcile: the committed cue tail gets pixel-gated during the scan itself,
+        // and the preview updates its clean tail without waiting for Pause. The final ReconcileAsync below still runs its safety pass.
+        // Declared before RunGuardedLaneAsync so the local function captures it correctly.
         var liveWindow = await ComputeContinuationWindowAsync(_tools, _processes, source, token);
-        // Pixel cache share live -> final trong CÙNG một scan session (Task 1 perf gate):
-        // một ProductionPixelComparer instance duy nhất cho cả liveTail.Start và final
-        // ReconcileAsync. _comparisonCache là instance field nên final reuse kết quả live đã đo
-        // (cùng key: video path + SourcePts A/B + shared crop) thay vì decode lại bằng FFmpeg.
-        // Lifetime = method scope: tạo khi session bắt đầu, hết scope khi session kết thúc/hủy,
-        // scan mới/video khác luôn có instance (cache) mới — không leak xuyên video.
-        // Không static/global. Key identity giữ nguyên, không nới lỏng.
+        // Pixel cache shared live -> final WITHIN the same scan session (Task 1 perf gate):
+        // one single ProductionPixelComparer instance for both liveTail.Start and the final
+        // ReconcileAsync. _comparisonCache is an instance field so final reuses the live measurements
+        // (same key: video path + SourcePts A/B + shared crop) instead of decoding again via FFmpeg.
+        // Lifetime = method scope: created when the session starts, ends when the session ends/is cancelled,
+        // a new scan/different video always gets a new (cache) instance — no leaking across videos.
+        // Not static/global. Key identity preserved, not loosened.
         var sharedPixelComparer = new ProductionPixelComparer(_tools, _processes, _activeProcesses);
-        // Sidecar pxv: nạp verdict pixel scan trước (key chuẩn hóa theo vân file, xem OcrSidecar).
-        // Miss là bình thường (scan đầu/đổi ROI) — đường tính lại giữ nguyên bên dưới.
-        // Seed CHỈ thêm hit, không xóa/sửa gì của session này.
+        // Sidecar pxv: load pixel verdicts from a previous scan (key normalized by file hash, see OcrSidecar).
+        // A miss is normal (first scan/changed ROI) — the recomputation path below is preserved.
+        // Seeding ONLY adds hits, never deletes/modifies anything from this session.
         if (sidecarDoc?.Pixel is { } pxvSection && pxvSection.V == OcrSidecar.PixelVersion)
         {
             var seedEntries = new List<(long First, long Second, System.Drawing.Rectangle Crop, PixelCheckResult Result)>();
@@ -478,13 +478,13 @@ public sealed class OcrScanner
         liveTail.Start(source, sharedPixelComparer, liveWindow,
             onError: error => job.Log("Live tail reconcile lỗi (preview giữ raw, final pass vẫn chạy): " + Compact(error.Message)),
             linkedToken: laneCancellation.Token);
-        // Lọc thời gian (17/09) nằm TRONG pipeline OCR: luôn chạy, KHÔNG toggle,
-        // KHÔNG key, KHÔNG AI. Sub cứng thật ĐỨNG YÊN qua nhiều frame (vị trí
-        // cố định), chữ trong video (trang sách/bối cảnh) DI CHUYỂN theo camera
-        // -> chụp 3 khung, OCR lại, so vị trí -> keep/drop. Journal file RIÊNG
-        // trong Data app (28/09: cấm file cạnh video — alongside chỉ đọc di sản;
-        // verdict VLM cũ không được nạp — dedup sẽ chặn chấm lại). Dispose cuối
-        // scan + finally của await using cho mọi đường thoát.
+        // Time filter (17/09) lives INSIDE the OCR pipeline: always runs, NO toggle,
+        // NO key, NO AI. A real hardcoded sub STAYS STILL across many frames (fixed
+        // position), text inside the video (book pages/background) MOVES with the camera
+        // -> capture 3 frames, re-OCR, compare positions -> keep/drop. A SEPARATE journal file
+        // in app Data (28/09: files beside the video are forbidden — alongside is legacy-read only;
+        // old VLM verdicts must not be loaded — dedup would block re-judging). Dispose at the end of the
+        // scan + the finally of the await using for every exit path.
         var temporalJournal = OcrVerdictJournal.AppDataPath(source, _appDataDir);
         await using var trailingJudge = OcrTrailingJudge.CreateTemporalLive(
             _tools, _processes, _ocr, source, ffmpeg,
@@ -496,10 +496,10 @@ public sealed class OcrScanner
             inputHealth.Height,
             speech: speechSegments);
         job.Log($"Lọc thời gian: bật ({trailingJudge.Workers} luồng chấm theo {checkpoint.Lanes.Count} lane OCR) — sub đứng yên qua nhiều khung thì qua, chữ di chuyển (trang sách/bối cảnh) thì xóa khỏi SRT.");
-        // Tốc độ thật cho vụ số giả .5x: theo dõi trung bình + 5 phút + kẹt lane.
-        // Diagnostic thuần túy, không đụng scheduling/tracker/checkpoint nên resume-safe.
-        // Resume-base (vụ panel 281×): progress gieo sẵn checkpoint cũ nhưng đồng hồ bấm
-        // lại từ 0, nên tracker trừ mốc đầu phiên — mọi tốc độ là PHẦN LÀM THÊM / giờ chạy thêm.
+        // Real throughput for the fake .5x number case: track session average + 5 minutes + lane stalls.
+        // Pure diagnostic, does not touch scheduling/tracker/checkpoint so it is resume-safe.
+        // Resume-based (the 281× panel case): progress is seeded from the old checkpoint but the clock restarts
+        // from 0, so the tracker subtracts the session start offset — all throughput is EXTRA WORK / extra run time.
         var initialUnique = checkpoint.Lanes.Sum(x =>
             Math.Max(0, Math.Min(x.Segment.CoreEnd, progress[x.Segment.Index]) - x.Segment.CoreStart));
         var pace = new ScanPaceTracker(checkpoint.Lanes.Count, initialUnique);
@@ -517,12 +517,12 @@ public sealed class OcrScanner
 
         using var checkpointSaveGate = new SemaphoreSlim(1, 1);
         using var laneRecoveryGate = new SemaphoreSlim(1, 1);
-        // Rút lui thích ứng (28/09, vụ storm 16:18: rebuild giữ sức grow để
-        // nhanh, nhưng pool sập lặp lại (OOM/fragmentation) -> rebuild liên
-        // tục retire queue -> hủy việc đang bay lane khác -> storm -> job chết;
-        // trong khi behaviour cũ về base 2 thì chậm mà sống). Sập lần đầu:
-        // dựng lại đủ sức đã grow. Sập tiếp trong 15 phút: rút về base
-        // pre-grow cho hết lượt quét này, không thử nhanh nữa.
+        // Adaptive fallback (28/09, the 16:18 storm: rebuilding keeping grown capacity for
+        // speed, but the pool kept failing (OOM/fragmentation) -> continuous rebuild -> retire queue -> cancelling
+        // in-flight work from other lanes -> storm -> job death;
+        // while the old behaviour of returning to base 2 was slow but survived). First failure:
+        // rebuild at the grown capacity. A further failure within 15 minutes: fall back to the base
+        // pre-grow level for the rest of this scan, no more speed attempts.
         var poolCollapseCount = 0;
         var poolRetreatedToBase = false;
         long lastPoolCollapseTicks = 0;
@@ -545,9 +545,9 @@ public sealed class OcrScanner
             }
         }
 
-        // Sidecar pxv dump: verdict pixel session này -> file đệm cạnh video để scan sau
-        // (finish/export/mở-checkpoint) khỏi decode lại frame. Best-effort TUYỆT ĐỐI:
-        // mọi lỗi nuốt lặng bên trong, không bao giờ giết lane hay checkpoint.
+        // Sidecar pxv dump: this session's pixel verdicts -> the sidecar file beside the video so the next scan
+        // (finish/export/open-checkpoint) avoids decoding those frames again. ABSOLUTELY best-effort:
+        // every error is swallowed internally, never kills the lane or the checkpoint.
         async Task FlushPixelSidecarAsync()
         {
             try
@@ -602,9 +602,9 @@ public sealed class OcrScanner
 
         async Task<OcrLaneCheckpoint> RunGuardedLaneAsync(OcrLaneCheckpoint lane)
         {
-            // Stagger launch (17/10): 8 NVDEC session + 2 CUDA worker context khởi
-            // cùng nhịp từng làm NVDEC hỏng ngay đầu scan; cách quãng 150ms×index,
-            // lane đã xong chỉ vượt qua delay ~0 (try-quick return vẫn chạy).
+            // Staggered launch (17/10): 8 NVDEC sessions + 2 CUDA worker contexts starting
+            // at the same beat used to break NVDEC right at scan start; stagger by 150ms×index,
+            // a lane that has already finished passes through with a delay of ~0 (try-quick return still runs).
             var launchDelay = TimeSpan.FromMilliseconds(LaneSpawnStaggerMs * lane.Segment.Index);
             if (launchDelay > TimeSpan.Zero) await Task.Delay(launchDelay, laneCancellation.Token);
             OcrLaneCheckpoint? outcome = null;
@@ -639,11 +639,11 @@ public sealed class OcrScanner
                                         liveCommitted.Add(cue);
                                         owned.Add(cue);
                                     }
-                                    // Trigger live tail reconcile đúng khi tracker commit boundary mới,
-                                    // không phải mỗi frame. Worker serialize + revision-guard ở trong.
+                                    // Trigger live tail reconcile exactly when the tracker commits a new boundary,
+                                    // not on every frame. Worker serialization + revision guard are inside.
                                     if (owned.Count > 0) liveTail.AppendCommitted(owned);
-                                    // Chấm nền: chỉ cue đã chốt mới vào hàng (câu live đang mở không chấm).
-                                    // TryWrite không block — hàng đầy là bỏ + đếm, lane không đợi.
+                                    // Background judging: only closed cues enter the queue (open live cues are not judged).
+                                    // TryWrite does not block — a full queue means drop + count, the lane does not wait.
                                     var (judgeAccepted, judgeSkipped) = trailingJudge.EnqueueCues(owned);
                                     if (judgeAccepted > 0)
                                         Interlocked.Add(ref telemetry.JudgeEnqueued, judgeAccepted);
@@ -681,9 +681,9 @@ public sealed class OcrScanner
                              if (!_ocr.IsPoolUsableForRetry())
                             {
                                  // Pool chet han (kenh chet hoac 0 worker song): dung lai toan bo
-                                 // theo sức mạnh runtime đã grow (KHÔNG về configuredWorkers
-                                 // pre-grow: rebuild về 2 giết worker đã grow giữa chừng ->
-                                 // các lane khác mất việc đang bay -> storm retry dây chuyền).
+                                 // to the runtime capacity that has grown (NOT back to configuredWorkers
+                                 // pre-grow: rebuilding to 2 kills grown workers mid-run ->
+                                 // other lanes lose in-flight work -> chained retry storm).
                                  // Con lai (meo 1 slot nhung van chay) thi TUYET DOI khong rebuild:
                                  // rebuild retire queue -> huy hang loat viec dang bay cua lane khac
                                  // -> moi lane dot attempt -> rebuild storm (10:40 + 19:00 13/9).
@@ -732,8 +732,8 @@ public sealed class OcrScanner
                                     && (isLast ? restart.Active.Start <= lane.Segment.CoreEnd : restart.Active.Start < lane.Segment.CoreEnd)
                                         ? restart.Active
                                         : null;
-                                // Lane recovery dựng lại committed từ checkpoint an toàn: reset live tail
-                                // để reconcile lại từ state đúng, không giữ merge từ attempt hỏng.
+                                // Lane recovery rebuilds committed cues from a safe checkpoint: reset the live tail
+                                // so reconciliation restarts from the correct state, keeping no merges from the failed attempt.
                                 liveTail.ResetCommitted(liveCommitted);
                             }
                             await SaveRecoverableCheckpointAsync();
@@ -760,7 +760,7 @@ public sealed class OcrScanner
                 // being cancelled (for example, an owned child/stream abort). Preserve the
                 // first such failure before cancelling sibling lanes; otherwise Task.WhenAll
                 // surfaces only cancellation and the outer job incorrectly reports that the
-                // user pressed Hủy.
+                // user pressed Cancel.
                 if (!token.IsCancellationRequested && !laneCancellation.IsCancellationRequested)
                 {
                     var failure = error is OperationCanceledException
@@ -824,8 +824,8 @@ public sealed class OcrScanner
         }
         await StopCheckpointWriterAsync();
         await liveTail.StopAsync();
-        // Chấm nền: lane xong là hết câu mới — dừng service (ca dở chạy nốt rồi
-        // thôi), tóm tắt 1 dòng. Số còn lại hoãn cho lượt sau (nhật ký giữ ca xong).
+        // Background judging: when a lane finishes, no new cues remain — stop the service (half-written cues run to completion then
+        // stop), summary in 1 line. The remainder is deferred to the next round (the journal keeps finished cues).
         var trailingStats = trailingJudge.Snapshot();
         await trailingJudge.DisposeAsync();
         if (trailingStats.Enqueued > 0)
@@ -845,12 +845,12 @@ public sealed class OcrScanner
         IReadOnlyList<OcrCue> merged;
         if (paused)
         {
-            // Pause-nhanh (vụ chờ "tải song song 2529 frame" 15/9): reconcile pixel hàng nghìn
-            // frame là việc của FINISH/export, không phải của tạm dừng. Preview pause = đúng
-            // view live đã gộp (drain vòng tail, bounded) — khớp thứ user vẫn thấy lúc quét;
-            // timeout/hỏng thì fallback preview thô cũ (fail-open, pause không treo).
-            // BoundaryMerges giữ số cũ (grep toàn src: không chỗ nào đọc). Checkpoint vẫn
-            // đủ lanes để resume; finish về sau tính lại từ đầu.
+            // Fast pause (the "loading 2529 frames in parallel" wait case 15/9): pixel reconciliation of thousands of
+            // frames is FINISH/export work, not pause work. The pause preview is exactly the
+            // merged live view (drain the tail loop, bounded) — matching what the user still sees while scanning;
+            // on timeout/failure, fall back to the old raw preview (fail-open, pause never hangs).
+            // BoundaryMerges keeps its old count (grep across src: nothing reads it). The checkpoint still
+            // has enough lanes to resume; finish recomputes everything later.
             job.Set("finalizing", 99.5, "Đang lưu checkpoint tạm dừng · bỏ qua ghép SRT (để dành lúc finish/xuất).");
             mergedAll = OcrTextCleanup.Cleanup(
                 await BuildPausedPreviewAsync(liveTail, lanes, source, sharedPixelComparer, liveWindow, frontier, token)).Cues;
@@ -884,10 +884,10 @@ public sealed class OcrScanner
                 },
                 speechSegments: speechSegments);
             merged = mergedAll;
-            // Guard chữ nền tĩnh (18/09): bù cho việc bỏ drop-im-lặng — chữ
-            // banner/watermark đứng yên trong đoạn im phải bị bắt ở đây (ghi
-            // .exclude.json như judge drop nên list cuối = SRT theo đường cũ).
-            // Chỉ chạy ở finish (không chạy pause: resume-finish tính lại).
+            // Static background text guard (18/09): compensates for removing silence-drop — banner/watermark text
+            // standing still during silent segments must be caught here (written to
+            // .exclude.json just like a judge drop so the final list = SRT via the old path).
+            // Only runs at finish (not at pause: resume-finish recomputes).
             var bannerDrops = OcrBannerGuard.Evaluate(mergedAll, speechSegments, request.Duration);
             if (bannerDrops.Count > 0)
             {
@@ -898,8 +898,8 @@ public sealed class OcrScanner
                     FormattableString.Invariant($"{drop.Start:0.0}s {drop.Reason}")));
                 job.Log($"Guard banner: {bannerDrops.Count} câu chữ nền tĩnh loại khỏi SRT (+{added} mới): {bannerSamples}");
             }
-            // Cảnh báo thiếu sub (18/09): chỉ báo, không sinh — người duyệt
-            // kiểm tra tay đoạn có tiếng mà không có sub nào.
+            // Missing-sub warning (18/09): report only, never generate — the reviewer
+            // manually checks segments that have audio but no sub.
             foreach (var warning in OcrMissingSubWarning.Find(speechSegments, mergedAll, request.Duration))
                 job.Warn(warning);
         }
@@ -926,7 +926,7 @@ public sealed class OcrScanner
         var media = lanes.Sum(x => Math.Max(0, Math.Min(x.Segment.CoreEnd, x.MediaSeconds) - x.Segment.CoreStart));
         LogScanTelemetry(job, telemetry, inferenceBefore, selected, effectiveWorkers,
             frames, images, media, started.Elapsed.TotalSeconds, mergedAll.Count(x => x.NeedsReview), initialUnique);
-        // Resume-base như live: media gieo sẵn checkpoint cũ, đồng hồ bấm lại từ 0.
+        // Resume-based like live: media seeded from the old checkpoint, clock restarts from 0.
         var sessionMedia = Math.Max(0, media - initialUnique);
         var sessionRealtime = started.Elapsed.TotalSeconds > 0 ? sessionMedia / started.Elapsed.TotalSeconds : 0;
         var result = new OcrScanResult(
@@ -936,8 +936,8 @@ public sealed class OcrScanner
             effectiveWorkers, configuredWorkerKinds, frontier, mergedAll.Count, paused);
 
         job.SetResult(result);
-        // Dump pixel verdicts cuối phiên vào sidecar (best-effort, không throw):
-        // finish/export/mở-checkpoint lần sau khỏi decode lại frame đã verdict.
+        // Dump end-of-session pixel verdicts into the sidecar (best-effort, never throws):
+        // the next finish/export/open-checkpoint avoids decoding already-verdicted frames.
         await FlushPixelSidecarAsync();
         if (paused)
         {
@@ -954,13 +954,13 @@ public sealed class OcrScanner
         return await _checkpoints.AssembleInfoAsync(checkpoint, request, cancellationToken);
     }
 
-    // Load resume chịu padding container (06/10, vụ pause-then-resume báo
-    // mất checkpoint dù file/key còn nguyên): pause-save kẹp lane cuối theo
-    // stream truth (ngắn hơn container ~0.5s) nên end-match 1ms luôn rớt.
-    // Thử exact trước; miss thì parse ứng viên cùng key, nếu span ngắn hơn
-    // duration mà khớp stream truth đã probe (đuôi container không có frame,
-    // bản quét mới cũng kẹp y hệt) thì nhận + báo rõ. Overshoot/span rỗng/
-    // probe lỗi là từ chối như cũ. Không đụng IsValidCheckpoint.
+    // Loading a resume tolerates container padding (06/10, the pause-then-resume reporting
+    // a lost checkpoint even though the file/key are intact): pause-save clamps the last lane to the
+    // stream truth (~0.5s shorter than the container) so the 1ms end-match always fails.
+    // Try exact first; on a miss, parse candidates with the same key, and if the span is shorter than
+    // the duration yet matches the probed stream truth (the container tail has no frames,
+    // and a fresh scan clamps identically) then accept it + report clearly. Overshoot/empty span/
+    // probe errors are rejected as before. Does not touch IsValidCheckpoint.
     internal async Task<OcrParallelCheckpoint?> LoadResumeCheckpointAsync(OcrScanRequest request, CancellationToken cancellationToken)
     {
         var exact = await _checkpoints.LoadAsync(request, cancellationToken);
@@ -1205,12 +1205,12 @@ public sealed class OcrScanner
             ? Math.Clamp((frontier - scanStart) / duration * 100, 0, 99.5)
             : 0;
         var completedCount = completed.Count(x => x);
-        // Preview live: committed tail đã qua pixel-gate incremental (OcrLiveTailReconciler),
-        // active provisional ghép riêng để hiển thị, không thành authoritative. Final Finish/Export
-        // dùng ReconcileAsync safety pass + _cues, cùng một collection semantics.
-        // PERF (lag cuối scan 15/9): tail lấy TRỰC TIẾP từ reconciler dưới 1 lock
-        // (GetTailBelow), không copy toàn bộ _view mỗi 500ms/lane. Kết quả Y HỆT vòng
-        // lặp tail cũ (tối đa 120 cue ở/below frontier) nhưng cost hằng số.
+        // Live preview: the committed tail already went through incremental pixel-gating (OcrLiveTailReconciler),
+        // and active provisional entries are stitched on just for display, never becoming authoritative. Final Finish/Export
+        // uses the ReconcileAsync safety pass + _cues, the same collection semantics.
+        // PERF (end-of-scan lag 15/9): the tail is fetched DIRECTLY from the reconciler under 1 lock
+        // (GetTailBelow), not copying the entire _view every 500ms/lane. Results are IDENTICAL to the old
+        // tail loop (max 120 cues at/below the frontier) but at constant cost.
         const int previewCueLimit = 120;
         List<OcrCue> tail;
         try { tail = liveTail.GetTailBelow(frontier, previewCueLimit); }
@@ -1221,10 +1221,10 @@ public sealed class OcrScanner
             .OrderBy(cue => cue.Start).ThenBy(cue => cue.End)
             .TakeLast(previewCueLimit)
             .ToArray();
-        // Số thật (vụ số giả .5x và panel 281×): trung bình phiên + tức thời 5 phút
-        // gần nhất + lane kẹt. unique gieo sẵn checkpoint cũ nhưng đồng hồ bấm lại từ 0
-        // khi resume, nên TRỪ mốc đầu phiên — mọi tốc độ là phần làm thêm / giờ chạy thêm.
-        // realtime trung bình phiên che đà chậm dần thì số 5p lột ra; lane đứng yên >3p báo tên.
+        // Real numbers (the fake .5x number case and the 281× panel): session average + instant over the last 5 minutes
+        // + stalled lanes. Unique media is seeded from the old checkpoint but the clock restarts from 0
+        // on resume, so SUBTRACT the session start offset — all throughput is extra work / extra run time.
+        // A session-average realtime figure hides a gradually slowing pace which the 5m number exposes; a lane idle >3m gets flagged.
         var paceInfo = pace.Observe(unique, progress, completed);
         var sessionUnique = Math.Max(0, unique - pace.BaseUnique);
         var average = elapsedSeconds > 0 ? sessionUnique / elapsedSeconds : 0;
@@ -1240,10 +1240,10 @@ public sealed class OcrScanner
             lanes.Count, completedCount, 0, "live", workers, workerKinds, frontier, recentCues.Length, false));
     }
 
-    // Tốc độ thật theo thời gian: giữ mẫu (thời điểm, media ĐÃ TRỪ MỐC ĐẦU PHIÊN) trong
-    // cửa sổ 5 phút trượt; instant = delta media / delta giờ. Per-lane: nhớ media + mốc
-    // đổi cuối; lane chưa xong mà đứng yên quá StallSeconds thì liệt vào kẹt. Thuần
-    // diagnostic, không can thiệp scheduling/tracker/checkpoint.
+    // Real throughput over time: keep samples (timestamp, media ALREADY MINUS THE SESSION START OFFSET) in
+    // the 5-minute sliding window; instant = delta media / delta time. Per-lane: remember media + the last
+    // change point; a lane that is not finished and idle beyond StallSeconds is listed as stalled. Purely
+    // diagnostic, does not interfere with scheduling/tracker/checkpoint.
     private sealed class ScanPaceTracker
     {
         public const double WindowSeconds = 300;
@@ -1277,8 +1277,8 @@ public sealed class OcrScanner
                 && Stopwatch.GetElapsedTime(_window.Peek().Ticks, now).TotalSeconds > WindowSeconds)
                 _window.Dequeue();
             var elapsed = Stopwatch.GetElapsedTime(_window.Peek().Ticks, now).TotalSeconds;
-            // Cửa sổ-first: khi scan mới (<10s mẫu) chưa đủ baseline thì instant = average
-            // ở call-site (truyền average vào); ở đây trả 0 để báo chưa đủ mẫu.
+            // Window-first: for a new scan (<10s of samples) without enough baseline, instant = average
+            // at the call-site (the average is passed in); here return 0 to report insufficient samples.
             var instant = 0d;
             if (_window.Count > 1 && elapsed >= 10)
             {
@@ -1304,12 +1304,12 @@ public sealed class OcrScanner
         }
     }
 
-    // Probe cache 2 tầng (memory/app-lifetime + sidecar/disk): metadata video tĩnh nên
-    // 8 lane + padding + NVDEC chỉ spawn ffprobe 1 lần/scan (lần đầu), các scan sau đọc
-    // sidecar. Trả kèm doc sidecar mới nhất + cờ trúng sidecar (để đếm, không để gate).
+    // Two-tier probe cache (memory/app-lifetime + sidecar/disk): video metadata is static so
+    // 8 lanes + padding + NVDEC spawn ffprobe only once per scan (the first time), later scans read the
+    // sidecar. Returns the newest sidecar doc + a sidecar-hit flag (for counting, not for gating).
 
-    // Cold-start 8 lane đua nhau: cùng miss memory → cùng probe như hôm nay (không tệ hơn),
-    // lane đầu xong ghi sidecar, các scan sau trúng. Null chỉ cache memory.
+    // Cold start with 8 lanes racing: same memory miss → same probe as today (no worse),
+    // the first lane to finish writes the sidecar, later scans hit it. Null is memory-cache only.
     private Task<(VideoProbe? Probe, OcrSidecar.SidecarDocument? Doc, bool SidecarHit)> ProbeVideoAsync(
         string source, CancellationToken cancellationToken)
         => ProbeVideoAsync(source, OcrSidecar.FileIdentity.FromFile(source), cancellationToken);
@@ -1345,10 +1345,10 @@ public sealed class OcrScanner
         return (probed, doc, false);
     }
 
-    // Chụp khung mẫu đo kiểu sub (tự nhận diện, khỏi gạt tay): 12 khung cách
-    // đều trong phạm vi lượt quét, cắt đúng ROI, worker đo vành chữ. Trả
-    // "off"|"medium"|"strong"; mọi lỗi -> "off" (y hệt cũ). Best-effort: từng
-    // khung hỏng là bỏ qua, đủ <2 khung là thôi.
+    // Sample frames to measure the subtitle style (auto-detection, no manual switch): 12 evenly spaced
+    // frames within the scan range, cropped to the exact ROI, the worker measures the text ring. Returns
+    // "off"|"medium"|"strong"; every error -> "off" (exactly as before). Best-effort: each
+    // broken frame is skipped, and with fewer than 2 valid frames it stops.
     private async Task<string> ProbeSubtitleStyleAsync(
         AppJob job, string ffmpeg, string source, OcrScanRequest request, CancellationToken cancellationToken)
     {
@@ -1405,7 +1405,7 @@ public sealed class OcrScanner
         Func<VadTimeline?>? vadSource = null)
     {
         if (lane.Completed) return lane;
-        // Boot chọn software thì giữ nguyên đường cũ (không có gì để retry NVDEC).
+        // A boot that picks software keeps the old path intact (nothing to retry with NVDEC).
         if (decoder != "nvdec")
             return await RunLaneAsync(ffmpeg, source, request, mode, lane, nvdec: false, onProgress, job, processes, telemetry, cancellationToken, vadSource);
         for (var attempt = 1; attempt <= MaxNvdecLaneAttempts; attempt++)
@@ -1466,8 +1466,8 @@ public sealed class OcrScanner
         var tracker = new SubtitleTracker(mode.Fps, mode.LowConfidence, exactFrameTiming: mode.AdaptiveTiming, sourceRoi: request.Region, laneGeometry: laneGeometry, streamStartTime: streamStart, sourceTimeBase: laneTb);
         tracker.Restore(saved.Cues, saved.Active);
         var publishedCueCount = tracker.Cues.Count;
-        // PTS domain: segment/saved.MediaSeconds là media-relative (0-based cho SRT).
-        // Lane FFmpeg dùng absolute (media + streamStart) với -seek_timestamp 1 + -copyts.
+        // PTS domain: segment/saved.MediaSeconds are media-relative (0-based for SRT).
+        // The FFmpeg lane uses absolute (media + streamStart) with -seek_timestamp 1 + -copyts.
         var absoluteStart = startAtMedia + streamStart;
         var absoluteEnd = segment.ScanEnd + streamStart;
         var args = BuildLaneArguments(source, request.Region, mode, absoluteStart, absoluteEnd, nvdec, videoProbe);
@@ -1484,7 +1484,7 @@ public sealed class OcrScanner
         process.Start();
         using var ownership = processes.Track(process);
         using var registration = cancellationToken.Register(() => Kill(process));
-        // PTS domain: showinfo absolute (copyts, không offset). Tracker nhận absolute, tự trừ streamStart ra media cho cue/SRT.
+        // PTS domain: showinfo is absolute (copyts, no offset). The tracker receives absolute values and subtracts streamStart itself to get media time for cues/SRT.
         var timestamps = new FrameTimestampReader(process.StandardError);
         var errorTask = timestamps.Completion;
         var reader = new JpegStreamReader(process.StandardOutput.BaseStream);
@@ -1518,18 +1518,18 @@ public sealed class OcrScanner
         // Qua N carry thi bat buoc doc that 1 lan de chat chuoi.
         long consecutiveCarries = 0;
         const long MaxConsecutiveCarries = 5;
-        // Council v1 (E.5 enforce): neo blank + đếm skip liên tiếp cho ShouldCouncilSkip.
-        // prevBlankAnchored chỉ thành true bằng full-read BLANK (skip giữ nguyên, full-read
-        // có chữ/audit/resume làm rớt) — chuỗi skip luôn neo vào 1 lần đọc thật gần nhất.
+        // Council v1 (E.5 enforce): blank anchor + count consecutive skips for ShouldCouncilSkip.
+        // prevBlankAnchored only becomes true via a full-read BLANK (skip keeps its value, full-read
+        // with text/audit/resume clears it) — a skip chain always anchors to the nearest 1 genuine read.
         long consecutiveSkips = 0;
         bool prevBlankAnchored = false;
-        // Council skip: MỞ lại khi timeline từ TAI NGHE Whisper (17/09) — đúng
-        // điều kiện "VAD được sửa" mà OcrGateShadow đòi để mở lại (VAD năng
-        // lượng báo-im-sai ăn chữ thật nên tắt 16/09; tai nghe phân biệt
-        // nói/im thật nên chân VAD hết sai hệ thống). Dấu hiệu: timeline có
-        // cờ HasSub (chỉ Whisper sinh ra). Đa-cổng bảo thủ + cap + canary audit
-        // + kill-switch khi canary-hit giữ nguyên — skip sai là canary bắt ngay.
-        // Không tai (timeline năng lượng/sidecar cũ) -> vẫn TẮT như cũ.
+        // Council skip: RE-ENABLE when the timeline comes from Whisper EAR LISTENING (17/09) — exactly
+        // the "fixed VAD" condition OcrGateShadow requires to re-enable it (energy-based VAD
+        // false-silence ate real text so it was disabled 16/09; ear listening distinguishes
+        // speech/silence correctly so systematic VAD errors end). Signal: the timeline has
+        // the HasSub flag (only Whisper generates it). Multi-gate conservatism + cap + canary audit
+        // + the kill-switch stays when canary-hit — a wrong skip is caught by the canary immediately.
+        // No ear (energy timeline/old sidecar) -> still OFF as before.
         var councilSkipsEnabled = OcrGateShadow.CouncilEnabledDefault
             || vadSource?.Invoke()?.Flags.Contains(VadFlag.HasSub) == true;
         OcrResult? previousAdaptiveSample = mode.AdaptiveTiming && tracker.Active is { } restoredActive
@@ -1548,8 +1548,8 @@ public sealed class OcrScanner
             var activeShortText = tracker.Active?.Text is { } activeText && activeText.EnumerateRunes().Count() == 1
                 ? activeText
                 : null;
-            // Đường OCR của lane: có scope vét batch thì qua scope (cap=1 = đường cũ),
-            // không có (ngoài scan) thì gọi thẳng manager. Chữ ký/timing đo như cũ.
+            // The lane's OCR path: if a batch-scavenging scope exists, go through it (cap=1 = old path),
+            // if not (outside a scan), call the manager directly. Signature/timing measurement as before.
             Task<OcrResult> SubmitOcrAsync(string base64, bool recover, string? active, Action<OcrPerfSample> perf)
             {
                 var scope = _ambientBatchScope.Value;
@@ -1708,14 +1708,14 @@ public sealed class OcrScanner
             catch { }
         }
 
-        // Ứng viên 2 luminance SHADOW (spec khóa 16/09): đo chữ ký sáng từng dòng
-        // OCR (điểm trắng >=224 + điểm tối <64), đếm would-drop, KHÔNG bỏ dòng nào
-        // (EnforceDefault=false). GDI+ decode lỗi -> passthrough. Không throw ra lane.
-        // Cổng màu CHROMA (user chốt 18/09: sub luôn TRẮNG, chữ màu loại luôn):
-        // chạy TIẾP sau luminance trên kết quả đã lọc, enforce TRỰC TIẾP
-        // (EnforceDefault=true) — dòng không điểm trắng + thừa điểm màu thì bỏ,
-        // fail-open mọi lỗi decode/box. Chữ trắng trên nền màu (trời xanh) giữ
-        // nhờ cổng trắng đứng trước.
+        // Candidate 2 luminance SHADOW (pinned spec 16/09): measure the brightness signature of each OCR
+        // line (white point >=224 + dark point <64), count would-drops, NEVER drop any line
+        // (EnforceDefault=false). GDI+ decode errors -> passthrough. Never throw at the lane.
+        // The CHROMA colour gate (locked by user 18/09: subs are always WHITE, coloured text is always excluded):
+        // runs AFTER luminance on the filtered result, with direct enforcement
+        // (EnforceDefault=true) — a line with no white point and excess colour is dropped,
+        // fail-open on every decode/box error. White text on a coloured background (blue sky) is kept
+        // thanks to the white gate running first.
         OcrResult ApplyLuminanceGate(byte[] jpeg, OcrResult result)
         {
             try
@@ -1741,8 +1741,8 @@ public sealed class OcrScanner
             catch { return result; }
         }
 
-        // Round-trip mỗi OCR request (queue + IPC + inference): tổng + max (CAS lock-free)
-        // + đếm request >=30s. Max lành là điều kiện gate để hạ timeout 90s về sau.
+        // Round-trip per OCR request (queue + IPC + inference): total + max (CAS lock-free)
+        // + count requests >=30s. Max latency is the gate condition for lowering the 90s timeout later.
         void RecordRequestSample(long milliseconds)
         {
             try
@@ -1794,7 +1794,7 @@ public sealed class OcrScanner
         // E.4b canary audit: doc lai 1 mau bo-qua bang OCR day du tu vong retro.
         // Stratified: doi nhau blank-carry / text-carry, lay mau moi nhat.
         // Hit -> WARN to + tat skip ca scan (reuse dormant + council: quay ve doc day du).
-        // Quy trách nhiệm VAD: mẫu audit im mà đọc ra chữ thì tai hùa sai (đếm riêng).
+        // VAD responsibility: an audit sample marked silent that reads as text means the ear lied (counted separately).
         // Khong backfill (nguy hiem PTS nguoc) + khong bao gio giet lane.
         // Manual-reset = scan moi (flag theo scope lane).
         async Task RunCanaryAuditAsync()
@@ -1841,10 +1841,10 @@ public sealed class OcrScanner
             onProgress(saved with
             {
                 MediaSeconds = mediaSeconds,
-                // PERF (lag cuối scan): danh sách Cues đầy đủ chỉ được dùng khi
-                // checkpointSafe (clone vào recoverableLanes). Lần báo tiến độ thường
-                // (500ms/lane) không ai đọc Cues -> gửi rỗng, tránh copy nghìn cue
-                // mỗi lần. Đường pause/recovery/final tự lấy tracker.Cues trực tiếp.
+                // PERF (end-of-scan lag): the full Cues list is only used when
+                // checkpointSafe (cloned into recoverableLanes). Regular progress reports
+                // (500ms/lane) have nobody reading Cues -> send empty, avoiding copying thousands of cues
+                // each time. The pause/recovery/final paths read tracker.Cues directly themselves.
                 Cues = tracker.CanCheckpoint ? tracker.Cues.ToList() : [],
                 Active = tracker.Active,
                 Frames = frames,
@@ -1891,9 +1891,9 @@ public sealed class OcrScanner
             }
             var probeMs = probeWatch.ElapsedMilliseconds;
             OcrResult sampleResult;
-            // Mẫu skip (blank giả, KHÔNG đọc thật) không được vào tracker và
-            // không được làm anchor chuyển cảnh (18/09: ObserveEmpty giả chốt
-            // cue đang mở oan + blank giả che biên chữ thật).
+            // A skip sample (fake blank, NOT a real read) must not enter the tracker and
+            // must not become a scene-change anchor (18/09: a fake ObserveEmpty wrongly closed
+            // an open cue + a fake blank hides the real text boundary).
             var skippedSample = false;
             var prevSample = previousAdaptiveSample;
             // Dieu kien provenance: carry text DOI HOI boxes (prev.Lines). Truong hop
@@ -1925,12 +1925,12 @@ public sealed class OcrScanner
                     prevBlankAnchored,
                     consecutiveSkips))
             {
-                // Council SKIP (E.5 enforce): im + đứng yên + neo blank-đọc-thật — KHÔNG gọi
-                // Paddle (images không tăng: tiết kiệm thật). Ghi blank rỗng, không boxes
-                // (blank không tạo cue nên không cần provenance — comment provenance ở trên).
-                // 18/09: blank này là GIẢ (không đọc) nên cấm vào tracker ở dưới —
-                // tracker chỉ nghe kết quả đọc thật. Retro cho canary soi; cap chuỗi
-                // bằng CouncilMaxSkips trong hàm thuần.
+                // Council SKIP (E.5 enforce): silence + still + real-read blank anchor — do NOT call
+                // Paddle (image count does not increase: real savings). Write an empty blank, not boxes
+                // (a blank creates no cue so no provenance is needed — the provenance comment above).
+                // 18/09: this blank is FAKE (not read) so forbid it from entering the tracker below —
+                // the tracker only listens to real read results. Retrospective for the canary to watch; cap the chain
+                // with CouncilMaxSkips in the pure function.
                 sampleResult = new OcrResult(true, false, string.Empty, 0, []);
                 skippedSample = true;
                 consecutiveSkips++;
@@ -1965,8 +1965,8 @@ public sealed class OcrScanner
                 var recovered = await RecognizeSingleAsync(sample, recoverShortBlank: true);
                 if (recovered.Detected)
                 {
-                    // Đọc thật phục hồi đè blank (kể cả blank giả của skip) ->
-                    // gỡ cờ skip để tracker được nghe kết quả thật ở dưới.
+                    // A real read recovering over a blank (including a fake blank from a skip) ->
+                    // clear the skip flag so the tracker can hear the real result below.
                     sampleResult = recovered;
                     skippedSample = false;
                 }
@@ -2051,16 +2051,16 @@ public sealed class OcrScanner
                 for (var index = 0; index < batch.Length; index++)
                     tracker.Observe(batch[index].Timing.SourcePts, batch[index].Timing.PresentationTime, batch[index].Timing.Duration, results[index]);
             }
-            // Tracker chỉ nghe mẫu đọc thật — mẫu skip (blank giả) mà vào đây
-            // sẽ chốt cue oan qua ObserveEmpty (18/09).
+            // The tracker only listens to real read samples — a skip sample (fake blank) entering here
+            // would wrongly close a cue via ObserveEmpty (18/09).
             if (!skippedSample)
                 tracker.Observe(sample.Timing.SourcePts, sample.Timing.PresentationTime, sample.Timing.Duration, sampleResult);
             // E.5 SHADOW + council gate:
-            // - VAD vote theo gio media + outcome production -> histogram 2x2; vote im là 1
-            //   chân trong ShouldCouncilSkip (C abstain — xem OcrGateShadow).
-            // - ROI static zones: CHỈ HỌC khi ROI scan phủ nửa trên khung hình
-            //   (LearningEnabledFor); ROI dải-sub đáy thì text lặp nào cũng là thoại lặp
-            //   nên tắt học (zones rỗng, wouldfilter 0) thay vì học zone oan.
+            // - VAD votes by media time + production outcome -> 2x2 histogram; a silence vote is 1
+            //   leg within ShouldCouncilSkip (C abstains — see OcrGateShadow).
+            // - ROI static zones: ONLY LEARN when the scan ROI covers the top half of the frame
+            //   (LearningEnabledFor); for a bottom subtitle-band ROI every repeated text is dialogue repetition
+            //   so disable learning (zones empty, wouldfilter 0) rather than learning a wrong zone.
             try
             {
                 var vote = vadSource?.Invoke()?.At(sample.Timing.PresentationTime - streamStart) ?? VadFlag.Suspicious;
@@ -2081,7 +2081,7 @@ public sealed class OcrScanner
             catch { }
             // E.4b canary audit: kiem tra mau bo-qua (reuse dormant + council-skip) bang OCR
             // day du tu vong retro. Audit CHI BAO + tu ha cap (tat skip ca scan), khong backfill
-            // (E.5+). Audit khong bao gio giet lane. Reuse tắt hẳn nên trigger thực tế là council.
+            // (E.5+). Audit never kills the lane. Reuse is fully disabled so the real trigger is council.
             if ((reuseEnabled || councilSkipsEnabled) && retroBuffer.Count > 0
                 && OcrGateShadow.ShouldTriggerCanary(paddleSinceAudit,
                     Stopwatch.GetElapsedTime(lastFullOcrTicks, Stopwatch.GetTimestamp()).TotalSeconds))
@@ -2090,8 +2090,8 @@ public sealed class OcrScanner
             // only the next baseline sample, even if the visual probe is quiet.
             if (!tracker.CanCheckpoint)
                 pendingVisualFollowups = Math.Max(pendingVisualFollowups, 2);
-            // Anchor chuyển cảnh giữ mẫu đọc thật gần nhất — blank giả của
-            // skip mà thành anchor sẽ che biên chữ thật ở mẫu sau (18/09).
+            // The scene-change anchor keeps the nearest real read sample — a fake blank from a
+            // skip becoming an anchor would hide the real text boundary at the next sample (18/09).
             if (!skippedSample)
                 previousAdaptiveSample = sampleResult;
             previousVisualAnchor = sample;
@@ -2203,10 +2203,10 @@ public sealed class OcrScanner
     private static OcrLaneCheckpoint CloneLaneCheckpoint(OcrLaneCheckpoint lane) =>
         lane with { Cues = lane.Cues.ToList() };
 
-    // Preview thô cho đường pause-nhanh: câu lane-owned (đúng bound ownership của Reconcile:
-    // lane thường Start < CoreEnd, lane cuối Start <= CoreEnd, Start >= CoreStart), cắt theo
-    // frontier, sắp xếp. Thuần bộ nhớ, KHÔNG FFmpeg/pixel — gộp pixel để dành finish/export/
-    // mở-checkpoint. Test trực tiếp qua OcrPausePreviewContract (không cần worker/video thật).
+    // Raw preview for the fast-pause path: lane-owned cues (exactly Reconcile's bound ownership:
+    // a regular lane has Start < CoreEnd, the last lane Start <= CoreEnd, Start >= CoreStart), sliced by the
+    // frontier and sorted. Purely in memory, NO FFmpeg/pixel — pixel merging is left to finish/export/
+    // open-checkpoint. Tested directly via OcrPausePreviewContract (no real worker/video needed).
     internal static IReadOnlyList<OcrCue> BuildPausedPreview(IReadOnlyList<OcrLaneCheckpoint> lanes, double frontier)
     {
         var owned = new List<OcrCue>();
@@ -2222,16 +2222,16 @@ public sealed class OcrScanner
                 owned.Add(cue);
             }
         }
-        // Fallback thô cho pause (không gộp): gộp thật nằm ở bản Async drain
-        // vòng tail bên dưới. Giữ thuần để pause không bao giờ treo.
+        // Raw fallback for pause (no merging): the real merging is in the Async drain
+        // of the tail loop below. Keep it pure so pause never hangs.
         return owned.OrderBy(cue => cue.Start).ThenBy(cue => cue.End).ToArray();
     }
 
-    // Pause-preview drain vòng tail của liveTail rồi lấy đúng CommittedView live
-    // đang hiển thị (28/09, vụ ấn Dừng là cue rã ra). Vòng tail chỉ reconcile
-    // TailWindow cue cuối (pixel-gated, vài FFmpeg check) nên bounded vài giây —
-    // khác hẳn reconcile full hàng nghìn frame ở finish. Timeout/hỏng/không có
-    // gì mới -> fallback preview thô (fail-open, pause không bao giờ treo).
+    // Pause-preview drains the liveTail's tail loop then takes exactly the live CommittedView
+    // being displayed (28/09, the case where pressing Stop made cues scatter). The tail loop only reconciles
+    // the last TailWindow cues (pixel-gated, a few FFmpeg checks) so it is bounded to a few seconds —
+    // completely unlike the full reconciliation of thousands of frames at finish. Timeout/failure/nothing
+    // new -> fall back to the raw preview (fail-open, pause never hangs).
     internal static async Task<IReadOnlyList<OcrCue>> BuildPausedPreviewAsync(
         OcrLiveTailReconciler liveTail,
         IReadOnlyList<OcrLaneCheckpoint> lanes,
@@ -2294,13 +2294,13 @@ public sealed class OcrScanner
         return OcrCueReconciler.MergeTouchingIdentical(output.Select(item => item.Cue));
     }
 
-    // Exact-identical window từ native frame rate (mọi mode): gap giải thích được tối đa bởi
-    // 3 native frame miss liên tiếp (blink-level) thì candidate; dài hơn là reappearance.
-    // Field evidence: blank thật 0.667s tồn tại (27.35-27.9 không caption, 6 OCR blank + mắt thường),
-    // balanced 4Hz không phân biệt nổi blank thật với dropout bằng cue data => KHÔNG được mở window
-    // theo observation-rate (3/4Hz=0.75s sẽ merge nhầm 2 instances đã chứng minh khác nhau).
-    // Touching (gap ~0) vẫn merge qua Epsilon. Probe fail => Epsilon, fail-safe.
-    // Dùng chung cho full scan reconcile và checkpoint/range replay để cùng một window production.
+    // Exact-identical window derived from the native frame rate (all modes): a gap explainable at most by
+    // 3 consecutive native frame misses (blink-level) is a candidate; longer is a reappearance.
+    // Field evidence: a real 0.667s blank exists (27.35-27.9 with no caption, 6 OCR blanks + naked eye),
+    // balanced 4Hz cannot distinguish a real blank from a dropout using cue data => the window must NOT be opened
+    // by observation-rate (3/4Hz=0.75s would wrongly merge 2 instances proven to be distinct).
+    // Touching (gap ~0) still merges via Epsilon. Probe failure => Epsilon, fail-safe.
+    // Shared by the full-scan reconcile and checkpoint/range replay to use the same production window.
     internal static async Task<double> ComputeContinuationWindowAsync(
         Tools.ToolManager tools,
         Processes.ProcessRunner processes,
@@ -2389,20 +2389,20 @@ public sealed class OcrScanner
             });
         }
         var merged = await OcrCueReconciler.MergeTouchingIdenticalAsync(finalCues, videoPath, comparer, cancellationToken, continuationWindow, onProgress);
-        // Dọn chữ (17/09): gộp cue kề trùng lặp (flicker OCR chẻ 1 câu) + xóa
-        // mảnh vụn (1-2 chữ kề câu dài chứa nó). Thuần logic chữ, chạy cho MỌI
-        // đường gọi ReconcileAsync (finish/export/checkpoint) nên list cuối =
-        // SRT. KHÔNG sửa chữ đọc sai (cần hiểu ngữ nghĩa) — giữ nguyên.
+        // Text cleanup (17/09): merge adjacent duplicate cues (OCR flicker splitting one sentence) + delete
+        // fragments (1-2 characters adjacent to a longer sentence containing them). Pure text logic, runs for EVERY
+        // ReconcileAsync call path (finish/export/checkpoint) so the final list = SRT.
+        // Does NOT correct misread text (requires semantic understanding) — keep as-is.
         var cleaned = OcrTextCleanup.Cleanup(merged);
-        // Hồi tố sau-Cleanup (18/09): Cleanup xóa/gộp ở giữa khiến 2 cue kề
-        // nhau MỚI mà pixel chưa từng verify (cặp trùng hở 0.067-0.3s không
-        // review) — chấm đúng luật pass chính (pixel-gate + review), không
-        // đụng spec micro-gap đã ghim.
+        // Retroactive post-Cleanup pass (18/09): Cleanup removing/merging in the middle makes 2 cues
+        // NEWLY adjacent that pixel never verified (gapped duplicates 0.067-0.3s with no
+        // review) — judged by exactly the main-pass rule (pixel-gate + review), without
+        // touching the pinned micro-gap spec.
         var (reverified, reverifyMerges) = await OcrCueReconciler.MergeCleanupAdjacentsAsync(
             merged, cleaned.Cues, videoPath, comparer, cancellationToken, continuationWindow);
-        // Tai phân xử cặp trùng khe rộng (21/09): 1 đoạn thoại phủ liên tục qua
-        // khe = caption tĩnh bị tracker chẻ oan → gộp; khe im = thoại lặp thật
-        // → giữ. Chạy cuối reconcile, trước banner guard/missing-sub.
+        // The ear adjudicates wide-gap duplicate pairs (21/09): one speech segment covering the gap continuously =
+        // a static caption wrongly split by the tracker → merge; a silence gap = genuine repeated dialogue
+        // → keep. Runs at the end of reconcile, before banner guard/missing-sub.
         var echoed = OcrCueReconciler.MergeSpeechCoveredIdentical(reverified, speechSegments);
         return (echoed, merges + cleaned.Merged + reverifyMerges);
     }
@@ -2444,10 +2444,10 @@ public sealed class OcrScanner
 
     private async Task<(int Width, int Height)?> TryGetSourceDimensionsAsync(string path, CancellationToken cancellationToken)
     {
-        // Contract coordinate-space: dùng coded W/H (ffprobe width/height), và OCR/extractor đều chạy với -noautorotate
-        // để iw/ih là coded (không autorotate theo rotation metadata). Mọi path (OCR crop, bbox provenance,
-        // pixel extractor, source crop) thống nhất coded space. Nếu video có rotation=90, cả OCR và comparer
-        // đều thấy 1920x1080 coded, không bên nào thấy 1080x1920 rotated.
+        // Contract coordinate space: use the coded W/H (ffprobe width/height), and both OCR and the extractor run with -noautorotate
+        // so iw/ih are coded (no autorotation from rotation metadata). Every path (OCR crop, bbox provenance,
+        // pixel extractor, source crop) uses the same coded space. If a video has rotation=90, both OCR and comparer
+        // see 1920x1080 coded, neither sees 1080x1920 rotated.
         try
         {
             var ffprobe = await _tools.EnsureFfprobeAsync(cancellationToken);
@@ -2482,7 +2482,7 @@ public sealed class OcrScanner
         }
         else
         {
-            // Probe thất bại: fallback filter cũ để không chặn scan. Pixel compare sẽ Unavailable vì geometry không chắc chắn.
+            // Probe failure: fall back to the old filter so the scan is not blocked. Pixel compare will be Unavailable because the geometry is uncertain.
             filter = string.Format(CultureInfo.InvariantCulture,
                 "crop=iw*{0}:ih*{1}:iw*{2}:ih*{3},scale=1280:320:force_original_aspect_ratio=decrease,pad=1280:320:(ow-iw)/2:(oh-ih)/2:black{4}",
                 region.Width, region.Height, region.X, region.Y, enhanced ? ",eq=contrast=1.25:brightness=0.03,unsharp=5:5:0.8" : string.Empty);
@@ -2526,18 +2526,18 @@ public sealed class OcrScanner
     {
         var args = new List<string> { "-hide_banner", "-loglevel", "info", "-nostdin", "-noautorotate" };
         if (nvdec) args.AddRange(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda", "-hwaccel_device", "0"]);
-        // Decode hardening (17/10): lane chết giữa đường vì frame hỏng/driver hiccup
-        // (ExitCode != 0) từng làm cả lane rơi vĩnh viễn về decode software (4/8 lane,
-        // video 7h39m, tốc độ rớt 0,08x realtime). Flags sau nuốt frame lỗi thay vì
-        // chết stream, cho CẢ nhánh NVDEC lẫn software; guard n-sequence showinfo
-        // (FrameTimestampReader) vẫn chặn mọi lệch JPEG↔PTS nên data-integrity không đổi.
+        // Decode hardening (17/10): a lane dying mid-stream due to a corrupt frame/driver hiccup
+        // (ExitCode != 0) used to make the whole lane drop permanently to software decoding (4/8 lanes,
+        // 7h39m video, speed dropped to 0.08x realtime). Flags after now swallow corrupt frames instead of
+        /// dying streams, for BOTH the NVDEC and software branches; the n-sequence guard for showinfo
+        // (FrameTimestampReader) still blocks every JPEG↔PTS desync so data integrity is unchanged.
         args.AddRange(["-err_detect", "ignore_err", "-ec", "3", "-fflags", "+genpts+discardcorrupt"]);
         args.AddRange(["-copyts", "-seek_timestamp", "1"]);
         if (start > 0 || (probe is not null && probe.StartTimeSeconds != 0))
             args.AddRange(["-ss", start.ToString("0.#########", CultureInfo.InvariantCulture)]);
         args.AddRange(["-i", source]);
-        // start/end đều absolute (media + streamStart), output giữ absolute nhờ -copyts nên -to absolute là đúng.
-        // Không dùng -t duration: với -copyts + start>0, -t dừng ngay lập tức (đã chứng minh thực nghiệm: 3 frame rồi empty).
+        // start/end are both absolute (media + streamStart), the output stays absolute thanks to -copyts so -to absolute is correct.
+        // Do not use -t duration: with -copyts + start>0, -t stops immediately (proven experimentally: 3 frames then empty).
         if (end > start) args.AddRange(["-to", end.ToString("0.#########", CultureInfo.InvariantCulture)]);
         string crop;
         if (probe is { Width: > 0, Height: > 0 }
@@ -2552,9 +2552,9 @@ public sealed class OcrScanner
                 "crop=iw*{0}:ih*{1}:iw*{2}:ih*{3},scale=1280:320:force_original_aspect_ratio=decrease:flags=fast_bilinear,pad=1280:320:(ow-iw)/2:(oh-ih)/2:black",
                 region.Width, region.Height, region.X, region.Y);
         }
-        // Không dùng fps filter trước showinfo: fps rewrite PTS (drop/duplicate), provenance sẽ sai.
-        // Sampling 4Hz thực hiện ở C# theo PTS (adaptiveWindow/nextAdaptiveSample), giữ nguyên source PTS.
-        // Mọi mode hiện tại đều AdaptiveTiming:true, nên luôn đi nhánh giữ PTS này.
+        // Do not use an fps filter before showinfo: fps rewrites PTS (drops/duplicates), provenance would be wrong.
+        // 4Hz sampling is done in C# by PTS (adaptiveWindow/nextAdaptiveSample), preserving the source PTS.
+        // Every mode currently has AdaptiveTiming:true, so it always takes this PTS-preserving branch.
         string filter;
         if (probe is { TimeBaseNum: > 0, TimeBaseDen: > 0 })
         {
@@ -2782,13 +2782,13 @@ public sealed class OcrScanner
 
         var baselineHeight = baseline is null ? 1 : Math.Max(1, Math.Abs(baseline.Box[3] - baseline.Box[1]));
         var baselineCenter = baseline is null ? 0 : baseline.Box[1] + baseline.Box[3];
-        // Cột chữ cảnh xếp chồng (thư giấy/biển/bảng rơi vào ROI, vụ bức thư
-        // "休书" 21/09): thoại thật tối đa 1-2 dòng phụ trên baseline, chữ cảnh
-        // xếp cả cột. Có baseline CĂN GIỮA khung 1280 + ≥4 dòng nằm gọn TRÊN
-        // đỉnh nó → toàn bộ phần trên là chữ cảnh, loại hết (kể cả dòng sát
-        // baseline mà luật farAbove đơn-lẻ không với tới). Chỉ áp cho ROI đáy
-        // (tôn-trọng ROI tay vùng trên); thiếu baseline căn giữa → passthrough
-        // (fail-open: mực-đen không baseline đã có cổng luminance lo).
+        // Stacked background text columns (notes/signs/boards falling into the ROI, the 21/09 letter
+        // "休书" case): real dialogue is at most 1-2 secondary lines above the baseline, background text
+        // stacks in full columns. With a CENTRE baseline on a 1280 frame + ≥4 lines sitting compactly ABOVE
+        // it, the entire region above is background text and all is removed (including lines close to
+        // the baseline that the single-line farAbove rule cannot reach). Only applies to bottom ROI
+        // (respecting manual top ROI); missing a centre baseline -> passthrough
+        // (fail-open: ink-black cases without a baseline are already handled by the luminance gate).
         var stackedSceneDrop = new HashSet<OcrLine>(ReferenceEqualityComparer.Instance);
         if (region.Y >= .5 && baseline is not null
             && Math.Min(baseline.Box[0], baseline.Box[2]) < 640
@@ -2973,10 +2973,10 @@ public sealed class OcrScanner
     private sealed class OcrScanTelemetryCounters
     {
         public readonly object Gate = new();
-        // PERF (lag cuối scan 15/9): 8 lane tranh 1 lock cho mỗi ảnh OCR (466k lần/scan)
-        // chỉ để đếm unique PTS cho telemetry cuối. ConcurrentDictionary cho Add/Count
-        // lock-free, cùng semantics (mỗi SourcePts đếm 1 lần), không còn contention
-        // tăng dần theo độ dài scan. Gate vẫn giữ cho PaddleDetMs/RecMs (double+=).
+        // PERF (end-of-scan lag 15/9): 8 lanes contending on 1 lock for every OCR image (466k times/scan)
+        // just to count unique PTS for the end-of-session telemetry. ConcurrentDictionary gives lock-free Add/Count
+        // with the same semantics (each SourcePts counted once), removing contention
+        // growing with scan length. The gate is kept for PaddleDetMs/RecMs (double+=).
         public readonly ConcurrentDictionary<long, byte> UniqueOcrPts = new();
         public long BatchCalls;
         public long SingleCalls;
@@ -2991,14 +2991,14 @@ public sealed class OcrScanner
         public long ProbeChangeFrames;
         public long ProbeSameFrames;
         public long LaneRestarts;
-        // NVDEC resilience (17/10): đếm thang retry trong lane (retry/fail/fallback)
-        // để nhìn thấy sức khỏe NVDEC ngay trên dòng telemetry thay vì đọc log từng dòng.
+        // NVDEC resilience (17/10): count the retry ladder within the lane (retry/fail/fallback)
+        // so NVDEC health is visible right on the telemetry line instead of reading logs line by line.
         public long NvdecRetries;
         public long NvdecFailures;
         public long SoftwareFallbacks;
-        // Checkpoint save cost (diagnostic only): số lần lưu + tổng ms. Save 30s/lần
-        // serialize toàn bộ cue (11MB ở pause 24:27) + copy .bak nên càng về cuối càng
-        // lâu; log để phát hiện khi save thành nguồn lag mới.
+        // Checkpoint save cost (diagnostic only): number of saves + total ms. Saving every 30s
+        // serializes all cues (11MB at the 24:27 pause) + copies .bak so it grows slower toward the end;
+        // logged to detect when saving becomes a new source of lag.
         public long CheckpointSaves;
         public long CheckpointSaveMs;
         // E.2 dashboard skeleton (gates chua code: giu 0, co so de E.3/E.4 dien).
@@ -3027,15 +3027,15 @@ public sealed class OcrScanner
         public long PaddleDetBoxes;
         public long PaddleRecCrops;
         public long PaddleCacheHits;
-        // Stage timings (P1 diagnostics, thuần cộng dồn, không gate hành vi):
-        // - ProbeMsTotal: round-trip mỗi probe (queue + IPC + OpenCV).
-        // - RequestMsTotal/MaxRequestMs/Over30sRequests: round-trip mỗi OCR request —
-        //   phân phối latency để gate việc hạ timeout 90s (chỉ hạ khi max lành << 90s).
+        // Stage timings (P1 diagnostics, purely cumulative, does not gate behaviour):
+        // - ProbeMsTotal: round-trip per probe (queue + IPC + OpenCV).
+        // - RequestMsTotal/MaxRequestMs/Over30sRequests: round-trip per OCR request —
+        //   latency distribution to gate lowering the 90s timeout (only lower when max is well << 90s).
         public long ProbeMsTotal;
         public long RequestMsTotal;
         public long MaxRequestMs;
         public long Over30sRequests;
-        // Sidecar hits (diagnostic): probe/VAD/pxv xài lại từ file đệm thay vì tính lại.
+        // Sidecar hits (diagnostic): probe/VAD/pxv reused from the cache file instead of recomputed.
         public long SidecarProbeHits;
         public long SidecarVadHits;
         public long SidecarPxvHits;
@@ -3045,24 +3045,24 @@ public sealed class OcrScanner
         public long VadNoBlank;
         public long VadSuspText;
         public long VadSuspBlank;
-        // Canary quy trách nhiệm: hit mà mẫu audit im (VAD NoSub) thì tai hùa sai.
+        // Canary responsibility: a hit while the audit sample is silent (VAD NoSub) means the ear lied.
         public long CanaryVadAttributed;
         public long RoiStaticZones;
         public long RoiLinesWouldFilter;
-        // Ứng viên 2 luminance SHADOW: đo mọi dòng, đếm would-drop, không bỏ dòng.
+        // Candidate 2 luminance SHADOW: measure every line, count would-drops, never drop a line.
         // CHI GHI CHEP (EnforceDefault=false).
         public long LumFrames;
         public long LumLines;
         public long LumWouldDrop;
         public long LumDecodeFails;
-        // Cổng màu chữ 18/09 (user chốt: sub luôn trắng): enforce trực tiếp,
-        // đếm dòng đo/bỏ/decode-hỏng.
+        // Text colour gate 18/09 (locked by user: subs are always white): direct enforcement,
+        // counting lines measured/dropped/broken-decode.
         public long ChromaFrames;
         public long ChromaLines;
         public long ChromaDropped;
         public long ChromaDecodeFails;
-        // Chấm nền VLM lúc quét: ca vào hàng / bỏ qua (trùng/tràn/dispose).
-        // Verdict chi tiết (giữ/bỏ/chưa rõ) nằm nhật ký + log tóm tắt cuối scan.
+        // Background VLM judging during the scan: cues entering the queue / skipped (duplicate/full/dispose).
+        // Detailed verdicts (keep/drop/unclear) live in the journal + the end-of-scan summary log.
         public long JudgeEnqueued;
         public long JudgeSkipped;
 
@@ -3104,11 +3104,11 @@ public sealed class OcrScanner
             SingleWriter = true,
         });
         private readonly StringBuilder _diagnostic = new();
-        // Buffer lỗi decode thật (17/10): _diagnostic trước đây cap 48KB giữ HEAD
-        // (header + showinfo rác) nên khi ffmpeg chết mid-stream, exception chỉ
-        // mang đuôi showinfo — dòng lỗi CUDA/cuvid/decoder thật mất hẳn (cả 4 lane
-        // fallback 16/10 đều không lộ nguyên nhân). Nay gom riêng dòng lỗi theo
-        // keyword nếu buffer lỗi là EMPTY. Giữ nguyên tail 48KB để chẩn đoán sâu.
+        // Real decode-error buffer (17/10): _diagnostic previously capped at 48KB keeping the HEAD
+        // (header + showinfo junk) so when ffmpeg died mid-stream, the exception only
+        // carried the showinfo tail — real CUDA/cuvid/decoder error lines were lost entirely (all 4 lanes
+        // in the 16/10 fallback showed no cause). Now useful error lines are collected separately by
+        // keyword when the error buffer is EMPTY. The 48KB tail is preserved for deep diagnosis.
         private const int DiagnosticTailCapacity = 48 * 1024;
         private const int DecoderErrorCapacity = 8 * 1024;
         private static readonly string[] DecoderErrorKeywords =
@@ -3132,14 +3132,14 @@ public sealed class OcrScanner
         private string BuildDiagnostics()
         {
             var errors = _decoderErrors.ToString();
-            // Lỗi thật xếp CUỐI: Compact() (dùng ở throw/lane log) giữ 300 ký tự đuôi,
-            // nhờ đó ngay cả dòng log ngắn cũng rơi vào lỗi decode thay vì showinfo rác.
+            // Real errors are placed LAST: Compact() (used at throw/lane log) keeps the last 300 characters,
+            // so even a short log line falls into the decode error instead of showinfo junk.
             return errors.Length > 0
                 ? $"[stderr tail] {_diagnostic} [decoder errors] {errors}"
                 : _diagnostic.ToString();
         }
 
-        // Cách A: -copyts giữ source clock, showinfo pts_time là timestamp nguồn. Không cộng startAt.
+        // Approach A: -copyts keeps the source clock, showinfo pts_time is the source timestamp. Do not add startAt.
         public FrameTimestampReader(StreamReader standardError) => Completion = PumpAsync(standardError);
 
         public Task<string> Completion { get; }
@@ -3171,9 +3171,9 @@ public sealed class OcrScanner
                     var match = TimestampPattern.Match(line);
                     if (!match.Success)
                     {
-                        // Ancillary showinfo lines (color_range/color_space/...) không phải frame record.
-                        // Frame record thật luôn có " n:". Thiếu => fail lane, không shift JPEG↔timestamp.
-                        // Bỏ sót một frame record thật sẽ bị phát hiện bởi kiểm tra n-sequence ở record kế tiếp.
+                        // Ancillary showinfo lines (color_range/color_space/...) are not frame records.
+                        // A real frame record always has " n:". Missing => fail the lane, do not shift JPEG↔timestamp.
+                        // Omitting a real frame record would be caught by the n-sequence check at the next record.
                         if (line.IndexOf(" n:", StringComparison.Ordinal) < 0) continue;
                         throw new InvalidDataException("FFmpeg showinfo frame không parse được PTS (fail lane, không shift JPEG↔timestamp).");
                     }

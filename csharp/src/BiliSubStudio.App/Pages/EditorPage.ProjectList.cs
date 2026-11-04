@@ -19,8 +19,65 @@ public sealed partial class EditorPage
 
     private void InitializeProjectList()
     {
+        // Same code-owned subscription the other page controls use (Overlay,
+        // TimelineScrollViewer): an XAML SizeChanged attribute is banned by the
+        // migration gate, and a code registration behaves identically.
+        ProjectGridView.SizeChanged -= ProjectGridView_SizeChanged;
+        ProjectGridView.SizeChanged += ProjectGridView_SizeChanged;
         ProjectGridView.ItemsSource = _editorProjects;
         ShowProjectListSurface();
+    }
+
+    /// <summary>
+    /// Keeps the project cards filling the whole row: the wrap panel lays out a
+    /// fixed number of items, which left a dead strip on the right whenever the
+    /// window width was not an exact multiple of the card width. The item slot is
+    /// recomputed from the live width so the last column always reaches the right
+    /// edge (cards only grow, never below the 286px design).
+    /// The items panel may not exist yet when the size changes (it is created
+    /// during the layout pass), so a miss is retried on the next LayoutUpdated.
+    /// </summary>
+    private void ProjectGridView_SizeChanged(object sender, SizeChangedEventArgs e) => UpdateProjectCardSlot();
+
+    private bool _cardSlotRetryPending;
+
+    private void UpdateProjectCardSlot()
+    {
+        var wrap = ProjectGridView.ItemsPanelRoot as ItemsWrapGrid;
+        var available = ProjectGridView.ActualWidth;
+        if (wrap is null || available <= 0)
+        {
+            if (!_cardSlotRetryPending)
+            {
+                Services.StartupDiagnostics.Write("project-slot",
+                    $"defer panel={(wrap is null ? "null" : "wrap")} w={available}");
+            }
+            ScheduleProjectCardSlotRetry();
+            return;
+        }
+
+        const double designCardWidth = 286;
+        const double cardGap = 12;
+        var columns = Math.Max(1, (int)Math.Floor((available + cardGap) / (designCardWidth + cardGap)));
+        var slot = Math.Floor(available / columns);
+        if (slot < designCardWidth || Math.Abs(wrap.ItemWidth - slot) <= 0.5) return;
+        wrap.ItemWidth = slot;
+        Services.StartupDiagnostics.Write("project-slot",
+            $"set w={available} cols={columns} slot={slot} panel={wrap.GetType().Name}");
+    }
+
+    private void ScheduleProjectCardSlotRetry()
+    {
+        if (_cardSlotRetryPending) return;
+        _cardSlotRetryPending = true;
+        ProjectGridView.LayoutUpdated += OnProjectGridViewLayoutUpdated;
+    }
+
+    private void OnProjectGridViewLayoutUpdated(object? sender, object e)
+    {
+        ProjectGridView.LayoutUpdated -= OnProjectGridViewLayoutUpdated;
+        _cardSlotRetryPending = false;
+        UpdateProjectCardSlot();
     }
 
     private async Task ShowProjectListAsync(bool saveCurrent)
@@ -83,6 +140,9 @@ public sealed partial class EditorPage
             _editorProjects.Clear();
             foreach (var summary in summaries) _editorProjects.Add(new EditorProjectListItem(summary));
             UpdateProjectListState();
+            // The wrap panel only exists after the first layout pass; recompute the
+            // card slot once the freshly loaded items are on screen.
+            DispatcherQueue.TryEnqueue(UpdateProjectCardSlot);
             Services.StartupDiagnostics.Write("editor-projects", $"n={_editorProjects.Count}");
             _ = LoadProjectThumbnailsAsync(_editorProjects.ToArray(), cancellation.Token);
         }
@@ -161,7 +221,12 @@ public sealed partial class EditorPage
 
     private async void NewProject_Click(object sender, RoutedEventArgs e)
     {
-        try { await OpenVideoAsync(); }
+        try
+        {
+            var picked = await _picker.PickVideosAsync();
+            if (picked.Count == 0) return;
+            await OpenVideoSetAsync(picked);
+        }
         catch (OperationCanceledException) { }
         catch (Exception error) { StatusText.Text = "Không tạo được project: " + error.Message; }
     }

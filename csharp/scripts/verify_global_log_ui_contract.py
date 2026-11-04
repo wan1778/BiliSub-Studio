@@ -39,12 +39,14 @@ require(nav == [
     ("Chỉnh video", "editor"),
     ("Cài đặt", "settings"),
 ], f"production navigation drifted: {nav}")
-# Rail trái gọn: mỗi mục điều hướng phải có icon để hiển thị khi pane đóng.
+# A compact left rail: every navigation item must have an icon to display when
+# the pane is closed.
 require('new FontIcon' in main_code,
         "navigation items must get a Segoe Fluent Icons icon for the compact rail")
 require('IsPaneOpen="False"' in main_xaml,
         "the navigation rail must start collapsed so the editor gets the full width")
-# Mỗi lần mở app phải full màn hình: giao diện editor cần player + dải thời gian.
+# Every app launch must be full screen: the editor UI needs the player +
+# timeline.
 require('presenter.Maximize()' in main_code,
         "the main window must open maximized")
 for forbidden in ("Hiệu năng", "Đăng nhập", "Cập nhật & hỗ trợ"):

@@ -170,9 +170,9 @@ public sealed class ApplicationLog : IDisposable
         catch (UnauthorizedAccessException) { }
     }
 
-    // 30/09 (user chốt): mỗi lần mở app là một file log mới sạch, dễ đọc.
-    // Phiên cũ dồn sang application.log.1..5 (giữ tối đa 5 đời để còn
-    // truy vết crash xuyên lần mở), không bao giờ mất hẳn.
+    // 30/09 (user decision): each app launch starts a fresh, clean log file that is easy to read.
+    // The old session shifts to application.log.1..5 (keeping at most 5 generations so crash
+    // history survives across launches), never lost entirely.
     private void RotateOnStartup()
     {
         try

@@ -6,14 +6,17 @@ using BiliSubStudio.Core.Editor;
 
 namespace BiliSubStudio.App.Pages;
 
-// Tự hồi phục voice 08/10 (user: thoát project vào lại mất voice, phải chạy
-// lại — nguyên nhân gốc là NormalizeTts cũ loại engine vieneu mỗi lần lưu).
-// Khi mở project thấy Tts trống nhưng cache còn result hợp lệ thì nhận lại
-// result mới nhất (không bắt chạy lại). Chống nhận nhầm bản cũ: chỉ nhận
-// result khớp toàn bộ ID cue hiện tại + kiểm tra đầy đủ qua
-// EditorProjectStore.NormalizeTts (sha manifest/master, revision engine,
-// cửa sổ sample-exact) + tôn trọng mốc thu hồi voice-revoked.json do các
-// luồng sửa sub/chạy lại ASR ghi (sửa lời sau khi tạo voice thì không nhận).
+// Voice self-recovery 08/10 (user: leaving a project and coming back lost the
+// voice and it had to be regenerated — the root cause was the old NormalizeTts
+// discarding the vieneu engine on every save).
+// When opening a project whose Tts is empty but whose cache still holds a valid
+// result, re-adopt the newest result (without forcing a regeneration). Guarding
+// against adopting the wrong (stale) copy: only adopt a result that matches all
+// current cue IDs plus passes full validation through
+// EditorProjectStore.NormalizeTts (manifest/master sha, engine revision,
+// sample-exact windows), and honor the revocation marker voice-revoked.json
+// written by the subtitle-edit and ASR-rerun flows (editing text after voice
+// generation means no adoption).
 public sealed partial class EditorPage
 {
     private const string VoiceRevokedFileName = "voice-revoked.json";
@@ -120,6 +123,9 @@ public sealed partial class EditorPage
             File.WriteAllText(Path.Combine(root, VoiceRevokedFileName),
                 "{\"utc\":\"" + DateTimeOffset.UtcNow.ToString("o") + "\",\"reason\":\"" + reason + "\"}");
         }
-        catch { }
+        catch (Exception error)
+        {
+            System.Diagnostics.Debug.WriteLine("editor-voice-revoked-marker: " + error);
+        }
     }
 }

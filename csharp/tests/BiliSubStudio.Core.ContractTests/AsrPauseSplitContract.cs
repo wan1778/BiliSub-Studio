@@ -3,9 +3,10 @@ using System.Runtime.CompilerServices;
 
 namespace BiliSubStudio.Core.ContractTests;
 
-// Cắt câu theo khe im (23/09): khe im >= 0.6s cắt thành 2 câu, chữ chia theo
-// giờ chữ; khe ngắn không cắt; mảnh <0.3s dính vào câu bên; câu >10s không có
-// khe đủ rộng cắt ở khe rộng nhất; không đảo thứ tự, không sửa danh sách gốc.
+// Sentence splitting by silent gaps (23/09): a gap >= 0.6s splits into 2 sentences, words are divided
+// per word timing; a short gap does not split; a sliver <0.3s sticks to the neighbouring sentence; a
+// sentence >10s with no wide enough gap is split at the widest gap; no reordering and no mutation of
+// the source list.
 internal static class AsrPauseSplitContract
 {
     [ModuleInitializer]
@@ -72,7 +73,7 @@ internal static class AsrPauseSplitContract
         return Task.CompletedTask;
     }
 
-    // 0.14-1.0 nói | im 0.8s | 1.8-2.5 nói: khe 0.8 >= 0.6 -> cắt 2 câu.
+    // 0.14-1.0 speech | 0.8s silence | 1.8-2.5 speech: the 0.8 gap >= 0.6 -> split into 2 sentences.
     private static void GapSplitsIntoTwo()
     {
         var cue = Cue(0.14, 2.5, "前半后半",
@@ -89,7 +90,7 @@ internal static class AsrPauseSplitContract
         Check(TextOf(pieces[0]) == "前半" && TextOf(pieces[1]) == "后半", "chữ phải chia theo khung");
     }
 
-    // Khe 0.5s (< 0.6) và câu ngắn: không cắt.
+    // A 0.5s gap (< 0.6) with a short sentence: no split.
     private static void ShortGapKeepsWhole()
     {
         var cue = Cue(0.0, 2.0, "短句",
@@ -102,7 +103,7 @@ internal static class AsrPauseSplitContract
         Check(StartOf(pieces[0]) == 0.0 && EndOf(pieces[0]) == 2.0, "câu nguyên phải giữ nguyên");
     }
 
-    // Câu 12s không có khe >= 0.6: cắt ở khe rộng nhất (0.4s).
+    // A 12s sentence with no gap >= 0.6: split at the widest gap (0.4s).
     private static void LongUnsplitFallsBackToWidest()
     {
         var cue = Cue(0.0, 12.0, "长句不歇",
@@ -116,7 +117,7 @@ internal static class AsrPauseSplitContract
         Check(EndOf(pieces[0]) == 5.0 && StartOf(pieces[1]) == 5.4, "phải cắt ở khe 0.4s giữa 长/句");
     }
 
-    // Mảnh đuôi 0.2s (<0.3s): dính vào câu trước.
+    // A 0.2s tail sliver (<0.3s): it sticks to the previous sentence.
     private static void TailSliverMergedBack()
     {
         var cue = Cue(0.0, 3.6, "主要嗯",
@@ -131,7 +132,7 @@ internal static class AsrPauseSplitContract
         Check(TextOf(pieces[1]).Contains("嗯", StringComparison.Ordinal), "chữ mảnh đuôi không được mất");
     }
 
-    // Mảnh đầu 0.15s (<0.3s): gộp xuống câu sau.
+    // A 0.15s head sliver (<0.3s): it merges down into the next sentence.
     private static void HeadSliverMergedForward()
     {
         var cue = Cue(0.0, 3.0, "嗯主要",

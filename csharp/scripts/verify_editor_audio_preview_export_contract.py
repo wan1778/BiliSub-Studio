@@ -36,7 +36,8 @@ require(("_page.CurrentEditRequest(_page.PreviewSubtitleBurn())" in preview
 export = IMAGES.split("private async Task RenderProjectAsync()", 1)[1].split(
     "private void RefreshImageControls()", 1
 )[0]
-require("var request = CurrentEditRequest(subtitle) with" in export
+require(("var request = CurrentEditRequest(subtitle) with" in export
+         or "await CurrentComposedEditRequestAsync(subtitle)" in export)
         and "_application.StartEditor(request)" in export,
         "AUDIO-SHARED final Export does not originate from CurrentEditRequest")
 

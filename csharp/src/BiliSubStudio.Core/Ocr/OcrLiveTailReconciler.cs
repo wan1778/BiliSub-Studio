@@ -1,23 +1,23 @@
 namespace BiliSubStudio.Core.Ocr;
 
-// Live incremental reconcile cho preview trong lúc scan.
+// Live incremental reconcile for the preview during a scan.
 //
-// Tracker commit cue mới -> AppendCommitted -> background loop reconcile CHỈ tail
-// (ReconcileLiveTailAsync, pixel-gated) -> CommittedView thay tail ngay, không đợi Pause.
-// - Serialize: một worker loop duy nhất; revision counter; kết quả stale (revision cũ hơn
-//   hiện tại) bị discard, không overwrite tail mới hơn.
-// - Không mutate raw tracker state: chỉ đọc snapshot committed cues.
-// - Active/provisional KHÔNG vào CommittedView; UI ghép riêng qua ViewWithActive để hiển thị.
-// - Lỗi pixel/worker trong loop chỉ báo qua onError (job log), không bao giờ giết scan.
+// Tracker commits a new cue -> AppendCommitted -> background loop reconciles ONLY the tail
+// (ReconcileLiveTailAsync, pixel-gated) -> CommittedView replaces the tail immediately, without waiting for Pause.
+// - Serialize: a single worker loop; revision counter; stale results (a revision older than
+//   current) are discarded and never overwrite a newer tail.
+// - Does not mutate raw tracker state: only reads the committed cue snapshot.
+// - Active/provisional never enter CommittedView; the UI merges them separately via ViewWithActive for display.
+// - Pixel/worker errors in the loop are only reported via onError (job log), never kill a scan.
 public sealed class OcrLiveTailReconciler : IDisposable
 {
-    // Số committed cue cuối giữ lại để reconcile mỗi vòng, + chain-extend ngược (cap 64).
+    // The number of last committed cues retained for each round of reconcile, + backward chain-extend (cap 64).
     public const int TailWindow = 8;
 
     private readonly object _gate = new();
     private readonly List<OcrCue> _committed = [];
-    // Instance đã đưa vào _view (reference equality: out-of-order multi-lane arrival có thể
-    // insert trước vùng đã cover; đếm số lượng sẽ sai fresh set).
+    // Instances already brought into _view (reference equality: out-of-order multi-lane arrival may
+    // insert before the covered region; counting quantities would get the fresh set wrong).
     private readonly HashSet<OcrCue> _covered = new(ReferenceEqualityComparer.Instance);
     private List<OcrCue> _view = [];
     private long _revision;
@@ -31,20 +31,21 @@ public sealed class OcrLiveTailReconciler : IDisposable
     private Action? _onUpdated;
     private Action<Exception>? _onError;
     private bool _disposed;
+    private int _resourcesDisposed;
 
     public long Revision { get { lock (_gate) return _revision; } }
     public long AppliedRevision { get { lock (_gate) return _appliedRevision; } }
 
-    // Authoritative committed view (đã reconcile tới AppliedRevision). Copy để UI render.
-    // LƯU Ý PERF (lag cuối scan 15/9, pause tại 24:27 với ~9000 cue): CommittedView copy
-    // toàn bộ _view mỗi lần gọi. PublishTelemetry chạy 8 lane × mỗi 500ms = 16 copy/s
-    // của cả lịch sử -> càng về cuối càng đơ (nhảy 2-5s/frame). Đường telemetry PHẢI
-    // dùng GetTailBelow (chỉ lấy đuôi dưới frontier, 1 lần lock, không copy full).
+    // Authoritative committed view (reconciled up to AppliedRevision). Copied for the UI to render.
+    // PERF NOTE (end-of-scan lag 15/9, pause at 24:27 with ~9000 cues): CommittedView copies
+    // the entire _view on every call. PublishTelemetry runs 8 lanes × every 500ms = 16 copies/s
+    // of the whole history -> the later it gets the stiffer it becomes (jumping 2-5s/frame). The telemetry path MUST
+    // use GetTailBelow (only take the tail below the frontier, 1 lock, no full copy).
     public IReadOnlyList<OcrCue> CommittedView { get { lock (_gate) return _view.ToArray(); } }
 
-    // Tail-only snapshot cho telemetry: lấy tối đa `limit` cue có Start <= frontier,
-    // duyệt ngược từ cuối (đã sort) nên cost hằng số, không tăng theo độ dài scan.
-    // Kết quả Y HỆT vòng lặp tail cũ trong PublishTelemetry, chỉ khác là không copy full.
+    // Tail-only snapshot for telemetry: take at most `limit` cues with Start <= frontier,
+    // iterating backward from the end (already sorted) so the cost is constant and does not grow with scan length.
+    // The result is EXACTLY the old tail loop in PublishTelemetry, just without the full copy.
     public List<OcrCue> GetTailBelow(double frontier, int limit)
     {
         lock (_gate)
@@ -61,7 +62,7 @@ public sealed class OcrLiveTailReconciler : IDisposable
         }
     }
 
-    // Ghép active provisional để hiển thị; active KHÔNG thành committed, không vào _view.
+    // Merges the provisional active for display; active does NOT become committed and does not enter _view.
     public IReadOnlyList<OcrCue> ViewWithActive(OcrCue? active)
     {
         var view = CommittedView;
@@ -76,19 +77,19 @@ public sealed class OcrLiveTailReconciler : IDisposable
             ObjectDisposedException.ThrowIf(_disposed, this);
             var batch = cues as IList<OcrCue> ?? cues.ToList();
             if (batch.Count == 0) return;
-            // PERF (lag cuối scan): _committed luôn giữ sorted. Trường hợp thường gặp là
-            // cue mới tới đúng thứ tự (nối tiếp tail) -> chỉ sort batch nhỏ rồi nối đuôi,
-            // thay vì sort lại toàn bộ history mỗi lần commit. Chỉ sort full khi batch tới
-            // out-of-order (multi-lane arrival muộn). Kết quả cuối Y HỆT như trước.
+            // PERF (end-of-scan lag): _committed always stays sorted. The common case is
+            // cues arriving in the right order (continuing the tail) -> only sort the small batch then append to the tail,
+            // rather than re-sorting the whole history on every commit. Full sort only when the batch arrives
+            // out-of-order (late multi-lane arrival). The final result is EXACTLY as before.
             var ordered = batch.OrderBy(cue => cue.Start).ThenBy(cue => cue.End).ToList();
             var inOrder = _committed.Count == 0
                 || CompareCue(ordered[0], _committed[^1]) >= 0;
             if (inOrder) _committed.AddRange(ordered);
             else if (ordered.Count * 32 < _committed.Count)
             {
-                // PERF (lag cuối scan): batch muộn nhỏ (multi-lane arrival) chèn nhị phân
-                // từng cue, O(m log n) thay vì sort lại toàn bộ O(n log n) mỗi lần commit.
-                // Kết quả Y HỆT sort full (cùng CompareCue).
+                // PERF (end-of-scan lag): a small late batch (multi-lane arrival) binary-inserts
+                // each cue, O(m log n) instead of re-sorting the whole thing O(n log n) on every commit.
+                // Result EXACTLY like a full sort (same CompareCue).
                 foreach (var cue in ordered)
                 {
                     var at = _committed.BinarySearch(cue, Comparer<OcrCue>.Create(CompareCue));
@@ -173,17 +174,36 @@ public sealed class OcrLiveTailReconciler : IDisposable
 
     public void Dispose()
     {
+        Task? worker;
         lock (_gate)
         {
             if (_disposed) return;
             _disposed = true;
+            worker = _worker;
+            _worker = null;
         }
         try { _cts?.Cancel(); } catch (ObjectDisposedException) { }
-        Pulse();
-        try { _worker?.GetAwaiter().GetResult(); }
-        catch { }
-        _cts?.Dispose();
-        _signal.Dispose();
+        if (worker is null)
+        {
+            DisposeResources();
+            return;
+        }
+        // Never block the UI thread on a reconcile that may be waiting inside
+        // FFmpeg/decoder code. Cancel now, release handles when the worker ends.
+        _ = worker.ContinueWith(completed =>
+        {
+            if (completed.Exception is { } error) Report(error);
+            DisposeResources();
+        }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+    }
+
+    private void DisposeResources()
+    {
+        if (Interlocked.Exchange(ref _resourcesDisposed, 1) != 0) return;
+        try { _cts?.Dispose(); }
+        catch (ObjectDisposedException) { }
+        try { _signal.Dispose(); }
+        catch (ObjectDisposedException) { }
     }
 
     private void Pulse()
@@ -264,7 +284,7 @@ public sealed class OcrLiveTailReconciler : IDisposable
             }
             lock (_gate)
             {
-                // Stale: tail mới đã tới trong lúc reconcile -> discard, loop sẽ chạy lại với mới nhất.
+                // Stale: a newer tail arrived while reconciling -> discard, the loop will run again with the newest.
                 if (revision < _revision) continue;
                 foreach (var cue in fresh) _covered.Add(cue);
                 _view = reconciled.ToList();

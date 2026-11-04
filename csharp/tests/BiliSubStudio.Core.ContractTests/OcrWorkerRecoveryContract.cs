@@ -108,8 +108,8 @@ internal static class OcrWorkerRecoveryContract
                     Check(batch.Count == count && batch.All(result => result.Ok && result.Text == encoded
                         && result.Lines.Single().Text == active), "batch pipe changed images or recovery fields");
                 }
-                // Worker đang chạy chỉ nhận tối đa 4 (parity 15/9): batch 5-8 fail ngay
-                // ở client, không ra pipe.
+                // A running worker accepts at most 4 (parity 15/9): batches of 5-8 fail immediately
+                // on the client, never reaching the pipe.
                 foreach (var count in new[] { 5, 8 })
                 {
                     try

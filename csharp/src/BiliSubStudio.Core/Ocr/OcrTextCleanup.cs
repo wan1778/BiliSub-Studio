@@ -1,49 +1,49 @@
 namespace BiliSubStudio.Core.Ocr;
 
-// Dọn chữ sau reconcile (17/09): gộp cue kề trùng lặp + xóa mảnh vụn flicker.
-// Thuần logic chữ (KHÔNG AI, KHÔNG hiểu ngữ nghĩa):
-// - Gộp: 2 cue kề nhau (gap ≤ 0.3s) + chữ tương đồng ≥ 0.65 (sau chuẩn hóa) ->
-//   1 cue (span cả hai, giữ chữ DÀI hơn = bản đọc đầy đủ hơn). Xử lý flicker
-//   OCR đọc 1 câu chẻ nhiều mảnh (cue 34/35: cùng câu 休书, sim 0.69).
-//   Ngưỡng 0.65 + gap 0.3s: 2 sub thật khác nhau kề nhau hiếm khi giống
-//   nhau ≥65% trong 0.3s (đó chính là định nghĩa flicker).
-// - Mảnh vụn: cue ≤ 2 rune kề (gap ≤ 0.3s) cue DÀI HƠN chứa hết chữ nó ->
-//   mảnh flicker -> xóa (cue 31 "人。" kề cue 30 "人第一").
-// KHÔNG sửa chữ đọc sai (联姻对象→眼惘叶象, 两不相干, 纠缠, câu cụt 38):
-// sửa chữ cần hiểu ngữ nghĩa (AI) — giữ nguyên để user sửa tay.
+// Text cleanup after reconcile (17/09): merge adjacent duplicate cues + delete flicker fragments.
+// Pure text logic (NO AI, NO semantic understanding):
+// - Merge: 2 adjacent cues (gap ≤ 0.3s) + text similarity ≥ 0.65 (after normalization) ->
+//   1 cue (spanning both, keep the LONGER text = the more complete read). Handles flicker
+//   where OCR splits one sentence into many pieces (cue 34/35: same sentence 休书, sim 0.69).
+//   Threshold 0.65 + gap 0.3s: two genuinely different subs side by side rarely match
+//   ≥65% within 0.3s (that is precisely the definition of flicker).
+// - Fragments: cue ≤ 2 runes adjacent (gap ≤ 0.3s) to a LONGER cue containing all of its text ->
+//   a flicker fragment -> delete (cue 31 "人。" next to cue 30 "人第一").
+// Does NOT correct misread text (联姻对象→眼惘叶象, 两不相干, 纠缠, truncated sentence 38):
+// correcting text requires semantic understanding (AI) — left unchanged for the user to fix manually.
 public static class OcrTextCleanup
 {
     public const double MergeGapSeconds = 0.3;
     public const double MergeSimilarity = 0.65;
     public const double FragmentGapSeconds = 0.3;
-    // Hiệu ứng gõ-chữ/diễn tiến (21/09, ca p01 "xxx100%>xxx" hóng chuỗi 3):
-    // cue sau MỞ ĐẦU bằng toàn bộ chữ cue trước (normalize) và dài hơn → cùng
-    // 1 caption đang lớn dần, gộp giữ bản dài. Cửa sổ rộng hơn merge-thường
-    // vì chuỗi gõ kéo dài. Chữ ngắn <3 rune không đủ tin để suy ra gõ-chữ.
+    // Typing/progressive-reveal effect (21/09, case p01 "xxx100%>xxx" waiting for string 3):
+    // the later cue STARTS WITH all of the previous cue's text (normalized) and is longer -> the same
+    // 1 caption growing, merge keeping the longer version. The window is wider than a normal merge
+    // because a typing chain drags on. Short text <3 runes is not trusted enough to infer typing.
     public const double PrefixGrowthGapSeconds = 0.5;
     public const int PrefixGrowthMinRunes = 3;
     public const int FragmentMaxRunes = 2;
-    // Ngưỡng phantom (cue chớp nháy do flash/effect): NGẮN + KẸP SÁT + KHÁC
-    // CHỮ cả hai bên. Điều kiện KHÁC CHỮ là bắt buộc: flicker cùng câu (cue
-    // 34/35: ngắn + kẹp nhưng chữ GIỐNG nhau 0.69) phải để merge gộp, không
-    // được xóa — chỉ cue lạ chen giữa (cue 55: sim ~0 cả hai bên) mới là rác.
+    // Phantom threshold (cue flickering from flash/effect): SHORT + TIGHTLY SQUEEZED + DIFFERENT
+    // TEXT on both sides. The DIFFERENT-TEXT condition is mandatory: same-sentence flicker (cue
+    // 34/35: short + squeezed but the text is ALIKE 0.69) must be left for merge to join, not
+    // deleted — only a strange cue wedged in between (cue 55: sim ~0 on both sides) is junk.
     public const double PhantomMaxDuration = 0.6;
     public const double PhantomMaxGap = 0.15;
     public const double PhantomMaxSimilarity = 0.4;
-    // Miễn phantom hẹp (18/09): cue đọc RẤT chắc thì không phải chớp-nháy —
-    // bảo vệ thoại ngắn thật ("ừm", "hả", "ĐI"). Ngưỡng cũ giữ nguyên cho
-    // cue mờ (rác flicker thường tin thấp).
-    // Miễn phantom theo mật độ đọc (27/09, vụ lọc mất 1 chữ): flash artifact
-    // nhồi chục chữ vào <0.5s (cue 55: ~30 chữ/0.43s = bất khả thi vật lý);
-    // thoại ngắn thật ("嗯" 1 chữ/0.3s, sub nhanh ~10 chữ/s) mật độ bình
-    // thường -> giữ. Chỉ cue mật độ bất khả thi mới đáng gọi chớp-nháy.
+    // Narrow phantom exemption (18/09): a cue read VERY confidently is not a flicker —
+    // protects genuinely short dialogue ("ừm", "hả", "ĐI"). The old threshold stays unchanged for
+    // blurry cues (flicker junk usually has low confidence).
+    // Phantom exemption by read density (27/09, the case that filtered out 1 character): flash artifacts
+    // cram dozens of characters into <0.5s (cue 55: ~30 characters/0.43s = physically impossible);
+    // genuinely short dialogue ("嗯" 1 character/0.3s, fast subs ~10 characters/s) has an ordinary
+    // density -> keep. Only cues with an impossible density deserve the flicker label.
     public const double PhantomMinDensityRunesPerSecond = 12.0;
 
     public sealed record CleanupResult(
         IReadOnlyList<OcrCue> Cues, int Merged, int FragmentsDropped, int PhantomsDropped);
 
-    // Cue chớp nháy? Ngắn + kẹp sát cue kề + chữ khác cả hai bên hiện diện.
-    // Không bên nào (đầu/cuối list) coi như gap vô cực -> giữ.
+    // Flickering cue? Short + tightly squeezed next to an adjacent cue + different text present on both sides.
+    // No side (list start/end) is treated as an infinite gap -> keep.
     public const double PhantomExemptConfidence = 0.9;
 
     public static bool IsPhantom(OcrCue? cue, OcrCue? prev, OcrCue? next)
@@ -56,9 +56,9 @@ public static class OcrTextCleanup
         if (runes <= 0 || runes / duration < PhantomMinDensityRunesPerSecond) return false;
         var gapBefore = prev is null ? double.PositiveInfinity : cue.Start - prev.End;
         var gapAfter = next is null ? double.PositiveInfinity : next.Start - cue.End;
-        // KẸP CẢ 2 BÊN mới là chớp-nháy (18/09: sửa && thành || — cũ xóa oan
-        // thoại ngắn thật chỉ hẹp 1 bên, VD đáp "嗯" sau câu dài 0.1s).
-        // Thoáng 1 bên là đủ chỗ cho 1 câu thoại thật.
+        // SQUEEZED ON BOTH SIDES is what makes a flicker (18/09: fixed && into || — the old code wrongly deleted
+        // genuinely short dialogue that was only squeezed on one side, e.g. the reply "嗯" after a long sentence 0.1s later).
+        // Room on one side is enough for a real line of dialogue.
         if (gapBefore >= PhantomMaxGap || gapAfter >= PhantomMaxGap) return false;
         if (prev?.Text is not null && TextSimilarity(prev.Text, cue.Text) >= PhantomMaxSimilarity)
             return false;
@@ -71,9 +71,9 @@ public static class OcrTextCleanup
     {
         var ordered = cues.Where(cue => cue is not null && cue.Text is not null)
             .OrderBy(cue => cue.Start).ToArray();
-        // Pass 0: xóa mảnh vụn flicker TRƯỚC (cue ≤2 rune kề cue dài hơn chứa
-        // hết chữ nó) — để pass 1 (phantom) không ăn mất cue neo (VD "人第一"
-        // kề "人。": neo ngắn+kẹp nhưng là câu neo, mảnh "人。" mới là rác).
+        // Pass 0: delete flicker fragments FIRST (cue ≤2 runes next to a longer cue containing
+        // all of its text) — so pass 1 (phantom) does not eat the anchor cue (e.g. "人第一"
+        // next to "人。": the anchor is short+squeezed but is the anchor sentence, the "人。" fragment is the junk).
         var fragDropped = new bool[ordered.Length];
         var fragments = 0;
         for (var index = 0; index < ordered.Length; index++)
@@ -103,9 +103,9 @@ public static class OcrTextCleanup
         var defragged = new List<OcrCue>(ordered.Length);
         for (var index = 0; index < ordered.Length; index++)
             if (!fragDropped[index]) defragged.Add(ordered[index]);
-        // Pass 1: xóa cue chớp nháy (flash/effect): ngắn + kẹp + khác chữ 2 bên.
-        // Chạy SAU fragment (neo còn nguyên) và TRƯỚC merge (flicker cùng câu
-        // còn nguyên để merge gộp đúng).
+        // Pass 1: delete flickering cues (flash/effect): short + squeezed + different text on both sides.
+        // Runs AFTER fragment (anchor intact) and BEFORE merge (same-sentence flicker
+        // stays intact so merge joins it correctly).
         var alive = new List<OcrCue>(defragged.Count);
         var phantoms = 0;
         for (var index = 0; index < defragged.Count; index++)
@@ -119,10 +119,10 @@ public static class OcrTextCleanup
             }
             alive.Add(defragged[index]);
         }
-        // Pass 2: gộp kề trùng lặp (giữ chữ dài hơn, cộng support, OR NeedsReview).
-        // NGOẠI TRỪ chữ Y HỆT nhau (sim == 1.0): pixel verdict đã xử (identical
-        // + pixel Different = 2 instance thật giữ tách; identical + Same thì
-        // MergeTouchingIdentical đã gộp). Chỉ gộp flicker đọc KHÁC nhau.
+        // Pass 2: merge adjacent duplicates (keep the longer text, sum support, OR NeedsReview).
+        // EXCEPT byte-identical text (sim == 1.0): the pixel verdict already handled it (identical
+        // + pixel Different = 2 real instances kept separate; identical + Same then
+        // MergeTouchingIdentical already merged). Only merge flicker that reads DIFFERENTLY.
         var merged = new List<OcrCue>();
         var merges = 0;
         foreach (var cue in alive)
@@ -163,9 +163,9 @@ public static class OcrTextCleanup
     private static int NormalizedLength(string text) =>
         OcrTemporalFilter.Normalize(text).EnumerateRunes().Count();
 
-    // Cue sau là bản LỚN DẦN của cue trước (hiệu ứng gõ chữ): normalize ngắn
-    // là prefix nghiêm ngặt của dài và dài hơn hẳn. Không kén độ tương đồng —
-    // bản tăng trưởng nhanh có thể khác xa (vd "…50%" → "…100% xong").
+    // The later cue is the GROWING version of the previous one (typing effect): the short normalized
+    // text is a strict prefix of the long one and considerably shorter. Does not demand similarity —
+    // a fast-growing version may differ wildly (e.g. "…50%" → "…100% done").
     private static bool IsPrefixGrowth(string previousText, string nextText)
     {
         var a = OcrTemporalFilter.Normalize(previousText);
@@ -176,7 +176,7 @@ public static class OcrTextCleanup
         return b.StartsWith(a, StringComparison.Ordinal);
     }
 
-    // Internal để bộ lọc thời gian tái dùng khi tìm bản đọc tốt hơn (fallback).
+    // Internal so the temporal filter can reuse it when looking for a better read (fallback).
     internal static double TextSimilarity(string left, string right)
     {
         var a = OcrTemporalFilter.Normalize(left);

@@ -2,6 +2,7 @@
     x:Class="BiliSubStudio.App.Pages.EditorPage"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:controls="using:BiliSubStudio.App.Controls"
     Background="{ThemeResource CanvasBrush}"
     AutomationProperties.Name="Chỉnh video"
     IsTabStop="True"
@@ -77,7 +78,7 @@
                     </GridView.ItemContainerStyle>
                     <GridView.ItemTemplate>
                         <DataTemplate>
-                            <Border Width="286" MinHeight="282" Background="{ThemeResource RaisedSurfaceBrush}" BorderBrush="{ThemeResource BorderBrush}"
+                            <Border MinWidth="260" MinHeight="282" Background="{ThemeResource RaisedSurfaceBrush}" BorderBrush="{ThemeResource BorderBrush}"
                                     BorderThickness="1" CornerRadius="12" ToolTipService.ToolTip="{Binding SourcePath}">
                                 <Border.ContextFlyout>
                                     <MenuFlyout>
@@ -138,12 +139,18 @@
         <Grid x:Name="WorkspaceGrid" Grid.Row="1" ColumnSpacing="10" RowSpacing="8" Visibility="Collapsed">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition x:Name="SourceColumn" Width="0.68*" MinWidth="120" MaxWidth="200" />
+                <ColumnDefinition Width="Auto" />
                 <ColumnDefinition x:Name="PlayerColumn" Width="2.2*" MinWidth="220" />
-                <ColumnDefinition x:Name="DetailsColumn" Width="1.22*" MinWidth="320" MaxWidth="380" />
+                <ColumnDefinition Width="Auto" />
+                <!-- NAV-01: the floor of this column is what six 56px tool tabs plus the strip
+                     padding need (336 + 30), so the tool strip always fits its content instead
+                     of overflowing when the window narrows. -->
+                <ColumnDefinition x:Name="DetailsColumn" Width="1.22*" MinWidth="366" MaxWidth="380" />
             </Grid.ColumnDefinitions>
             <Grid.RowDefinitions>
                 <RowDefinition Height="*" />
                 <RowDefinition Height="Auto" />
+                <RowDefinition x:Name="TimelineRow" Height="206" MinHeight="160" MaxHeight="420" />
             </Grid.RowDefinitions>
 
             <Border Grid.Column="0" Padding="10" Background="{ThemeResource RaisedSurfaceBrush}" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="1" CornerRadius="11">
@@ -153,9 +160,12 @@
                         <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
                     <Grid ColumnSpacing="6">
-                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
                         <TextBlock FontSize="15" FontWeight="SemiBold" VerticalAlignment="Center" Text="Source" />
                         <Button Grid.Column="1" x:Name="OpenVideoButton" AccessKey="O" Click="OpenVideo_Click" Content="Mở video" Padding="9,5" Visibility="Collapsed" />
+                        <Button Grid.Column="2" x:Name="SourceCollapseButton" Content="«" Click="SourceCollapseToggle_Click" Width="28" Height="28" Padding="0"
+                                HorizontalAlignment="Center" VerticalAlignment="Center" ToolTipService.ToolTip="Thu gọn / mở rộng Source"
+                                AutomationProperties.Name="Thu gọn hoặc mở rộng Source" />
                     </Grid>
                     <ScrollViewer Grid.Row="1" Margin="0,10,0,0" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
                         <StackPanel Spacing="12">
@@ -181,6 +191,8 @@
                                 <TextBlock x:Name="CurrentProjectNameText" FontSize="12" FontWeight="SemiBold" Foreground="{ThemeResource PrimaryTextBrush}" Text="Chưa mở project" TextWrapping="Wrap" />
                                 <TextBlock Style="{StaticResource MutedTextStyle}" Text="Tự lưu thay đổi · source media luôn giữ nguyên." TextWrapping="Wrap" />
                                 <ToggleSwitch x:Name="EditorAutoCompositeToggle" Header="Tự cập nhật preview" IsOn="True" />
+                                <TextBlock x:Name="AutoCompositeBusyText" Margin="0,2,0,0" FontSize="10" Foreground="{ThemeResource SecondaryTextBrush}"
+                                           TextWrapping="Wrap" Visibility="Collapsed" AutomationProperties.LiveSetting="Polite"/>
                                 <Button Click="BackToProjects_Click" Content="Đổi project khác" Style="{StaticResource SecondaryButtonStyle}" HorizontalAlignment="Stretch" />
                             </StackPanel>
                         </StackPanel>
@@ -188,12 +200,25 @@
                 </Grid>
             </Border>
 
-            <Grid Grid.Column="1" RowSpacing="7">
+            <controls:WorkspaceSplitter Grid.Column="1" x:Name="SourcePlayerSplitter" Orientation="Horizontal"
+                                        AutomationProperties.Name="Đổi bề rộng Source và Player"
+                                        DragDelta="SourcePlayerSplitter_DragDelta" DragCompleted="WorkspaceSplitter_DragCompleted" />
+            <controls:WorkspaceSplitter Grid.Column="3" x:Name="PlayerDetailsSplitter" Orientation="Horizontal"
+                                        AutomationProperties.Name="Đổi bề rộng Player và Details"
+                                        DragDelta="PlayerDetailsSplitter_DragDelta" DragCompleted="WorkspaceSplitter_DragCompleted" />
+            <controls:WorkspaceSplitter Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="5" x:Name="WorkspaceTimelineSplitter"
+                                        Orientation="Vertical" AutomationProperties.Name="Đổi bề cao Dải thời gian"
+                                        DragDelta="WorkspaceTimelineSplitter_DragDelta" DragCompleted="WorkspaceSplitter_DragCompleted" />
+            <Grid Grid.Column="2" RowSpacing="7">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="*" />
                     <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
-                <Border x:Name="PreviewSurface" Background="Black" BorderBrush="{ThemeResource StrongBorderBrush}" BorderThickness="1" CornerRadius="12">
+                <!-- DROP-TO-OPEN: dragging a video file onto the preview opens it,
+                      same path as the "Mở video" button (which stays). -->
+                <Border x:Name="PreviewSurface" Background="Black" BorderBrush="{ThemeResource StrongBorderBrush}" BorderThickness="1" CornerRadius="12"
+                        AllowDrop="True" DragEnter="PreviewSurface_DragEnter" DragOver="PreviewSurface_DragOver"
+                        DragLeave="PreviewSurface_DragLeave" Drop="PreviewSurface_Drop">
                     <Grid AutomationProperties.Name="Player Editor">
                         <MediaPlayerElement x:Name="PreviewPlayer" AreTransportControlsEnabled="False" AutoPlay="False" Stretch="Uniform" Visibility="Collapsed" AutomationProperties.Name="Video preview" />
                         <Image x:Name="PreviewImage" Stretch="Uniform" AutomationProperties.Name="Frame preview" />
@@ -220,6 +245,12 @@
                                 </Border>
                             </Grid>
                         </Border>
+                        <Border x:Name="PreviewDropHint" Background="#991B2F4A" CornerRadius="12" Visibility="Collapsed"
+                                BorderBrush="{ThemeResource AccentPrimaryBrush}" BorderThickness="2"
+                                HorizontalAlignment="Stretch" VerticalAlignment="Stretch" IsHitTestVisible="False">
+                            <TextBlock Text="Th? video d? m? video" FontSize="16" FontWeight="SemiBold" Foreground="White"
+                                       HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
                     </Grid>
                 </Border>
                 <Border Grid.Row="1" x:Name="PlayerControlBar" Height="48" Padding="8,5" Background="{ThemeResource RaisedSurfaceBrush}" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="1" CornerRadius="9" AutomationProperties.Name="Điều khiển preview">
@@ -233,7 +264,7 @@
                             <ColumnDefinition Width="36" />
                         </Grid.ColumnDefinitions>
                         <Button x:Name="PlayerPlayPauseButton" Click="PlayerPlayPause_Click" Content="▶" IsEnabled="False" Padding="0" HorizontalContentAlignment="Center" ToolTipService.ToolTip="Phát / tạm dừng preview" />
-                        <TextBlock Grid.Column="1" x:Name="ClockText" VerticalAlignment="Center" FontSize="11" Text="00:00 / 00:00" />
+                        <TextBlock Grid.Column="1" x:Name="ClockText" VerticalAlignment="Center" FontSize="11" FontFamily="Consolas" Text="00:00 / 00:00" />
                         <Slider Grid.Column="2" x:Name="Timeline" Minimum="0" IsEnabled="False" ValueChanged="Timeline_ValueChanged" VerticalAlignment="Center" AutomationProperties.Name="Vị trí video" />
                         <ToggleSwitch Grid.Column="3" x:Name="PreviewMuteToggle" Toggled="PreviewMute_Toggled" OffContent="" OnContent="" MinWidth="0" HorizontalAlignment="Center" ToolTipService.ToolTip="Tắt / bật tiếng" />
                         <Slider Grid.Column="4" x:Name="PreviewVolumeSlider" Minimum="0" Maximum="100" Value="100" ValueChanged="PreviewVolume_ValueChanged" VerticalAlignment="Center" AutomationProperties.Name="Âm lượng preview" />
@@ -242,10 +273,13 @@
                 </Border>
             </Grid>
 
-            <Border Grid.Column="2" Padding="9" Background="{ThemeResource RaisedSurfaceBrush}" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="1" CornerRadius="11">
+            <Border Grid.Column="4" Padding="9" Background="{ThemeResource RaisedSurfaceBrush}" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="1" CornerRadius="11">
                 <Grid>
                     <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
                     <Border Background="#0F1724" BorderBrush="#2A3A52" BorderThickness="1" CornerRadius="16" Padding="6" VerticalAlignment="Center">
+                        <!-- NAV-01: equal columns so the tools spread like the original design,
+                             but every column declares a min width: the strip can never squeeze the
+                             tabs into each other (the old overlap bug at narrow windows). -->
                         <Grid Height="68" VerticalAlignment="Center">
                             <Grid.Resources>
                                 <SolidColorBrush x:Key="ToggleButtonBackgroundChecked" Color="#1B2F4A"/>
@@ -255,6 +289,11 @@
                                 <SolidColorBrush x:Key="ToggleButtonForegroundCheckedPointerOver" Color="#6AB8FF"/>
                                 <SolidColorBrush x:Key="ToggleButtonForegroundCheckedPressed" Color="#4A9CE6"/>
                                 <SolidColorBrush x:Key="ToggleButtonBorderBrushChecked" Color="#2A4A6B"/>
+                                <!-- NAV-02: hover/focus must not masquerade as the active (checked)
+                                     tool: un hover stays neutral, active keeps the blue pill. -->
+                                <SolidColorBrush x:Key="ToggleButtonBackgroundPointerOver" Color="#182238"/>
+                                <SolidColorBrush x:Key="ToggleButtonBorderBrushPointerOver" Color="#26344C"/>
+                                <SolidColorBrush x:Key="ToggleButtonForegroundPointerOver" Color="#C9D6EA"/>
                                 <Style TargetType="ToggleButton">
                                     <Setter Property="CornerRadius" Value="14"/>
                                     <Setter Property="Padding" Value="0"/>
@@ -269,55 +308,66 @@
                                     <Setter Property="MinWidth" Value="0"/>
                                     <Setter Property="HorizontalAlignment" Value="Stretch"/>
                                     <Setter Property="VerticalAlignment" Value="Stretch"/>
+                                    <!-- NAV-03: the system focus border would look like a second active
+                                         tool; focus shows the accent cue under the label instead. -->
+                                    <Setter Property="UseSystemFocusVisuals" Value="False"/>
                                 </Style>
                             </Grid.Resources>
-                            <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
+                            <Grid.ColumnDefinitions><ColumnDefinition MinWidth="56"/><ColumnDefinition MinWidth="56"/><ColumnDefinition MinWidth="56"/><ColumnDefinition MinWidth="56"/><ColumnDefinition MinWidth="56"/><ColumnDefinition MinWidth="56"/></Grid.ColumnDefinitions>
                             <!-- uniform height separators, vertically centered -->
                             <Rectangle Grid.Column="1" Width="1" Height="36" Fill="#1E2D44" HorizontalAlignment="Left" VerticalAlignment="Center"/>
                             <Rectangle Grid.Column="2" Width="1" Height="36" Fill="#1E2D44" HorizontalAlignment="Left" VerticalAlignment="Center"/>
                             <Rectangle Grid.Column="3" Width="1" Height="36" Fill="#1E2D44" HorizontalAlignment="Left" VerticalAlignment="Center"/>
                             <Rectangle Grid.Column="4" Width="1" Height="36" Fill="#1E2D44" HorizontalAlignment="Left" VerticalAlignment="Center"/>
                             <Rectangle Grid.Column="5" Width="1" Height="36" Fill="#1E2D44" HorizontalAlignment="Left" VerticalAlignment="Center"/>
+                            <!-- NAV-01: tabs keep a min width (never overlap/squeeze) and spread
+                                 out evenly when the strip has room to spare -->
                             <ToggleButton x:Name="SubtitleModeButton" Grid.Column="0" Tag="Subtitle" IsChecked="True" ToolTipService.ToolTip="Văn bản">
                                 <Grid Width="56" VerticalAlignment="Center">
-                                    <Grid.RowDefinitions><RowDefinition Height="28"/><RowDefinition Height="14"/></Grid.RowDefinitions>
+                                    <Grid.RowDefinitions><RowDefinition Height="28"/><RowDefinition Height="14"/><RowDefinition Height="2"/></Grid.RowDefinitions>
                                     <Grid Height="28" VerticalAlignment="Center"><FontIcon Glyph="&#xE8F2;" FontSize="22" HorizontalAlignment="Center" VerticalAlignment="Center"/></Grid>
                                     <TextBlock Grid.Row="1" Text="VĂN BẢN" FontSize="9" FontWeight="SemiBold" HorizontalAlignment="Center" VerticalAlignment="Center" LineHeight="14" TextAlignment="Center"/>
+                                    <Rectangle Grid.Row="2" Tag="FocusCue" Width="28" Height="2" Fill="#5AB0FF" HorizontalAlignment="Center" Visibility="Collapsed"/>
                                 </Grid>
                             </ToggleButton>
                             <ToggleButton x:Name="EffectModeButton" Grid.Column="1" Tag="Effect" ToolTipService.ToolTip="Hiệu ứng vùng">
                                 <Grid Width="56" VerticalAlignment="Center">
-                                    <Grid.RowDefinitions><RowDefinition Height="28"/><RowDefinition Height="14"/></Grid.RowDefinitions>
+                                    <Grid.RowDefinitions><RowDefinition Height="28"/><RowDefinition Height="14"/><RowDefinition Height="2"/></Grid.RowDefinitions>
                                     <Grid Height="28" VerticalAlignment="Center"><TextBlock Text="fx" FontSize="19" FontWeight="Bold" FontStyle="Italic" HorizontalAlignment="Center" VerticalAlignment="Center"/></Grid>
                                     <TextBlock Grid.Row="1" Text="EFFECT" FontSize="9" FontWeight="SemiBold" HorizontalAlignment="Center" VerticalAlignment="Center" LineHeight="14" TextAlignment="Center"/>
+                                    <Rectangle Grid.Row="2" Tag="FocusCue" Width="28" Height="2" Fill="#5AB0FF" HorizontalAlignment="Center" Visibility="Collapsed"/>
                                 </Grid>
                             </ToggleButton>
                             <ToggleButton x:Name="AudioModeButton" Grid.Column="2" Tag="Audio" ToolTipService.ToolTip="Âm nhạc">
                                 <Grid Width="56" VerticalAlignment="Center">
-                                    <Grid.RowDefinitions><RowDefinition Height="28"/><RowDefinition Height="14"/></Grid.RowDefinitions>
+                                    <Grid.RowDefinitions><RowDefinition Height="28"/><RowDefinition Height="14"/><RowDefinition Height="2"/></Grid.RowDefinitions>
                                     <Grid Height="28" VerticalAlignment="Center"><FontIcon Glyph="&#xE8D6;" FontSize="22" HorizontalAlignment="Center" VerticalAlignment="Center"/></Grid>
                                     <TextBlock Grid.Row="1" Text="ÂM NHẠC" FontSize="9" FontWeight="SemiBold" HorizontalAlignment="Center" VerticalAlignment="Center" LineHeight="14" TextAlignment="Center"/>
+                                    <Rectangle Grid.Row="2" Tag="FocusCue" Width="28" Height="2" Fill="#5AB0FF" HorizontalAlignment="Center" Visibility="Collapsed"/>
                                 </Grid>
                             </ToggleButton>
                             <ToggleButton x:Name="VoiceModeButton" Grid.Column="3" Tag="Voice" ToolTipService.ToolTip="Giọng nói">
                                 <Grid Width="56" VerticalAlignment="Center">
-                                    <Grid.RowDefinitions><RowDefinition Height="28"/><RowDefinition Height="14"/></Grid.RowDefinitions>
+                                    <Grid.RowDefinitions><RowDefinition Height="28"/><RowDefinition Height="14"/><RowDefinition Height="2"/></Grid.RowDefinitions>
                                     <Grid Height="28" VerticalAlignment="Center"><FontIcon Glyph="&#xE720;" FontSize="22" HorizontalAlignment="Center" VerticalAlignment="Center"/></Grid>
                                     <TextBlock Grid.Row="1" Text="GIỌNG NÓI" FontSize="9" FontWeight="SemiBold" HorizontalAlignment="Center" VerticalAlignment="Center" LineHeight="14" TextAlignment="Center"/>
+                                    <Rectangle Grid.Row="2" Tag="FocusCue" Width="28" Height="2" Fill="#5AB0FF" HorizontalAlignment="Center" Visibility="Collapsed"/>
                                 </Grid>
                             </ToggleButton>
                             <ToggleButton x:Name="ImageModeButton" Grid.Column="4" Tag="Image" ToolTipService.ToolTip="Hình ảnh">
                                 <Grid Width="56" VerticalAlignment="Center">
-                                    <Grid.RowDefinitions><RowDefinition Height="28"/><RowDefinition Height="14"/></Grid.RowDefinitions>
+                                    <Grid.RowDefinitions><RowDefinition Height="28"/><RowDefinition Height="14"/><RowDefinition Height="2"/></Grid.RowDefinitions>
                                     <Grid Height="28" VerticalAlignment="Center"><FontIcon Glyph="&#xEB9F;" FontSize="22" HorizontalAlignment="Center" VerticalAlignment="Center"/></Grid>
                                     <TextBlock Grid.Row="1" Text="HÌNH ẢNH" FontSize="9" FontWeight="SemiBold" HorizontalAlignment="Center" VerticalAlignment="Center" LineHeight="14" TextAlignment="Center"/>
+                                    <Rectangle Grid.Row="2" Tag="FocusCue" Width="28" Height="2" Fill="#5AB0FF" HorizontalAlignment="Center" Visibility="Collapsed"/>
                                 </Grid>
                             </ToggleButton>
                             <ToggleButton x:Name="ExportModeButton" Grid.Column="5" Tag="Export" ToolTipService.ToolTip="Xuất">
                                 <Grid Width="56" VerticalAlignment="Center">
-                                    <Grid.RowDefinitions><RowDefinition Height="28"/><RowDefinition Height="14"/></Grid.RowDefinitions>
+                                    <Grid.RowDefinitions><RowDefinition Height="28"/><RowDefinition Height="14"/><RowDefinition Height="2"/></Grid.RowDefinitions>
                                     <Grid Height="28" VerticalAlignment="Center"><FontIcon Glyph="&#xEDE1;" FontSize="22" HorizontalAlignment="Center" VerticalAlignment="Center"/></Grid>
                                     <TextBlock Grid.Row="1" Text="XUẤT" FontSize="9" FontWeight="SemiBold" HorizontalAlignment="Center" VerticalAlignment="Center" LineHeight="14" TextAlignment="Center"/>
+                                    <Rectangle Grid.Row="2" Tag="FocusCue" Width="28" Height="2" Fill="#5AB0FF" HorizontalAlignment="Center" Visibility="Collapsed"/>
                                 </Grid>
                             </ToggleButton>
                         </Grid>
@@ -540,12 +590,19 @@
                                 <Button x:Name="AddRegionButton" Click="AddRegion_Click" Content="＋  Thêm vùng" IsEnabled="False" HorizontalAlignment="Stretch" MinHeight="38" CornerRadius="8" FontWeight="SemiBold" Background="{ThemeResource AccentPrimaryBrush}" Foreground="White" BorderThickness="0"/>
 
                                 <Border CornerRadius="8" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="1" Background="{ThemeResource InputSurfaceBrush}" Padding="2">
-                                    <ListView x:Name="RegionList" MinHeight="82" MaxHeight="130" SelectionChanged="RegionList_SelectionChanged" AutomationProperties.Name="Danh sách vùng hiệu ứng"/>
+                                    <ListView x:Name="RegionList" MinHeight="82" MaxHeight="130" SelectionChanged="RegionList_SelectionChanged" AutomationProperties.Name="Danh sách vùng hiệu ứng">
+                                        <ListView.ItemTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding Display}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
+                                                           ToolTipService.ToolTip="{Binding Details}" ToolTipService.Placement="Right"/>
+                                            </DataTemplate>
+                                        </ListView.ItemTemplate>
+                                    </ListView>
                                 </Border>
                                 <Grid ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
-                                    <Button x:Name="UndoButton" Click="Undo_Click" Content="↩ Hoàn tác" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" CornerRadius="8"/>
-                                    <Button Grid.Column="1" x:Name="RedoButton" Click="Redo_Click" Content="↪ Làm lại" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" CornerRadius="8"/>
-                                    <Button Grid.Column="2" x:Name="RemoveRegionButton" Click="RemoveRegion_Click" Content="Xóa" IsEnabled="False" Style="{StaticResource DangerButtonStyle}" CornerRadius="8"/>
+                                    <Button x:Name="UndoButton" Click="Undo_Click" Content="↩ Hoàn tác" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" Padding="8,3" Height="26" MinHeight="26" CornerRadius="8"/>
+                                    <Button Grid.Column="1" x:Name="RedoButton" Click="Redo_Click" Content="↪ Làm lại" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" Padding="8,3" Height="26" MinHeight="26" CornerRadius="8"/>
+                                    <Button Grid.Column="2" x:Name="RemoveRegionButton" Click="RemoveRegion_Click" Content="Xóa" IsEnabled="False" Style="{StaticResource DangerButtonStyle}" Padding="8,3" Height="26" MinHeight="26" CornerRadius="8"/>
                                 </Grid>
                             </StackPanel>
 
@@ -579,33 +636,37 @@
                             </StackPanel>
 
                             <StackPanel x:Name="VoiceInspectorPanel" Spacing="8" Visibility="Collapsed">
-                                <TextBlock Text="Voice · NGHI-TTS" FontSize="11" FontWeight="SemiBold" Foreground="{ThemeResource MutedTextBrush}" Opacity="0.85"/>
-                                <ComboBox x:Name="AsrExecutionModeBox" Header="Nhận dạng nhịp thoại (ASR)" SelectedIndex="0" HorizontalAlignment="Stretch">
-                                    <ComboBoxItem Tag="gpu" Content="GPU ưu tiên (mặc định)"/>
-                                    <ComboBoxItem Tag="cpu" Content="CPU"/>
-                                    <ComboBoxItem Tag="hybrid" Content="Hybrid · CPU + GPU"/>
-                                </ComboBox>
-                                <TextBlock Text="Hybrid chia việc theo thiết bị rảnh, không đảm bảo nhanh hơn GPU. Đổi chế độ không xóa timing đã lưu; dùng nút dưới để phân tích lại." FontSize="10" TextWrapping="Wrap" Foreground="{ThemeResource MutedTextBrush}"/>
-                                <Button x:Name="AnalyzeTimingButton" Content="Phân tích nhịp theo chế độ đã chọn" Click="AnalyzeTiming_Click" HorizontalAlignment="Stretch" Style="{StaticResource SecondaryButtonStyle}" ToolTipService.ToolTip="Dùng lại checkpoint hợp lệ; chỉ cập nhật timing và voice phụ thuộc khi phân tích thành công."/>
-                                <Border Style="{StaticResource CardBorderStyle}" Padding="10">
+                                <TextBlock Text="Voice · VieNeu-TTS" FontSize="11" FontWeight="SemiBold" Foreground="{ThemeResource MutedTextBrush}" Opacity="0.85"/>
+                                <Button x:Name="VoiceAdvancedToggleButton" Click="VoiceAdvancedToggle_Click" Content="Nâng cao · nhận dạng nhịp"
+                                        HorizontalAlignment="Stretch" Style="{StaticResource SecondaryButtonStyle}" Padding="8,5" Height="32" MinHeight="32"
+                                        ToolTipService.ToolTip="Chỉ mở khi bạn muốn đổi chế độ nhận dạng nhịp hoặc phân tích lại."
+                                        AutomationProperties.Name="Hiện hoặc ẩn thiết lập nhận dạng nhịp nâng cao" />
+                                <StackPanel x:Name="VoiceAdvancedPanel" Spacing="8" Visibility="Collapsed">
+                                    <ComboBox x:Name="AsrExecutionModeBox" Header="Nhận dạng nhịp thoại (ASR)" SelectedIndex="0" HorizontalAlignment="Stretch">
+                                        <ComboBoxItem Tag="gpu" Content="GPU ưu tiên (mặc định)"/>
+                                        <ComboBoxItem Tag="cpu" Content="CPU"/>
+                                        <ComboBoxItem Tag="hybrid" Content="Hybrid · CPU + GPU"/>
+                                    </ComboBox>
+                                    <TextBlock Text="Hybrid chia việc theo thiết bị rảnh, không đảm bảo nhanh hơn GPU. Đổi chế độ không xóa timing đã lưu; dùng nút dưới để phân tích lại." FontSize="10" TextWrapping="Wrap" Foreground="{ThemeResource MutedTextBrush}"/>
+                                    <Button x:Name="AnalyzeTimingButton" Content="Phân tích nhịp theo chế độ đã chọn" Click="AnalyzeTiming_Click" HorizontalAlignment="Stretch" Style="{StaticResource SecondaryButtonStyle}" ToolTipService.ToolTip="Dùng lại checkpoint hợp lệ; chỉ cập nhật timing và voice phụ thuộc khi phân tích thành công."/>
+                                </StackPanel>
+                                <Border Style="{StaticResource SectionGroupStyle}" Padding="10">
                                     <StackPanel Spacing="8">
-                                        <!-- Giọng đọc compact -->
+                                        <!-- Compact voice selection -->
                                         <Grid ColumnSpacing="6" VerticalAlignment="Center">
                                             <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                                            <ComboBox x:Name="VoiceModelBox" MinHeight="36" Height="36" Padding="8,0" SelectedIndex="0" VerticalAlignment="Center" SelectionChanged="VoiceModelBox_SelectionChanged">
-                                                <ComboBoxItem Tag="ngoc_huyen" Content="Ngọc Huyền · NGHI local"/>
-                                            </ComboBox>
+                                            <ComboBox x:Name="VoiceModelBox" MinHeight="36" Height="36" Padding="8,0" SelectedIndex="0" VerticalAlignment="Center" SelectionChanged="VoiceModelBox_SelectionChanged"/>
                                             <StackPanel x:Name="VoiceSampleSlot" Grid.Column="1" VerticalAlignment="Center" Orientation="Horizontal" Spacing="0"/>
                                         </Grid>
                                         <!-- metadata chips single row -->
                                         <StackPanel Orientation="Horizontal" Spacing="4">
                                             <Border Padding="5,2" CornerRadius="5" Background="{ThemeResource StrongSurfaceBrush}" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="1"><TextBlock Text="Local" FontSize="9" Foreground="{ThemeResource SecondaryTextBrush}"/></Border>
-                                            <Border Padding="5,2" CornerRadius="5" Background="{ThemeResource StrongSurfaceBrush}" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="1"><TextBlock x:Name="VoiceEngineChipText" Text="NGHI-TTS" FontSize="9" Foreground="{ThemeResource SecondaryTextBrush}"/></Border>
-                                            <Border Padding="5,2" CornerRadius="5" Background="{ThemeResource StrongSurfaceBrush}" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="1"><TextBlock x:Name="VoiceRuntimeChipText" Text="ONNX" FontSize="9" Foreground="{ThemeResource SecondaryTextBrush}"/></Border>
+                                            <Border Padding="5,2" CornerRadius="5" Background="{ThemeResource StrongSurfaceBrush}" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="1"><TextBlock x:Name="VoiceEngineChipText" Text="VieNeu-TTS" FontSize="9" Foreground="{ThemeResource SecondaryTextBrush}"/></Border>
+                                            <Border Padding="5,2" CornerRadius="5" Background="{ThemeResource StrongSurfaceBrush}" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="1"><TextBlock x:Name="VoiceRuntimeChipText" Text="GPU" FontSize="9" Foreground="{ThemeResource SecondaryTextBrush}"/></Border>
                                             <Border x:Name="VoiceSampleRateChip" Padding="5,2" CornerRadius="5" Background="{ThemeResource StrongSurfaceBrush}" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="1"><TextBlock x:Name="VoiceSampleRateText" Text="22050 Hz" FontSize="9" Foreground="{ThemeResource SecondaryTextBrush}"/></Border>
                                             <TextBlock Text="Nguyên câu" FontSize="9" Foreground="{ThemeResource AccentPrimaryBrush}" VerticalAlignment="Center" Margin="4,0,0,0" ToolTipService.ToolTip="Model ưu tiên đọc lại nguyên cue theo nhịp nguồn; cue quá chật sẽ nén nhịp có giữ cao độ, không cắt chữ cuối hay chia theo khoảng nghỉ"/>
                                         </StackPanel>
-                                        <!-- main action button: Tạo voice / (Tạm dừng + Hủy khi đang chạy) -->
+                                        <!-- Main action button: Generate voice / (Pause + Cancel while running) -->
                                         <Grid>
                                             <Button x:Name="GenerateTtsButton" Click="GenerateTts_Click" Content="✦  Tạo voice và tự canh timecode" IsEnabled="False" HorizontalAlignment="Stretch" MinHeight="36" Height="36" CornerRadius="8" FontWeight="SemiBold" Background="{ThemeResource AccentPrimaryBrush}" Foreground="White" BorderThickness="0"/>
                                             <Grid x:Name="VoiceBusyButtons" Visibility="Collapsed" ColumnSpacing="8">
@@ -619,7 +680,7 @@
                                             <Grid ColumnSpacing="8">
                                                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                                 <ProgressBar x:Name="VoiceProgress" Minimum="0" Maximum="100" Height="3" CornerRadius="2" VerticalAlignment="Center" Foreground="{ThemeResource AccentPrimaryBrush}"/>
-                                                <TextBlock x:Name="VoiceProgressPercent" Grid.Column="1" Text="0%" MinWidth="42" TextAlignment="Right" VerticalAlignment="Center" FontSize="11" FontWeight="SemiBold" Foreground="{ThemeResource AccentPrimaryBrush}" AutomationProperties.Name="Phần trăm tiến trình Voice/ASR"/>
+                                                <TextBlock x:Name="VoiceProgressPercent" Grid.Column="1" Text="0%" MinWidth="42" TextAlignment="Right" VerticalAlignment="Center" FontSize="11" FontWeight="SemiBold" FontFamily="Consolas" Foreground="{ThemeResource AccentPrimaryBrush}" AutomationProperties.Name="Phần trăm tiến trình Voice/ASR"/>
                                             </Grid>
                                             <TextBlock x:Name="VoiceStatusText" Style="{StaticResource MutedTextStyle}" Text="Chọn giọng rồi tạo voice." TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" FontSize="10" Foreground="{ThemeResource SecondaryTextBrush}"/>
                                         </StackPanel>
@@ -645,7 +706,7 @@
                                         </Grid>
                                     </StackPanel>
                                 </Border>
-                                <Border x:Name="VoiceCuePreviewPanel" Style="{StaticResource CardBorderStyle}" Padding="10">
+                                <Border x:Name="VoiceCuePreviewPanel" Style="{StaticResource SectionGroupStyle}" Padding="10">
                                     <Grid Height="300" RowSpacing="7">
                                         <Grid.RowDefinitions>
                                             <RowDefinition Height="Auto"/>
@@ -762,7 +823,7 @@
                                             <Button Grid.Column="1" x:Name="CancelButton" Click="Cancel_Click" Content="Hủy" IsEnabled="False" Style="{StaticResource DangerButtonStyle}" HorizontalAlignment="Stretch" CornerRadius="8" MinHeight="40"/>
                                         </Grid>
                                         <ProgressBar x:Name="Progress" Minimum="0" Maximum="100" Height="4" CornerRadius="2" Foreground="{ThemeResource AccentPrimaryBrush}" AutomationProperties.Name="Tiến độ xuất video"/>
-                                        <TextBlock x:Name="RenderEtaText" FontSize="11" Foreground="{ThemeResource SecondaryTextBrush}" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite"/>
+                                        <TextBlock x:Name="RenderEtaText" FontSize="11" FontFamily="Consolas" Foreground="{ThemeResource SecondaryTextBrush}" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite"/>
                                     </StackPanel>
                                 </Border>
                             </StackPanel>
@@ -771,8 +832,9 @@
                 </Grid>
             </Border>
 
-            <Border Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="3" x:Name="TimelinePanel" Height="186" Padding="8,6,8,8"
+            <Border Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="5" x:Name="TimelinePanel" Padding="8,6,8,8"
                     Background="{ThemeResource RaisedSurfaceBrush}" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="1" CornerRadius="11"
+                    AllowDrop="True" DragOver="TimelinePanel_DragOver" DragLeave="TimelinePanel_DragLeave" Drop="TimelinePanel_Drop"
                     AutomationProperties.Name="Dải thời gian">
                 <Grid RowSpacing="6">
                     <Grid.RowDefinitions>
@@ -780,69 +842,129 @@
                         <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
 
-                    <Grid ColumnSpacing="8">
+                    <Grid ColumnSpacing="10">
                         <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
                         <TextBlock Text="Dải thời gian" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center" />
-                        <TextBlock Grid.Column="1" x:Name="TimelineZoomText" Style="{StaticResource MutedTextStyle}" FontSize="11" VerticalAlignment="Center" Text="—" />
-                        <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                        <StackPanel Grid.Column="1" x:Name="TimelineClipToolsGroup" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center"
+                                    AutomationProperties.Name="Nhóm thêm và chỉnh sửa clip">
                             <Button x:Name="TimelineAddClipButton" Click="TimelineAddClipButton_Click" Style="{StaticResource SecondaryButtonStyle}"
-                                    Padding="8,3" Height="26" MinHeight="26" ToolTipService.ToolTip="Thêm một video vào cuối dải thời gian">+ Video</Button>
+                                    Padding="8,3" Height="26" MinHeight="26" ToolTipService.ToolTip="Thêm một video vào cuối dải thời gian"
+                                    AutomationProperties.AutomationId="TimelineAddClipButton">+ Video</Button>
                             <Button x:Name="TimelineSplitClipButton" Click="TimelineSplitClipButton_Click" Style="{StaticResource SecondaryButtonStyle}"
-                                    Padding="8,3" Height="26" MinHeight="26" ToolTipService.ToolTip="Tách đoạn video tại vị trí playhead">Tách</Button>
+                                    Padding="8,3" Height="26" MinHeight="26" ToolTipService.ToolTip="Tách đoạn video tại vị trí playhead"
+                                    AutomationProperties.AutomationId="TimelineSplitClipButton">Tách</Button>
                             <Button x:Name="TimelineRemoveClipButton" Click="TimelineRemoveClipButton_Click" Style="{StaticResource SecondaryButtonStyle}"
-                                    Padding="8,3" Height="26" MinHeight="26" ToolTipService.ToolTip="Xoá đoạn video đang chọn">Xoá</Button>
+                                    Padding="8,3" Height="26" MinHeight="26" ToolTipService.ToolTip="Xoá đoạn video đang chọn"
+                                    AutomationProperties.AutomationId="TimelineRemoveClipButton">Xoá</Button>
+                            <Button x:Name="TimelineClipSubtitleButton" Click="TimelineClipSubtitleButton_Click" Style="{StaticResource SecondaryButtonStyle}"
+                                    Padding="8,3" Height="26" MinHeight="26" ToolTipService.ToolTip="Gắn SRT Việt riêng cho đoạn đang chọn (mỗi video một SRT)"
+                                    AutomationProperties.AutomationId="TimelineClipSubtitleButton"
+                                    AutomationProperties.Name="Gắn SRT cho đoạn đang chọn">SRT đoạn</Button>
+                            <Rectangle Width="1" Height="16" Fill="{ThemeResource BorderBrush}" VerticalAlignment="Center" />
+                            <Button x:Name="TimelineUndoButton" Click="TimelineUndoButton_Click" Style="{StaticResource SecondaryButtonStyle}"
+                                    Content="↩" Padding="0" Width="26" Height="26" MinHeight="26" MinWidth="26" VerticalAlignment="Center"
+                                    IsEnabled="False" ToolTipService.ToolTip="Hoàn tác thao tác trên dải thời gian (Ctrl+Z)"
+                                    AutomationProperties.AutomationId="TimelineUndoButton"
+                                    AutomationProperties.Name="Hoàn tác thao tác trên dải thời gian" />
+                            <Button x:Name="TimelineRedoButton" Click="TimelineRedoButton_Click" Style="{StaticResource SecondaryButtonStyle}"
+                                    Content="↪" Padding="0" Width="26" Height="26" MinHeight="26" MinWidth="26" VerticalAlignment="Center"
+                                    IsEnabled="False" ToolTipService.ToolTip="Làm lại thao tác trên dải thời gian (Ctrl+Y)"
+                                    AutomationProperties.AutomationId="TimelineRedoButton"
+                                    AutomationProperties.Name="Làm lại thao tác trên dải thời gian" />
                         </StackPanel>
-                        <Slider Grid.Column="3" x:Name="TimelineZoomSlider" Minimum="0" Maximum="100" Value="35" Width="130"
-                                ValueChanged="TimelineZoom_ValueChanged" VerticalAlignment="Center" AutomationProperties.Name="Mức thu phóng dải thời gian" />
-                        <Button Grid.Column="4" x:Name="TimelineZoomOutButton" Content="−" Click="TimelineZoomOut_Click" Padding="0" Width="30" Height="26" MinWidth="30"
-                                VerticalAlignment="Center" ToolTipService.ToolTip="Thu nhỏ" />
-                        <Button Grid.Column="5" x:Name="TimelineZoomInButton" Content="+" Click="TimelineZoomIn_Click" Padding="0" Width="30" Height="26" MinWidth="30"
-                                VerticalAlignment="Center" ToolTipService.ToolTip="Phóng to" />
-                        <Button Grid.Column="6" x:Name="TimelineFitButton" Content="Vừa khung" Click="TimelineFit_Click" Style="{StaticResource SecondaryButtonStyle}"
-                                Padding="8,3" Height="26" MinHeight="26" VerticalAlignment="Center" ToolTipService.ToolTip="Đưa toàn bộ video vào khung nhìn" />
+                        <Rectangle Grid.Column="2" Width="1" Height="18" Fill="{ThemeResource BorderBrush}" VerticalAlignment="Center" />
+                        <StackPanel Grid.Column="3" x:Name="TimelineZoomToolsGroup" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center"
+                                    AutomationProperties.Name="Nhóm zoom và điều hướng dải thời gian">
+                            <TextBlock x:Name="TimelineZoomText" Style="{StaticResource MutedTextStyle}" FontSize="11" FontFamily="Consolas" VerticalAlignment="Center" Text="—"
+                                       AutomationProperties.Name="Mật độ pixel của dải thời gian (px mỗi giây, đơn vị logic DIP)"
+                                       AutomationProperties.AutomationId="TimelineZoomText" />
+                            <Slider x:Name="TimelineZoomSlider" Minimum="0" Maximum="100" Value="35" Width="120"
+                                    ValueChanged="TimelineZoom_ValueChanged" VerticalAlignment="Center" AutomationProperties.Name="Mức thu phóng dải thời gian"
+                                    AutomationProperties.AutomationId="TimelineZoomSlider" />
+                            <Button x:Name="TimelineZoomOutButton" Content="−" Click="TimelineZoomOut_Click" Padding="0" Width="30" Height="26" MinWidth="30"
+                                    VerticalAlignment="Center" ToolTipService.ToolTip="Thu nhỏ" AutomationProperties.AutomationId="TimelineZoomOutButton" />
+                            <Button x:Name="TimelineZoomInButton" Content="+" Click="TimelineZoomIn_Click" Padding="0" Width="30" Height="26" MinWidth="30"
+                                    VerticalAlignment="Center" ToolTipService.ToolTip="Phóng to" AutomationProperties.AutomationId="TimelineZoomInButton" />
+                            <Button x:Name="TimelineFitButton" Content="Vừa khung" Click="TimelineFit_Click" Style="{StaticResource SecondaryButtonStyle}"
+                                    Padding="8,3" Height="26" MinHeight="26" VerticalAlignment="Center" ToolTipService.ToolTip="Đưa toàn bộ video vào khung nhìn"
+                                    AutomationProperties.AutomationId="TimelineFitButton" />
+                        </StackPanel>
+                        <Rectangle Grid.Column="4" Width="1" Height="18" Fill="{ThemeResource BorderBrush}" VerticalAlignment="Center" />
+                        <Button Grid.Column="5" x:Name="EditorShortcutsButton" HorizontalAlignment="Left" Click="EditorShortcutsButton_Click" Style="{StaticResource SecondaryButtonStyle}"
+                                Padding="8,3" Height="26" MinHeight="26" VerticalAlignment="Center" ToolTipService.ToolTip="Xem phím tắt của trang Chỉnh video"
+                                AutomationProperties.AutomationId="EditorShortcutsButton" AutomationProperties.Name="Phím tắt">
+                            <StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE765;" FontSize="12" /><TextBlock Text="Phím tắt" /></StackPanel>
+                        </Button>
+                        <Button Grid.Column="6" x:Name="TimelineCollapseButton" Content="▁" Click="TimelineCollapseToggle_Click" Width="28" Height="26" Padding="0"
+                                HorizontalAlignment="Right" VerticalAlignment="Center" ToolTipService.ToolTip="Thu gọn / mở rộng Dải thời gian"
+                                AutomationProperties.Name="Thu gọn hoặc mở rộng Dải thời gian" />
                     </Grid>
 
                     <Grid Grid.Row="1" ColumnSpacing="6">
                         <Grid.ColumnDefinitions>
+                            <ColumnDefinition x:Name="TimelineHeaderColumn" Width="78" MinWidth="56" MaxWidth="150" />
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="*" />
                         </Grid.ColumnDefinitions>
 
-                        <Grid Grid.Column="0" Width="78" x:Name="TimelineHeaderGrid">
+                        <Grid Grid.Column="0" x:Name="TimelineHeaderGrid">
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="26" />
                                 <RowDefinition Height="3" />
                                 <RowDefinition Height="26" />
+                                <RowDefinition Height="3" />
                                 <RowDefinition Height="26" />
+                                <RowDefinition Height="3" />
                                 <RowDefinition Height="26" />
+                                <RowDefinition Height="3" />
                                 <RowDefinition Height="26" />
                             </Grid.RowDefinitions>
-                            <TextBlock Grid.Row="0" Text="Thước" FontSize="9" Foreground="{ThemeResource MutedTextBrush}" VerticalAlignment="Center" />
-                            <TextBlock Grid.Row="2" x:Name="TimelineLaneVideoLabel" Text="Video" FontSize="10" Foreground="{ThemeResource SecondaryTextBrush}" VerticalAlignment="Center" />
-                            <TextBlock Grid.Row="3" x:Name="TimelineLaneEffectLabel" Text="Hiệu ứng" FontSize="10" Foreground="{ThemeResource SecondaryTextBrush}" VerticalAlignment="Center" />
-                            <TextBlock Grid.Row="4" x:Name="TimelineLaneSubtitleLabel" Text="Phụ đề" FontSize="10" Foreground="{ThemeResource SecondaryTextBrush}" VerticalAlignment="Center" />
-                            <TextBlock Grid.Row="5" x:Name="TimelineLaneVoiceLabel" Text="Voice" FontSize="10" Foreground="{ThemeResource SecondaryTextBrush}" VerticalAlignment="Center" />
+                            <TextBlock Grid.Row="0" Text="Thước" FontSize="9" Foreground="{ThemeResource MutedTextBrush}" VerticalAlignment="Center"
+                                       AutomationProperties.AutomationId="TimelineRulerLabel" />
+                            <TextBlock Grid.Row="2" x:Name="TimelineLaneEffectLabel" FontSize="10" Foreground="{ThemeResource SecondaryTextBrush}" VerticalAlignment="Center"
+                                       AutomationProperties.AutomationId="TimelineLaneEffectLabel"><Run Text="fx" FontWeight="SemiBold" Foreground="{ThemeResource AccentPrimaryBrush}" /><Run Text=" Hiệu ứng" /></TextBlock>
+                            <TextBlock Grid.Row="4" x:Name="TimelineLaneSubtitleLabel" FontSize="10" Foreground="{ThemeResource SecondaryTextBrush}" VerticalAlignment="Center"
+                                       AutomationProperties.AutomationId="TimelineLaneSubtitleLabel"><Run Text="T" FontWeight="SemiBold" Foreground="{ThemeResource AccentPrimaryBrush}" /><Run Text=" Phụ đề" /></TextBlock>
+                            <TextBlock Grid.Row="6" x:Name="TimelineLaneVideoLabel" Text="Video" FontSize="10" Foreground="{ThemeResource SecondaryTextBrush}" VerticalAlignment="Center"
+                                       AutomationProperties.AutomationId="TimelineLaneVideoLabel" />
+                            <TextBlock Grid.Row="8" x:Name="TimelineLaneVoiceLabel" Text="Voice" FontSize="10" Foreground="{ThemeResource SecondaryTextBrush}" VerticalAlignment="Center"
+                                       AutomationProperties.AutomationId="TimelineLaneVoiceLabel" />
                         </Grid>
 
-                        <ScrollViewer Grid.Column="1" x:Name="TimelineScrollViewer" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled"
+                        <controls:WorkspaceSplitter Grid.Column="1" x:Name="TimelineHeaderSplitter" Orientation="Horizontal"
+                                                    AutomationProperties.Name="Đổi bề rộng nhãn lane và nội dung dải thời gian"
+                                                    DragDelta="TimelineHeaderSplitter_DragDelta" DragCompleted="WorkspaceSplitter_DragCompleted" />
+                        <ScrollViewer Grid.Column="2" x:Name="TimelineScrollViewer" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled"
+                                      HorizontalContentAlignment="Left" VerticalContentAlignment="Top"
                                       ViewChanged="TimelineScroll_ViewChanged" Background="Transparent">
-                            <Canvas x:Name="TimelineContentGrid" Width="800" Height="134" Background="Transparent">
+                            <Canvas x:Name="TimelineContentGrid" Width="800" Height="134" Background="Transparent"
+                                    HorizontalAlignment="Left" VerticalAlignment="Top"
+                                    PointerMoved="TimelineContentGrid_PointerMoved" PointerReleased="TimelineContentGrid_PointerReleased"
+                                    PointerCanceled="TimelineContentGrid_PointerCanceled"
+                                    PointerCaptureLost="TimelineContentGrid_PointerCaptureLost">
                                 <Canvas x:Name="TimelineRulerCanvas" Height="26" Width="800" Background="Transparent"
-                                        PointerPressed="TimelineRuler_PointerPressed" AutomationProperties.Name="Thước thời gian" />
+                                        PointerPressed="TimelineRuler_PointerPressed" AutomationProperties.Name="Thước thời gian"
+                                        AutomationProperties.AutomationId="TimelineRulerCanvas" />
                                 <Canvas x:Name="TimelineTracksCanvas" Height="105" Width="800" Background="Transparent"
-                                        PointerPressed="TimelineTracks_PointerPressed" AutomationProperties.Name="Các lane của dải thời gian" />
-                                <Rectangle x:Name="TimelinePlayhead" Width="2" Height="134" Fill="#FF4C8DFF" Canvas.Left="0" IsHitTestVisible="False" />
+                                        PointerPressed="TimelineTracks_PointerPressed" AutomationProperties.Name="Các lane của dải thời gian"
+                                        AutomationProperties.AutomationId="TimelineTracksCanvas" />
+                                <Rectangle x:Name="TimelinePlayhead" Width="2" Height="134" Fill="#FF4C8DFF" Canvas.Left="0" IsHitTestVisible="False"
+                                           AutomationProperties.AutomationId="TimelinePlayhead" AutomationProperties.Name="Playhead của dải thời gian" />
+                                <controls:TimelinePlayheadHandle x:Name="TimelinePlayheadHead" Width="32" Height="26" Canvas.Left="0" Canvas.Top="0"
+                                                               PointerPressed="TimelinePlayheadHead_PointerPressed"
+                                                               AutomationProperties.AutomationId="TimelinePlayheadHead" AutomationProperties.Name="Đầu playhead trên thước thời gian" />
+                                <Rectangle x:Name="TimelineSnapIndicator" Width="1" Height="134" Fill="#FFFFC107" Canvas.Left="0" IsHitTestVisible="False" Visibility="Collapsed" />
+                                <Rectangle x:Name="TimelineDropIndicator" Width="2" Height="22" Fill="#FF4C8DFF" Canvas.Left="0" IsHitTestVisible="False" Visibility="Collapsed"
+                                           AutomationProperties.AutomationId="TimelineDropIndicator" AutomationProperties.Name="Vị trí chèn clip trên dải thời gian" />
+                                <Rectangle x:Name="TimelineEdgeHoverIndicator" Width="2" Height="22" Fill="#FFFFFFFF" Canvas.Left="0" IsHitTestVisible="False" Visibility="Collapsed" />
                                 <Rectangle x:Name="TimelineOriginMarker" Width="0" Height="0" Canvas.Left="0" IsHitTestVisible="False" Opacity="0" />
                             </Canvas>
                         </ScrollViewer>
@@ -901,8 +1023,10 @@
                             <Grid ColumnSpacing="9">
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
                                 <TextBox x:Name="ExportDialogDirectoryBox" Header="Thư mục lưu" IsReadOnly="True" TextWrapping="NoWrap" />
-                                <Button Grid.Column="1" x:Name="ExportDialogChooseDirectoryButton" Content="Chọn" Click="ExportDialogChooseDirectory_Click" VerticalAlignment="Bottom" MinHeight="34" Padding="17,6" Style="{StaticResource SecondaryButtonStyle}" />
-                                <Button Grid.Column="2" x:Name="ExportDialogOpenDirectoryButton" Content="Mở" Click="ExportDialogOpenDirectory_Click" VerticalAlignment="Bottom" MinHeight="34" Padding="17,6" Style="{StaticResource SecondaryButtonStyle}" />
+                                <!-- One code-owned Click owner per button (BindStaticUiShell): a
+                                     second XAML Click ran the same picker twice. -->
+                                <Button Grid.Column="1" x:Name="ExportDialogChooseDirectoryButton" Content="Chọn" VerticalAlignment="Bottom" MinHeight="34" Padding="17,6" Style="{StaticResource SecondaryButtonStyle}" />
+                                <Button Grid.Column="2" x:Name="ExportDialogOpenDirectoryButton" Content="Mở" VerticalAlignment="Bottom" MinHeight="34" Padding="17,6" Style="{StaticResource SecondaryButtonStyle}" />
                             </Grid>
                         </StackPanel>
                     </Border>
@@ -987,6 +1111,17 @@
                 </StackPanel>
             </Border>
         </Grid>
+    </ContentDialog>
+
+    <ContentDialog x:Name="EditorShortcutsDialog" Title="Phím tắt" PrimaryButtonText="Đóng"
+                   AutomationProperties.AutomationId="EditorShortcutsDialog"
+                   AutomationProperties.Name="Danh sách phím tắt">
+        <ScrollViewer MaxHeight="430" VerticalScrollBarVisibility="Auto" VerticalScrollMode="Auto"
+                      HorizontalScrollBarVisibility="Disabled" HorizontalScrollMode="Disabled">
+            <StackPanel x:Name="EditorShortcutsList" Spacing="3"
+                        AutomationProperties.AutomationId="EditorShortcutsList"
+                        AutomationProperties.Name="Các phím tắt của trang Chỉnh video" />
+        </ScrollViewer>
     </ContentDialog>
     </Grid>
 </Page>

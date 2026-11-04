@@ -1,9 +1,0 @@
-<Window
-    x:Class="BiliSubStudio.App.BrowserLoginWindow"
-    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
-    <Grid x:Name="RootGrid" Loaded="RootGrid_Loaded">
-        <WebView2 x:Name="Browser" />
-        <InfoBar x:Name="ErrorBar" Title="Không mở được trình duyệt" Severity="Error" IsOpen="False" IsClosable="True" VerticalAlignment="Top" />
-    </Grid>
-</Window>

@@ -47,9 +47,9 @@ internal sealed partial class LocalAsrInstaller : IDisposable
         new("tokenizer.json", 2_203_239, "fb7b63191e9bb045082c79fd742a3106a12c99513ab30df4a0d47fa6cb6fd0ab"),
         new("vocabulary.txt", 459_861, "34ce3fe1c5041027b3f8d42912270993f986dbc4bb34cf27f951e34a1e453913"),
     ];
-    // Tách model Whisper (27/09): Edit giữ small cho nhẹ; tai nghe OCR dùng
-    // large-v3-turbo convert CT2 int8 local (không tải HF). Hai model khóa
-    // revision/file riêng, checkpoint khóa theo revision nên không lẫn nhau.
+    // Separate Whisper models (27/09): Edit keeps small for lightness; the OCR ear uses
+    // large-v3-turbo converted to CT2 int8 locally (no HF download). The two models lock
+    // separate revisions/files, and checkpoints lock by revision so they do not get mixed up.
     internal const string EditModelId = "small";
     internal const string ListenModelId = "large-v3-turbo";
     internal const string ListenModelName = "whisper large-v3-turbo CT2 int8 (tai nghe OCR)";
@@ -260,9 +260,9 @@ internal sealed partial class LocalAsrInstaller : IDisposable
 
     private void RemoveLegacyLargeV3Model(AppJob job)
     {
-        // Đổi large-v3 -> small (27/09): thu hồi ~3 GB model cũ sau khi small
-        // đã verified sẵn sàng. Best-effort tuyệt đối: xóa lỗi không được giết
-        // cài đặt; chỉ xóa đúng thư mục legacy đã khóa tên, không đụng thư mục mới.
+        // Switch large-v3 -> small (27/09): reclaim ~3 GB of the old model once small
+        // has been verified ready. Strictly best-effort: a delete failure must not kill the
+        // installation; delete only the name-locked legacy directory, never touch the new directory.
         try
         {
             var legacy = Path.Combine(Root, "Models", "faster-whisper-large-v3-edaa852ec7e1");

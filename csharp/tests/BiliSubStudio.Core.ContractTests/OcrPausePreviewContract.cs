@@ -3,11 +3,11 @@ using BiliSubStudio.Core.Ocr;
 
 namespace BiliSubStudio.Core.ContractTests;
 
-// Pause-nhanh regression (vụ chờ "tải song song 2529 frame" 15/9): preview pause PHẢI là
-// hàm thuần BuildPausedPreview (câu lane-owned cắt theo frontier, sắp xếp) — KHÔNG FFmpeg,
-// KHÔNG pixel, KHÔNG worker. Gộp pixel để dành finish/export/mở-checkpoint.
-// Bound ownership copy đúng Reconcile: lane thường Start < CoreEnd, lane cuối Start <= CoreEnd,
-// Start >= CoreStart; cắt Start > frontier.
+// Fast-pause regression (the "loading 2529 frames in parallel" wait, 15/9): the pause preview MUST be
+// the pure function BuildPausedPreview (lane-owned cues trimmed by the frontier, sorted) — NO FFmpeg,
+// NO pixel, NO worker. Pixel merging is reserved for finish/export/open-checkpoint.
+// Bound ownership copies Reconcile exactly: a normal lane has Start < CoreEnd, the last lane Start <= CoreEnd,
+// Start >= CoreStart; trim Start > frontier.
 internal static class OcrPausePreviewContract
 {
     public static Task RunAsync()
@@ -43,7 +43,7 @@ internal static class OcrPausePreviewContract
             return list;
         }
 
-        // 1. Hai lane, frontier 150: giữ owned, bỏ pre-core/guard-vượt/quá-frontier, sắp xếp.
+        // 1. Two lanes, frontier 150: keep owned, drop pre-core/over-guard/beyond-frontier, sort.
         var lanes = Lanes(
             Lane(Seg(0, 0, 100), 60, [
                 new OcrCue(-10, -5, "pre", 0.9),
@@ -63,13 +63,13 @@ internal static class OcrPausePreviewContract
             "preview must be ordered a/guard/b with pre/next-lane/future cut");
         Check(view.All(c => c.Start <= 150.001), "preview must cut cues beyond frontier");
 
-        // 2. Frontier 250: lane cuối bao Start == CoreEnd (<=), bỏ Start > CoreEnd.
+        // 2. Frontier 250: the last lane includes Start == CoreEnd (<=), drops Start > CoreEnd.
         var wide = Preview(lanes, 250);
         Check(wide.Count == 5, $"wide frontier must keep 5 cues (got {wide.Count})");
         Check(wide[3].Text == "future" && wide[4].Text == "last-edge",
             "last lane must include Start == CoreEnd but exclude Start > CoreEnd");
 
-        // 3. Lane rỗng + frontier 0: rỗng, không throw, không chạm FFmpeg/worker (hàm thuần).
+        // 3. Empty lane + frontier 0: empty, no throw, no FFmpeg/worker touched (pure function).
         var empty = Preview(Lanes(Lane(Seg(0, 0, 100), 0, [])), 0);
         Check(empty.Count == 0, "empty lanes must preview empty");
         return Task.CompletedTask;

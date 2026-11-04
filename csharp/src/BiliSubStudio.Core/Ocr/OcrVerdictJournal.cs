@@ -3,12 +3,12 @@ using System.Text;
 
 namespace BiliSubStudio.Core.Ocr;
 
-// Nhật ký verdict giám khảo VLM (spec khóa 16/09): 1 entry/ca đã chấm.
-// 28/09 (user cấm file cạnh video): verdict ghi vào Data/Verdicts/<sha>.json,
-// KHÔNG bao giờ cạnh video nữa. Alongside chỉ còn để ĐỌC di sản (migration),
-// Save luôn appdata. Không thuộc checkpoint (key/resume không đụng).
-// Câu đổi chữ/giờ thì entry cũ khớp hụt (vô hại) — verdict hết hiệu lực tự nhiên.
-// Xóa file là quên hết verdict (làm lại).
+// Journal of VLM judge verdicts (pinned spec 16/09): 1 entry per judged cue.
+// 28/09 (user forbids files beside the video): verdicts are written to Data/Verdicts/<sha>.json,
+// never beside the video again. Alongside remains only to READ legacy files (migration),
+// Save always goes to appdata. Not part of the checkpoint (key/resume are untouched).
+// If a cue's text/time changes, the old entry misses the match (harmless) — the verdict goes stale naturally.
+// Deleting the file forgets all verdicts (judge again).
 public sealed record OcrCueVerdict(
     double CueStart,
     string CueText,
@@ -25,10 +25,10 @@ public static class OcrVerdictJournal
     {
         try
         {
-            // File RIÊNG cho lọc thời gian: journal cũ ".ocr-verdicts.json" của
-            // VLM (16/09) ghi "keep" cho chữ bối cảnh — nạp lại là dedup chặn
-            // chấm lại, đúng ca cần xóa thì không bao giờ bị drop. Tên mới để
-            // verdict cũ không bao giờ được nạp.
+            // A SEPARATE file for the time filter: the old VLM ".ocr-verdicts.json" (16/09)
+            // wrote "keep" for context text — reloading it would make dedup block
+            // judging again, so cues that should be deleted would never be dropped. The new name ensures
+            // old verdicts are never loaded.
             return videoPath + ".temporal-verdicts.json";
         }
         catch
@@ -39,8 +39,8 @@ public static class OcrVerdictJournal
         }
     }
 
-    // Vị trí chuẩn mới: Data app, đặt tên theo digest video (không bao giờ cạnh
-    // video). Mọi Save sau 28/09 dùng đường này.
+    // New canonical location: app Data, named by the video digest (never beside the
+    // video). Every Save after 28/09 uses this path.
     public static string AppDataPath(string videoPath, string appDataDir)
     {
         var digest = Convert.ToHexStringLower(
@@ -49,8 +49,8 @@ public static class OcrVerdictJournal
         return Path.Combine(root, "Verdicts", digest[..16] + ".temporal-verdicts.json");
     }
 
-    // Đọc di sản: appdata trước (sự thật mới), cạnh video sau (file cũ còn sót
-    // vẫn cho cache hit, tới lần Save sau thì nằm appdata).
+    // Read legacy: appdata first (the newer truth), then beside the video (old files still
+    // provide cache hits until the next Save puts them in appdata).
     public static IReadOnlyList<OcrCueVerdict> LoadAny(string appDataPath, string alongsidePath)
     {
         var entries = Load(appDataPath);
@@ -110,8 +110,8 @@ public static class OcrVerdictJournal
         return false;
     }
 
-    // Đánh dấu 1 verdict đã duyệt (người bấm Giữ/Bỏ trong hàng đợi).
-    // Pure: trả danh sách mới + found. Caller tự Save (đã có hàm Save).
+    // Mark one verdict as reviewed (the user clicked Keep/Drop in the queue).
+    // Pure: returns a new list + found. The caller Saves itself (a Save function already exists).
     public static (IReadOnlyList<OcrCueVerdict> Entries, bool Found) TryMarkReviewed(
         IReadOnlyList<OcrCueVerdict> entries, double start, string? text)
     {

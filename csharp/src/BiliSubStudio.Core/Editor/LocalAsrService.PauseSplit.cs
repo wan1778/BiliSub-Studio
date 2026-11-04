@@ -2,12 +2,12 @@ using System.Text;
 
 namespace BiliSubStudio.Core.Editor;
 
-// Cắt câu theo khe im (23/09): Whisper gom cả đoạn dài thành 1 câu, khoảng
-// nghỉ nằm lọt bên trong nên sub lê thê và voice đọc dính chùm. Sau khi nghe
-// xong mỗi đoạn, nhìn giờ từng chữ (có sẵn, không nghe lại): khe im >= 0.6s
-// thì cắt thành câu riêng, chữ chia theo đúng giờ của nó. Mảnh dưới 0.3s thì
-// dính vào câu bên, không để câu cụt. Câu dài quá 10s mà không có khe đủ rộng
-// thì cắt ở khe im rộng nhất bên trong. Thuần logic, không đụng VAD/tai nghe.
+// Split sentences on silence gaps (23/09): Whisper collapses a whole long stretch into 1 sentence, and the
+// pauses fall inside it, so subtitles drag on and the voice reads in a run-on chunk. After
+// finishing each stretch, look at each character's timestamp (already available, no re-listening): a silence gap >= 0.6s
+// becomes its own sentence, with characters split at their own exact times. A piece below 0.3s
+// attaches to a neighbouring sentence, avoiding truncated sentences. A sentence longer than 10s with no wide-enough gap
+// is cut at the widest internal silence gap. Pure logic; VAD/earphones are not touched.
 internal sealed partial class LocalAsrService
 {
     internal const double PauseSplitGapSeconds = 0.6;
@@ -28,8 +28,8 @@ internal sealed partial class LocalAsrService
         }
         if (candidates.Count == 0 && cue.End - cue.Start > PauseSplitMaxUnsplitSeconds)
         {
-            // Câu dài bất thường mà không có khe nghỉ đủ rộng: cắt ở khe rộng
-            // nhất để sub không lê thê vô hạn (voice vẫn đọc đủ nguyên chữ).
+            // Abnormally long sentence with no wide-enough pause: cut at the widest
+            // gap so subtitles do not drag on indefinitely (the voice still reads every character).
             var best = -1;
             var widest = 0d;
             for (var index = 0; index + 1 < words.Count; index++)
@@ -52,7 +52,7 @@ internal sealed partial class LocalAsrService
         var tail = BuildPiece(cue, words, pieceStart, words.Count - 1);
         if (tail is not null) pieces.Add(tail);
 
-        // Mảnh vụn (<0.3s) dính vào câu bên: đầu gộp xuống, giữa/đuôi gộp lên.
+        // Fragments (<0.3s) attach to a neighbouring sentence: a leading fragment folds down, middle/trailing fragments fold up.
         if (pieces.Count >= 2 && IsShortPiece(pieces[0]))
         {
             var second = pieces[1];
@@ -101,9 +101,9 @@ internal sealed partial class LocalAsrService
         return cue with { Start = start, End = end, Words = pieceWords, Text = JoinPieceText(pieceWords) };
     }
 
-    // Chữ câu ghép từ giờ chữ: chữ Trung (ngoài ASCII) dính nhau không space,
-    // chữ Latin cách nhau bằng space. Trước đây bê nguyên câu Whisper nên
-    // khoảng nghỉ không hiện; giờ mỗi câu chỉ mang chữ của khung mình.
+    // Joined-sentence text derived from character times: Chinese characters (non-ASCII) stick together with no space,
+    // Latin characters are separated by spaces. Previously the raw Whisper sentence was copied whole, so the
+    // pauses never showed; now each sentence only carries the characters of its own frame.
     private static string JoinPieceText(IReadOnlyList<AsrWord> words)
     {
         var builder = new StringBuilder();

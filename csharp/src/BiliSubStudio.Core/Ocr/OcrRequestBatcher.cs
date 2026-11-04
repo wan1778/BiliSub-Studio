@@ -2,17 +2,17 @@ using System.Threading.Channels;
 
 namespace BiliSubStudio.Core.Ocr;
 
-// Vét batch (fill-4 trên worker đang chạy): gộp các request OCR đơn lẻ đang CHỜ SẴN
-// thành 1 batch worker.
-// Quy tắc thép:
-// - ZERO-WAIT: không bao giờ đợi đủ mate. Worker rảnh + có >=1 pending là chạy ngay.
-// - Cùng cờ mới gộp (recoverShortBlank + activeShortText): khác cờ là khác batch,
-//   vì worker áp 1 bộ cờ cho cả batch — gộp sai cờ là đổi kết quả.
-// - GIỚI HẠN 4 (parity 15/9 bằng worker thật đang chạy): worker 27/8 từ chối batch >4
-//   ("phải là batch 1-4 ảnh", đã đo), dù protocol repo mới cho 8. Vượt là lỗi batcher.
-// - Thứ tự: batch giữ đúng thứ tự submit; kết quả map theo index (worker giữ order).
-// - Hủy từng phần: member nào hủy thì TCS đó cancel, batch vẫn chạy cho số còn lại.
-// - Fail-safe: dispatch ném lỗi -> mọi member chưa xong nhận đúng lỗi đó, không treo.
+// Batch scavenging (fill-4 on a running worker): merges individual OCR requests that are ALREADY WAITING
+// into one worker batch.
+// Iron rules:
+// - ZERO-WAIT: never wait for enough mates. Idle worker + >=1 pending means run immediately.
+// - Same flags to merge (recoverShortBlank + activeShortText): different flags means different batch,
+//   because the worker applies one flag set to the whole batch — merging with wrong flags changes results.
+// - LIMIT 4 (parity 15/9 against the actually running worker): the 27/8 worker rejects batches >4
+//   ("must be a batch of 1-4 images", measured), even though the newer repo protocol allows 8. Exceeding is a batcher error.
+// - Order: a batch preserves the exact submit order; results map by index (the worker preserves order).
+// - Partial cancellation: whichever member is cancelled has its TCS cancelled, the batch still runs for the rest.
+// - Fail-safe: if dispatch throws -> every unfinished member receives that same error, never hangs.
 public sealed class OcrRequestBatcher : IAsyncDisposable
 {
     public const int WorkerBatchLimit = 4;
@@ -78,16 +78,16 @@ public sealed class OcrRequestBatcher : IAsyncDisposable
     private readonly object _trackedSync = new();
     private readonly List<Task> _tracked = [];
 
-    // Busy-coalesce hold (26/09): mỗi lượt gọi tốn ~380ms overhead cố định
-    // trong khi compute chỉ ~40-140ms — batch đầy 4 rẻ gấp ~3x mỗi ảnh. Giữ
-    // luật rảnh-chạy-ngay: chỉ hold khi mọi worker đều đang bận (không worker
-    // nào rảnh thì chờ thêm cũng không mất gì). workerCountProvider null nghĩa
-    // là không biết pool (đường cũ/test cũ): hành vi y hệt zero-wait trước đây.
+    // Busy-coalesce hold (26/09): each call costs ~380ms of fixed overhead
+    // while compute is only ~40-140ms — a full batch of 4 is ~3x cheaper per image. Keep
+    // the idle-run-immediately rule: only hold when every worker is busy (no worker
+    // is idle, so waiting more costs nothing). workerCountProvider null means
+    // the pool is unknown (old path/old tests): behavior identical to the previous zero-wait.
     internal static readonly TimeSpan CoalesceHold = TimeSpan.FromMilliseconds(15);
 
-    // dispatch: nhận 1 batch (1..cap, cùng cờ, đúng thứ tự) và PHẢI hoàn thành
-    // (result/exception/canceled) mọi member khi xong. Ném lỗi -> batcher tự
-    // gán lỗi cho member còn treo (lưới an toàn, không treo lane).
+    // dispatch: accepts one batch (1..cap, same flags, exact order) and MUST settle
+    // (result/exception/canceled) every member when done. If it throws -> the batcher assigns
+    // the error to members still hanging (safety net, never hangs a lane).
     public OcrRequestBatcher(
         Func<IReadOnlyList<Pending>, CancellationToken, Task> dispatch,
         int cap = WorkerBatchLimit,
@@ -133,15 +133,15 @@ public sealed class OcrRequestBatcher : IAsyncDisposable
         {
             while (!_stop.IsCancellationRequested)
             {
-                // Spill trước (không đói): batch toàn item tồn cùng cờ.
+                // Spill first (never starvation): a batch of all leftover items with matching flags.
                 if (_spill.Count > 0)
                 {
                     Track(DispatchSafeAsync(TakeSpillBatch()));
                     continue;
                 }
-                // Zero-wait khi rảnh: chỉ block khi KHÔNG có gì chờ. Có là vét
-                // ngay, không đợi mate — trừ khi mọi worker đều bận (lúc đó
-                // chờ thêm tối đa hold window để gom batch đầy, không mất gì).
+                // Zero-wait when idle: only block when there is NOTHING waiting. If anything is
+                // there, scavenge immediately, no waiting for mates — except when every worker is busy (then
+                // waiting at most the hold window to collect a full batch costs nothing).
                 if (!await _pending.Reader.WaitToReadAsync(_stop.Token)) break;
                 if (!_pending.Reader.TryRead(out var head) || head is null) continue;
                 if (HoldApplies())
@@ -149,8 +149,8 @@ public sealed class OcrRequestBatcher : IAsyncDisposable
                     try { await Task.Delay(_holdWindow, _stop.Token); }
                     catch (OperationCanceledException)
                     {
-                        // Head đã lấy ra khỏi channel mà chưa dispatch: settle
-                        // ngay như Dispose làm với leftovers, không treo lane.
+                        // Head was taken out of the channel but not yet dispatched: settle
+                        // immediately as Dispose does with leftovers, never hang a lane.
                         head.TrySetCanceled();
                         break;
                     }
@@ -171,9 +171,9 @@ public sealed class OcrRequestBatcher : IAsyncDisposable
         candidate.RecoverShortBlank == head.RecoverShortBlank
         && string.Equals(candidate.ActiveShortText, head.ActiveShortText, StringComparison.Ordinal);
 
-    // Mọi worker đều đang giữ 1 dispatch chưa xong thì hold thêm mate là miễn
-    // phí (không worker rảnh nào bị bắt đợi). Ngược lại chạy ngay như cũ.
-    // Provider lỗi/trả <= 0 là fail-open về zero-wait (không bao giờ hold mù).
+    // If every worker is holding one unfinished dispatch, holding longer for mates is wasted
+    // effort (no idle worker is forced to wait). Otherwise run immediately as before.
+    // Provider errors/returns <= 0 fail-open back to zero-wait (never hold blindly).
     private bool HoldApplies()
     {
         var provider = _workerCountProvider;
@@ -189,9 +189,9 @@ public sealed class OcrRequestBatcher : IAsyncDisposable
         }
     }
 
-    // Lấy batch từ spill: head = item tồn lâu nhất + mate cùng cờ (giữ thứ tự).
-    // Không tương thích thì ở lại spill chờ vòng sau — nhưng vòng nào cũng xả spill
-    // trước channel nên không đói (xấu nhất: đi một mình như hôm nay).
+    // Take a batch from the spill: head = the longest-surviving item + mates with matching flags (preserving order).
+    // Incompatible ones stay in the spill waiting for the next round — but every round drains the spill
+    // before the channel so there is no starvation (worst case: it goes alone as it does today).
     private List<Pending> TakeSpillBatch()
     {
         var head = _spill[0];
@@ -216,13 +216,13 @@ public sealed class OcrRequestBatcher : IAsyncDisposable
                 _tracked.RemoveAll(task => task.IsCompleted);
             _tracked.Add(dispatch);
         }
-        // Dispatch TỰ hoàn thành member. Ném lỗi thoát ra là bug của dispatch:
-        // production dispatch có catch-all hoàn thành member; contract test bắt
-        // dispatch fake hoàn thành đủ. Không treo lane vì DisposeAsync cancel hết tồn.
+        // Dispatch settles members ITSELF. An error escaping it is a dispatch bug:
+        // the production dispatch has a catch-all that settles members; the contract test catches
+        // fake dispatches that settle everything. No lane hangs because DisposeAsync cancels all leftovers.
     }
 
-    // Lưới chống dispatch ném đồng bộ (giết loop -> treo mọi submit sau):
-    // lỗi nào cũng gán cho member batch đó, loop sống tiếp.
+    // Net against a dispatch throwing synchronously (kills the loop -> hangs every later submit):
+    // any error is assigned to that batch's members, and the loop lives on.
     private async Task DispatchSafeAsync(IReadOnlyList<Pending> batch)
     {
         try
@@ -236,7 +236,7 @@ public sealed class OcrRequestBatcher : IAsyncDisposable
         }
     }
 
-    // Chỉ loop thread đụng _spill; Dispose đọc sau khi loop xong nên không lock.
+    // Only the loop thread touches _spill; Dispose reads it after the loop finishes, so no lock.
     private readonly List<Pending> _spill = [];
 
     public async ValueTask DisposeAsync()

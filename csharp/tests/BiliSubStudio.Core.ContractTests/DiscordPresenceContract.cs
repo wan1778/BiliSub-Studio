@@ -4,8 +4,8 @@ using System.Text.Json;
 
 namespace BiliSubStudio.Core.ContractTests;
 
-// Discord presence theo job thật: kind -> chữ details tiếng Việt, payload có
-// assets logo + timestamps. Pure, không chạm pipe Discord trong test.
+// Discord presence following real jobs: kind -> Vietnamese details text, the payload carries logo
+// assets + timestamps. Pure, no Discord pipe is touched in the test.
 internal static class DiscordPresenceContract
 {
     [ModuleInitializer]

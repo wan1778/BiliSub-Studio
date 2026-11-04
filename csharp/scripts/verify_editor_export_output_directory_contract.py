@@ -76,8 +76,8 @@ require(xaml.count('x:Name="ExportDialogChooseDirectoryButton"') == 1,
         "EXPORT-03 requires one Choose output-directory button")
 require(xaml.count('x:Name="ExportDialogOpenDirectoryButton"') == 1,
         "EXPORT-03 requires one Open output-directory button")
-require('Content="Chọn"' in xaml and 'Click="ExportDialogChooseDirectory_Click"' in xaml,
-        "EXPORT-03 Choose button must remain user-visible and wired")
+require('Content="Chọn"' in xaml and 'Click="ExportDialogChooseDirectory_Click"' not in xaml,
+        "EXPORT-03 Choose button must remain user-visible and wired exactly once, in code")
 require('Click="EditorChooseOutput_Click"' not in xaml,
         "EXPORT-03 Choose button must not gain a duplicate XAML Click owner")
 
@@ -88,20 +88,20 @@ require(bootstrap.count("ExportDialogOpenDirectoryButton.Click += EditorOpenOutp
         "EXPORT-03 Open output button must bind exactly once")
 require("_editorOutputPathText = ExportDialogDirectoryBox;" in bootstrap,
         "EXPORT-03 output path text must be owned by the static shell")
-require("ExportDialogDirectoryBox.Text = _application.Config.OutputDirectory;" in bootstrap,
-        "EXPORT-03 initial UI must show the current persisted output directory")
+require("ExportDialogDirectoryBox.Text = _application.Config.EditorOutputDirectory;" in bootstrap,
+        "EXPORT-03 initial UI must show the current persisted Editor output directory")
 
 choose = extract_method(parity, "private async void EditorChooseOutput_Click(")
 require(choose, "EXPORT-03 Choose output handler is missing")
 require("new FolderPickerService(() => window)" in choose,
         "EXPORT-03 Choose handler must open the native Windows folder picker")
-require("PickFolderAsync(_application.Config.OutputDirectory)" in choose,
-        "EXPORT-03 picker must receive the current output directory as its context")
+require("PickFolderAsync(_application.Config.EditorOutputDirectory)" in choose,
+        "EXPORT-03 picker must receive the current Editor output directory as its context")
 require("if (string.IsNullOrWhiteSpace(path)) return;" in choose,
         "EXPORT-03 picker cancel must be a no-op")
-require("await _application.Settings.SetOutputDirectoryAsync(path, CancellationToken.None);" in choose,
+require("await _application.Settings.SetEditorOutputDirectoryAsync(path, CancellationToken.None);" in choose,
         "EXPORT-03 selected folder must flow through Settings validation/persistence")
-require("_editorOutputPathText.Text = _application.Config.OutputDirectory" in choose,
+require("_editorOutputPathText.Text = _application.Config.EditorOutputDirectory" in choose,
         "EXPORT-03 UI must refresh from authoritative Config after selection")
 require("RefreshEditorActions();" in choose,
         "EXPORT-03 editor action state must refresh after output-directory selection")
@@ -141,16 +141,16 @@ require("await AtomicJsonFile.WriteAsync(paths.ConfigFile, next, cancellationTok
 # UI display/open state remains derived from the same authoritative config.
 refresh = extract_method(parity, "private void RefreshEditorParityControls()")
 require(refresh, "EXPORT-03 output-directory control refresh owner is missing")
-require("_editorOutputPathText.Text = _application.Config.OutputDirectory" in refresh,
+require("_editorOutputPathText.Text = _application.Config.EditorOutputDirectory" in refresh,
         "EXPORT-03 displayed output directory must come from Config")
-require("Directory.Exists(_application.Config.OutputDirectory)" in refresh,
-        "EXPORT-03 Open-folder availability must follow the configured output directory")
+require("Directory.Exists(_application.Config.EditorOutputDirectory)" in refresh,
+        "EXPORT-03 Open-folder availability must follow the configured Editor output directory")
 
 # PROJECT-10: Config is authoritative at click time, then one immutable target
 # snapshot must feed every final stage so an in-flight export cannot jump folders.
 capture = extract_method(output_target, "private EditorOutputTarget CaptureEditorOutputTarget(")
 require(capture, "EXPORT-03/PROJECT-10 output target capture owner is missing")
-require("_application.Config.OutputDirectory" in capture,
+require("_application.Config.EditorOutputDirectory" in capture,
         "EXPORT-03 output target must originate from the authoritative Config snapshot")
 require("_project?.FileName" in capture,
         "EXPORT-03 output target must capture the current filename with the directory")
@@ -171,8 +171,8 @@ require("OutputDirectory = temporaryDirectory" in render_project,
 # but final RenderProjectAsync must override it with the locked click-time target.
 current_request = extract_method(editor, "private VideoEditRequest CurrentEditRequest(")
 require(current_request, "EXPORT-03 CurrentEditRequest is missing")
-require("_application.Config.OutputDirectory," in current_request,
-        "EXPORT-03 shared request default must continue to derive from Config")
+require("_application.Config.EditorOutputDirectory," in current_request,
+        "EXPORT-03 shared request default must continue to derive from the Editor Config folder")
 
 # Tiny behavioral fixture: cancel preserves current directory; a chosen writable folder
 # persists. Once Render is clicked, later config changes do not retarget that run.
@@ -209,8 +209,8 @@ with tempfile.TemporaryDirectory() as td:
             "EXPORT-03 fixture: in-flight render was retargeted after click")
 
 # Negative fixture proves the gate detects loss of Settings persistence.
-require("SetOutputDirectoryAsync(path" not in choose.replace(
-    "await _application.Settings.SetOutputDirectoryAsync(path, CancellationToken.None);", "", 1),
+require("SetEditorOutputDirectoryAsync(path" not in choose.replace(
+    "await _application.Settings.SetEditorOutputDirectoryAsync(path, CancellationToken.None);", "", 1),
     "EXPORT-03 fixture sanity failure")
 
 print("PASS: EXPORT-03 output directory selection, persistence and immutable in-flight render target are locked")

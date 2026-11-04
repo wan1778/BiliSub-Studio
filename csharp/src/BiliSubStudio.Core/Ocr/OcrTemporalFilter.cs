@@ -1,33 +1,33 @@
 namespace BiliSubStudio.Core.Ocr;
 
-// Bộ lọc thời gian (user chốt 17/09): sub cứng thật ĐỨNG YÊN qua nhiều frame
-// (vị trí cố định giữa các khung), còn chữ trong video (trang sách/bối cảnh
-// bị camera lia) thì DI CHUYỂN liên tục, không đứng lâu.
-// Chấm từng ca nghi: chụp 3 khung trong ca (đầu/giữa/cuối + rìa ±0.3s),
-// OCR lại từng khung, so khớp chữ + vị trí:
-// - ≥2 khung tìm thấy nhưng vị trí trôi > 5% khung -> DI CHUYỂN -> DROP
-//   (chữ bối cảnh chạy theo camera, không phải sub).
-// - 3/3 khung cùng chữ + cùng vị trí -> ĐỨNG YÊN -> KEEP (sub thật).
-// - 2/3 khung cùng vị trí (1 khung OCR s Méng) -> KEEP (tha toler flake).
-// - <2 khung tìm thấy -> không đủ bằng chứng -> KEEP (không drop oan).
-// Fail-open tuyệt đối: mọi lỗi grab/OCR -> KEEP, không bao giờ mất chữ oan.
+// Time filter (locked by user 17/09): a real hardcoded sub STAYS STILL across many frames
+// (fixed position between frames), while text inside the video (book pages/background
+// panned by the camera) MOVES continuously, never staying put.
+// Judge each suspicious cue: capture 3 frames within the cue (start/middle/end + ±0.3s margins),
+// re-OCR each frame, compare text + position:
+// - ≥2 frames found but position drifts > 5% of frame -> MOVING -> DROP
+//   (background text panning with the camera, not a sub).
+// - 3/3 frames same text + same position -> STILL -> KEEP (real sub).
+// - 2/3 frames same position (1 frame OCR garbled) -> KEEP (tolerates a flake).
+// - <2 frames found -> insufficient evidence -> KEEP (no wrongful drop).
+// Absolutely fail-open: any grab/OCR error -> KEEP, never lose real text by mistake.
 public static class OcrTemporalFilter
 {
-    // Trôi vị trí tối đa để coi là "đứng yên": 4% khung. Jitter box OCR trên
-    // chữ tĩnh chỉ ~0.1-0.5% khung nên 4% an toàn; camera lia qua window
-    // ~2.3s (kể cả chữ lia chậm 2%/s) trôi > 4%.
+    // Maximum position drift to consider "still": 4% of frame. OCR box jitter on
+    // static text is only ~0.1-0.5% of frame so 4% is safe; camera panning through the window
+    // ~2.3s (even slow text panning at 2%/s) drifts > 4%.
     public const double MoveDriftThreshold = 0.04;
     public const int ProbeFrames = 3;
-    // Rìa phủ ra NGOÀI ca (±1s) để khuếch đại độ trôi: ca ngắn 0.27s mà chỉ
-    // quét trong ca thì window 0.16s — drift không bao giờ vượt ngưỡng (bug
-    // đã sửa 17/09). Phủ ngoài + khớp chữ theo đúng CHỮ CA nên không dính
-    // sub kế (chữ khác không match).
+    // Margin extending OUTSIDE the cue (±1s) to amplify drift: a 0.27s cue scanned only
+    // inside itself gives a 0.16s window — drift never crosses the threshold (bug
+    // fixed 17/09). Covering outside + matching text by exact CUE TEXT means no bleed into the
+    // next sub (different text does not match).
     public const double EdgePadSeconds = 1.0;
 
     public sealed record TemporalVerdict(string Decision, string Reason);
 
-    // Chức danh credit/tít (KHÔNG phải thoại). Thoại thật có thể nhắc tới
-    // ("导演说明天开拍") nhưng KHÔNG mở đầu bằng chức danh + dấu ngăn cách.
+    // Credit/title role (NOT dialogue). Real dialogue may mention it
+    // ("导演说明天开拍") but never starts with a role name + separator.
     private static readonly string[] CreditRoles =
     [
         "立书人", "出品人", "联合出品", "出品", "制片人", "总制片", "监制", "总监制",
@@ -37,12 +37,12 @@ public static class OcrTemporalFilter
         "字幕", "翻译", "校对", "压制", "片源", "修复",
     ];
 
-    // Tít/credit (KHÔNG phải thoại) — drop ngay không cần chụp khung:
-    // - dòng BẮT ĐẦU bằng chức danh credit + dấu ngăn cách ("立书人：冷暖暖")
-    //   hoặc chức danh đứng một mình ("出品人");
-    // - dòng chỉ là ngày tháng ("2026年6月3日");
-    // - dòng bản quyền (©/copyright/版权/著作权).
-    // Thoại thật ("导演说明天开拍") không có dấu ngăn cách sau chức danh nên thoát.
+    // Title/credit (NOT dialogue) — drop immediately, no frame capture needed:
+    // - a line STARTING with a credit role + separator ("立书人：冷暖暖")
+    //   or a role name standing alone ("出品人");
+    // - a line that is only a date ("2026年6月3日");
+    // - a copyright line (©/copyright/版权/著作权).
+    // Real dialogue ("导演说明天开拍") has no separator after the role name so it escapes.
     public static bool IsCreditTitle(string text)
     {
         if (string.IsNullOrWhiteSpace(text)) return false;
@@ -76,16 +76,16 @@ public static class OcrTemporalFilter
         };
     }
 
-    // Ngưỡng fallback đọc lại (17/09): chỉ cue đáng ngờ (⚠️/tin thấp) mới
-    // đọc lại khung lân cận. Fix CHỈ khi bản đọc khác CHẮC CHẮN hơn hẳn —
-    // không bao giờ "sửa" chữ đúng thành chữ sai.
+    // Re-read fallback threshold (17/09): only suspicious cues (⚠️/low confidence) get a
+    // re-read of neighbouring frames. Fix ONLY when the different read is CLEARLY better —
+    // never "correct" correct text into wrong text.
     public const double FallbackTriggerConfidence = 0.85;
     public const double FixMinConfidence = 0.88;
     public const double FixMargin = 0.08;
     public const double FixMinSimilarity = 0.55;
 
-    // Tìm bản đọc tốt nhất cho cue trong 1 frame: dòng tương đồng (cùng câu
-    // đọc khác) có tin cao nhất. Trả null khi không có dòng nào plausibly cùng câu.
+    // Find the best read of a cue within one frame: the matching line (same sentence
+    // read differently) with the highest confidence. Returns null when no line plausibly matches the sentence.
     public static (string Text, double Confidence)? FindBestFixMatch(
         IReadOnlyList<OcrLine> lines, string cueText)
     {
@@ -96,7 +96,7 @@ public static class OcrTemporalFilter
         {
             var hay = Normalize(line.Text);
             if (hay.Length == 0) continue;
-            // Cùng chữ y hệt thì không phải "bản đọc khác" — bỏ qua.
+            // Identical text is not a "different read" — skip it.
             if (string.Equals(hay, needle, StringComparison.Ordinal)) continue;
             if (OcrTextCleanup.TextSimilarity(line.Text, cueText) < FixMinSimilarity) continue;
             if (best is null || line.Confidence > best.Value.Confidence)
@@ -105,15 +105,15 @@ public static class OcrTemporalFilter
         return best;
     }
 
-    // Chuẩn hóa chữ: chỉ giữ chữ/số (CJK là letter), bỏ space+punct
-    // ("立书人，冷暖暖" == "立书人：冷暖暖"). Rỗng sau chuẩn hóa là không khớp.
+    // Normalize text: keep only letters/digits (CJK counts as a letter), drop spaces+punct
+    // ("立书人，冷暖暖" == "立书人：冷暖暖"). Empty after normalization means no match.
     public static string Normalize(string text)
     {
         if (string.IsNullOrWhiteSpace(text)) return string.Empty;
         return new string(text.Where(char.IsLetterOrDigit).ToArray());
     }
 
-    // Tâm box (tọa độ pixel) chuẩn hóa theo kích thước khung.
+    // Box centre (pixel coords) normalized by frame size.
     public static (double X, double Y)? LineCenter(OcrLine line, int frameWidth, int frameHeight)
     {
         if (line.Box is not { Length: 8 } box || frameWidth <= 0 || frameHeight <= 0) return null;
@@ -126,12 +126,12 @@ public static class OcrTemporalFilter
         return (sumX / 4 / frameWidth, sumY / 4 / frameHeight);
     }
 
-    // Tìm dòng khớp chữ ca (chứa 1 trong 2 chiều sau chuẩn hóa). Không khớp -> null.
-    // Cue NGẮN (≤2 chữ sau chuẩn hóa, vd "哼"/"滚"/"武夫"): CẤM khớp "chứa nhau" —
-    // chữ nền dài chứa đúng chữ đó luôn thắng longest-match rồi đo nhầm vị trí
-    // dòng nền (chạy theo camera) -> drop oan sub đứng yên (cue "哼"/"滚" thật
-    // trong .exclude.json). Nhánh này chỉ chấp nhận KHỚP TUYỆT ĐỐI, hòa thì lấy
-    // tin cao nhất. Đường cue dài (>2 chữ) giữ nguyên từng dòng bên dưới.
+    // Find the line matching the cue text (contains either direction after normalization). No match -> null.
+    // SHORT cue (≤2 chars after normalization, e.g. "哼"/"滚"/"武夫"): FORBID "contains" matching —
+    // long background text that happens to contain those chars always wins longest-match, then the position
+    // of a background line (panning with the camera) is mis-measured -> wrongful drop of a still sub (the real "哼"/"滚" cues
+    // in .exclude.json). This branch only accepts EXACT match, ties take the
+    // highest confidence. The long-cue path (>2 chars) keeps the per-line logic below.
     public static OcrLine? FindMatch(IReadOnlyList<OcrLine> lines, string cueText)
     {
         var needle = Normalize(cueText);
@@ -161,7 +161,7 @@ public static class OcrTemporalFilter
             if (hay.Length == 0) continue;
             if (!hay.Contains(needle, StringComparison.Ordinal)
                 && !needle.Contains(hay, StringComparison.Ordinal)) continue;
-            // Ưu tiên dòng khớp dài nhất (đủ câu, không phải dòng cắt ngắn).
+            // Prefer the longest matching line (full sentence, not a truncated line).
             if (hay.Length > bestLength)
             {
                 best = line;
@@ -171,8 +171,8 @@ public static class OcrTemporalFilter
         return best;
     }
 
-    // Quyết từ kết quả OCR của các khung probe (theo thứ tự probe).
-    // frames[i] = kết quả OCR khung i; thiếu khung -> null.
+    // Decide from the OCR results of the probe frames (in probe order).
+    // frames[i] = OCR result of frame i; a missing frame -> null.
     public static TemporalVerdict Decide(
         IReadOnlyList<OcrResult?> frames,
         IReadOnlyList<double> frameTimes,
@@ -192,7 +192,7 @@ public static class OcrTemporalFilter
         if (found.Count < 2)
             return new TemporalVerdict("keep",
                 "không đủ bằng chứng di chuyển (đứng yên hoặc OCR s Méng) -> giữ");
-        // Trôi tối đa giữa các cặp khung tìm thấy.
+        // Maximum drift among the found frame pairs.
         var maxDriftX = 0.0;
         var maxDriftY = 0.0;
         for (var a = 0; a < found.Count; a++)

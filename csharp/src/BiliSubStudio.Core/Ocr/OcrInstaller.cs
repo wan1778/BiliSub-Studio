@@ -27,9 +27,9 @@ public const string DetectionModel = "PP-OCRv6_medium_det";
     // scraps the tracker filters downstream). Accurate keeps Medium.
     public const string SmallDetectionModel = "PP-OCRv6_small_det";
     public const string SmallRecognitionModel = "PP-OCRv6_small_rec";
-    // Tier siêu nhỏ cho Balanced/Fast (28/09, theo lệnh user: nhanh/vừa dùng
-    // nhỏ nhất; Accurate giữ Medium, không đụng). PP-OCRv5_mobile đã verify
-    // tải được từ BOS + instantiate OK, cùng API TextDetection/TextRecognition.
+    // Smallest tier for Balanced/Fast (28/09, per user order: fast/balanced use
+    // the smallest; Accurate keeps Medium, untouched). PP-OCRv5_mobile has been verified
+    // to download from BOS + instantiate OK, with the same TextDetection/TextRecognition API.
     public const string MobileDetectionModel = "PP-OCRv5_mobile_det";
     public const string MobileRecognitionModel = "PP-OCRv5_mobile_rec";
 
@@ -44,10 +44,10 @@ public const string DetectionModel = "PP-OCRv6_medium_det";
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly HashSet<string> _ensuredModelTiers = new(StringComparer.Ordinal);
 
-    // Đảm bảo model det/rec của tier đã tải về TRƯỚC scan (2026-09-26):
-    // PaddleX tự tải BOS ở lần instantiate đầu — để worker làm việc đó giữa
-    // scan là treo cả lane. Fast path kiểm tra cache có sẵn; chậm thì chạy
-    // python một lần duy nhất mỗi tier mỗi session (gate chung).
+    // Ensure the tier's det/rec models are downloaded BEFORE the scan (2026-09-26):
+    // PaddleX downloads from BOS on the first instantiate — letting the worker do
+    // that mid-scan would hang the whole lane. Fast path checks the existing cache;
+    // otherwise run python exactly once per tier per session (shared gate).
     internal async Task EnsureTierModelsAsync(string modelsRoot, string python, string detModel, string recModel, CancellationToken cancellationToken)
     {
         ValidateModelName(detModel);
@@ -89,7 +89,7 @@ public const string DetectionModel = "PP-OCRv6_medium_det";
         "\"" + name.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal) + "\"";
 
     // Fast path: PaddleX cache layout <modelsRoot>/official_models/official_models/<name>/.
-    // Chỉ là gợi ý tăng tốc — python ensure ở trên mới là chuẩn cuối.
+    // Just a speedup hint — the python ensure above is the final arbiter.
     private static bool TierModelsCached(string modelsRoot, string model)
     {
         try
@@ -207,11 +207,44 @@ public const string DetectionModel = "PP-OCRv6_medium_det";
             var uv = await EnsureUvAsync(cancellationToken);
             var basePython = await EnsureBasePythonAsync(uv, ManagedEnvironment(), cancellationToken);
             var python = Path.Combine(venvRoot, "Scripts", "python.exe");
-            if (!File.Exists(python)) await CreatePrivateVenvAsync(uv, basePython, venvRoot, cancellationToken);
+            if (!await IsUsablePrivateVenvAsync(python, venvRoot, cancellationToken))
+                await CreatePrivateVenvAsync(uv, basePython, venvRoot, cancellationToken);
             if (!File.Exists(python)) throw new FileNotFoundException("Private Python không được tạo hoàn chỉnh.", python);
             return new ManagedPythonEnvironment(uv, python, ExplicitPythonEnvironment());
         }
         finally { _gate.Release(); }
+    }
+
+    // An old venv may still have python.exe but is missing pyvenv.cfg (runtime swap, local copy,
+    // overwrite install) or points at an ancient Python. Then python.exe reports "No pyvenv.cfg file"
+    // and exits 106 so every command inside the venv dies; reusing a broken venv makes every
+    // later runtime install fail at the verify step. An unhealthy venv must be rebuilt
+    // from the current base Python.
+    private async Task<bool> IsUsablePrivateVenvAsync(string python, string venvRoot, CancellationToken cancellationToken)
+    {
+        if (!File.Exists(python)) return false;
+        var config = Path.Combine(venvRoot, "pyvenv.cfg");
+        if (!File.Exists(config)) return false;
+        try
+        {
+            var version = File.ReadLines(config)
+                .Select(line => line.Split('=', 2))
+                .Where(parts => parts.Length == 2 && parts[0].Trim().Equals("version", StringComparison.OrdinalIgnoreCase))
+                .Select(parts => parts[1].Trim())
+                .FirstOrDefault();
+            if (version is null) return false;
+            if (!version.StartsWith(PythonVersion + ".", StringComparison.Ordinal)
+                && !string.Equals(version, PythonVersion, StringComparison.Ordinal)) return false;
+        }
+        catch { return false; }
+        try
+        {
+            var probe = await _processes.RunAsync(python,
+                ["-I", "-c", "import sys; sys.exit(0 if sys.prefix != sys.base_prefix else 3)"],
+                cancellationToken, ExplicitPythonEnvironment());
+            return probe.ExitCode == 0;
+        }
+        catch { return false; }
     }
 
     public void RemoveBootstrap()

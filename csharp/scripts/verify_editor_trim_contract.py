@@ -49,7 +49,7 @@ for token in (
 for token in (
     "Trim: CurrentTrimRange());",
     "var trimChanged = hasMedia && _trimRangeValid",
-    "|| hasImages || trimChanged)",
+    "|| hasImages || trimChanged || timelineEdited)",
 ):
     require(token in editor, f"TRIM-01 Editor state owner lost: {token}")
 for token in (
@@ -75,20 +75,43 @@ for token in (
 
 for token in (
     "PreviewWindow(trim.Start, trim.End, requestedStart)",
-    "_page.CurrentTrimRange().Start",
-    "_page.CurrentTrimRange().End",
-    'StatusText.Text = "Đã xem hết khoảng giữ lại. Bấm Play để phát lại từ mốc đầu.";',
+    # Preview starts at trim.Start and stops at trim.End, but that mark is
+    # mapped to composed strip time (a multi-clip strip) instead of source time.
+    "private double PreviewStartTime()",
+    "return timelineStart + Math.Max(0, trim.Start - clip.SourceIn);",
+    "limit = Math.Min(limit, trim.End);",
+    'StatusText.Text = "Đã xem hết dải thời gian. Bấm Play để phát lại từ mốc đầu.";',
 ):
     require(token in service or token in playback, f"TRIM-01 Preview range contract lost: {token}")
 
 for token in (
     "var trimChanged = EditorProjectStore.HasTrim(trim, _media.Duration);",
-    "|| _voiceTrack is not null || trimChanged;",
-    "trimChanged ? trim.Duration : _media.Duration",
+    "|| _voiceTrack is not null || trimChanged || hasComposedClips;",
+    "ComposedExportDuration(trim)",
 ):
     require(token in images, f"TRIM-01 image export range contract lost: {token}")
 
 require("editor trim range persists and shifts Preview Export timelines" in tests,
         "TRIM-01 executable contract test is missing")
 
-print("PASS: TRIM-01 keep-range UI, persistence, Preview and Export contracts are locked")
+# TRIM-02: the keep mark set at the "current position" must map from the
+# composed strip coordinate to the source file coordinate of the primary clip,
+# never using the strip value directly.
+composition = (PAGES / "EditorPage.TimelineComposition.cs").read_text(encoding="utf-8")
+for token in (
+    "internal double? CurrentPrimarySourceTime()",
+    "var (clip, sourceTime, _) = LocateTimelineClip(Timeline.Value);",
+    "if (!IsPrimaryTimelineClip(clip)) return null;",
+):
+    require(token in composition, f"TRIM-02 the composed-time owner lost: {token}")
+
+require("var sourceTime = CurrentPrimarySourceTime();" in dialog,
+        "TRIM-02 the export dialog must map the current position to the source clip")
+require("var sourceTime = CurrentPrimarySourceTime();" in editor,
+        "TRIM-02 the effect region must map the current position to the source clip")
+require("var value = Math.Clamp(Timeline.Value, 0, _media.Duration);" not in dialog,
+        "TRIM-02 the export dialog must not use the timeline value as a source time")
+require("var value = Math.Clamp(Timeline.Value, 0, _media.Duration);" not in editor,
+        "TRIM-02 the effect region must not use the timeline value as a source time")
+
+print("PASS: TRIM-01/02 keep-range UI, persistence, Preview, Export and composed-time contracts are locked")

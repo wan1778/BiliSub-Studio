@@ -4,10 +4,10 @@ using BiliSubStudio.Core.Ocr;
 
 namespace BiliSubStudio.Core.ContractTests;
 
-// Đắp chữ sửa AI lúc xuất SRT (luật cuối 16/09): fix khớp Start (±1ms) + chữ cũ
-// từng chữ thì thay chữ đúng; chạy SAU loại trừ, TRƯỚC normalize. Không khớp mờ,
-// không lan. File .fix.json cạnh checkpoint, xóa là hoàn tác. Lưu hỏng/thiếu =
-// xuất như cũ, không bao giờ chặn export.
+// Applying AI text corrections at SRT export (final rule 16/09): a fix matches Start (±1ms) + the old
+// text exactly and replaces it with the corrected text; it runs AFTER exclusion, BEFORE normalize. No fuzzy
+// matching, no spillover. The .fix.json file sits next to the checkpoint, deleting it undoes everything. Saving corrupt/missing
+// data = export as before, never blocks export.
 internal static class OcrExportFixContract
 {
     public static async Task RunAsync()
@@ -38,8 +38,8 @@ internal static class OcrExportFixContract
 
     private static void ApplyMatchesNormalizedFossil()
     {
-        // Fix hóa thạch ghi chữ cũ thô (space thừa), cue ở export đã normalize
-        // -> khớp tuyệt đối hụt (fix chết). Fallback chuẩn hóa 2 vế cứu đúng.
+        // A fossil fix stores raw old text (extra spaces), while the export cue is already
+        // normalized -> exact matching misses (dead fix). The normalize-both-sides fallback rescues it.
         var cues = new[] { Cue(10.0, "你好"), Cue(11.0, "再见") };
         var result = OcrExportFixes.Apply(cues, [new OcrCueFix(10.0, "你好 ", "您好")]);
         Check(result.Fixed == 1 && result.Cues[0].Text == "您好", "fix space thừa phải khớp");
@@ -51,16 +51,16 @@ internal static class OcrExportFixContract
     private static void ApplySkipsNonMatch()
     {
         var cues = new[] { Cue(10.0, "说了多少变了") };
-        // Lệch giờ quá 1ms -> hụt (vô hại).
+        // Time drift beyond 1ms -> miss (harmless).
         var late = OcrExportFixes.Apply(cues, [new OcrCueFix(10.002, "说了多少变了", "说了多少遍了")]);
         Check(late.Fixed == 0 && late.Cues[0].Text == "说了多少变了", "lệch giờ phải hụt");
-        // Khác chữ -> hụt.
+        // Different text -> miss.
         var other = OcrExportFixes.Apply(cues, [new OcrCueFix(10.0, "说了多少遍了", "xxx")]);
         Check(other.Fixed == 0, "khác chữ cũ phải hụt");
-        // Chữ mới rỗng -> bỏ qua.
+        // Empty new text -> skipped.
         var empty = OcrExportFixes.Apply(cues, [new OcrCueFix(10.0, "说了多少变了", "")]);
         Check(empty.Fixed == 0, "chữ mới rỗng phải bỏ qua");
-        // Không danh sách = đường cũ.
+        // No list = the old path.
         var none = OcrExportFixes.Apply(cues, null);
         Check(none.Fixed == 0 && none.Cues.Count == 1, "null phải giữ nguyên");
         Check(OcrExportFixes.Apply([], [new OcrCueFix(1.0, "a", "b")]).Fixed == 0, "rỗng phải 0");
@@ -68,7 +68,7 @@ internal static class OcrExportFixContract
 
     private static void ApplyAfterExclusion()
     {
-        // Câu đã xóa thì khỏi sửa: exclusion chạy trước, fix chỉ thấy câu còn lại.
+        // A deleted cue needs no fixing: exclusion runs first, the fix only sees the surviving cue.
         var cues = new[] { Cue(10.0, "水印88"), Cue(11.0, "说了多少变了") };
         var kept = OcrExportExclusions.Apply(cues, [new OcrCueExclusion(10.0, "水印88")]);
         Check(kept.Dropped == 1 && kept.Kept.Count == 1, "exclusion trước sai");
@@ -78,7 +78,7 @@ internal static class OcrExportFixContract
             "fix sau exclusion sai (câu đã xóa không được sống lại)");
     }
 
-    // Fix tai-sửa-chữ (FlagReview) thì cue hiện ⚠️; fix thường không đổi cờ.
+    // A text-preserving fix (FlagReview) shows ⚠️ on the cue; an ordinary fix leaves the flag alone.
     private static void ApplyFlagReviewMarksCue()
     {
         var cues = new[] { Cue(10.0, "云烟很天"), Cue(11.0, "你好") };
@@ -92,8 +92,8 @@ internal static class OcrExportFixContract
         Check(plain.Fixed == 1 && !plain.Cues[0].NeedsReview, "fix thường không được gắn cờ");
     }
 
-    // Fix giữ-nguyên-chữ (F2 chữ-cảnh-nghi-vấn) chỉ gắn cờ, không đổi chữ,
-    // không ghi mẫu "A→A".
+    // A text-preserving fix (F2 suspicious scene text) only sets the flag, does not change the
+    // text, and does not record an "A→A" sample.
     private static void ApplySameTextFlagOnlyMarks()
     {
         var cues = new[] { Cue(10.0, "金陵武道九班档案") };
@@ -156,7 +156,7 @@ internal static class OcrExportFixContract
             var saved = await SaveAsync((object)store, request,
                 [new OcrCueFix(10.0, "变", "遍"), new OcrCueFix(11.0, "你好", "您好")]);
             Check(saved == 2, "lưu mới phải báo 2");
-            // Trùng (Start ±1ms + chữ cũ) thì bản sau GHI ĐÈ, không đếm.
+            // A duplicate (Start ±1ms + old text) is OVERWRITTEN by the later one, not counted.
             var overwrite = await SaveAsync((object)store, request,
                 [new OcrCueFix(10.0005, "变", "辨"), new OcrCueFix(12.0, "再见", "再會")]);
             Check(overwrite == 1, "ghi đè không được đếm, câu mới phải thêm");

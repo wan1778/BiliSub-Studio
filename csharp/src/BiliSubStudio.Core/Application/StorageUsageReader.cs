@@ -4,12 +4,13 @@ namespace BiliSubStudio.Core.Application;
 
 public sealed class StorageUsageReader : IStorageUsageReader
 {
-    // Đổi thư mục lưu (và mọi Set* settings) đều đợi BuildSnapshotAsync, mà
-    // snapshot nào cũng quét ĐỆ QUY toàn bộ Data/Tools/Ocr/Temp/Cache — gồm
-    // venv Paddle + model hàng chục nghìn file. Ổ bận là UI treo 3-5 phút mới
-    // thấy path đổi (vụ user 27/09). Cache 60s + 1 lần quét chia sẻ: đổi
-    // setting trả ngay số cũ, số dung lượng (thuần hiển thị) refresh nền.
-    // Không đụng Accurate/scan/TTS — chỉ đường settings.
+    // Changing the save folder (and every Set* setting) waits on BuildSnapshotAsync, and
+    // every snapshot recursively scans all of Data/Tools/Ocr/Temp/Cache — including the
+    // Paddle venv + models with tens of thousands of files. On a busy disk the UI hangs 3-5
+    // minutes before the path change appears (user issue 27/09). A 60s cache + one shared
+    // scan: changing a setting returns the previous number immediately, while the usage
+    // figures (display only) refresh in the background.
+    // Does not touch Accurate/scan/TTS — only the settings path.
     private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(60);
     private readonly object _gate = new();
     private DateTime _lastRunUtc = DateTime.MinValue;
@@ -54,8 +55,8 @@ public sealed class StorageUsageReader : IStorageUsageReader
                 return;
             _inFlight = scan = ScanAsync(paths);
         }
-        // Không await: caller (đường settings/UI) trả ngay. Quét lỗi thì
-        // nhả _inFlight để lần sau quét lại, không kẹt vĩnh viễn.
+        // No await: the caller (settings/UI path) returns immediately. If the scan fails,
+        // release _inFlight so the next scan can retry, never stuck permanently.
         _ = scan.ContinueWith(
             static (completed, state) =>
             {
@@ -76,8 +77,8 @@ public sealed class StorageUsageReader : IStorageUsageReader
 
     private async Task<StorageUsage> ScanAsync(AppPaths paths)
     {
-        // Quét nền không ăn cancellation của caller: nhiều caller settings xài
-        // chung 1 lần quét, caller hủy không được giết quét của người khác.
+        // The background scan does not consume the caller's cancellation: many settings callers
+        // share one scan, so a cancelled caller must not kill someone else's scan.
         var usage = await Task.Run(
             () => new StorageUsage(
                 DirectorySize(paths.Data, CancellationToken.None),

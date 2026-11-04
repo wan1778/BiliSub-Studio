@@ -19,6 +19,8 @@ public sealed partial class VideoPage : Page
     private int _queueCounter;
     private string? _metadataUrl;
     private string? _metadataTitle;
+    private IReadOnlyList<VideoPart> _metadataParts = [];
+    private readonly List<CheckBox> _partChecks = [];
     private string? _jobId;
     private bool _monitoringQueue;
     private bool _submitting;
@@ -60,6 +62,7 @@ public sealed partial class VideoPage : Page
         var url = UrlBox.Text.Trim();
         _metadataUrl = null;
         _metadataTitle = null;
+        ClearParts();
         StartButton.IsEnabled = false;
         QualityBox.Items.Clear();
         TrackBox.Items.Clear();
@@ -110,6 +113,8 @@ public sealed partial class VideoPage : Page
 
             _metadataUrl = url;
             _metadataTitle = metadata.Title;
+            _metadataParts = metadata.Parts ?? [];
+            RenderParts(url);
             var hasThumbnail = !string.IsNullOrWhiteSpace(metadata.ThumbnailUrl);
             var hasOutput = !string.IsNullOrWhiteSpace(OutputPathBox.Text);
             var normalCount = metadata.Subtitles.Count(track => track.Official);
@@ -150,11 +155,93 @@ public sealed partial class VideoPage : Page
         {
             _metadataUrl = null;
             _metadataTitle = null;
+            ClearParts();
             StartButton.IsEnabled = false;
             QualityBox.Items.Clear();
             TrackBox.Items.Clear();
             MetadataText.Text = "URL đã đổi. Bấm Kiểm tra lại để đọc nguồn mới.";
         }
+    }
+
+    /// <summary>
+    /// Shows the collection's parts as tick boxes so one checked source can
+    /// enqueue several downloads. A link that already points at one part
+    /// (…?p=3) starts with only that part ticked; a plain collection link
+    /// starts with everything ticked because that is what the user asked for.
+    /// </summary>
+    private void RenderParts(string url)
+    {
+        PartsListPanel.Children.Clear();
+        _partChecks.Clear();
+        if (_metadataParts.Count <= 1)
+        {
+            PartsPanel.Visibility = Visibility.Collapsed;
+            PartsSummaryText.Text = string.Empty;
+            return;
+        }
+
+        var explicitPart = BilibiliPartUrl.ReadPart(url);
+        foreach (var part in _metadataParts)
+        {
+            var duration = part.DurationSeconds > 0
+                ? " · " + TimeSpan.FromSeconds(part.DurationSeconds).ToString(@"hh\:mm\:ss")
+                : string.Empty;
+            var check = new CheckBox
+            {
+                Content = $"P{part.Page} · {part.Title}{duration}",
+                IsChecked = explicitPart <= 0 || explicitPart == part.Page,
+                Tag = part,
+            };
+            check.Checked += PartCheck_Changed;
+            check.Unchecked += PartCheck_Changed;
+            _partChecks.Add(check);
+            PartsListPanel.Children.Add(check);
+        }
+        PartsPanel.Visibility = Visibility.Visible;
+        UpdatePartsSummary();
+    }
+
+    private void ClearParts()
+    {
+        _metadataParts = [];
+        RenderParts(string.Empty);
+    }
+
+    private void PartCheck_Changed(object sender, RoutedEventArgs e) => UpdatePartsSummary();
+
+    private void PartsSelectAll_Click(object sender, RoutedEventArgs e)
+    {
+        foreach (var check in _partChecks) check.IsChecked = true;
+        UpdatePartsSummary();
+    }
+
+    private void PartsSelectNone_Click(object sender, RoutedEventArgs e)
+    {
+        foreach (var check in _partChecks) check.IsChecked = false;
+        UpdatePartsSummary();
+    }
+
+    private void UpdatePartsSummary()
+    {
+        if (_metadataParts.Count <= 1)
+        {
+            PartsSummaryText.Text = string.Empty;
+            return;
+        }
+        var chosen = SelectPartsForDownload().Count;
+        PartsSummaryText.Text =
+            $"Bộ gồm {_metadataParts.Count} phần · đang chọn {chosen} phần. Mỗi phần tải một file riêng, lần lượt vào hàng đợi.";
+    }
+
+    private List<VideoPart> SelectPartsForDownload()
+    {
+        if (_metadataParts.Count <= 1) return _metadataParts.ToList();
+        var selected = new List<VideoPart>();
+        foreach (var check in _partChecks)
+        {
+            if (check.IsChecked == true && check.Tag is VideoPart part) selected.Add(part);
+        }
+        return selected;
     }
 
     private async void Start_Click(object sender, RoutedEventArgs e)
@@ -257,8 +344,10 @@ public sealed partial class VideoPage : Page
 
         try
         {
-            // Vụ kẹt nút Tải media 05/10: kiểm tra thư mục không được treo
-            // quá 30 giây (kẹt là nhả nút + báo rõ, cấm kẹt câm khóa nút).
+            // The "Download media" button freeze issue of 05/10: the folder
+            // check must not hang for more than 30 seconds (if it hangs,
+            // release the button and report the reason clearly; silently
+            // locking the button is forbidden).
             StatusText.Text = "Đang kiểm tra thư mục lưu...";
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
             var snapshot = await _application.Settings.SetOutputDirectoryAsync(outputDirectory, timeout.Token);
@@ -279,6 +368,14 @@ public sealed partial class VideoPage : Page
             return;
         }
 
+        var parts = SelectPartsForDownload();
+        if (parts.Count == 0)
+        {
+            StatusText.Text = "Hãy chọn ít nhất một phần của bộ trước khi tải.";
+            _log.Warning("Media", "Không bắt đầu tải vì chưa chọn phần nào của bộ.");
+            return;
+        }
+
         Progress.Value = 0;
         PercentText.Text = "0%";
 
@@ -295,24 +392,61 @@ public sealed partial class VideoPage : Page
             BundleThumbnail: downloadThumbnail,
             MediaBundle: true,
             BundleVideo: downloadVideo);
-        string jobId;
-        try
+
+        // Batch source: every ticked part becomes its own queued download, run
+        // one after another, each keeping its own part name.
+        var batch = _metadataParts.Count > 1;
+        var added = 0;
+        var partIndex = 0;
+        foreach (var part in parts)
         {
-            jobId = _application.StartVideo(request);
+            if (_queueItems.Count(item => !item.Done) >= 50)
+            {
+                StatusText.Text = "Hàng đợi đã đạt giới hạn 50 mục; các phần còn lại chưa được thêm.";
+                _log.Warning("Media", "Không thêm thêm media vì hàng đợi đã đạt giới hạn 50 mục.");
+                break;
+            }
+
+            // Thumbnail belongs to the whole collection, NOT to each part. Only the first
+            // queued part carries the thumbnail job, so a 14-part collection does not
+            // download 14 identical thumbnails (one per part).
+            var isFirstPart = partIndex++ == 0;
+            var partRequest = batch
+                ? request with
+                {
+                    Url = BilibiliPartUrl.WithPart(sourceUrl, part.Page),
+                    OutputName = part.Title,
+                    BundleThumbnail = isFirstPart && downloadThumbnail,
+                }
+                : request;
+            string jobId;
+            try
+            {
+                jobId = _application.StartVideo(partRequest);
+            }
+            catch (Exception error)
+            {
+                StatusText.Text = "Không thể thêm vào hàng đợi: " + error.Message;
+                _log.Error("Media", StatusText.Text);
+                break;
+            }
+            var title = batch ? $"P{part.Page} · {part.Title}" : metadataTitle ?? sourceUrl;
+            var item = new MediaQueueItem(++_queueCounter, jobId, title, partRequest.Url, outputDirectory);
+            _queueItems.Add(item);
+            added++;
+            _log.Info("Media", batch
+                ? $"Đã thêm phần {part.Page} vào hàng đợi."
+                : hasExplicitSelection ? "Đã thêm các asset đã chọn vào hàng đợi." : "Đã thêm bộ Media mặc định vào hàng đợi.", jobId);
         }
-        catch (Exception error)
-        {
-            StatusText.Text = "Không thể thêm vào hàng đợi: " + error.Message;
-            _log.Error("Media", StatusText.Text);
-            return;
-        }
-        var item = new MediaQueueItem(++_queueCounter, jobId, metadataTitle ?? sourceUrl, sourceUrl, outputDirectory);
-        _queueItems.Add(item);
+
+        if (added == 0) return;
+
         QueueList.Visibility = Visibility.Visible;
         QueueEmptyText.Visibility = Visibility.Collapsed;
         CancelButton.IsEnabled = true;
-        StatusText.Text = $"Đã thêm mục {item.Number} vào hàng đợi. Bạn có thể nhập URL tiếp theo.";
-        _log.Info("Media", hasExplicitSelection ? "Đã thêm các asset đã chọn vào hàng đợi." : "Đã thêm bộ Media mặc định vào hàng đợi.", jobId);
+        StatusText.Text = added == 1
+            ? "Đã thêm 1 mục vào hàng đợi. Bạn có thể nhập URL tiếp theo."
+            : $"Đã thêm {added} mục vào hàng đợi. Bạn có thể nhập URL tiếp theo.";
         ResetSourceForNextItem();
         _ = MonitorQueueAsync(_queueMonitorCancellation.Token);
     }
@@ -325,6 +459,9 @@ public sealed partial class VideoPage : Page
         VideoAssetCheckBox.IsEnabled = enabled;
         ThumbnailAssetCheckBox.IsEnabled = enabled;
         SubtitleAssetCheckBox.IsEnabled = enabled;
+        PartsSelectAllButton.IsEnabled = enabled;
+        PartsSelectNoneButton.IsEnabled = enabled;
+        foreach (var check in _partChecks) check.IsEnabled = enabled;
         QualityBox.IsEnabled = enabled;
         ModeBox.IsEnabled = enabled;
         ContainerBox.IsEnabled = enabled;
@@ -358,6 +495,7 @@ public sealed partial class VideoPage : Page
     {
         _metadataUrl = null;
         _metadataTitle = null;
+        ClearParts();
         UrlBox.Text = string.Empty;
         QualityBox.Items.Clear();
         TrackBox.Items.Clear();
@@ -383,9 +521,10 @@ public sealed partial class VideoPage : Page
                     item.Apply(snapshot);
                     snapshots.Add((item, snapshot));
                 }
-                // QUEUE-AUTO-REMOVE: mục đã xong (hoàn tất/lỗi/hủy) tự gỡ khỏi
-                // danh sách để chừa chỗ cho mục sau; kết quả vẫn nằm ở thư mục
-                // lưu và phần trạng thái phía dưới không đổi.
+                // QUEUE-AUTO-REMOVE: finished items (completed/errored/cancelled)
+                // remove themselves from the list to make room for later items;
+                // the results stay in the output folder and the status section
+                // below is unchanged.
                 var finished = _queueItems.Where(item => item.Done).ToList();
                 var latestFinished = finished.LastOrDefault();
                 foreach (var item in finished)

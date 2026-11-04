@@ -4,11 +4,11 @@ using BiliSubStudio.Core.Ocr;
 
 namespace BiliSubStudio.Core.ContractTests;
 
-// Hàng đợi chấm nền GIÁM KHẢO THỜI GIAN lúc quét (user chốt 17/09): OCR chạy kệ
-// nó, giám khảo chấm lần lượt ca đã chốt bằng logic thời gian (chữ đứng yên =
-// keep, chữ di chuyển = drop), chống trùng bằng nhật ký + dedup.
-// Bất biến: không block đường quét (đầy là bỏ + đếm); verdict chỉ ghi nhật ký;
-// hủy là dừng êm, số còn lại hoãn.
+// Background TEMPORAL JUDGE verdict queue during scanning (user confirmed 17/09): OCR runs
+// on its own, the judge verdicts settled cues one by one using time logic (still text =
+// keep, moving text = drop), preventing duplicates via the journal + dedup.
+// Invariants: never block the scan path (full means drop + count); the verdict only writes the
+// journal; cancel is a graceful stop, the remainder are deferred.
 internal static class OcrTrailingJudgeContract
 {
     public static async Task RunAsync()
@@ -60,9 +60,9 @@ internal static class OcrTrailingJudgeContract
 
     private static async Task SpeechSilenceDropAsync()
     {
-        // 18/09 (fix #1): cue nằm sâu trong im lặng (cách thoại 100s) -> KHÔNG
-        // drop nữa (sub-không-tiếng là thật) — để mắt quyết qua probe (phải
-        // grab + keep fail-open). Chữ nền tĩnh do guard banner ở finish bắt.
+        // 18/09 (fix #1): a cue deep inside silence (100s from speech) -> NO longer dropped
+        // (a subtitle with no audio is real) — let the eye decide via probe (must grab +
+        // keep fail-open). Static background text is caught by the banner guard at finish.
         var journal = TempJournal();
         var grabs = 0;
         var speech = new[] { Seg(100.0, 200.0, "啊") };
@@ -82,8 +82,8 @@ internal static class OcrTrailingJudgeContract
 
     private static async Task SpeechMismatchDropAfterWarmupAsync()
     {
-        // Tai nghe khác hẳn chữ thấy (sim ~0), warmup xong, TAI PHỦ KÍN cue
-        // bằng chữ tự tin (mâu thuẫn dương tính 18/09) -> drop.
+        // The ear hears something entirely different from the text shown (sim ~0), warmup is
+        // done, and the EAR COVERS the cue with confident words (positive contradiction 18/09) -> drop.
         var journal = TempJournal();
         var grabs = 0;
         var words = new[]
@@ -107,9 +107,9 @@ internal static class OcrTrailingJudgeContract
 
     private static async Task SparseEarMismatchGoesToProbeAsync()
     {
-        // 18/09 (luật chung): sim thấp nhưng tai THƯA quanh cue (không phủ
-        // kín) -> không đủ bằng chứng buộc tội -> cấm drop, để probe mắt
-        // quyết (SteadyOcr giữ). Code cũ drop oan ở đây.
+        // 18/09 (general rule): low sim but a SPARSE ear around the cue (not a full cover)
+        // -> not enough evidence to convict -> dropping is forbidden, let the eye probe decide
+        // (SteadyOcr keeps). The old code dropped wrongly here.
         var journal = TempJournal();
         var grabs = 0;
         var words = new[] { W("啊", 100.0, 104.0) };
@@ -130,9 +130,9 @@ internal static class OcrTrailingJudgeContract
 
     private static async Task SpeechContainedShortCueKeptAfterWarmupAsync()
     {
-        // 18/09 (miễn containment): cue ngắn 好的 nằm nguyên văn trong segment
-        // dài 好的我们开始吧 — sim Levenshtein thấp nhưng tai CÓ nói -> cấm
-        // drop, để probe mắt quyết (SteadyOcr giữ).
+        // 18/09 (containment exemption): the short cue 好的 sits verbatim inside the long
+        // segment 好的我们开始吧 — Levenshtein sim is low but the ear DID say it -> dropping is
+        // forbidden, let the eye probe decide (SteadyOcr keeps).
         var journal = TempJournal();
         var grabs = 0;
         var speech = new[] { Seg(100.0, 200.0, "啊"), Seg(100.0, 200.0, "好的我们开始吧") };
@@ -149,9 +149,9 @@ internal static class OcrTrailingJudgeContract
         Check(service.Snapshot().Keeps == 11, "cue ngắn thật phải giữ hết");
     }
 
-    // 18/09: cue TIN CAO + tai vừa (mid-sim) + rác số đuôi -> trim thử (luồng
-    // mới) và áp dụng vì nhát cắt số (ShouldApplyTrimFix). Code cũ bỏ qua
-    // fallback nên không bao giờ sửa -> red.
+    // 18/09: HIGH-confidence cue + mid ear (mid-sim) + trailing digit garbage -> try trimming
+    // (new flow) and apply it because the cut edge is digits (ShouldApplyTrimFix). The old code
+    // skipped the fallback so it never fixed anything -> red.
     private static async Task HighConfidentDigitAffixGetsFixedAsync()
     {
         var journal = TempJournal();
@@ -179,9 +179,9 @@ internal static class OcrTrailingJudgeContract
         Check(Volatile.Read(ref grabs) == 3, "chỉ probe 3 khung, không đọc lại lân cận");
     }
 
-    // Field 2408.1: OCR đọc sai 1 chữ (克~直) + sub hiện trễ 0.4s sau tiếng —
-    // tai nói cùng nội dung ngay ngoài ±0.3s. Code cũ drop oan (sim hẹp = 0);
-    // luật mới cứu bằng sim rộng rồi để probe giữ.
+    // Field 2408.1: OCR misreads 1 character (克~直) + the subtitle appears 0.4s after the audio —
+    // the ear says the same content just outside ±0.3s. The old code dropped wrongly (narrow sim = 0);
+    // the new rule rescues with wide sim then lets the probe keep it.
     private static async Task TimingSlipSimRescueAsync()
     {
         var journal = TempJournal();
@@ -212,9 +212,9 @@ internal static class OcrTrailingJudgeContract
 
     private static async Task TimingSlipContainedRescueAsync()
     {
-        // Biến thể containment: lõi cue ngắn nằm nguyên văn trong segment DÀI
-        // ngoài cửa sổ hẹp (sim rộng vẫn thấp vì chênh độ dài!) — chỉ nhánh
-        // containment-rộng cứu được (sim-rộng không đủ). Code cũ drop oan.
+        // Containment variant: the short cue's core sits verbatim inside a LONG segment
+        // outside the narrow window (wide sim is still low because of the length gap!) — only the
+        // wide-containment branch rescues it (wide sim is not enough). The old code dropped wrongly.
         var journal = TempJournal();
         var grabs = 0;
         var nearWords = new[]
@@ -243,8 +243,9 @@ internal static class OcrTrailingJudgeContract
 
     private static async Task SpeechMismatchKeptDuringWarmupAsync()
     {
-        // Warmup chưa xong (cue lệch đến TRƯỚC): không drop theo chữ -> đi
-        // đường vị trí (SteadyOcr giữ) -> keep. Chống xóa oan video lệch ngôn ngữ.
+        // Warmup not finished (the mismatched cue arrives BEFORE): no text-based drop -> take
+        // the position path (SteadyOcr keeps) -> keep. Guards against wrongful deletion on
+        // language-mismatched video.
         var journal = TempJournal();
         var grabs = 0;
         var speech = new[] { Seg(100.0, 200.0, "啊") };
@@ -261,7 +262,7 @@ internal static class OcrTrailingJudgeContract
 
     private static async Task SpeechStrongMatchEarlyKeepAsync()
     {
-        // Tai-mắt khớp mạnh (sim 1.0): keep sớm, KHÔNG grab (tiết kiệm).
+        // Strong ear-eye match (sim 1.0): keep early, NO grab (saves work).
         var journal = TempJournal();
         var grabs = 0;
         var speech = new[] { Seg(100.0, 200.0, "啊") };
@@ -296,8 +297,8 @@ internal static class OcrTrailingJudgeContract
         }
     }
 
-    // OCR fake: mỗi khung đều thấy CHỮ CA ở cùng vị trí (tâm 0.5, 0.9) —
-    // đứng yên -> keep.
+    // Fake OCR: every frame sees the same character at the same position (center 0.5, 0.9) —
+    // still -> keep.
     private static Task<IReadOnlyList<OcrResult>> SteadyOcr(
         IReadOnlyList<byte[]> frames, CancellationToken token)
     {
@@ -329,8 +330,8 @@ internal static class OcrTrailingJudgeContract
 
     private static async Task DisposeWithoutJudgingKeepsJournalAsync()
     {
-        // Vụ 16/09: job quét 0 giây (dừng ngay, chưa chấm câu nào) mà Dispose
-        // vẫn ghi nhật ký thì xóa sạch verdict cũ. Chưa chấm = không đụng file.
+        // Case 16/09: a 0-second scan job (stops immediately, no cue judged yet) whose Dispose
+        // still writes the journal would wipe all old verdicts. Not judged = do not touch the file.
         var journal = TempJournal();
         OcrVerdictJournal.Save(journal,
             [new OcrCueVerdict(40.0, "嗯", "keep", "old", "m", "2026-09-16")]);
@@ -354,10 +355,10 @@ internal static class OcrTrailingJudgeContract
         }
         await using var service = OcrTrailingJudge.CreateTemporal(
             (_, _) => Task.FromResult<byte[]?>([7]), Ocr, journal, maxQueue: 64);
-        // Cùng câu 3 lần (2 lần trùng) + câu khác.
+        // The same cue 3 times (2 duplicates) + a different cue.
         service.EnqueueCues([Cue(10, "啊"), Cue(10, "啊"), Cue(11, "嗯"), Cue(10, "啊")]);
-        // Đợi CHẤM XONG (không phải mới gọi OCR) rồi mới dispose — dispose giữa
-        // chừng là cancel task đang bay (flaky).
+        // Wait for JUDGING TO FINISH (not just the OCR call) before disposing — disposing midway
+        // cancels the in-flight task (flaky).
         await WaitForAsync(() => service.Snapshot().Judged == 2, "judge không chạy xong");
         await service.DisposeAsync();
         var stats = service.Snapshot();
@@ -376,20 +377,20 @@ internal static class OcrTrailingJudgeContract
             gate.Task.ContinueWith(_ => (IReadOnlyList<OcrResult>)[LineWithText("z", 0.5, 0.9)], token);
         await using var service = OcrTrailingJudge.CreateTemporal(
             (_, _) => Task.FromResult<byte[]?>([7]), Gated, journal, maxQueue: 2);
-        // Task đầu vào hàng để loop kẹt ở gate (chưa mở) -> hàng chứa tối đa 2.
+        // The first task enqueues so the loop sticks at the gate (not yet open) -> the queue holds at most 2.
         service.EnqueueCues([Cue(20, "z")]);
         await WaitForAsync(() => service.Snapshot().Enqueued == 1, "task đầu chưa vào");
         var (accepted, skipped) = service.EnqueueCues(
             [Cue(21, "a"), Cue(22, "b"), Cue(23, "c"), Cue(24, "d")]);
         gate.TrySetResult();
-        // Đợi chấm xong HẾT hàng tồn TRƯỚC khi dispose (mỗi task 3 OCR round-trip;
-        // dispose ngay là cancel giữa chừng -> judged thiếu, flaky).
+        // Wait for the ENTIRE pending queue to finish judging BEFORE disposing (each task is 3 OCR
+        // round-trips; disposing immediately cancels midway -> judged is short, flaky).
         await WaitForAsync(() => service.Snapshot().Judged == 1 + accepted, "chưa chấm hết hàng tồn");
         await service.DisposeAsync();
         var stats = service.Snapshot();
         Check(accepted + skipped == 4, "mọi submit phải có số phận (nhận/bỏ)");
         Check(stats.QueueFullDropped >= 1, "tràn hàng phải đếm");
-        // Mọi task đã nhận: hoặc chấm xong, hoặc hoãn — cộng lại phải khớp.
+        // Every accepted task is either judged or deferred — the counts must add up.
         Check(stats.Judged + stats.Deferred == 1 + accepted, "judged+deferred phải khớp đã nhận");
     }
 
@@ -409,13 +410,13 @@ internal static class OcrTrailingJudgeContract
 
     private static async Task DropVerdictSavedBeforeJournalAsync()
     {
-        // drop phải ghi file .exclude TRƯỚC khi ghi nhật ký (lưu hỏng thì lần
-        // sau chấm lại, không mất quyết định).
+        // A drop must write the .exclude file BEFORE writing the journal (if the save fails the next
+        // run judges again, the decision is not lost).
         var journal = TempJournal();
         var drops = new List<OcrCueExclusion>();
-        // OCR fake: chữ DI CHUYỂN giữa khung 1 (x=0.4) và khung 3 (x=0.7)
-        // (trôi 0.3 > 5%) -> drop. Khung 2 trả rỗng (OCR s Méng) — drift vẫn
-        // thấy từ cặp khung 1+3.
+        // Fake OCR: the text MOVES between frame 1 (x=0.4) and frame 3 (x=0.7)
+        // (drifts 0.3 > 5%) -> drop. Frame 2 returns empty (OCR is blurry) — the drift is still
+        // seen from the frame 1+3 pair.
         var calls = 0;
         Task<IReadOnlyList<OcrResult>> MovingOcr(
             IReadOnlyList<byte[]> frames, CancellationToken token)
@@ -431,7 +432,7 @@ internal static class OcrTrailingJudgeContract
         await using var service = OcrTrailingJudge.CreateTemporal(
             (_, _) => Task.FromResult<byte[]?>([7]), MovingOcr, journal, maxQueue: 16,
             saveDrop: (drop, _) => { lock (drops) { drops.Add(drop); } return Task.CompletedTask; });
-        // Câu 1-chữ mới qua được bộ lọc ca-nghi.
+        // A fresh 1-character cue passes the suspicious-cue filter.
         service.EnqueueCues([Cue(90, "印")]);
         await WaitForAsync(() => OcrVerdictJournal.Load(journal).Count >= 1, "verdict không ghi journal");
         await service.DisposeAsync();
@@ -444,13 +445,13 @@ internal static class OcrTrailingJudgeContract
 
     private static async Task WorkersScaleWithLanesAsync()
     {
-        // 8 lane nay -> 2 luồng, 16 lane sau -> 4 (trần 4).
+        // 8 lanes now -> 2 threads, 16 lanes later -> 4 (cap 4).
         Check(OcrTrailingJudge.WorkersForLanes(1) == 1, "1 lane phải 1 luồng");
         Check(OcrTrailingJudge.WorkersForLanes(4) == 1, "4 lane phải 1 luồng");
         Check(OcrTrailingJudge.WorkersForLanes(8) == 2, "8 lane phải 2 luồng");
         Check(OcrTrailingJudge.WorkersForLanes(16) == 4, "16 lane phải 4 luồng");
         Check(OcrTrailingJudge.WorkersForLanes(64) == 4, "trần 4 luồng");
-        // Đa luồng chấm song song thật: 2 task kẹt chung 1 gate cùng mở.
+        // Genuine multi-threaded parallel judging: 2 tasks stuck on the same gate open together.
         var journal = TempJournal();
         var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         Task<IReadOnlyList<OcrResult>> Gated(
@@ -482,11 +483,11 @@ internal static class OcrTrailingJudgeContract
             },
             journal, maxQueue: 16);
         service.EnqueueCues([Cue(40, "嗯"), Cue(41, "啊")]);
-        // Đợi CHẤM XONG rồi mới dispose (dispose giữa chừng là cancel flaky).
+        // Wait for JUDGING TO FINISH before disposing (disposing midway is a flaky cancel).
         await WaitForAsync(() => service.Snapshot().Judged >= 1, "câu mới không chấm");
         await service.DisposeAsync();
-        // Temporal: mỗi ca chấm = 3 lần OCR (3 khung). Câu cũ đã chấm phải bỏ qua
-        // trước khi grab (dedup journal) -> chỉ câu mới được chấm = đúng 3 lần.
+        // Temporal: each judged cue = 3 OCR runs (3 frames). An old already-judged cue must be skipped
+        // before the grab (journal dedup) -> only the new cue is judged = exactly 3 runs.
         Check(Volatile.Read(ref ocrCalls) == 3, "câu đã chấm rồi phải bỏ qua");
         Check(OcrVerdictJournal.Load(journal).Count == 2, "journal phải giữ cũ + thêm mới");
     }
@@ -511,7 +512,7 @@ internal static class OcrTrailingJudgeContract
 
     private static async Task TemporalKeepSteadyTextAsync()
     {
-        // OCR fake: 3/3 khung cùng chữ cùng vị trí -> ĐỨNG YÊN -> KEEP.
+        // Fake OCR: 3/3 frames same text same position -> STILL -> KEEP.
         var journal = TempJournal();
         await using var service = OcrTrailingJudge.CreateTemporal(
             (_, _) => Task.FromResult<byte[]?>([7]), SteadyOcr, journal, maxQueue: 16);
@@ -524,8 +525,8 @@ internal static class OcrTrailingJudgeContract
 
     private static async Task TemporalDropMovingTextAsync()
     {
-        // OCR fake: 3/3 khung cùng chữ nhưng DI CHUYỂN (0.3 -> 0.5 -> 0.7,
-        // trôi 0.4 > 5%) -> DROP.
+        // Fake OCR: 3/3 frames same text but MOVING (0.3 -> 0.5 -> 0.7,
+        // drifts 0.4 > 5%) -> DROP.
         var journal = TempJournal();
         var calls = 0;
         Task<IReadOnlyList<OcrResult>> MovingOcr(
@@ -559,10 +560,10 @@ internal static class OcrTrailingJudgeContract
 
     private static async Task TemporalSingleCharIgnoresLongBackgroundDistractorAsync()
     {
-        // Cue 1 chữ "哼" đứng yên + chữ nền dài chứa nó ("哼哼唧唧说不停")
-        // DI CHUYỂN (0.4 -> 0.5 -> 0.6): khớp "chứa nhau" + longest-match cũ sẽ
-        // khóa nhầm dòng nền -> drop oan. Khớp tuyệt đối phải khóa đúng chữ
-        // đứng yên -> KEEP.
+        // A 1-character cue "哼" standing still + a long background line containing it ("哼哼唧唧说不停")
+        // MOVING (0.4 -> 0.5 -> 0.6): "contains" matching + the old longest-match would lock
+        // onto the wrong background line -> wrongful drop. Absolute matching must lock onto the still
+        // character -> KEEP.
         var journal = TempJournal();
         var calls = 0;
         Task<IReadOnlyList<OcrResult>> DistractorOcr(
@@ -585,9 +586,9 @@ internal static class OcrTrailingJudgeContract
 
     private static async Task TemporalSingleCharMovingStillDroppedAsync()
     {
-        // Chữ nền 1 chữ DI CHUYỂN thật ("滚" 0.4 -> 0.5 -> 0.6, không dòng
-        // dài nào chứa nó): khớp tuyệt đối vẫn bắt đúng -> DROP như cũ.
-        // Chống sửa lố thành giữ hết chữ ngắn.
+        // A 1-character background MOVING for real ("滚" 0.4 -> 0.5 -> 0.6, no long line
+        // contains it): absolute matching still catches it correctly -> DROP as before.
+        // Guards against over-fixing into keeping every short text.
         var journal = TempJournal();
         var calls = 0;
         Task<IReadOnlyList<OcrResult>> MovingSingleOcr(
@@ -611,7 +612,7 @@ internal static class OcrTrailingJudgeContract
 
     private static void CreditTitleRule()
     {
-        // Tít/credit (KHÔNG phải thoại) phải drop — logic chữ, không AI.
+        // Title/credit (NOT speech) must drop — text logic, no AI.
         Check(OcrTemporalFilter.IsCreditTitle("立书人：冷暖暖 2026年6月3日"), "立书人： phải là credit");
         Check(OcrTemporalFilter.IsCreditTitle("立书人，冷暖暖 2026年6月3日"), "立书人， phải là credit");
         Check(OcrTemporalFilter.IsCreditTitle("立书人:2026年6月3日"), "立书人: phải là credit");
@@ -620,8 +621,8 @@ internal static class OcrTrailingJudgeContract
         Check(OcrTemporalFilter.IsCreditTitle("导演：李四"), "导演： phải là credit");
         Check(OcrTemporalFilter.IsCreditTitle("2026年6月3日"), "ngày thuần phải là credit");
         Check(OcrTemporalFilter.IsCreditTitle("© 2026 bilibili"), "bản quyền phải là credit");
-        // Thoại thật nhắc tới chức danh nhưng KHÔNG mở đầu bằng chức danh +
-        // dấu ngăn cách -> phải giữ (không drop oan).
+        // Real speech mentioning a job title but NOT opening with the title +
+        // a separator -> must keep (no wrongful drop).
         Check(!OcrTemporalFilter.IsCreditTitle("导演说明天开拍"), "thoại nhắc 导演 phải giữ");
         Check(!OcrTemporalFilter.IsCreditTitle("导演！"), "gọi đạo diễn phải giữ");
         Check(!OcrTemporalFilter.IsCreditTitle("宝子们看完了吧"), "thoại thật phải giữ");
@@ -631,7 +632,7 @@ internal static class OcrTrailingJudgeContract
 
     private static async Task TemporalDropCreditTitleAsync()
     {
-        // Tít/credit drop NGAY không cần chụp khung (logic chữ).
+        // Title/credit drops IMMEDIATELY without grabbing a frame (text logic).
         var journal = TempJournal();
         var grabs = 0;
         await using var service = OcrTrailingJudge.CreateTemporal(
@@ -649,8 +650,8 @@ internal static class OcrTrailingJudgeContract
 
     private static async Task SpeechVocativeCreditShapedKeptAsync()
     {
-        // 18/09: cue hình credit (主持人，+ ngăn cách) NHƯNG tai đang nói đúng
-        // chữ đó (xưng hô) -> KHÔNG phải tít -> cấm drop, để probe quyết.
+        // 18/09: a credit-shaped cue (主持人，+ separator) BUT the ear is saying exactly
+        // that text (a vocative) -> NOT a title -> dropping forbidden, let the probe decide.
         var journal = TempJournal();
         var grabs = 0;
         var speech = new[]
@@ -673,8 +674,8 @@ internal static class OcrTrailingJudgeContract
 
     private static async Task CreditOverUnrelatedSpeechStillDroppedAsync()
     {
-        // Credit thật chiếu trên nền có tiếng KHÁC (tai không nói chữ đó)
-        // -> vẫn drop như cũ, không cần grab.
+        // A real credit shown over a background with DIFFERENT audio (the ear does not say that
+        // text) -> still drops as before, no grab needed.
         var journal = TempJournal();
         var grabs = 0;
         var speech = new[] { Seg(100.0, 200.0, "啊") };
@@ -693,7 +694,7 @@ internal static class OcrTrailingJudgeContract
 
     private static void FindBestFixMatchRule()
     {
-        // Bản đọc khác cùng câu (sim cao) -> chọn bản tin cao nhất.
+        // A different reading of the same line (high sim) -> pick the most confident reading.
         const string garbled = "我们早已不是一个世界的人，我己经确定新的眼惘叶象";
         const string clean = "我们早已不是一个世界的人，我已经确定新的联姻对象";
         var lines = new[]
@@ -703,11 +704,11 @@ internal static class OcrTrailingJudgeContract
         };
         var best = OcrTemporalFilter.FindBestFixMatch(lines, garbled);
         Check(best is not null && best.Value.Text == clean, "phải tìm bản đọc khác cùng câu");
-        // Chữ y hệt thì không phải "bản khác" -> null.
+        // Identical text is not a "different reading" -> null.
         Check(OcrTemporalFilter.FindBestFixMatch(
             [new OcrLine(garbled, 0.99, [0, 0, 100, 20])], garbled) is null,
             "chữ y hệt phải null");
-        // Chữ khác hẳn -> null.
+        // Entirely different text -> null.
         Check(OcrTemporalFilter.FindBestFixMatch(
             [new OcrLine("龙王在她眼里只会做饭", 0.99, [0, 0, 100, 20])], garbled) is null,
             "chữ khác hẳn phải null");
@@ -716,9 +717,9 @@ internal static class OcrTrailingJudgeContract
 
     private static async Task TemporalFixLowConfidenceGarbledAsync()
     {
-        // Ca đáng ngờ (⚠️) chữ đứng yên nhưng đọc lỗi: 3 khung wide đọc lỗi
-        // (tin 0.7, cùng vị trí -> keep), 2 khung tight đọc đúng (tin 0.95) ->
-        // FIX (lưu .fix.json + journal), không phải keep mù.
+        // A suspicious cue (⚠️) with still text but a wrong reading: 3 wide frames read wrong
+        // (confidence 0.7, same position -> keep), 2 tight frames read correctly (confidence 0.95) ->
+        // FIX (save .fix.json + journal), not a blind keep.
         const string garbled = "我们早已不是一个世界的人，我己经确定新的眼惘叶象";
         const string clean = "我们早已不是一个世界的人，我已经确定新的联姻对象";
         var journal = TempJournal();
@@ -728,7 +729,7 @@ internal static class OcrTrailingJudgeContract
             IReadOnlyList<byte[]> frames, CancellationToken token)
         {
             var call = Interlocked.Increment(ref calls);
-            // Calls 1-3: wide probes (lỗi, tin thấp). Calls 4-5: tight (đúng, tin cao).
+            // Calls 1-3: wide probes (wrong, low confidence). Calls 4-5: tight (correct, high confidence).
             var text = call <= 3 ? garbled : clean;
             var conf = call <= 3 ? 0.7 : 0.95;
             return Task.FromResult<IReadOnlyList<OcrResult>>([LineWithText(text, 0.5, 0.9, conf)]);
@@ -749,7 +750,7 @@ internal static class OcrTrailingJudgeContract
 
     private static async Task TemporalNoFixWhenConfidentAsync()
     {
-        // Ca tin cao, không ⚠️: KHÔNG đọc lại (tiết kiệm), keep thẳng.
+        // A high-confidence cue without ⚠️: NO reread (saves work), keep straight away.
         var journal = TempJournal();
         var ocrCalls = 0;
         await using var service = OcrTrailingJudge.CreateTemporal(
@@ -764,13 +765,13 @@ internal static class OcrTrailingJudgeContract
         service.EnqueueCues([cue]);
         await WaitForAsync(() => service.Snapshot().Judged >= 1, "giám khảo không chấm");
         await service.DisposeAsync();
-        // Chỉ 3 wide probes, không tight reread (3 lần OCR).
+        // Only 3 wide probes, no tight reread (3 OCR runs).
         Check(Volatile.Read(ref ocrCalls) == 3, "ca tin cao không được đọc lại");
         Check(service.Snapshot().Keeps == 1, "phải keep");
     }
 
-    // F2 (video Cả Lớp 19/09): cue probe-giữ mà cách mọi thoại >1.5s thì fix
-    // giữ-nguyên-chữ + FlagReview (list hiện ⚠️), KHÔNG drop, KHÔNG chặn probe.
+    // F2 (Cả Lớp video 19/09): a probe-kept cue more than 1.5s from all speech gets a
+    // keep-text fix + FlagReview (the list shows ⚠️), NOT a drop, and the probe is NOT blocked.
     private static async Task SilenceFlagsReviewFixAsync()
     {
         var journal = TempJournal();
@@ -796,9 +797,9 @@ internal static class OcrTrailingJudgeContract
         Check(fixes[0].FlagReview, "fix giữ chữ phải mang cờ review");
     }
 
-    // F5 (replay Ăn Mày 19/09: tai-mắt lệch 1 chữ nhưng sub gốc cho thấy đa
-    // số là paraphrase cố ý — máy không phân biệt được): KHÔNG sửa text, chỉ
-    // gắn cờ review qua fix giữ-nguyên-chữ + lý do mang gợi ý.
+    // F5 (Ăn Mày replay 19/09: ear-eye differ by 1 character but the original subtitle shows most
+    // are deliberate paraphrases — the machine cannot tell): do NOT edit the text, only
+    // flag review via a keep-text fix + a reason carrying a hint.
     private static async Task EarCorrectsSingleCharAsync()
     {
         var journal = TempJournal();

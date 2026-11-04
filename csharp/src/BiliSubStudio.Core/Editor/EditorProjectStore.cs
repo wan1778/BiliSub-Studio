@@ -94,7 +94,14 @@ public sealed record EditorProject(
     EditorTtsProject? Tts = null,
     IReadOnlyDictionary<string, string>? VoiceOverrides = null,
     EditorTrimRange? Trim = null,
-    EditorTimelineProject? Timeline = null);
+    EditorTimelineProject? Timeline = null,
+    // Per-clip Vietnamese SRT and the voice generated from it, keyed by
+    // EditorTimelineClip.Id. The project's own Subtitle/Tts above stay the
+    // primary clip so old projects keep opening and the existing pipeline
+    // keeps owning the source video.
+    IReadOnlyDictionary<string, EditorSubtitleProject>? ClipSubtitles = null,
+    IReadOnlyDictionary<string, EditorTtsProject>? ClipTts = null,
+    double PlayheadSeconds = 0);
 
 public sealed record EditorProjectSummary(
     string Id,
@@ -114,6 +121,15 @@ public sealed class EditorProjectStore
 {
     public const int CurrentSchema = 7;
     private const long MaxProjectBytes = 64L * 1024 * 1024;
+    // Retired NGHI tuple. Generation was removed; these constants exist only
+    // so older projects keep their voice track readable after an upgrade.
+    private const string LegacyNghiEngine = "nghi-tts";
+    private const string LegacyNghiEngineVersion = "nghi-tts-1.0.0";
+    private const string LegacyNghiVoice = "ngoc_huyen";
+    private const string LegacyNghiVoiceRevision =
+        "2140977786d76d834736c059dacfa553d4931dac2b2c7aaaea438bb2aa9da697"
+        + ":971f57f8d504223fee5b40d664f503cf769baf7db21f7d2ae0554a75d07de2f8"
+        + ":whole-cue-piper-natural-first-v17";
     private readonly string _directory;
     private readonly string _ttsCacheDirectory;
     private readonly string _thumbnailCacheDirectory;
@@ -124,6 +140,7 @@ public sealed class EditorProjectStore
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
         PropertyNameCaseInsensitive = true,
         WriteIndented = true,
+        Converters = { new EditorTimelineClipJsonConverter() },
     };
 
     public EditorProjectStore(AppPaths paths)
@@ -350,8 +367,10 @@ public sealed class EditorProjectStore
                     ArchiveSourceChanged(projectPath);
                     return CreateFreshProject(source, id, loaded.Name, loaded.FileName);
                 }
-                var regions = NormalizeRegions(loaded.Regions, source.Duration, normalizeStored: true);
+                var regions = NormalizeRegions(loaded.Regions, source.Duration,
+                    RegionTimeLimit(loaded, source.Duration), normalizeStored: true);
                 var subtitle = NormalizeSubtitle(loaded.Subtitle);
+                var clipSubtitles = NormalizeClipSubtitles(loaded.ClipSubtitles, loaded.Timeline);
                 return loaded with
                 {
                     Schema = CurrentSchema,
@@ -364,6 +383,9 @@ public sealed class EditorProjectStore
                     Tts = subtitle is null ? null : NormalizeTts(loaded.Tts),
                     VoiceOverrides = subtitle is null ? null : NormalizeVoiceOverrides(loaded.VoiceOverrides),
                     Trim = NormalizeTrim(loaded.Trim, source.Duration),
+                    PlayheadSeconds = NormalizePlayhead(loaded.PlayheadSeconds),
+                    ClipSubtitles = clipSubtitles,
+                    ClipTts = NormalizeClipTts(loaded.ClipTts, clipSubtitles),
                 };
             }
             catch (OperationCanceledException) { throw; }
@@ -404,11 +426,11 @@ public sealed class EditorProjectStore
             Trim: new EditorTrimRange(0, source.Duration));
     }
 
-    // RELINK (kiểu Adobe): video nguồn bị xóa/đổi tên/di chuyển khỏi đường
-    // dẫn cũ. User chỉ lại file mới; giữ nguyên toàn bộ project (vùng, SRT,
-    // voice, trim) và chỉ trỏ nguồn sang đường dẫn mới. Chặn file lạ bằng
-    // kích thước khung hình + thời lượng, KHÔNG so size/mtime vì copy file
-    // hợp lệ vẫn đổi mtime.
+    // RELINK (Adobe style): the source video was deleted/renamed/moved away from its old
+    // path. The user points at a new file; the entire project stays intact (regions, SRT,
+    // voice, trim) and only the source is pointed at the new path. Unknown files are blocked by
+    // frame size + duration, NOT by comparing size/mtime, because a legitimate file
+    // copy still changes mtime.
     public static EditorProject RelinkSource(
         EditorProject project,
         string newPath,
@@ -543,11 +565,13 @@ public sealed class EditorProjectStore
         if (SourceFingerprintChanged(project.Source, normalizedSource))
             throw new InvalidDataException("Video nguồn đã thay đổi ngoài ứng dụng; hãy mở lại video trước khi tiếp tục lưu project.");
         var subtitle = NormalizeSubtitle(project.Subtitle);
+        var clipSubtitles = NormalizeClipSubtitles(project.ClipSubtitles, project.Timeline);
         var normalized = project with
         {
             Source = normalizedSource,
             FileName = string.IsNullOrWhiteSpace(project.FileName) ? project.Name + "_edited.mp4" : project.FileName.Trim(),
-            Regions = NormalizeRegions(project.Regions, normalizedSource.Duration, normalizeStored: false),
+            Regions = NormalizeRegions(project.Regions, normalizedSource.Duration,
+                RegionTimeLimit(project, normalizedSource.Duration), normalizeStored: false),
             Subtitle = subtitle,
             Audio = NormalizeAudio(project.Audio),
             Asr = NormalizeAsr(project.Asr),
@@ -555,6 +579,9 @@ public sealed class EditorProjectStore
             Tts = subtitle is null ? null : NormalizeTts(project.Tts),
             VoiceOverrides = subtitle is null ? null : NormalizeVoiceOverrides(project.VoiceOverrides),
             Trim = NormalizeTrim(project.Trim, normalizedSource.Duration),
+            PlayheadSeconds = NormalizePlayhead(project.PlayheadSeconds),
+            ClipSubtitles = clipSubtitles,
+            ClipTts = NormalizeClipTts(project.ClipTts, clipSubtitles),
             UpdatedUtc = DateTimeOffset.UtcNow,
         };
 
@@ -578,7 +605,14 @@ public sealed class EditorProjectStore
         return new EditorSourceFingerprint(path, info.Length, info.LastWriteTimeUtc.Ticks, width, height, Math.Max(0, duration));
     }
 
-    private static IReadOnlyList<EditRegion> NormalizeRegions(IReadOnlyList<EditRegion>? source, double duration, bool normalizeStored)
+    private static double RegionTimeLimit(EditorProject project, double sourceDuration)
+        => EditorTimelineComposition.RegionTimeLimit(project.Timeline, project.Source.Path, sourceDuration);
+
+    private static IReadOnlyList<EditRegion> NormalizeRegions(
+        IReadOnlyList<EditRegion>? source,
+        double sourceDuration,
+        double timedLimit,
+        bool normalizeStored)
     {
         if (source is null) return [];
         if (source.Count > 32) throw new InvalidDataException("Project Editor vượt quá 32 vùng.");
@@ -609,14 +643,16 @@ public sealed class EditorProjectStore
                 {
                     "blur" => EditorBlurStrength.NormalizeStored(region.Strength),
                     "mosaic" => EditorMosaicStrength.NormalizeStored(region.Strength),
-                    // cover và clean đều bất động: strength luôn 0.
+                    // cover and clean are both inert: strength is always 0.
                     "cover" or "clean" => EditorCoverEffect.NormalizeStored(region.Strength),
                     _ => EditorCoverEffect.StoredStrength,
                 },
             };
-            normalized.Add(normalizeStored
-                ? EditorRegionTimeScope.NormalizeStored(normalizedRegion, duration)
-                : EditorRegionTimeScope.Normalize(normalizedRegion, duration));
+            normalized.Add(normalizedRegion.WholeVideo
+                ? EditorRegionTimeScope.NormalizeWholeVideo(normalizedRegion, sourceDuration)
+                : normalizeStored
+                    ? EditorRegionTimeScope.NormalizeStored(normalizedRegion, timedLimit)
+                    : EditorRegionTimeScope.Normalize(normalizedRegion, timedLimit));
         }
         return normalized;
     }
@@ -654,6 +690,57 @@ public sealed class EditorProjectStore
             Style = EditorSubtitleStylePolicy.Normalize(subtitle.Style),
             Visible = subtitle.Visible,
         };
+    }
+
+    // Per-clip SRTs are bound to an exact timeline clip id. A clip removed from
+    // the strip (or a split half that was undone) loses its binding on the next
+    // save; a stale SRT file is dropped exactly like the primary subtitle rather
+    // than corrupting the whole project.
+    private static IReadOnlyDictionary<string, EditorSubtitleProject>? NormalizeClipSubtitles(
+        IReadOnlyDictionary<string, EditorSubtitleProject>? clipSubtitles,
+        EditorTimelineProject? timeline)
+    {
+        if (clipSubtitles is null || clipSubtitles.Count == 0) return null;
+        if (clipSubtitles.Count > 128)
+            throw new InvalidDataException("Project Editor chứa quá nhiều SRT theo đoạn.");
+        var clipIds = timeline?.Clips is { Count: > 0 } clips
+            ? clips.Select(clip => clip.Id).ToHashSet(StringComparer.Ordinal)
+            : null;
+        if (clipIds is null) return null;
+        var normalized = new Dictionary<string, EditorSubtitleProject>(StringComparer.Ordinal);
+        foreach (var (key, value) in clipSubtitles)
+        {
+            var id = key?.Trim() ?? string.Empty;
+            if (id.Length is 0 or > 160 || value is null || !clipIds.Contains(id)) continue;
+            try
+            {
+                var subtitle = NormalizeSubtitle(value);
+                if (subtitle is not null) normalized[id] = subtitle;
+            }
+            catch (InvalidDataException) { }
+        }
+        return normalized.Count == 0 ? null : normalized;
+    }
+
+    private static IReadOnlyDictionary<string, EditorTtsProject>? NormalizeClipTts(
+        IReadOnlyDictionary<string, EditorTtsProject>? clipTts,
+        IReadOnlyDictionary<string, EditorSubtitleProject>? clipSubtitles)
+    {
+        if (clipTts is null || clipTts.Count == 0 || clipSubtitles is null) return null;
+        if (clipTts.Count > 128)
+            throw new InvalidDataException("Project Editor chứa quá nhiều voice theo đoạn.");
+        var normalized = new Dictionary<string, EditorTtsProject>(StringComparer.Ordinal);
+        foreach (var (key, value) in clipTts)
+        {
+            if (value is null || !clipSubtitles.ContainsKey(key)) continue;
+            try
+            {
+                var tts = NormalizeTts(value);
+                if (tts is not null) normalized[key] = tts;
+            }
+            catch (InvalidDataException) { }
+        }
+        return normalized.Count == 0 ? null : normalized;
     }
 
     public static EditorAudioSettings NormalizeAudio(EditorAudioSettings? audio)
@@ -702,6 +789,18 @@ public sealed class EditorProjectStore
     {
         var normalized = NormalizeTrim(trim, sourceDuration);
         return normalized.Start > .001 || normalized.End < sourceDuration - .001;
+    }
+
+    /// <summary>
+    /// Normalizes the playhead position saved with the project (seconds, timeline coordinates).
+    /// A legacy project with no such field gets 0 (playhead at the start of the timeline), and
+    /// corrupt values are dropped rather than corrupting the whole project.
+    /// </summary>
+    /// <param name="playhead">Playhead position read from the project (seconds).</param>
+    public static double NormalizePlayhead(double? playhead)
+    {
+        if (playhead is not { } value || !double.IsFinite(value) || value <= 0) return 0;
+        return value;
     }
 
     private static EditorAsrProject? NormalizeAsr(EditorAsrProject? asr)
@@ -753,13 +852,14 @@ public sealed class EditorProjectStore
         };
     }
 
-    // 08/10 (user: thoát project vào lại mất voice, phải chạy lại):
-    // NormalizeTts cũ chỉ chấp nhận tuple engine NGHI (nghi-tts/...) nên mọi
-    // voice VieNeu (vieneu-tts/...) bị lặng lẽ trả null MỖI LẦN LƯU — disk
-    // không bao giờ giữ Tts, mở lại không có gì để nạp. Sửa: chấp nhận cả 2
-    // tuple engine, mỗi tuple kiểm nguyên bộ (engine+version+cặp voice phải
-    // khớp nhau) để không nới lỏng kiểm tra. Mở internal để App dùng lại khi
-    // tự hồi phục voice từ result cache (không duplicate logic kiểm tra).
+    // 08/10 (user: leaving and re-entering a project lost the voice, forcing a re-run):
+    // the old NormalizeTts only accepted NGHI engine tuples (nghi-tts/...), so every
+    // VieNeu voice (vieneu-tts/...) was silently returned as null ON EVERY SAVE — the disk
+    // never kept Tts, so reopening left nothing to load. VieNeu is the current
+    // engine; the old NGHI tuples are still read (read-only) so legacy projects do not lose
+    // their voice track. Each tuple is validated as a whole set (engine+version+the voice pair must
+    // match) so the check is not loosened. Internal so App can reuse it when
+    // recovering voice from the result cache itself (no duplicating the validation logic).
     public static EditorTtsProject? NormalizeTts(EditorTtsProject? tts)
     {
         if (tts is null) return null;
@@ -773,15 +873,15 @@ public sealed class EditorProjectStore
         var engineVersion = tts.EngineVersion.Trim();
         var maleVoice = tts.MaleVoice.Trim();
         var femaleVoice = tts.FemaleVoice.Trim();
-        var nghiTuple = string.Equals(engine, LocalTtsInstaller.Engine, StringComparison.Ordinal)
+        var vieneuTuple = string.Equals(engine, LocalTtsInstaller.Engine, StringComparison.Ordinal)
             && string.Equals(engineVersion, LocalTtsInstaller.EngineVersion, StringComparison.Ordinal)
-            && string.Equals(maleVoice, LocalTtsInstaller.Voice, StringComparison.Ordinal)
-            && string.Equals(femaleVoice, LocalTtsInstaller.Voice, StringComparison.Ordinal);
-        var vieneuTuple = string.Equals(engine, LocalTtsInstaller.VieneuEngine, StringComparison.Ordinal)
-            && string.Equals(engineVersion, LocalTtsInstaller.VieneuEngineVersion, StringComparison.Ordinal)
-            && maleVoice.StartsWith("vieneu_", StringComparison.Ordinal)
+            && TtsVoiceCatalog.IsVieneuVoice(maleVoice)
             && string.Equals(maleVoice, femaleVoice, StringComparison.Ordinal);
-        if (!nghiTuple && !vieneuTuple)
+        var legacyNghiTuple = string.Equals(engine, LegacyNghiEngine, StringComparison.Ordinal)
+            && string.Equals(engineVersion, LegacyNghiEngineVersion, StringComparison.Ordinal)
+            && string.Equals(maleVoice, LegacyNghiVoice, StringComparison.Ordinal)
+            && string.Equals(femaleVoice, LegacyNghiVoice, StringComparison.Ordinal);
+        if (!vieneuTuple && !legacyNghiTuple)
             return null;
         var manifest = string.IsNullOrWhiteSpace(tts.ManifestPath) ? string.Empty : Path.GetFullPath(tts.ManifestPath.Trim());
         var track = tts.VoiceTrack;
@@ -851,7 +951,7 @@ public sealed class EditorProjectStore
             var revision = root.GetProperty("voice_revision").GetString();
             if (root.GetProperty("schema").GetInt32() != 2
                 || root.GetProperty("sample_rate").GetInt32() != 22050
-                || (revision != LocalTtsInstaller.VoiceRevision && revision != LocalTtsInstaller.VieneuVoiceRevision)
+                || (revision != LocalTtsInstaller.VoiceRevision && revision != LegacyNghiVoiceRevision)
                 || !string.Equals(Path.GetFullPath(master.GetProperty("path").GetString()!), trackPath, StringComparison.OrdinalIgnoreCase)
                 || !FileShaMatches(trackPath, master.GetProperty("sha256").GetString()!)) return false;
             var cues = root.GetProperty("cues").EnumerateArray().ToArray();

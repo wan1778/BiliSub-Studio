@@ -5,11 +5,11 @@ using BiliSubStudio.Core.Ocr;
 
 namespace BiliSubStudio.Core.ContractTests;
 
-// Checkpoint resume float tolerance: writer BuildSegments tính CoreEnd = offset +
-// duration*N/N bằng floating-point nên có thể sludge ~1e-12 trên ScanEnd
-// (field: ScanEnd 7469.418 < CoreEnd 7469.418000000001). Validator phải dùng cùng
-// tolerance ±0.001 như mọi bound check lân cận, nếu không checkpoint hợp lệ bị
-// reject và Resume luôn báo "Không còn checkpoint OCR phù hợp".
+// Checkpoint resume float tolerance: the writer's BuildSegments computes CoreEnd = offset +
+// duration*N/N in floating-point, so ~1e-12 of sludge can land on ScanEnd
+// (field: ScanEnd 7469.418 < CoreEnd 7469.418000000001). The validator must use the same
+// tolerance ±0.001 as every neighboring bound check, otherwise a valid checkpoint is
+// rejected and Resume always reports "No suitable OCR checkpoint found".
 internal static class OcrCheckpointResumeContract
 {
     private const double Duration = 7469.418;
@@ -54,19 +54,19 @@ internal static class OcrCheckpointResumeContract
         Check(Valid(Checkpoint(Duration, Duration)), "exact ScanEnd==CoreEnd must be valid");
         // 2. Tiny floating drift (field repro): ScanEnd 7469.418, CoreEnd 7469.418000000001.
         Check(Valid(Checkpoint(7469.418000000001, Duration)), "1e-12 float drift must be valid");
-        // 3. Drift dưới tolerance 0.0005.
+        // 3. Drift below the 0.0005 tolerance.
         Check(Valid(Checkpoint(Duration + 0.0005, Duration)), "0.0005 drift must be valid");
         // 4. Boundary tolerance: drift 0.0009 (ngay trong 1ms) => VALID.
-        // Không assert đúng 0.001: float không biểu diễn được 0.001 chính xác nên biên
-        // tuyệt đối là may rủi ULP; hơn nữa span check độc lập
-        // |CoreEnd - duration| <= 0.001 cũng reject đúng tại biên tuyệt đối.
-        // 0.0009 fail dưới code cũ (strict ScanEnd < CoreEnd) và pass với fix => đúng regression.
+        // Do not assert exactly 0.001: a float cannot represent 0.001 exactly, so the absolute
+        // edge is ULP luck; moreover the independent span check
+        // |CoreEnd - duration| <= 0.001 also rejects exactly at the absolute edge.
+        // 0.0009 fails under the old code (strict ScanEnd < CoreEnd) and passes with the fix => a real regression.
         Check(Valid(Checkpoint(Duration + 0.0009, Duration)), "0.0009 drift must be valid");
-        // 5. Real invalid: vượt tolerance.
+        // 5. Real invalid: beyond the tolerance.
         Check(!Valid(Checkpoint(Duration + 0.0011, Duration)), "0.0011 drift must be invalid");
         Check(!Valid(Checkpoint(Duration + 0.002, Duration)), "0.002 drift must be invalid");
 
-        // 6. Checkpoint schema hiện tại + valid provenance => LoadAsync không null.
+        // 6. Current checkpoint schema + valid provenance => LoadAsync is not null.
         var root = Path.Combine(Path.GetTempPath(), "BiliReplayResume_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         try
@@ -91,7 +91,7 @@ internal static class OcrCheckpointResumeContract
             var workersProp = parallelType.GetProperty("Workers")!;
             Check((int)workersProp.GetValue(fresh)! == 2 && (int)parallelType.GetProperty("SelectedParallelism")!.GetValue(fresh)! == 4,
                 "checkpoint must persist two workers separately from four lanes");
-            // Gắn cue có provenance đầy đủ (pixel observation 2 đầu) rồi save/load roundtrip.
+            // Attach a cue with full provenance (pixel observation at both ends) then save/load round-trip.
             var tb = new RationalTimeBase(1, 90000);
             var geo = new OcrFrameGeometry(0, 0, 1920, 1080, 1280, 320, 0, 0, 1280, 320);
             var cue = new OcrCue(10.0, 11.0, "龙无期", 0.99, 5, 5, false,

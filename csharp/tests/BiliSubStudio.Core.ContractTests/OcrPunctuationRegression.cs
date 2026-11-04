@@ -2,9 +2,9 @@ using BiliSubStudio.Core.Ocr;
 
 namespace BiliSubStudio.Core.ContractTests;
 
-// Regression từ field-test 02:00.300-02:02.033: caption "第二，也许有效" liên tục nhưng Paddle
-// đọc rớt dấu ， ở cue 49. Candidate punctuation-only propose pixel verifier, merge bắt buộc Same.
-// Không strip punctuation cho output text, không hardcode dấu/câu.
+// Regression from field test 02:00.300-02:02.033: the continuous caption "第二，也许有效" had Paddle
+// drop the ， punctuation at cue 49. A punctuation-only candidate goes to the pixel verifier; merging strictly requires Same.
+// Do not strip punctuation from output text, do not hardcode punctuation/sentences.
 internal static class OcrPunctuationRegression
 {
     private static readonly OcrRegion TestRoi = new(0, 0, 1, 1);
@@ -26,7 +26,7 @@ internal static class OcrPunctuationRegression
         var same = new FakePixelComparer(PixelCheckResult.Same);
         var ct = CancellationToken.None;
 
-        // 1. Fixture field 47-50 touching: 47↔48 exact, 48↔49 punctuation-only, 50 khác hẳn.
+        // 1. Field fixture 47-50 touching: 47↔48 exact, 48↔49 punctuation-only, 50 completely different.
         var chain = new[] {
             Prov(120.300, 120.733, "第二，也许有效", 0.99),
             Prov(120.733, 121.933, "第二，也许有效", 0.98),
@@ -40,9 +40,9 @@ internal static class OcrPunctuationRegression
         Check(merged[0].FirstObservation?.Pts == 120.300 && merged[0].LastObservation?.Pts == 122.033,
             "chain merge must preserve First=47.First and Last=49.Last");
 
-        // 2. Negative: khác Han (效/无) nhưng temporal+spatial dính => generic candidate,
-        // pixel là final gate duy nhất. Different => tách + NeedsReview; comparer PHẢI được gọi
-        // đúng 1 lần (gate mới không lọc bằng text pattern).
+        // 2. Negative: different Han (效/无) but touching temporally+spatially => a generic candidate,
+        // pixel is the only final gate. Different => split + NeedsReview; the comparer MUST be called
+        // exactly once (the new gate does not filter by text pattern).
         var countingNeg = new FakePixelComparer(PixelCheckResult.Different);
         var negative = new[] {
             Prov(10.000, 10.500, "第二，也许有效", 0.99),
@@ -53,13 +53,13 @@ internal static class OcrPunctuationRegression
             "Different pixel must keep Han-different pair separate with NeedsReview");
         Check(countingNeg.Calls == 1, "generic gate must send every temporally-continuous pair to pixel verifier");
 
-        // 3. Punctuation-only candidate + Different => tách + NeedsReview.
+        // 3. Punctuation-only candidate + Different => split + NeedsReview.
         var diff = new FakePixelComparer(PixelCheckResult.Different);
         var diffMerged = await OcrCueReconciler.MergeTouchingIdenticalAsync(chain[1..3], "v.mp4", diff, ct);
         Check(diffMerged.Count == 2 && diffMerged.All(c => c.NeedsReview),
             "Different pixel must keep punctuation pair separate with NeedsReview");
 
-        // 4. Punctuation-only candidate + Unavailable => tách + NeedsReview.
+        // 4. Punctuation-only candidate + Unavailable => split + NeedsReview.
         var unav = new FakePixelComparer(PixelCheckResult.Unavailable);
         var unavMerged = await OcrCueReconciler.MergeTouchingIdenticalAsync(chain[1..3], "v.mp4", unav, ct);
         Check(unavMerged.Count == 2 && unavMerged.All(c => c.NeedsReview),

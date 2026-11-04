@@ -1,24 +1,25 @@
 namespace BiliSubStudio.Core.Ocr;
 
-// E.5 — ROI STATIC ZONES (OCR Gates v1.3), DOT NAY CHI DUNG-NHIN (shadow).
+// E.5 — ROI STATIC ZONES (OCR Gates v1.3), THIS PHASE IS OBSERVE-ONLY (shadow).
 //
-// Y tuong: watermark/logo hien CUNG chu CUNG cho qua hang chuc sample lien tiep
-// (bilibili + ten uploader goc phai, do that B.4). Hoc vung tinh bang cach dem:
-// dong text xuat hien o box gan nhu he nhau >= RepeatThreshold sample lien tiep
-// thi la vung tinh (SUSPICIOUS) — de xuat khoet. Sub thoai doi lien tuc nen
-// khong bao gio dat nguong (an toan kieu false-positive thap).
-// Dot nay: ghi vung hoc duoc + dem dong le ra bi loc (would-filter). Chua loc
-// that, chua doi hanh vi. Box so sanh trong khong gian OCR crop (giong comparer).
+// Idea: watermarks/logos show the SAME text at the SAME spot across dozens of consecutive samples
+// (bilibili + original uploader name on the right, measured in B.4). Learn static regions by counting:
+// a text line appearing at a nearly identical box for >= RepeatThreshold consecutive samples
+// is a static region (SUSPICIOUS) — proposed for removal. Dialogue subtitles keep changing so
+// they never reach the threshold (low false-positive safety).
+// This phase: record the learned regions + count the odd lines that would be filtered (would-filter). No real
+// filtering yet, no behavior change. Boxes are compared in OCR crop space (like the comparer).
 public sealed class OcrRoiStaticZones
 {
     public const int RepeatThreshold = 5;
     public const double BoxTolerancePx = 4;
 
-    // Gate học zones (field 15/9: 396 zones trên ROI dải-sub đáy — toàn thoại lặp học thành
-    // zone oan): chỉ học khi ROI scan phủ lên nửa TRÊN khung hình (nơi watermark/logo sống).
-    // ROI dải-sub đáy (Y>=0.5, vd video hiện tại Y=0.82) thì text lặp nào cũng là thoại lặp
-    // nên TẮT học hẳn: zones rỗng, wouldfilter 0, không đổi hành vi đọc. Đo thật bboxes.json:
-    // dialogue y<=652/720, watermark x>=980 — rule Y là điều kiện cần để không oan.
+    // Zone-learning gate (field 15/9: 396 zones over a bottom subtitle-strip ROI — all repeated
+    // dialogue got learned as a wrong zone): only learn when the scan ROI covers the UPPER half of
+    // the frame (where watermarks/logos live). For a bottom subtitle-strip ROI (Y>=0.5, e.g. the
+    // current video Y=0.82) any repeated text is repeated dialogue, so learning is
+    // turned off entirely: zones empty, would-filter 0, read behavior unchanged. Measured bboxes.json:
+    // dialogue y<=652/720, watermark x>=980 — the Y rule is a necessary condition to avoid false learning.
     public static bool LearningEnabledFor(OcrRegion scanRegion) => scanRegion.Y < 0.5;
 
     public sealed record StaticZone(string Text, OcrBox Box, int Repeats);
@@ -38,7 +39,7 @@ public sealed class OcrRoiStaticZones
         return text + "|" + qx + "," + qy + "," + qw + "," + qh;
     }
 
-    // Moi sample: nap lines da filter. Tra ve so dong le ra bi loc (would-filter).
+    // Each sample: feed the filtered lines. Returns the number of odd lines that would be filtered (would-filter).
     public int Observe(IReadOnlyList<OcrLine> lines)
     {
         var seen = new HashSet<string>(StringComparer.Ordinal);
@@ -49,12 +50,12 @@ public sealed class OcrRoiStaticZones
             if (box.Right <= box.Left || box.Bottom <= box.Top) continue;
             seen.Add(ObserveLine(line.Text ?? string.Empty, box));
         }
-        // Streak chi noi khi xuat hien sample LIEN TIEP: key vang mat thi reset.
+        // A streak only grows when the sample appears CONSECUTIVELY: a missing key resets it.
         var gone = new List<string>();
         foreach (var key in _streaks.Keys)
             if (!seen.Contains(key)) gone.Add(key);
         foreach (var key in gone) _streaks.Remove(key);
-        // Dem would-filter: dong nam trong vung da hoc.
+        // Count would-filter: lines falling inside an already-learned zone.
         var wouldFilter = 0;
         foreach (var line in lines)
         {

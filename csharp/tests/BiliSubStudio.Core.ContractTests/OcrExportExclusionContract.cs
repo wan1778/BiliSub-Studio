@@ -4,9 +4,9 @@ using BiliSubStudio.Core.Ocr;
 
 namespace BiliSubStudio.Core.ContractTests;
 
-// Danh sách loại trừ lúc xuất SRT: khớp chính xác Start (±1ms) + Text từng chữ.
-// Không khớp mờ, không lan; thiếu/hỏng file = không loại trừ (không fail export);
-// xóa file là hoàn tác. Checkpoint/resume không đụng.
+// Exclusion list at SRT export: exact Start match (±1ms) + exact Text.
+// No fuzzy matching, no spillover; missing/corrupt file = no exclusions (never fails export);
+// deleting the file undoes it. Checkpoint/resume untouched.
 internal static class OcrExportExclusionContract
 {
     public static async Task RunAsync()
@@ -45,18 +45,18 @@ internal static class OcrExportExclusionContract
 
     private static void NormalizedFossilMatches()
     {
-        // Entry hóa thạch ghi chữ thô (kèm space/dấu/fullwidth), cue ở export
-        // đã normalize -> khớp tuyệt đối hụt (entry chết, cue rác sống lại).
-        // Fallback chuẩn hóa 2 vế cứu đúng entry (18/09: 8 entry gồm notebook
-        // 729.333 suýt vô hình).
+        // A fossil entry stores raw text (with spaces/punctuation/fullwidth), while the export cue
+        // is already normalized -> exact matching misses (dead entry, garbage cue survives).
+        // The normalize-both-sides fallback rescues the entry (18/09: 8 entries including notebook
+        // 729.333 nearly invisible).
         var cues = new[] { Cue(10.0, "你好"), Cue(11.0, "再见") };
         var trailingSpace = OcrExportExclusions.Apply(cues, [new OcrCueExclusion(10.0, "你好 ")]);
         Check(trailingSpace.Dropped == 1 && trailingSpace.Kept.Count == 1
             && trailingSpace.Kept[0].Text == "再见", "entry space thừa phải khớp");
-        // Không khớp bừa: chữ khác vẫn giữ dù space giống nhau.
+        // No false matches: different text is kept even when the spaces match.
         var wrongText = OcrExportExclusions.Apply(cues, [new OcrCueExclusion(10.0, "再见 ")]);
         Check(wrongText.Dropped == 0 && wrongText.Kept.Count == 2, "khác chữ không được lan");
-        // Lệch giờ vẫn hụt (fallback chỉ nới chữ, không nới giờ).
+        // Time drift still misses (the fallback only relaxes text, not time).
         var late = OcrExportExclusions.Apply(cues, [new OcrCueExclusion(10.002, "你好 ")]);
         Check(late.Dropped == 0, "lệch giờ phải hụt");
     }
@@ -64,7 +64,7 @@ internal static class OcrExportExclusionContract
     private static void ToleranceBoundary()
     {
         var cues = new[] { Cue(20.0, "川"), Cue(30.0, "川") };
-        // Bien dust-proof (cach xa 0.001 gap 2×): production so <= 0.001 giữ nguyên.
+        // Dust-proof edge (twice the 0.001 gap): production compares <= 0.001 and keeps it.
         var atEdge = OcrExportExclusions.Apply(cues, [new OcrCueExclusion(20.0005, "川")]);
         Check(atEdge.Dropped == 1 && atEdge.Kept.Count == 1, "lệch trong 1ms phải bỏ");
         var pastEdge = OcrExportExclusions.Apply(cues, [new OcrCueExclusion(30.002, "川")]);
@@ -97,7 +97,7 @@ internal static class OcrExportExclusionContract
         var result = OcrExportExclusions.Apply(cues, entries);
         Check(result.Dropped == 10 && result.Kept.Count == 0, "phải bỏ hết 10");
         Check(result.DroppedSamples.Count == 5, "mẫu bỏ phải cắt ở 5");
-        // Dấu thập phân theo culture máy ($"" display-only, không phải logic).
+        // Decimal separator follows the machine culture ($"" display-only, not logic).
         Check(result.DroppedSamples[0].Contains("0.000") || result.DroppedSamples[0].Contains("0,000"),
             "mẫu phải có giờ để soát");
     }
@@ -242,8 +242,8 @@ internal static class OcrExportExclusionContract
         return await task;
     }
 
-    // Hoàn tác xoá tay (21/09): nút "Hoàn tác xóa" trong app gọi đúng entry đã
-    // ghi. Gỡ xong câu quay lại SRT, câu lành không vạ lây; no-op phải an toàn.
+    // Undo manual deletion (21/09): the app's "Undo delete" button removes exactly the entry that
+    // was written. Once removed the cue returns to the SRT, healthy cues are untouched; no-op must be safe.
     private static async Task RemoveExclusionsRoundTripAsync()
     {
         var root = Path.Combine(Path.GetTempPath(), "ocr-excl-rm-" + Guid.NewGuid().ToString("N"));
@@ -261,13 +261,13 @@ internal static class OcrExportExclusionContract
             var result = OcrExportExclusions.Apply(cues, loaded);
             Check(result.Dropped == 2 && result.Kept.Count == 1 && result.Kept[0].Text == "你好",
                 "câu đã gỡ exclusion phải trở lại SRT");
-            // Không khớp / gỡ hai lần: no-op, file giữ nguyên.
+            // No match / removing twice: no-op, the file stays intact.
             var noop = await RemoveAsync((object)store, request,
                 [new OcrCueExclusion(11.0, "你好"), new OcrCueExclusion(99.0, "không có")]);
             Check(noop == 0, "gỡ hụt phải báo 0, không đụng file");
             Check((await LoadAsync((object)store, request)).Count == 2, "no-op không được phá file");
-            // Dung sai ±1ms giống append (hoàn tác entry mình vừa ghi bất kể
-            // tick hiển thị).
+            // The ±1ms tolerance matches append (undoing an entry just written regardless of
+            // display ticks).
             var tolerant = await RemoveAsync((object)store, request, [new OcrCueExclusion(10.0005, "川")]);
             Check(tolerant == 1, "gỡ lệch trong ±1ms phải khớp như append");
         }

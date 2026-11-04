@@ -69,7 +69,7 @@ internal static class OcrTimeBaseContract
         public FakePixelComparer(PixelCheckResult result) => _result = result;
         public Task<PixelComparison> CheckAsync(string videoPath, PixelObservation left, PixelObservation right, CancellationToken cancellationToken)
         {
-            // Mô phỏng production TB gate: thiếu TB hoặc TB hai bên không tương đương => Unavailable (không merge sạch).
+            // Simulate the production TB gate: a missing TB or non-equivalent TB on either side => Unavailable (no clean merge).
             if (left.SourceTimeBase is null || right.SourceTimeBase is null)
                 return Task.FromResult(new PixelComparison(PixelCheckResult.Unavailable,
                     new FrameSample(left.Pts, double.NaN, double.NaN),

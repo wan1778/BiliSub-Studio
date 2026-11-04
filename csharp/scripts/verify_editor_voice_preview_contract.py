@@ -66,8 +66,8 @@ require(("_page.CurrentEditRequest(_page.PreviewSubtitleBurn())" in load_segment
          or "_page.TimelineClipEditRequestAsync(" in load_segment)
         and "CreateEditorPreviewSegmentAsync" in load_segment,
         "VOICE-12 processed playback must render from the current shared Preview request")
-require("_voiceTrack," in composition,
-        "VOICE-12 clip-aware Preview request must carry the Vietnamese track")
+require("primary ? _voiceTrack : null," in composition,
+        "VOICE-12 clip-aware Preview request must carry the Vietnamese track for the primary clip only")
 require("ActivateSegmentAsync(" in load_segment,
         "VOICE-12 processed playback must activate the rendered segment in the player")
 

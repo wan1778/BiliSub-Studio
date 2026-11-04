@@ -11,9 +11,9 @@ public sealed class RangeNotSupportedException : IOException
     public RangeNotSupportedException(string message) : base(message) { }
 }
 
-// Field 2026-09-24: tuyến CDN chết hẳn nhưng không lỗi dứt khoát — worker quay
-// vòng retry/backoff/refresh mãi, UI bò 1/8 cả đêm. Hết StallTimeout mà không
-// thêm byte nào thì fail nhanh với câu rõ ràng thay vì treo vô hạn.
+// Field 2026-09-24: a CDN route is completely dead but never produces a definitive error — the worker
+// loops on retry/backoff/refresh forever and the UI crawls at 1/8 all night. When StallTimeout elapses
+// with no new bytes, fail fast with a clear message instead of hanging forever.
 public sealed class DownloadStalledException : IOException
 {
     public DownloadStalledException(string message) : base(message) { }
@@ -24,9 +24,9 @@ public sealed class RangeDownloader
     // Proven field-stable size from the legacy 3.9.2/3.9.4 downloader. Larger 32 MiB
     // requests regress on Bilibili CDNs that terminate a Range body early.
     public const long DefaultChunkSize = 4L * 1024 * 1024;
-    // Zero byte tiến triển trong từng này thì coi như tuyến đã chết (kể cả khi
-    // worker vẫn quay retry): fail nhanh để user tải lại sau thay vì bò vô hạn.
-    // Chỉ tính đứng yên tuyệt đối — rỉ chậm vẫn là tiến triển, do rotation xử lý.
+    // Zero bytes of progress within this window means the route is dead (even if the
+    // worker keeps retrying): fail fast so the user retries later instead of crawling forever.
+    // Only a complete standstill counts — slow trickling is still progress, which route rotation handles.
     public static readonly TimeSpan DefaultStallTimeout = TimeSpan.FromMinutes(10);
     private const int MaxSegmentAttempts = 32;
     private const int MaxProbeAttempts = 6;
@@ -89,10 +89,10 @@ public sealed class RangeDownloader
             try
             {
                 (total, rangeSupported) = await ProbeAsync(current, cancellationToken);
-                // Field 2026-09-05: CDN báo Content-Range total nhỏ hơn metadata
-                // playurl (audio 74,6 MB khai còn 43,9 MB). Mọi check segment/
-                // assemble phía dưới đều dùng total này nên file thiếu vẫn "xong"
-                // và ra file mất tiếng đuôi. Không bao giờ tin total ảo.
+                // Field 2026-09-05: the CDN reports a Content-Range total smaller than the playurl
+                // metadata (audio 74.6 MB reported as 43.9 MB). Every segment check and
+                // assemble step below uses this total, so a truncated file still "completes"
+                // and produces a file missing its audio tail. Never trust a bogus total.
                 if (original.Size > 0 && !ProbeTotalMatchesMetadata(total, original.Size))
                 {
                     probeError = new InvalidDataException(
@@ -171,8 +171,8 @@ public sealed class RangeDownloader
         var inFlight = new ConcurrentDictionary<int, long>();
         var queue = new ConcurrentQueue<Segment>(segments.Where(x => !completed.ContainsKey(x.Index)));
         var lastRefreshUtc = DateTime.MinValue;
-        // Stall watchdog: high-water chỉ tiến (thụt lùi sau failure không tính
-        // là tiến triển). Rỉ chậm vẫn gia hạn — chỉ đứng yên tuyệt đối mới nổ.
+        // Stall watchdog: the high-water mark only moves forward (a drop after a failure does not count
+        // as progress). Slow trickling still extends the window — only a complete standstill trips it.
         var progressGate = new object();
         var highWaterBytes = committedBytes;
         var lastAdvanceUtc = DateTime.UtcNow;
@@ -433,10 +433,10 @@ public sealed class RangeDownloader
                             // same generation-guarded rotation instead of waiting it out.
                             var forceRotation = shortBody
                                 && Volatile.Read(ref consecutiveShortBody) >= ConsecutiveShortBodyRotationThreshold;
-                            // Refresh chạy NGOÀI currentGate: giữ gate suốt yt-dlp
-                            // refetch làm mọi worker xếp hàng (kẹt 1/8). Check +
-                            // stamp cooldown trong gate; publish chỉ khi generation
-                            // còn nguyên (worker khác thắng thì bản này bỏ).
+                            // Refresh runs OUTSIDE currentGate: holding the gate across the whole yt-dlp
+                            // refetch queues every worker behind it (stuck at 1/8). Check +
+                            // stamp the cooldown inside the gate; publish only while the generation
+                            // is unchanged (if another worker wins, this result is discarded).
                             var wantsRefresh = canRefresh
                                 && (immediateRefresh || forceRotation || (weakProgressFailures > 0 && weakProgressFailures % 2 == 0));
                             var refreshDue = false;
@@ -493,8 +493,8 @@ public sealed class RangeDownloader
             }
             catch (OperationCanceledException) when (Volatile.Read(ref stallFired) == 1 && !cancellationToken.IsCancellationRequested)
             {
-                // Stall watchdog nổ trước user cancel: tuyến chết hẳn dù worker
-                // vẫn quay retry. Fail nhanh với câu rõ ràng; resume giữ nguyên.
+                // The stall watchdog tripped before a user cancel: the route is fully dead even though the worker
+                // keeps retrying. Fail fast with a clear message; resume state is preserved.
                 throw new DownloadStalledException(
                     $"Tải đứng yên quá {(int)stallLimit.TotalMinutes} phút (không thêm byte nào) dù đã xoay CDN; " +
                     "Bilibili/CDN có thể đang chặn hoặc nghẽn — hãy đăng nhập lại Bilibili rồi tải lại sau " +
@@ -526,9 +526,9 @@ public sealed class RangeDownloader
         }
     }
 
-    // Total từ Content-Range phải khớp metadata playurl. Lệch thiếu là file
-    // thiếu byte chắc chắn (trường hợp audio 59% gây câm đuôi); lệch thừa quá
-    // lớn là nhầm object sau refresh. Metadata approximate nên có biên độ.
+    // The total from Content-Range must match the playurl metadata. A shortfall is a definitely
+    // truncated file (the 59% audio case that silenced the tail); a large overshoot means the
+    // wrong object after a refresh. Metadata is approximate, so a margin is allowed.
     private static bool ProbeTotalMatchesMetadata(long total, long metadataSize)
     {
         if (metadataSize <= 0 || total <= 0) return true;
@@ -672,10 +672,10 @@ public sealed class RangeDownloader
     // partial progress (each attempt gains bytes, so the weak-progress path
     // below never fires); zero-gain failures keep rotating via that path.
     private const int ConsecutiveShortBodyRotationThreshold = 4;
-    // Field 2026-09-24: tuyến bệnh ném HttpRequestException liên tục, mỗi lỗi
-    // refetch playurl 1 lần (yt-dlp -J chục giây, đang 412/chập chờn) trong khi
-    // giữ currentGate → 7/8 worker xếp hàng sau gate, UI kẹt 1/8. Cooldown chặn
-    // storm: failure trong cửa sổ chỉ backoff thường, không refetch.
+    // Field 2026-09-24: a sick route throws HttpRequestException continuously, refetching
+    // playurl once per error (yt-dlp -J takes tens of seconds while 412/instability happens) while
+    // holding currentGate → 7 of 8 workers queue behind the gate, UI stuck at 1/8. The cooldown stops the
+    // storm: failures inside the window only take the normal backoff, no refetch.
     private static readonly TimeSpan RefreshCooldown = TimeSpan.FromSeconds(45);
 
     // Pure decision seam for contract tests: first failure always refreshes,

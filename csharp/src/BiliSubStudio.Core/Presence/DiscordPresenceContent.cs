@@ -2,9 +2,10 @@ using System.Text.Json;
 
 namespace BiliSubStudio.Core.Presence;
 
-// Nội dung presence Discord (thuần logic, có contract test): kind job ->
-// chữ details tiếng Việt + payload activity JSON (assets logo, timestamps).
-// IPC + vòng poll nằm ở App (DiscordPresenceService) để Core không dính IO.
+// Discord presence content (pure logic, covered by contract tests): job kind ->
+// Vietnamese details text + the activity JSON payload (logo assets, timestamps).
+// IPC and the polling loop live in App (DiscordPresenceService) so Core stays
+// free of IO.
 public static class DiscordPresenceContent
 {
     private static readonly JsonSerializerOptions Json = new() { WriteIndented = false };
@@ -32,7 +33,7 @@ public static class DiscordPresenceContent
             + ",\"large_text\":\"BiliSub Studio\"}}";
     }
 
-    // Pure (có contract test): rút gọn tên file dài cho vừa khung state Discord.
+    // Pure (covered by a contract test): shortens a long file name to fit Discord's state field.
     public static string ShortName(string? name, int maxLength = 40)
     {
         var text = (name ?? string.Empty).Trim();
@@ -40,14 +41,14 @@ public static class DiscordPresenceContent
         return "..." + text[^Math.Max(1, maxLength - 3)..];
     }
 
-    // Pure: state khi có job chạy (job thắng mọi context).
+    // Pure: state while a job is running (the job wins over every context).
     public static string ComposeJobState(double progress, string status, bool pauseRequested, string? video) =>
         $"{progress:0}%"
         + (string.Equals(status, "cancelling", StringComparison.OrdinalIgnoreCase) ? " · đang dừng"
             : string.Equals(status, "paused", StringComparison.OrdinalIgnoreCase) || pauseRequested ? " · tạm dừng" : string.Empty)
         + (string.IsNullOrWhiteSpace(video) ? string.Empty : " · " + ShortName(video));
 
-    // Pure: state khi rảnh (ưu tiên tên project Edit, rồi tên video).
+    // Pure: idle state (Edit project name first, then the video name).
     public static string ComposeIdleState(string? video, string? project) =>
         !string.IsNullOrWhiteSpace(project) ? ShortName(project)
         : !string.IsNullOrWhiteSpace(video) ? ShortName(video) : "Đang xem";

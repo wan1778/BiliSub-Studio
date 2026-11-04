@@ -2,9 +2,9 @@ using BiliSubStudio.Core.Ocr;
 
 namespace BiliSubStudio.Core.ContractTests;
 
-// Regression từ field-test: cue 7↔8 (exact + touching) và cue 9↔10 (exact + gap 0.667s).
-// Field evidence (6 OCR blank + mắt thường 27.35-27.9): gap 0.667 là blank THẬT => 2 instances,
-// KHÔNG merge. Window production = 3.0/nativeFps (~0.1s ở 30fps) cho mọi mode, không truyền tay 0.75.
+// Field-test regression: cue 7↔8 (exact + touching) and cue 9↔10 (exact + a 0.667s gap).
+// Field evidence (6 OCR blanks + naked eye 27.35-27.9): the 0.667 gap is a REAL blank => 2 instances,
+// NO merge. The production window = 3.0/nativeFps (~0.1s at 30fps) for every mode, never hand-passed 0.75.
 internal static class OcrExactGapRegression
 {
     private static readonly OcrRegion TestRoi = new(0, 0, 1, 1);
@@ -35,9 +35,9 @@ internal static class OcrExactGapRegression
         Check(touchMerged.Count == 1 && touchMerged[0].Start == 21.600 && touchMerged[0].End == 24.400,
             "field 7-8 exact touching must merge to 1 cue");
 
-        // 2. Field 9↔10: exact + gap 0.667s nhưng là blank THẬT (field evidence) => tách kể cả
-        // production Exhaustive window (3.0/30 ≈ 0.1s). Preview hiện 2 cue là đúng visual-instance semantics.
-        // Không truyền tay 0.75s: số đó sẽ merge nhầm 2 instances đã chứng minh khác nhau.
+        // 2. Field 9↔10: exact + a 0.667s gap that is a REAL blank (field evidence) => split even
+        // under the production Exhaustive window (3.0/30 ≈ 0.1s). Preview showing 2 cues is correct visual-instance semantics.
+        // Do not hand-pass 0.75s: that number would wrongly merge 2 instances proven different.
         const double productionExhaustiveWindow = 3.0 / 30.0;
         var gapped = new[] {
             Prov(24.933, 27.333, "直到烈战狂提到龙帝宫", 0.99),
@@ -48,13 +48,13 @@ internal static class OcrExactGapRegression
         Check(gappedMerged.Count == 2, "field 9-10 real 0.667 blank must stay 2 cues with production window");
         Check(countingGap.Calls == 0, "gap beyond production window must not reach pixel comparer");
 
-        // 3. Cùng pair nhưng window mặc định (Epsilon) => tách, không gọi comparer.
+        // 3. Same pair but the default window (Epsilon) => split, no comparer call.
         var countingDefault = new FakePixelComparer(PixelCheckResult.Same);
         var defaultMerged = await OcrCueReconciler.MergeTouchingIdenticalAsync(gapped, "v.mp4", countingDefault, ct);
         Check(defaultMerged.Count == 2, "default window must keep 0.667 gap separate");
         Check(countingDefault.Calls == 0, "gap beyond window must not reach pixel comparer");
 
-        // 4. Blank thật 1.0s > window 0.75 => tách, không gọi comparer.
+        // 4. A real 1.0s blank > the 0.75 window => split, no comparer call.
         var realBlank = new[] {
             Prov(40.000, 41.000, "龙无期", 0.99),
             Prov(42.000, 43.000, "龙无期", 0.98),
@@ -64,21 +64,21 @@ internal static class OcrExactGapRegression
         Check(blankMerged.Count == 2, "real 1.0s blank between same-text instances must stay separate");
         Check(countingBlank.Calls == 0, "real blank must not reach pixel comparer");
 
-        // 5. Gap 0.667 + Different => tách + NeedsReview cả hai.
+        // 5. A 0.667 gap + Different => split + NeedsReview on both.
         var diff = new FakePixelComparer(PixelCheckResult.Different);
         var diffMerged = await OcrCueReconciler.MergeTouchingIdenticalAsync(gapped, "v.mp4", diff, ct, continuationWindow: 0.75);
         Check(diffMerged.Count == 2 && diffMerged.All(c => c.NeedsReview),
             "Different pixel must keep 0.667 gap separate with NeedsReview");
 
-        // 6. Gap 0.667 + Unavailable => tách + NeedsReview cả hai.
+        // 6. A 0.667 gap + Unavailable => split + NeedsReview on both.
         var unav = new FakePixelComparer(PixelCheckResult.Unavailable);
         var unavMerged = await OcrCueReconciler.MergeTouchingIdenticalAsync(gapped, "v.mp4", unav, ct, continuationWindow: 0.75);
         Check(unavMerged.Count == 2 && unavMerged.All(c => c.NeedsReview),
             "Unavailable pixel must keep 0.667 gap separate with NeedsReview");
 
-        // 7. Hai câu thật khác nhau đứng sát (field 19↔20): temporal+spatial dính nên là
-        // generic candidate, pixel quyết định. Different => tách + NeedsReview, gọi đúng 1 lần.
-        // (Gate mới không lọc bằng text: an toàn đến từ pixel, không phải text pattern.)
+        // 7. Two truly different captions standing adjacent (field 19↔20): temporally+spatially touching so they are a
+        // generic candidate and the pixel decides. Different => split + NeedsReview, called exactly once.
+        // (The new gate does not filter by text: safety comes from the pixel, not a text pattern.)
         var countingDistinct = new FakePixelComparer(PixelCheckResult.Different);
         var distinct = new[] {
             Prov(50.700, 52.733, "这种人，不像人", 0.99),
@@ -89,10 +89,10 @@ internal static class OcrExactGapRegression
             "two truly different touching captions must stay separate with NeedsReview on Different pixel");
         Check(countingDistinct.Calls == 1, "touching distinct pair must reach pixel verifier once");
 
-// 8. Field V01-I07: gap đúng 3 native frame nhưng float noise ở magnitude PTS lớn
-        // (13633.600 - 13633.500 = 0.10000000000036 > 3.0/30) từng làm MỘT câu bị tách
-        // thành hai cue mà không có cờ review => lặp trong SRT. Epsilon window phải giữ
-        // nó là candidate và merge khi pixel Same.
+// 8. Field V01-I07: a gap of exactly 3 native frames but float noise at large PTS magnitude
+        // (13633.600 - 13633.500 = 0.10000000000036 > 3.0/30) once split ONE caption
+        // into two cues with no review flag => duplication in the SRT. The Epsilon window must keep
+        // it as a candidate and merge when the pixel says Same.
         var floatEdge = new[] {
             Prov(13633.333, 13633.500, "我为什么要知道", 1.0),
             Prov(13633.600, 13634.600, "我为什么要知道", 1.0),
@@ -102,9 +102,9 @@ internal static class OcrExactGapRegression
         Check(edgeMerged.Count == 1, "three-frame gap at large PTS magnitude must stay inside the continuation window");
         Check(edgeComparer.Calls == 0, "identical byte-for-byte 0.1s gap now merges without pixel (policy 21/09)");
 
-        // 9. Field flicker-split: chữ giống hệt từng byte + cùng box, khe ma 0.133s
-        // (tracker đóng cue oan vì vài frame misread, text không hề biến mất).
-        // Chính sách 21/09: byte-identical ≤0.5s gộp thẳng, MIỄN pixel.
+        // 9. Field flicker-split: byte-identical text + the same box, a phantom 0.133s gap
+        // (the tracker closes the cue wrongly because of a few misread frames; the text never disappeared).
+        // Policy 21/09: byte-identical ≤0.5s merges directly, PIXEL-FREE.
         var flicker = new[] {
             Prov(4.833, 5.900, "便为北凉郡主即刻离京", 0.986),
             Prov(6.033, 7.733, "便为北凉郡主即刻离京", 0.983),
@@ -115,8 +115,8 @@ internal static class OcrExactGapRegression
             "identical flicker-split pair with 0.133s gap must merge to 1 cue");
         Check(flickerSame.Calls == 0, "identical ≤0.5s merges without pixel (policy 21/09)");
 
-        // 10. Cặp khác CHỮ (thế 1 chữ) khe 0.133s + pixel Different -> tách + review.
-        // Giữ case này để bảo vệ pixel authority cho cặp KHÔNG byte-identical.
+        // 10. A pair with DIFFERENT TEXT (1 character swapped) at a 0.133s gap + pixel Different -> split + review.
+        // Keep this case to protect pixel authority for pairs that are NOT byte-identical.
         var flickerDiffPair = new[] {
             Prov(4.833, 5.900, "便为北凉郡主即刻离京", 0.986),
             Prov(6.033, 7.733, "便为北凉郡主即刻离京", 0.983), // Policy 21/09: byte-identical ≤0.25s merge pixel-free
@@ -126,8 +126,8 @@ internal static class OcrExactGapRegression
         Check(flickerSplit.Count == 1, "identical ≤0.25s merges pixel-free (policy 21/09)");
         Check(flickerDiff.Calls == 0, "identical ≤0.25s merges without pixel");
 
-        // 11. Chữ giống hệt nhưng khe 0.30s (> micro-gap 0.25, ≤ 0.5s) — vùng
-        // review-only theo evidence 0.325s blank thật (OcrGenericBoundaryProperty).
+        // 11. Identical text but a 0.30s gap (> micro-gap 0.25, ≤ 0.5s) — the
+        // review-only zone, per the 0.325s real-blank evidence (OcrGenericBoundaryProperty).
         var beyond = new[] {
             Prov(4.833, 5.900, "便为北凉郡主即刻离京", 0.986),
             Prov(6.200, 7.733, "便为北凉郡主即刻离京", 0.983),
@@ -239,7 +239,7 @@ internal static class OcrExactGapRegression
         }
     }
 
-    // Fast path overlap-identical không được gọi pixel: gọi là lỗi test.
+    // The overlap-identical fast path must not call the pixel: calling it is a test error.
     private sealed class ThrowingPixelComparer : IPixelComparer
     {
         public Task<PixelComparison> CheckAsync(string videoPath, PixelObservation left, PixelObservation right, CancellationToken cancellationToken) =>
@@ -247,11 +247,11 @@ internal static class OcrExactGapRegression
     }
 }
 
-// Hồi tố sau-Cleanup (18/09): Cleanup xóa mảnh/phantom ở giữa khiến 2 cue kề
-// nhau MỚI mà pixel chưa từng verify (field: cặp trùng 恭迎龙王归位/杀 hở
-// 0.067-0.3s trong video user — review=False, pixel chưa chạy). Pass này chỉ
-// chấm cặp kề-MỚI; cặp đã kề từ trước thì giữ nguyên tuyệt đối (không gọi
-// pixel lại, không lật quyết định, không gắn review oan).
+// Retro pass after Cleanup (18/09): Cleanup deleting fragments/phantoms in the middle creates NEW
+// adjacent pairs that the pixel has never verified (field: duplicate pair 恭迎龙王归位/杀 gapped
+// 0.067-0.3s in a user video — review=False, pixel not run). This pass only judges NEWLY-adjacent
+// pairs; pairs already adjacent beforehand are kept absolutely untouched (no repeat pixel
+// call, no decision flip, no wrongful review flag).
 internal static class OcrCleanupAdjacencyContract
 {
     private static readonly OcrRegion TestRoi = new(0, 0, 1, 1);
@@ -271,7 +271,7 @@ internal static class OcrCleanupAdjacencyContract
     public static async Task RunAsync()
     {
         var ct = CancellationToken.None;
-        // 1. Cặp trùng kề-mới (mảnh giữa đã bị Cleanup xóa): Same -> gộp 1 cue.
+        // 1. A newly-adjacent duplicate pair (the middle fragment was deleted by Cleanup): Same -> merge into 1 cue.
         var pre = new[] {
             Prov(10.0, 11.0, "恭迎龙王归位", 0.99),
             Prov(11.0, 11.15, "迎", 0.5),
@@ -284,14 +284,14 @@ internal static class OcrCleanupAdjacencyContract
         Check(merged.Count == 1 && merges == 1, "kề-mới trùng + Same phải gộp");
         Check(merged[0].Start == 10.0 && merged[0].End == 12.15, "span gộp sai");
 
-        // 2. Different -> tách + review cả hai.
+        // 2. Different -> split + review on both.
         var diff = new FakePixelComparer(PixelCheckResult.Different);
         var (split, merges2) = await OcrCueReconciler.MergeCleanupAdjacentsAsync(
             pre, post, "v.mp4", diff, ct, continuationWindow: 0.1);
         Check(split.Count == 2 && merges2 == 0 && split.All(c => c.NeedsReview),
             "Different phải tách + review");
 
-        // 3. Đã kề từ trước -> giữ nguyên, KHÔNG gọi comparer (kể cả Different).
+        // 3. Already adjacent beforehand -> keep as is, do NOT call the comparer (even for Different).
         var preAdj = new[] { Prov(20.0, 21.0, "杀", 0.99), Prov(21.2, 22.0, "杀", 0.98) };
         var counting = new FakePixelComparer(PixelCheckResult.Different);
         var (kept, merges3) = await OcrCueReconciler.MergeCleanupAdjacentsAsync(
@@ -300,8 +300,8 @@ internal static class OcrCleanupAdjacencyContract
         Check(counting.Calls == 0, "đã verify rồi thì không gọi pixel lại");
         Check(!kept.Any(c => c.NeedsReview), "không được gắn review oan");
 
-        // 4. Kề-mới nhưng ngoài window (gap 0.5) -> giữ im, không review, không
-        // gọi comparer (giữ spec micro-gap đã ghim: ngoài window là tách im lặng).
+        // 4. Newly adjacent but outside the window (gap 0.5) -> keep silent, no review, no
+        // comparer call (hold the pinned micro-gap spec: outside the window is a silent split).
         var farPre = new[] {
             Prov(30.0, 31.0, "杀", 0.99),
             Prov(31.0, 31.4, "死", 0.5),
@@ -314,8 +314,8 @@ internal static class OcrCleanupAdjacencyContract
         Check(farKept.Count == 2 && merges4 == 0 && farComparer.Calls == 0, "ngoài window phải giữ im lặng");
         Check(!farKept.Any(c => c.NeedsReview), "ngoài window không gắn review");
 
-        // 5. Cặp trùng y hệt hở 0.4s (ngoài micro-gap, trong 0.5s — ca 关于战神篇
-        // 0.3s của user): vùng review-only (0.25-0.5s) — evidence 0.325s blank thật.
+        // 5. An identical duplicate pair gapped 0.4s (outside the micro-gap, inside 0.5s — the user's
+        // 关于战神篇 0.3s case): the review-only zone (0.25-0.5s) — evidence: a 0.325s real blank.
         var dupPre = new[] { Prov(40.0, 41.0, "关于战神篇的全部内容", 0.99) };
         var dupPost = new[] { dupPre[0], Prov(41.4, 42.4, "关于战神篇的全部内容", 0.98) };
         var dupComparer = new FakePixelComparer(PixelCheckResult.Same);
@@ -325,7 +325,7 @@ internal static class OcrCleanupAdjacencyContract
         Check(dupComparer.Calls == 0, "trùng 0.4s không được gọi pixel (spec ghim)");
         Check(dupKept.All(c => c.NeedsReview), "trùng 0.4s phải gắn review để nghe tay");
 
-        // 6. Trùng hở 0.6s (ngoài 0.5s: thoại lặp thật) -> giữ im hoàn toàn.
+        // 6. Duplicates gapped 0.6s (outside 0.5s: genuinely repeated speech) -> keep completely silent.
         var far2Pre = new[] { Prov(50.0, 51.0, "杀", 0.99) };
         var far2Post = new[] { far2Pre[0], Prov(51.6, 52.6, "杀", 0.98) };
         var far2Comparer = new FakePixelComparer(PixelCheckResult.Same);
@@ -334,9 +334,9 @@ internal static class OcrCleanupAdjacencyContract
         Check(far2Kept.Count == 2 && merges6 == 0 && far2Comparer.Calls == 0, "trùng hở 0.6s giữ im");
         Check(!far2Kept.Any(c => c.NeedsReview), "ngoài 0.5s không gắn review");
 
-        // 19/09 (video Cả Lớp: 78 cặp trùng khác-lane giờ chồng nhau): chữ y
-        // hệt từng byte + span chồng (gap<0) = 1 caption 2 lane cùng đọc — gộp
-        // thẳng, MIỄN pixel (comparer ném lỗi nếu bị gọi).
+        // 19/09 (Cả Lớp video: 78 duplicate cross-lane pairs now overlapping): byte-identical
+        // text + overlapping spans (gap<0) = 1 caption read by 2 lanes — merge
+        // directly, PIXEL-FREE (the comparer throws if called).
         var throwing = new ThrowingPixelComparer();
         var xpair = new[] {
             Prov(982.7, 984.1, "金陵武道九班档案", 0.99),
@@ -345,7 +345,7 @@ internal static class OcrCleanupAdjacencyContract
         var xmerged = await OcrCueReconciler.MergeTouchingIdenticalAsync(xpair, "v.mp4", throwing, ct);
         Check(xmerged.Count == 1 && xmerged[0].Start == 982.7 && xmerged[0].End == 984.1,
             "trùng giờ-chồng phải gộp 1 cue không qua pixel");
-        // Chuỗi 3 cue chồng nhau gộp nối hết trong 1 pass.
+        // A chain of 3 overlapping cues merges into one in a single pass.
         var xtriple = new[] {
             Prov(100.0, 102.0, "没错", 0.99),
             Prov(101.0, 103.0, "没错", 0.98),
@@ -354,7 +354,7 @@ internal static class OcrCleanupAdjacencyContract
         var xtripleMerged = await OcrCueReconciler.MergeTouchingIdenticalAsync(xtriple, "v.mp4", throwing, ct);
         Check(xtripleMerged.Count == 1 && xtripleMerged[0].Start == 100.0 && xtripleMerged[0].End == 104.0,
             "chuỗi trùng chồng phải gộp nối 1 cue");
-        // Đối chứng: dash-overlap (—— vs —) KHÔNG lọt fast path — đi pixel cũ.
+        // Counter-check: dash-overlap (—— vs —) does NOT slip into the fast path — it takes the old pixel path.
         var dashDiff = new FakePixelComparer(PixelCheckResult.Different);
         var dashpair = new[] {
             Prov(50.0, 52.0, "出——", 0.99),
@@ -384,7 +384,7 @@ internal static class OcrCleanupAdjacencyContract
         }
     }
 
-    // Fast path overlap-identical không được gọi pixel: gọi là lỗi test.
+    // The overlap-identical fast path must not call the pixel: calling it is a test error.
     private sealed class ThrowingPixelComparer : IPixelComparer
     {
         public Task<PixelComparison> CheckAsync(string videoPath, PixelObservation left, PixelObservation right, CancellationToken cancellationToken) =>

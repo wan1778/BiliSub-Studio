@@ -2,9 +2,10 @@ using BiliSubStudio.Core.Ocr;
 
 namespace BiliSubStudio.Core.ContractTests;
 
-// Tự nhận diện kiểu sub (16/09, khỏi gạt tay): vote từ điểm worker đo.
-// Vành đen -> mạnh, vành xám (bóng nhẹ) -> vừa, còn lại -> tắt.
-// Không đủ bằng chứng / lỗi -> tắt (y hệt cũ, không mất chữ).
+// Automatic subtitle style detection (16/09, no manual switch): vote from frame
+// scores measured by the worker.
+// Black ring -> strong, gray ring (soft shadow) -> medium, anything else -> off.
+// Not enough evidence / error -> off (same as before, never drops text).
 internal static class OcrSubtitleStyleContract
 {
     public static Task RunAsync()
@@ -23,7 +24,7 @@ internal static class OcrSubtitleStyleContract
 
     private static void HardOutlineVotesStrong()
     {
-        // Viền đen: vành tối kịt (darkness 215-255).
+        // Black outline: pitch-black ring (darkness 215-255).
         var frames = new[]
         {
             Frame(0.012, 231.0), Frame(0.009, 244.0), Frame(0.015, 218.0),
@@ -34,7 +35,7 @@ internal static class OcrSubtitleStyleContract
 
     private static void SoftShadowVotesMedium()
     {
-        // Bóng nhẹ: vành xám (darkness 75-135).
+        // Soft shadow: gray ring (darkness 75-135).
         var frames = new[]
         {
             Frame(0.010, 95.0), Frame(0.012, 120.0), Frame(0.009, 80.0),
@@ -45,7 +46,7 @@ internal static class OcrSubtitleStyleContract
 
     private static void BareTextVotesOff()
     {
-        // Chữ màu/trần trên nền sáng: vành sáng (darkness < 60).
+        // Colored/bare text on a light background: bright ring (darkness < 60).
         var frames = new[]
         {
             Frame(0.010, 30.0), Frame(0.012, 12.0), Frame(0.009, 45.0),
@@ -56,8 +57,8 @@ internal static class OcrSubtitleStyleContract
 
     private static void TooFewVotesStaysOff()
     {
-        // Phim thoại thưa (2/12 khung có chữ): không đủ bằng chứng -> tắt,
-        // đừng lọc bừa.
+        // Sparse dialogue (2/12 frames contain text): not enough evidence -> off,
+        // never filter blindly.
         var frames = new[]
         {
             Frame(0.012, 231.0), Frame(0.009, 244.0),
@@ -69,7 +70,7 @@ internal static class OcrSubtitleStyleContract
 
     private static void TieFallsBackToMedium()
     {
-        // Hòa mạnh/vừa (không đa số): về vừa cho an toàn.
+        // Strong/medium tie (no majority): fall back to medium for safety.
         var frames = new[]
         {
             Frame(0.012, 231.0), Frame(0.009, 244.0), Frame(0.015, 218.0),

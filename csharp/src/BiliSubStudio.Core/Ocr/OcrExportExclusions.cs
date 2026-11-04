@@ -1,10 +1,10 @@
 namespace BiliSubStudio.Core.Ocr;
 
-// Lọc loại trừ lúc xuất SRT: bỏ câu rác đã duyệt (danmaku, chữ cảnh, watermark...)
-// khỏi file SRT mà KHÔNG đụng checkpoint (resume/export lại nguyên vẹn).
-// Khớp CHÍNH XÁC Start (±1ms) + Text từng chữ — không khớp mờ, không lan:
-// câu thoại trùng giờ khác chữ thì giữ; file đổi timing thì entry cũ khớp hụt
-// (vô hại). Xóa file .exclude.json là hoàn tác.
+// Exclusion filter when exporting SRT: remove reviewer-approved junk cues (danmaku, on-scene
+// text, watermark...) from the SRT file WITHOUT touching the checkpoint (resume/re-export stays intact).
+// EXACT Start (±1ms) + Text match — no fuzzy match, no spillover: dialogue cues with the
+// same timing but different text are kept; if the file's timing changes, old entries miss (harmless).
+// Deleting the .exclude.json file is the undo.
 public static class OcrExportExclusions
 {
     public const double StartToleranceSeconds = 0.001;
@@ -22,10 +22,10 @@ public static class OcrExportExclusions
         if (list.Count == 0) return new ExclusionResult(list, 0, []);
         if (exclusions is null || exclusions.Count == 0)
             return new ExclusionResult(list, 0, []);
-        // Chuẩn hóa 1 lần mỗi entry (fallback khớp hóa thạch): entry cũ ghi chữ
-        // thô (kèm space/dấu/fullwidth) khớp hụt cue đã normalize ở export
-        // (18/09: 8 entry gồm notebook 729.333 suýt vô hình). Entry không chuẩn
-        // hóa được thì chỉ khớp tuyệt đối.
+        // Normalize each entry once (fossilized-match fallback): old entries stored raw
+        // text (with space/diacritics/fullwidth) miss the cue normalized at export
+        // (18/09: 8 entries including notebook 729.333 nearly became invisible). Entries that
+        // cannot be normalized only match absolutely.
         var entryNorms = new string?[exclusions.Count];
         for (var e = 0; e < exclusions.Count; e++)
         {
@@ -52,8 +52,8 @@ public static class OcrExportExclusions
                 if (entry is null || entry.Text is null) continue;
                 if (Math.Abs(cue.Start - entry.Start) > StartToleranceSeconds) continue;
                 if (string.Equals(cue.Text, entry.Text, StringComparison.Ordinal)) { hit = true; break; }
-                // Fallback: cùng giờ + cùng chữ sau chuẩn hóa (không nới giờ,
-                // không khớp mờ — câu khác chữ vẫn an toàn).
+                // Fallback: same time + same text after normalization (no timing widening,
+                // no fuzzy match — cues with different text remain safe).
                 if (cueNorm is not null && entryNorms[index] is not null
                     && string.Equals(cueNorm, entryNorms[index], StringComparison.Ordinal))
                 {

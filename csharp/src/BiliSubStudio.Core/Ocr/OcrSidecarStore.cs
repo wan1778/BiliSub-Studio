@@ -3,10 +3,10 @@ using System.Text;
 
 namespace BiliSubStudio.Core.Ocr;
 
-// IO cho sidecar: 28/09 (user cấm file cạnh video) LUÔN ghi Data app;
-// AlongsidePath chỉ còn để ĐỌC di sản (file cũ còn sót vẫn cho cache hit).
-// Mọi lỗi (quyền, đĩa, corrupt) đều nuốt lặng + tiếp tục KHÔNG sidecar — scan không bao giờ
-// fail vì file đệm. Hủy (cancel) thì vẫn ném để tôn trọng caller.
+// IO for the sidecar: 28/09 (user forbade files beside the video) ALWAYS write to app Data;
+// AlongsidePath is only left for READING legacy files (old leftover files still give cache hits).
+// Every error (permissions, disk, corrupt) is swallowed silently + continue WITHOUT the sidecar — a scan never
+// fails because of a cache file. Cancellation still throws to respect the caller.
 public sealed class OcrSidecarStore
 {
     private readonly string _appDataDir;
@@ -41,7 +41,7 @@ public sealed class OcrSidecarStore
         return Path.Combine(_appDataDir, "Sidecars", "unknown.ocr-sidecar.json");
     }
 
-    // Đọc: cạnh video trước, fallback sau. Sai vân/version/hỏng => null (tính lại đường cũ).
+    // Read: beside the video first, fallback after. Wrong stamp/version/corrupt => null (recompute via the old path).
     public async Task<OcrSidecar.SidecarDocument?> LoadAsync(string videoPath, OcrSidecar.FileIdentity current, CancellationToken cancellationToken)
     {
         foreach (var path in new[] { AlongsidePath(videoPath), FallbackPath(current) })
@@ -61,8 +61,8 @@ public sealed class OcrSidecarStore
         return null;
     }
 
-    // Ghi nguyên tử (tmp + move). Cạnh video lỗi (quyền/đĩa) => bật fallback + thử lại 1 lần.
-    // Thất bại hết => nuốt lặng. Không bao giờ throw trừ cancel.
+    // Atomic write (tmp + move). If writing beside the video fails (permissions/disk) => enable fallback + retry once.
+    // If all fail => swallow silently. Never throws except on cancel.
     public async Task SaveAsync(string videoPath, OcrSidecar.SidecarDocument document, CancellationToken cancellationToken)
     {
         var payload = OcrSidecar.Serialize(document);

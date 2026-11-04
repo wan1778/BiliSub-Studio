@@ -6,17 +6,17 @@ using BiliSubStudio.Core.Ocr;
 
 namespace BiliSubStudio.Core.ContractTests;
 
-// Reconcile Replay / Targeted Regression: replay reconciliation từ checkpoint đã lưu
-// KHÔNG gọi PaddleOCR worker, KHÔNG extract frame mới ngoài candidate boundaries.
-// 7 asserts bên dưới chạy determinism, không cần video thật (media file rác vẫn PASS
-// vì không path nào chạm FFmpeg/worker khi đã truyền fake comparer + explicit window).
+// Reconcile Replay / Targeted Regression: replayed reconciliation from a saved checkpoint
+// does NOT call the PaddleOCR worker and does NOT extract new frames outside candidate boundaries.
+// The 7 asserts below run deterministically, no real video needed (a garbage media file still PASSes
+// because no path touches FFmpeg/the worker once a fake comparer + explicit window are supplied).
 internal static class OcrReplayContract
 {
     private static readonly OcrRegion TestRoi = new(0.05, 0.65, 0.90, 0.29);
     private static readonly RationalTimeBase TestTb = new(1, 90000);
     private static readonly OcrFrameGeometry TestGeo = new(0, 0, 1920, 1080, 1280, 320, 0, 0, 1280, 320);
     private static long _spts = 9000000;
-    private const double Window = 0.1; // explicit => bỏ qua FFmpeg probe như production đã probe
+    private const double Window = 0.1; // explicit => skip the FFmpeg probe, as production already probed
 
     private static OcrCue Prov(double s, double e, string t, double c)
     {
@@ -41,8 +41,8 @@ internal static class OcrReplayContract
         Directory.CreateDirectory(root);
         try
         {
-            // Media rác (không phải video): replay PASS trên file này chứng minh không path nào
-            // chạm FFmpeg probe/extract hay PaddleOCR worker (file thật hỏng sẽ nổ ở đó).
+            // Garbage media (not a video): replay PASSing on this file proves no path
+            // touches FFmpeg probe/extract or the PaddleOCR worker (a genuinely corrupt file would blow up there).
             var garbage = Path.Combine(root, "not-a-video.mp4");
             var random = new byte[1024];
             new Random(7).NextBytes(random);
@@ -102,10 +102,10 @@ internal static class OcrReplayContract
             var app = new BiliSubApplication(paths);
             var ct = CancellationToken.None;
 
-            // 1+2+3: full-checkpoint replay trên media rác, scripted comparer:
-            // Same đúng boundary A-B (Pts 11↔11), Different mọi boundary khác.
-            // Gate generic: mọi boundary trong continuation window đều tới comparer (A-B và C-D).
-            // Policy 21/09: A-B byte-identical touching gộp pixel-free → comparer KHÔNG được gọi cho A-B.
+            // 1+2+3: full-checkpoint replay on garbage media, scripted comparer:
+            // Same only at boundary A-B (Pts 11↔11), Different everywhere else.
+            // Generic gate: every boundary inside the continuation window reaches the comparer (A-B and C-D).
+            // Policy 21/09: A-B byte-identical touching merges pixel-free → the comparer is NOT called for A-B.
             await SeedAsync(SeedCues());
             var bytesBefore = await File.ReadAllBytesAsync(CheckpointFile());
             var scripted = new ScriptedPixelComparer((l, r) =>
@@ -118,7 +118,7 @@ internal static class OcrReplayContract
                 "Different pixel must flag C+D with NeedsReview");
             Check(scripted.Calls == 1, $"generic gate only verifies C-D now (A+B merges pixel-free, calls={scripted.Calls})");
 
-            // 3: replay == production full-scan reconcile trên cùng cues (cùng OcrScanner.ReconcileAsync).
+            // 3: replay == production full-scan reconcile on the same cues (same OcrScanner.ReconcileAsync).
             var directScripted = new ScriptedPixelComparer((l, r) =>
                 Math.Abs(l - 11.0) < 1e-9 && Math.Abs(r - 11.0) < 1e-9 ? PixelCheckResult.Same : PixelCheckResult.Different);
             var direct = await OcrCueReconciler.MergeTouchingIdenticalAsync(SeedCues(), garbage, directScripted, ct, Window);
@@ -128,9 +128,9 @@ internal static class OcrReplayContract
                     && direct[i].Text == replayed[i].Text && direct[i].NeedsReview == replayed[i].NeedsReview,
                     $"replay cue {i} differs from production reconcile");
 
-            // 4: targeted range replay giữ đúng 1 cue context mỗi phía + trace chẩn đoán.
-            // B-C ngoài window => không candidate; C-D trong window => candidate + Different.
-            // Policy 21/09: A-B byte-identical merging pixel-free, trace không còn pixel call.
+            // 4: targeted range replay keeps exactly 1 cue of context on each side + a diagnostic trace.
+            // B-C outside the window => not a candidate; C-D inside the window => candidate + Different.
+            // Policy 21/09: A-B byte-identical merges pixel-free, so the trace no longer has a pixel call.
             var countingRange = new ScriptedPixelComparer((l, r) =>
                 Math.Abs(l - 11.0) < 1e-9 && Math.Abs(r - 11.0) < 1e-9 ? PixelCheckResult.Same : PixelCheckResult.Different);
             var (ranged, trace) = await app.ReconcileRangeAsync(request, countingRange, 11.5, 20.5, ct, Window);
@@ -146,18 +146,18 @@ internal static class OcrReplayContract
             Check(ranged.Count == 3 && ranged[0].Start == 10.0 && ranged[0].End == 12.0,
                 "range merge must collapse A+B only");
 
-            // 5: replay không được sửa checkpoint gốc (raw immutable).
+            // 5: replay must not modify the original checkpoint (raw immutable).
             var bytesAfter = await File.ReadAllBytesAsync(CheckpointFile());
             Check(bytesBefore.AsSpan().SequenceEqual(bytesAfter), "replay must not rewrite the raw checkpoint file");
 
-            // 6: checkpoint thiếu provenance => safe-fail, không reconstruct/fabricate.
+            // 6: a checkpoint missing provenance => safe-fail, no reconstruct/fabricate.
             var bare = SeedCues().Select(cue => cue with { FirstObservation = null, LastObservation = null }).ToArray();
             await SeedAsync(bare);
             await ThrowsAsync<CheckpointNotEligibleForReplayException>(
                 () => app.ReconcileCheckpointAsync(request, new FakePixelComparer(PixelCheckResult.Same), ct, Window),
                 "checkpoint without pixel provenance must be rejected for replay");
 
-            // 7: Different ở mọi boundary => giữ tách + NeedsReview tất cả (single generic pass).
+            // 7: Different at every boundary => kept split + NeedsReview on all (a single generic pass).
             await SeedAsync(SeedCues());
             var diff = new FakePixelComparer(PixelCheckResult.Different);
             var held = await app.ReconcileCheckpointAsync(request, diff, ct, Window);
@@ -199,7 +199,7 @@ internal static class OcrReplayContract
         }
     }
 
-    // Verdict theo (left.Pts, right.Pts): mô phỏng pixel thật (Same trong instance, Different qua handoff).
+    // Verdict by (left.Pts, right.Pts): simulates a real pixel (Same inside an instance, Different across a handoff).
     private sealed class ScriptedPixelComparer : IPixelComparer
     {
         private readonly Func<double, double, PixelCheckResult> _verdict;

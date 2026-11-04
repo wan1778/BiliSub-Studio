@@ -1,11 +1,8 @@
 using System.Globalization;
-using BiliSubStudio.App.Services;
 using BiliSubStudio.Core.Editor;
 using BiliSubStudio.Core.IO;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Windows.Storage;
-using Windows.System;
 
 namespace BiliSubStudio.App.Pages;
 
@@ -25,12 +22,17 @@ public sealed partial class EditorPage
 
         _confirmedExportTarget = null;
         ExportVideoDialog.XamlRoot = XamlRoot;
+        // While a dialog is open, the page's shortcuts must not touch the
+        // timeline behind it.
+        using var dialogScope = BeginEditorDialogScope();
         await ExportVideoDialog.ShowAsync();
         if (_confirmedExportTarget is not { } target) return null;
 
-        await _application.Settings.SetOutputDirectoryAsync(target.Directory, CancellationToken.None);
-        // Tên file chốt từ dialog (ô tab đã dọn): lưu vào project để lần sau
-        // mở dialog vẫn thấy + nút Xuất vẫn biết tên khi chưa mở dialog.
+        await _application.Settings.SetEditorOutputDirectoryAsync(target.Directory, CancellationToken.None);
+        // The file name confirmed by the dialog (the tab's box has been removed):
+        // save it into the project so it is still shown the next time the dialog
+        // opens, and the Export button still knows the name before the dialog is
+        // opened.
         _project = _project with { FileName = target.FileName };
         _lastExportSettings = target.Settings;
         QueueProjectSave();
@@ -44,7 +46,7 @@ public sealed partial class EditorPage
         {
             var sourceName = string.IsNullOrWhiteSpace(_project?.FileName) ? "video_edited.mp4" : _project.FileName;
             ExportDialogFileNameBox.Text = FileNamePolicy.NormalizeVideoOutputName(sourceName);
-            ExportDialogDirectoryBox.Text = _application.Config.OutputDirectory;
+            ExportDialogDirectoryBox.Text = _application.Config.EditorOutputDirectory;
             SelectByTag(ExportDialogContainerBox, Path.GetExtension(ExportDialogFileNameBox.Text).Equals(".mkv", StringComparison.OrdinalIgnoreCase) ? "mkv" : "mp4");
             SelectByTag(ExportDialogCodecBox, _lastExportSettings.Codec);
             SetExportQuality(_lastExportSettings.Quality);
@@ -99,25 +101,6 @@ public sealed partial class EditorPage
         ExportVideoDialog.Hide();
     }
 
-    private async void ExportDialogChooseDirectory_Click(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            var app = Microsoft.UI.Xaml.Application.Current as BiliSubStudio.App.App
-                ?? throw new InvalidOperationException("Không lấy được cửa sổ chính.");
-            var window = app.MainWindow ?? throw new InvalidOperationException("Cửa sổ chính chưa sẵn sàng.");
-            var picker = new FolderPickerService(() => window);
-            var path = await picker.PickFolderAsync(ExportDialogDirectoryBox.Text);
-            if (string.IsNullOrWhiteSpace(path)) return;
-            ExportDialogDirectoryBox.Text = path;
-            ExportDialogValidationText.Text = string.Empty;
-        }
-        catch (Exception error)
-        {
-            ExportDialogValidationText.Text = "Không chọn được thư mục: " + error.Message;
-        }
-    }
-
     private void ExportDialogSetting_Changed(object sender, RoutedEventArgs args)
     {
         if (_syncingExportDialog || !IsLoaded) return;
@@ -155,9 +138,10 @@ public sealed partial class EditorPage
         ExportDialogFileNameBox.Text = Path.GetFileNameWithoutExtension(raw) + "." + container;
     }
 
-    // Cắt video trong dialog (giờ chuẩn hh:mm:ss thay vì giây thô): ô tab đã
-    // dọn nên dialog là chủ sở hữu duy nhất. Ghi thẳng vào _project.Trim +
-    // lưu project ngay như tab cũ (mở dialog lần sau vẫn thấy).
+    // Trimming video inside the dialog (standard hh:mm:ss times instead of raw
+    // seconds): the tab's box has been removed, so the dialog is the sole owner.
+    // It writes straight to _project.Trim and saves the project immediately like
+    // the old tab did (so the next dialog opening still sees it).
     private static string FormatClockFull(double seconds)
     {
         var value = TimeSpan.FromSeconds(Math.Max(0, seconds));
@@ -261,7 +245,16 @@ public sealed partial class EditorPage
     private void SetDialogTrimBoundaryFromCurrent(bool setStart)
     {
         if (_media is null || _project is null || EditorBusy || _playback.IsPreviewMode) return;
-        var value = Math.Clamp(Timeline.Value, 0, _media.Duration);
+        // Trim marks live in the primary clip's source-file coordinates, while
+        // the timeline's current position is composed-timeline coordinates: it
+        // must be mapped through the clip containing it.
+        var sourceTime = CurrentPrimarySourceTime();
+        if (sourceTime is not { } current0)
+        {
+            ExportDialogValidationText.Text = "Chỉ đặt được mốc giữ lại khi con trỏ đang ở clip gốc của dự án.";
+            return;
+        }
+        var value = current0;
         var current = CurrentTrimRange();
         var candidate = EditorProjectStore.NormalizeTrim(
             setStart ? new EditorTrimRange(value, current.End) : new EditorTrimRange(current.Start, value),
@@ -292,20 +285,6 @@ public sealed partial class EditorPage
         ExportDialogValidationText.Text = "Đã đặt lại: giữ toàn bộ video.";
     }
 
-    private async void ExportDialogOpenDirectory_Click(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            var shown = ExportDialogDirectoryBox.Text?.Trim() ?? string.Empty;
-            var folder = await StorageFolder.GetFolderFromPathAsync(shown.Length > 0 ? shown : _application.Config.OutputDirectory);
-            await Launcher.LaunchFolderAsync(folder);
-        }
-        catch (Exception error)
-        {
-            ExportDialogValidationText.Text = "Không mở được thư mục: " + error.Message;
-        }
-    }
-
     private EditorExportSettings ReadExportDialogSettings()
     {
         int? targetHeight = int.TryParse(SelectedTag(ExportDialogResolutionBox, "source"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var height)
@@ -330,7 +309,8 @@ public sealed partial class EditorPage
         {
             var settings = ReadExportDialogSettings();
             var trim = CurrentTrimRange();
-            ExportDialogDurationText.Text = "Thời lượng: " + TimeSpan.FromSeconds(trim.Duration).ToString(@"hh\:mm\:ss", CultureInfo.InvariantCulture);
+            var exportDuration = ComposedExportDuration(trim);
+            ExportDialogDurationText.Text = "Thời lượng: " + TimeSpan.FromSeconds(exportDuration).ToString(@"hh\:mm\:ss", CultureInfo.InvariantCulture);
             var inputBytes = File.Exists(_path) ? new FileInfo(_path).Length : 0;
             if (inputBytes <= 0)
             {
@@ -339,7 +319,7 @@ public sealed partial class EditorPage
             }
 
             var sourceGiB = inputBytes / 1024d / 1024 / 1024;
-            var durationFactor = _media.Duration > 0 ? trim.Duration / _media.Duration : 1;
+            var durationFactor = _media.Duration > 0 ? exportDuration / _media.Duration : 1;
             var dimensions = EditorExportPolicy.ResolveDimensions(settings, _media.Width, _media.Height);
             var pixelFactor = dimensions.Width * (double)dimensions.Height / (_media.Width * (double)_media.Height);
             var fpsFactor = settings.FrameRate is double fps && _media.FrameRate > 0 ? fps / _media.FrameRate : 1;
@@ -351,7 +331,7 @@ public sealed partial class EditorPage
             };
             var codecFactor = settings.Codec == "hevc" ? .68 : 1;
             var contentBase = sourceGiB * durationFactor * Math.Max(.12, pixelFactor) * Math.Max(.5, fpsFactor) * codecFactor;
-            var audioGiB = trim.Duration * settings.AudioBitrateKbps * 1000 / 8 / 1024d / 1024 / 1024;
+            var audioGiB = exportDuration * settings.AudioBitrateKbps * 1000 / 8 / 1024d / 1024 / 1024;
             var low = Math.Max(audioGiB, contentBase * lowFactor);
             var high = Math.Max(low + .1, contentBase * highFactor);
             ExportDialogEstimateText.Text = $"Ước tính: {low:0.0}–{high:0.0} GB";
@@ -361,6 +341,29 @@ public sealed partial class EditorPage
             ExportDialogEstimateText.Text = "Ước tính: không khả dụng";
             ExportDialogValidationText.Text = error.Message;
         }
+    }
+
+    /// <summary>
+    /// Video duration after exporting: a single-clip timeline uses the kept
+    /// range; a multi-clip timeline sums each clip's duration (the primary clip
+    /// uses the kept range).
+    /// </summary>
+    private double ComposedExportDuration(EditorTrimRange trim)
+    {
+        if (_timelineClips.Count <= 1) return trim.Duration;
+        var total = 0d;
+        foreach (var clip in _timelineClips)
+        {
+            if (!IsPrimaryTimelineClip(clip))
+            {
+                total += clip.Duration;
+                continue;
+            }
+            var start = Math.Max(clip.SourceIn, trim.Start);
+            var end = Math.Min(clip.End, trim.End);
+            total += end - start >= .1 ? end - start : clip.Duration;
+        }
+        return total;
     }
 
     private static string SelectedTag(ComboBox box, string fallback) =>

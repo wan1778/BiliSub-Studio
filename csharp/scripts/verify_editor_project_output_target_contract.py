@@ -42,7 +42,7 @@ def method_body(source: str, signature: str) -> str:
 def verify_source(images: str, target: str) -> None:
     capture = method_body(target, "private EditorOutputTarget CaptureEditorOutputTarget(")
     for token in (
-        "_application.Config.OutputDirectory",
+        "_application.Config.EditorOutputDirectory",
         "Path.GetFullPath(configuredDirectory)",
         "_project?.FileName",
         "new EditorOutputTarget(directory, fileName,",
@@ -90,9 +90,9 @@ def verify_source(images: str, target: str) -> None:
 
     # Once the snapshot exists, final output branches may not read live Config/FileNameBox again.
     after_capture = render[render.find("outputTarget = await ShowExportDialogAsync();") + len("outputTarget = await ShowExportDialogAsync();"):]
-    require("_application.Config.OutputDirectory" not in after_capture,
+    require("_application.Config.EditorOutputDirectory" not in after_capture,
             "PROJECT-10 in-flight final render re-reads live output directory")
-    require("composerInput, _application.Config.OutputDirectory" not in render,
+    require("composerInput, _application.Config.EditorOutputDirectory" not in render,
             "PROJECT-10 image stage still uses mutable Config output directory")
     require("FileNameBox.Text" not in render,
             "PROJECT-10 image stage still uses mutable filename UI")

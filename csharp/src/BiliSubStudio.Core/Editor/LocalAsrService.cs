@@ -125,8 +125,8 @@ internal sealed partial class LocalAsrService : IDisposable
                                 {
                                     cue = NormalizeCue(cue, checkpoint.Cues);
                                     if (cue is null) return;
-                                    // Cắt câu theo khe im (23/09): mỗi mảnh là 1 câu
-                                    // riêng, chữ chia theo giờ chữ, checkpoint lưu đủ.
+                                    // Split sentences on silence gaps (23/09): each piece is a separate
+                                    // sentence, characters split by their own times, checkpoint stores enough.
                                     foreach (var piece in SplitOnPauses(cue))
                                         checkpoint.Cues.Add(piece);
                                     checkpoint = checkpoint with { Frontier = checkpoint.Cues[^1].End };
@@ -183,9 +183,9 @@ internal sealed partial class LocalAsrService : IDisposable
                 selection.RealtimeFactor,
                 checkpoint.Cues.Select(ToSpeechSegment).ToArray());
             var analysisSha = await EditorSpeechAnalysisDocument.SaveAsync(analysisPath, analysis, job.CancellationToken);
-            // Bản analysis mới xong là chuẩn cuối (project lưu path mới nhất);
-            // các bản guid cũ cùng projectId không ai trỏ tới nữa — xóa để khỏi
-            // tích rác 6-8MB/lượt (28/09: 1 project ứ 11 bản = toàn rác).
+            // The just-finished analysis is the final truth (the project saves the newest path);
+            // the old-guid variants of the same projectId are no longer pointed at by anyone — delete them so junk
+            // does not pile up at 6-8MB per run (28/09: one project had 11 variants, all junk).
             PruneSupersededAnalyses(analysisDirectory, request.ProjectId, analysisPath);
             var wordCount = analysis.Segments.Sum(x => x.Words.Count);
             job.Set("asr-final", 99, $"Whisper timing hoàn tất · {analysis.Segments.Count} đoạn / {wordCount} từ · đã lưu nhịp, khoảng lặng và Nam/Nữ gợi ý.");
@@ -212,14 +212,14 @@ internal sealed partial class LocalAsrService : IDisposable
             job.Warn("VRAM trống dưới 1.500 MB; không tải/khởi động GPU Whisper, chuyển CPU/int8.");
         else
         {
-            // small needs ~0.5 GB in float16 nhưng giữ int8_float16 cho đồng đều
-            // (card 4 GB cõng chung pool OCR): vừa nhẹ VRAM vừa nhanh hơn large-v3
-            // int8 nhiều lần. Card >= 8 GB vẫn dùng float16 như cũ.
-            // 27/09 ép VRAM theo yêu cầu: turbo ăn float16 khi trống >= 2.5 GB
-            // (weights ~1.6 GB + workspace; tensor-core chạy float16 nhanh hơn
-            // int8 mà còn chuẩn hơn 1 nấc). Không đủ chỗ -> int8_float16 như cũ;
-            // small giữ nguyên vì đã nhanh, để chỗ cho display/OCR. Probe OOM thì
-            // rơi về CPU theo lưới cũ (chậm nhưng không crash giữa chừng).
+            // small needs ~0.5 GB in float16 but keep int8_float16 for consistency
+            // (a 4 GB card carries the OCR pool too): lighter on VRAM and still much faster than large-v3
+            // int8. Cards >= 8 GB still use float16 as before.
+            // 27/09 VRAM enforcement per requirement: turbo takes float16 when >= 2.5 GB is free
+            // (weights ~1.6 GB + workspace; tensor cores run float16 faster than
+            // int8 and a notch more accurate too). Not enough room -> int8_float16 as before;
+            // small is left unchanged since it is already fast, leaving room for display/OCR. If the probe OOMs
+            // it falls back to CPU following the old ladder (slow but no mid-run crash).
             var vramGb = hardware.VramTelemetryAvailable ? hardware.AvailableVramBytes / 1024d / 1024 / 1024 : 0;
             var isTurbo = string.Equals(modelId, LocalAsrInstaller.ListenModelId, StringComparison.Ordinal);
             var compute = vramGb <= 0 || vramGb >= 8 || (isTurbo && vramGb >= 2.5) ? "float16" : "int8_float16";
@@ -311,9 +311,9 @@ internal sealed partial class LocalAsrService : IDisposable
             "--compute", selection.Device == "hybrid" ? selection.ComputeType.Split('+')[0] : selection.ComputeType,
             "--threads", selection.Threads.ToString(CultureInfo.InvariantCulture),
             "--offset", offset.ToString(selection.Device == "hybrid" ? "R" : "0.000", CultureInfo.InvariantCulture),
-            // Probe dùng đúng beam của chạy thật (2026-09-25): probe beam=1
-            // còn chạy thật beam=5 đã đo được 1.07x nhưng thật ra 1.55x —
-            // benchmark lừa cả quyết định thiết bị lẫn % dự kiến.
+            // The probe uses the real run's beam size (2026-09-25): probe beam=1 while the real run
+            // used beam=5 measured 1.07x but was really 1.55x — the
+            // benchmark lied to both the device decision and the expected %.
             "--beam", "5",
         };
         if (selection.Device is "cuda" or "hybrid")
@@ -517,9 +517,9 @@ internal sealed partial class LocalAsrService : IDisposable
     private static void TryDelete(string path) { try { File.Delete(path); } catch { } }
     private static void TryDeleteDirectory(string path) { try { if (Directory.Exists(path)) Directory.Delete(path, recursive: true); } catch { } }
 
-    // Chỉ giữ bản analysis mới nhất mỗi projectId. File guid cũ không ai trỏ
-    // (path mới nhất mới được trả về + lưu vào project) nên xóa an toàn tuyệt
-    // đối: hỏng là bỏ qua, không bao giờ chặn hoàn tất transcribe.
+    // Keep only the newest analysis variant per projectId. The old-guid file is not pointed at by
+    // anyone (only the newest path is returned + saved into the project), so deleting it is
+    // absolutely safe: on failure just skip it, never block transcribe completion.
     internal static void PruneSupersededAnalyses(string directory, string projectId, string keepPath)
     {
         try
@@ -533,8 +533,8 @@ internal sealed partial class LocalAsrService : IDisposable
                 try
                 {
                     var name = Path.GetFileName(file);
-                    // Khớp chặt <projectId>.<guid32hex>.speech.json để không chạm
-                    // project khác chung prefix (id là hash, vẫn phòng).
+                    // Match <projectId>.<guid32hex>.speech.json strictly so we never touch
+                    // another project sharing a prefix (ids are hashes, still guarding).
                     if (!name.StartsWith(prefix, StringComparison.Ordinal)
                         || !name.EndsWith(".speech.json", StringComparison.Ordinal)) continue;
                     var middle = name.Substring(prefix.Length, name.Length - prefix.Length - ".speech.json".Length);

@@ -13,6 +13,12 @@ public sealed record AppConfig
     [JsonPropertyName("ocr_output_dir")]
     public string OcrOutputDirectory { get; init; } = string.Empty;
 
+    // Own per-tab folder for the Edit tab (export video / save SRT Việt / preview
+    // render). Choosing a folder in Tải media or OCR must never retarget this one,
+    // and this one must never retarget theirs.
+    [JsonPropertyName("editor_output_dir")]
+    public string EditorOutputDirectory { get; init; } = string.Empty;
+
     [JsonPropertyName("sub_format")]
     public string SubtitleFormat { get; init; } = "srt";
 

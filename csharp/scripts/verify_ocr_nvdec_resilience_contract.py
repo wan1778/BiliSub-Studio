@@ -17,8 +17,9 @@ def main() -> int:
     scanner = SCANNER.read_text(encoding="utf-8")
     checkpoint = CHECKPOINT.read_text(encoding="utf-8")
 
-    # Lớp 1 — ffmpeg decode hardening: ffmpeg phải nuốt frame hỏng thay vì chết
-    # stream (ExitCode != 0 từng là nguồn 4/8 lane rơi vĩnh viễn về software).
+    # Layer 1 — ffmpeg decode hardening: ffmpeg must swallow broken frames
+    # instead of killing the stream (ExitCode != 0 used to drop 4/8 lanes
+    # permanently to software).
     lane_args = scanner.split("private static IReadOnlyList<string> BuildLaneArguments", 1)[1]
     lane_args = lane_args.split("private static double Similarity", 1)[0]
     require('args.AddRange(["-err_detect", "ignore_err", "-ec", "3", "-fflags", "+genpts+discardcorrupt"]);' in lane_args,
@@ -29,8 +30,9 @@ def main() -> int:
     require('"-loglevel", "info"' in lane_args,
             "lane ffmpeg loglevel changed without contract update")
 
-    # Lớp 2 — thang retry NVDEC trong RunLaneWithFallbackAsync (resume từ checkpoint,
-    # backoff lũy thừa, chỉ fallback software sau MaxNvdecLaneAttempts lần NVDEC-linked).
+    # Layer 2 — the NVDEC retry ladder in RunLaneWithFallbackAsync (resume from
+    # the checkpoint, exponential backoff, only fall back to software after
+    # MaxNvdecLaneAttempts NVDEC-linked attempts).
     ladder_start = scanner.find("private async Task<OcrLaneCheckpoint> RunLaneWithFallbackAsync")
     ladder_end = scanner.find("private async Task<OcrLaneCheckpoint> RunLaneAsync", ladder_start)
     require(ladder_start >= 0 and ladder_end > ladder_start, "missing RunLaneWithFallbackAsync ladder bounds")
@@ -55,7 +57,8 @@ def main() -> int:
     require("if (decoder != \"nvdec\")" in ladder,
             "software-decided boot must stay on the legacy path without a fake NVDEC ladder")
 
-    # Lớp 3 — lỗi decode thật phải vào exception thay vì đuôi showinfo rác.
+    # Layer 3 — real decode errors must go into an exception instead of the junk
+    # showinfo tail.
     reader_start = scanner.find("private sealed class FrameTimestampReader")
     reader_end = scanner.find("private sealed class JpegStreamReader", reader_start)
     require(reader_start >= 0 and reader_end > reader_start, "missing FrameTimestampReader bounds")
@@ -70,7 +73,8 @@ def main() -> int:
             composed.index('[decoder errors]') < composed.index(': _diagnostic.ToString();'),
             "decoder errors must be appended AFTER the tail so Compact() surfaces real causes")
 
-    # Lớp 4 — stagger spawn chống pha đua NVDEC session lúc start/resume.
+    # Layer 4 — staggered spawn guards against NVDEC session races at
+    # start/resume.
     guarded_start = scanner.find("async Task<OcrLaneCheckpoint> RunGuardedLaneAsync(OcrLaneCheckpoint lane)")
     guarded_window = scanner[guarded_start:guarded_start + 900]
     require("LaneSpawnStaggerMs * lane.Segment.Index" in guarded_window and
@@ -79,7 +83,7 @@ def main() -> int:
     require("private const int LaneSpawnStaggerMs = 150;" in scanner,
             "lane spawn stagger is not pinned to 150ms per lane index")
 
-    # Lớp 5 — telemetry dòng tổng phải bộc lộ sức khỏe NVDEC.
+    # Layer 5 — the telemetry summary line must expose NVDEC health.
     require("nvdec_retries={telemetry.NvdecRetries}" in scanner and
             "nvdec_fail={telemetry.NvdecFailures}" in scanner and
             "soft_fallback={telemetry.SoftwareFallbacks}" in scanner,
@@ -88,8 +92,9 @@ def main() -> int:
             "public long SoftwareFallbacks;" in scanner,
             "telemetry counters missing from OcrScanTelemetryCounters")
 
-    # Checkpoint-key bất khả xâm phạm: fix chỉ đụng decode/retry — identity checkpoint
-    # không được đổi, nếu không resume của checkpoint đang dở sẽ vô hiệu.
+    # The checkpoint key is untouchable: the fix only touches decode/retry — the
+    # checkpoint identity must not change, otherwise resuming a
+    # half-finished checkpoint becomes invalid.
     require("private const int Schema = 19;" in checkpoint and
             "OcrModelTier.DetectionModel(request.Mode), OcrModelTier.RecognitionModel(request.Mode)" in checkpoint,
             "NVDEC fix must not touch checkpoint identity; existing progress must stay resumable")

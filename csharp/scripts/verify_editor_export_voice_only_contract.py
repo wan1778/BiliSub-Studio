@@ -65,7 +65,8 @@ require(
 )
 require(
     "if (!hasImages)" in images
-    and "var request = CurrentEditRequest(subtitle) with" in images,
+    and ("var request = CurrentEditRequest(subtitle) with" in images
+         or "await CurrentComposedEditRequestAsync(subtitle)" in images),
     "EXPORT-09 Voice-only must use the normal Editor render service",
 )
 

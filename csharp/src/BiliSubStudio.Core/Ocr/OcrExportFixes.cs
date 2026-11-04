@@ -1,10 +1,10 @@
 namespace BiliSubStudio.Core.Ocr;
 
-// Đắp chữ sửa của AI lúc xuất SRT: câu nào khớp Start (±1ms) + chữ cũ từng chữ
-// thì thay bằng chữ đúng. Chạy SAU loại trừ (câu đã xóa thì khỏi sửa), TRƯỚC
-// normalize/sửa pathology — câu còn lại đi đường cũ y hệt.
-// Không khớp mờ, không lan: chữ/giờ đổi thì entry cũ khớp hụt (vô hại).
-// Pure, test trực tiếp. Xóa file .fix.json là hoàn tác.
+// Apply AI text corrections when exporting SRT: any cue matching Start (±1ms) + old text
+// exactly gets replaced with the corrected text. Runs AFTER exclusion (deleted cues are not
+// corrected) and BEFORE normalize/pathology repair — remaining cues take the old path unchanged.
+// No fuzzy match, no spillover: if text/timing changes, the old entry misses (harmless).
+// Pure, directly tested. Deleting the .fix.json file is the undo.
 public static class OcrExportFixes
 {
     public const double StartToleranceSeconds = 0.001;
@@ -25,8 +25,8 @@ public static class OcrExportFixes
         var output = new List<OcrCue>(list.Count);
         var samples = new List<string>();
         var fixedCount = 0;
-        // Chuẩn hóa 1 lần mỗi entry (fallback khớp hóa thạch — cùng lý do
-        // OcrExportExclusions: chữ cũ thô khớp hụt chữ đã normalize).
+        // Normalize each entry once (fossilized-match fallback — same reason as
+        // OcrExportExclusions: raw old text misses the already-normalized cue).
         var fixNorms = new string?[fixes.Count];
         for (var f = 0; f < fixes.Count; f++)
         {
@@ -67,11 +67,11 @@ public static class OcrExportFixes
             else
             {
                 fixedCount++;
-                // Fix giữ-nguyên-chữ (gắn cờ review) thì khỏi ghi mẫu "A→A".
+                // Text-preserving fixes (flagged for review) are not written as "A→A" samples.
                 if (samples.Count < 5 && !string.Equals(replacement, cue.Text, StringComparison.Ordinal))
                     samples.Add($"{cue.Start:0.000}s “{Truncate(cue.Text, 18)}”→“{Truncate(replacement, 18)}”");
-                // Fix tai-sửa-chữ mang cờ review (OcrCueFix.FlagReview) để list
-                // hiện ⚠️ cho người duyệt kiểm tra chữ máy sửa.
+                // Ear-driven corrections carry a review flag (OcrCueFix.FlagReview) so the list
+                // shows ⚠️ for the reviewer to check the machine-corrected text.
                 output.Add(matched is not null && matched.FlagReview
                     ? cue with { Text = replacement, NeedsReview = true }
                     : cue with { Text = replacement });

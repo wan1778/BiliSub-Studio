@@ -39,11 +39,11 @@ public static class VietnameseTtsTextNormalizer
     {
         if (string.IsNullOrWhiteSpace(value)) return string.Empty;
         var text = value.Normalize(NormalizationForm.FormC).Trim();
-        // 10/10 vụ voice đánh vần (“P-H-I-M...”): model đọc chuỗi IN HOA như
-        // viết tắt, đánh vần từng chữ. Chỉ gập khi CẢ CUE không có chữ thường
-        // (banner/credit kiểu “PHIM ĐƯỢC THUYẾT MINH...”) — từ viết tắt lẻ trong
-        // câu thường (“Dùng AI để...”) giữ nguyên để vẫn đánh vần đúng.
-        // Chỉ đổi chữ voice đọc; SRT hiển thị giữ nguyên chữ gốc.
+        // 10/10 spelling-out voice bug: ("P-H-I-M...") the model reads an ALL-CAPS string as an
+        // abbreviation, spelling it out letter by letter. Fold to lowercase only when the WHOLE CUE has no lowercase
+        // (banner/credit style like "PHIM ĐƯỢC THUYẾT MINH...") — a lone abbreviation in
+        // an ordinary sentence ("Dùng AI để...") is left as is so it still spells out correctly.
+        // Only the text the voice reads is changed; the displayed SRT keeps the original casing.
         var hasLetter = false;
         var hasLower = false;
         foreach (var rune in text.EnumerateRunes())

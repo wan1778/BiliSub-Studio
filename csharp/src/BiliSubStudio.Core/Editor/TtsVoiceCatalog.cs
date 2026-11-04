@@ -5,13 +5,11 @@ namespace BiliSubStudio.Core.Editor;
 
 // Single source of truth for TTS voice options (UI dropdown + installer +
 // worker voice resolution). Tags are ASCII slugs (safe in manifests, paths,
-// logs); worker folds SDK labels the same way. "vieneu_" prefix disambiguates
-// the VieNeu Ngọc Huyền preset from the NGHI ngoc_huyen voice.
+// logs); worker folds SDK labels the same way.
 public static class TtsVoiceCatalog
 {
-    public const string NghiVoiceTag = "ngoc_huyen";
-    public const string NghiVoiceContent = "Ngọc Huyền · NGHI local";
     public const string VieneuPrefix = "vieneu_";
+    public const string DefaultVoice = "vieneu_ngoc_huyen";
 
     public static readonly IReadOnlyList<string> VieneuPresetLabels = Array.AsReadOnly(new[]
     {
@@ -24,8 +22,9 @@ public static class TtsVoiceCatalog
 
     public static string FoldSlug(string label)
     {
-        // Đ/đ ghim tường minh: NFD trên máy này không rã U+0110/U+0111 (trong
-        // khi ảăâêôơư rã bình thường) — không đụng vào là slug giữ nguyên Đ.
+        // Pin Đ/đ explicitly: NFD on this machine does not decompose
+        // U+0110/U+0111 (while the other Vietnamese vowels decompose normally),
+        // so leaving them untouched keeps Đ in the slug.
         var folded = new StringBuilder();
         foreach (var c in label.Trim().Replace('Đ', 'D').Replace('đ', 'd').Normalize(NormalizationForm.FormD))
         {
@@ -37,24 +36,30 @@ public static class TtsVoiceCatalog
     }
 
     public static IReadOnlyList<(string Tag, string Content)> VoiceOptions { get; } =
-        Array.AsReadOnly(new[] { (NghiVoiceTag, NghiVoiceContent) }
-            .Concat(VieneuPresetLabels.Select(label => (VieneuPrefix + FoldSlug(label), $"{label} · VieNeu GPU"))).ToArray());
+        Array.AsReadOnly(VieneuPresetLabels
+            .Select(label => (VieneuPrefix + FoldSlug(label), $"{label} · VieNeu GPU")).ToArray());
 
-    public static bool IsVieneuVoice(string voice) =>
-        voice.StartsWith(VieneuPrefix, StringComparison.Ordinal)
-        && VieneuPresetLabels.Any(label => VieneuPrefix + FoldSlug(label) == voice);
+    private static string Canonical(string voice) => voice.Trim().ToLowerInvariant().Replace('-', '_');
+
+    public static bool IsVieneuVoice(string voice)
+    {
+        if (string.IsNullOrWhiteSpace(voice)) return false;
+        var canonical = Canonical(voice);
+        return VieneuPresetLabels.Any(label => VieneuPrefix + FoldSlug(label) == canonical);
+    }
 
     public static string DisplayLabel(string voice)
     {
         if (!IsVieneuVoice(voice)) return voice;
-        var slug = voice[VieneuPrefix.Length..];
+        var slug = Canonical(voice)[VieneuPrefix.Length..];
         return VieneuPresetLabels.FirstOrDefault(label => FoldSlug(label) == slug) ?? voice;
     }
 
-    // Pace tự nhiên đo thật 01/10 (6 câu chuẩn/preset, batch GPU, chữ/giây —
-    // D:\temp\Temp\opencode\preset_pace.json): chỉ dùng ƯỚC need khi nới khung
-    // giờ, không phải núm tốc độ (model chỉ có 1 nhịp). Sai số ±5% chấp nhận
-    // được vì worker + validator đo lại pace thật sau đó.
+    // Natural pace measured on 01/10 (six standard cues per preset, GPU batch,
+    // characters/second; see D:\temp\Temp\opencode\preset_pace.json). Used only
+    // as an estimate when widening timing windows, not as a speed knob (the
+    // model has a single pace). The +/-5% error is acceptable because the
+    // worker and validator measure the real pace afterwards.
     private static readonly IReadOnlyDictionary<string, double> VieneuPaceByLabel =
         new Dictionary<string, double>(StringComparer.Ordinal)
         {
@@ -72,10 +77,26 @@ public static class TtsVoiceCatalog
     public static double PaceWordsPerSecond(string voice)
     {
         if (!IsVieneuVoice(voice)) return 0;
-        var slug = voice[VieneuPrefix.Length..];
+        var slug = Canonical(voice)[VieneuPrefix.Length..];
         var label = VieneuPresetLabels.FirstOrDefault(candidate => FoldSlug(candidate) == slug);
         if (label is not null && VieneuPaceByLabel.TryGetValue(label, out var pace) && pace > 0)
             return pace;
         return 4.0;
     }
+}
+
+/// <summary>
+/// Timing limits the C# side and the VieNeu worker must agree on to the frame.
+/// A single source so a planner change cannot silently drift from the worker's
+/// manifest validation (mirrored by MAX_LEAD_FRAMES in internal/vieneu/worker.py).
+/// </summary>
+public static class TtsTimingLimits
+{
+    /// <summary>
+    /// F1 (17/11): the most a voice may start EARLY, reading into the silence
+    /// before its subtitle, after the trailing gap has been exhausted. Left gaps
+    /// are only borrowed to keep a whole sentence from being cut short; the voice
+    /// still appears essentially with the subtitle.
+    /// </summary>
+    public const double MaxLeadSeconds = 1.0;
 }

@@ -200,9 +200,9 @@ internal static class OcrOverlayFilterRegression
                 throw new InvalidOperationException("scene filtering removed multiline/inline subtitle content");
         }
 
-        // Vụ bức thư "休书" 21/09: cột ≥4 dòng chữ cảnh phía trên baseline thoại
-        // căn giữa -> loại toàn bộ cột. Dòng thứ 5 sát baseline (không farAbove)
-        // là bằng chứng luật cột hoạt động chứ không phải luật cũ dọn hộ.
+        // The "休书" letter case 21/09: a column of ≥4 scene-text rows above the dialogue
+        // baseline, center-aligned -> drop the whole column. The 5th row hugging the baseline (not farAbove)
+        // is evidence the column rule is what fires, not the old cleanup rule.
         var letterScene = new OcrResult(true, true,
             "我们当初结婚从头到尾只是一场交易\n为应付家里催婚我找你当挡箭牌\n婚前协议写得很清楚婚后同住不同楼\n你打地铺不发生夫妻关系\n三年期满后我会按协议足额支付你五百万报酬\n冷氏集团这三年越做越强", .97,
         [
@@ -218,7 +218,7 @@ internal static class OcrOverlayFilterRegression
         if (letterClean.Lines.Count != 1 || letterClean.Text != "冷氏集团这三年越做越强")
             throw new InvalidOperationException("stacked scene-text column leaked into subtitle cues");
 
-        // 2 dòng phụ trên baseline (thoại 2 hàng) KHÔNG phải cột cảnh -> giữ.
+        // 2 secondary rows above the baseline (a two-row dialogue line) are NOT a scene column -> keep.
         var twoRowCaption = new OcrResult(true, true, "你说你家里穷得揭不开锅\n我冷氏集团凭什么看上你", .98,
         [
             new OcrLine("你说你家里穷得揭不开锅", .98, [350, 208, 780, 246]),
@@ -229,8 +229,8 @@ internal static class OcrOverlayFilterRegression
         if (retainedRows.Lines.Count != 2 || retainedRows.Text != twoRowCaption.Text)
             throw new InvalidOperationException("two-row subtitle was dropped as a scene column");
 
-        // ROI tay vùng trên (region.Y < .5): luật cột không áp — dòng sát
-        // baseline sống sót (farAbove cũ dọn phần xa, luật cột không được đụng).
+        // A hand-picked upper ROI (region.Y < .5): the column rule does not apply — rows hugging
+        // the baseline survive (the old farAbove cleanup removes distant ones, the column rule must not touch them).
         var upperClean = (OcrResult)(filter.Invoke(null, [letterScene, upperRegion])
             ?? throw new InvalidOperationException("OCR scene-column filter returned null for upper ROI"));
         if (!upperClean.Lines.Any(line => line.Text == "三年期满后我会按协议足额支付你五百万报酬")

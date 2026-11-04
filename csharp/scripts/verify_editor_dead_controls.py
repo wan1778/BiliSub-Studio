@@ -98,6 +98,18 @@ while ancestor in parents:
 require(player_control_bar.attrib.get("Grid.Row") == "1",
         "PREVIEW-LAYOUT-01 transport bar must occupy the row below PreviewSurface")
 
+# DROP-TO-OPEN: dragging a video onto the preview opens it through the SAME
+# open path as the "Mở video" button; the button keeps its own owner.
+preview_surface.attrib.setdefault("AllowDrop", "false")
+require(preview_surface.attrib.get("AllowDrop") == "True",
+        "the preview surface must accept a dropped video file")
+for handler in ("PreviewSurface_DragEnter", "PreviewSurface_Drop"):
+    require(handler in code, f"the preview drop handler is missing: {handler}")
+require("OpenVideoPathAsync(" in code.split("PreviewSurface_Drop", 1)[1],
+        "a dropped video must open through the same path as the open-video button")
+require("PreviewDropHint" in code and "PreviewDropHint" in xaml,
+        "the drop hint overlay must have an owner and stay inside the preview")
+
 fixture_xaml = '<Grid xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Name="DeadContainer" />'
 fixture_code = "private void SomethingElse() { }"
 fixture_name = "DeadContainer"

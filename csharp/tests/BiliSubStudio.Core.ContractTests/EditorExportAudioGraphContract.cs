@@ -4,14 +4,14 @@ using BiliSubStudio.Core.Editor;
 
 namespace BiliSubStudio.Core.ContractTests;
 
-// 08/10 vụ 123.mp4: file nguồn rip sẵn có 654 điểm timestamp audio suy biến,
-// graph xuất cũ kế thừa nguyên si sang file xuất. Hợp đồng: nhánh nhạc nguồn
-// trong graph ghép voice luôn có aresample=async (làm sạch timestamp), nhánh
-// voice giữ nguyên từng mẫu (không resample, khớp giờ tuyệt đối).
-// 09/10 vụ voice chỗ to chỗ nhỏ: nhánh voice thêm loudnorm (bám target EBU
-// theo thời gian, không đụng timing) + alimiter chốt trần; gain user đứng
-// sau norm nên núm Âm lượng voice vẫn có tác dụng mà không gây rè.
-// 11/10 vụ kéo gain là phập phù: thêm acompressor nhẹ giữa loudnorm và gain.
+// 08/10 case 123.mp4: the source rip has 654 degenerate audio timestamps, and the old export
+// graph carried them straight into the export file. Contract: the source-music branch inside a
+// voice-composed graph always has aresample=async (timestamp cleanup), the voice branch keeps every
+// sample untouched (no resample, absolute time alignment).
+// 09/10 voice sometimes loud, sometimes quiet: the voice branch adds loudnorm (tracks the EBU
+// target over time without touching timing) + alimiter to clamp the ceiling; the user gain stands
+// after norm so the voice volume knob still works without clipping.
+// 11/10 gain drags with pumping: add a light acompressor between loudnorm and gain.
 internal static class EditorExportAudioGraphContract
 {
     [ModuleInitializer]

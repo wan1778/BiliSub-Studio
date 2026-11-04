@@ -38,6 +38,17 @@ public sealed class SettingsApplicationService(
         return await BuildSnapshotAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    public async Task<SettingsSnapshot> SetEditorOutputDirectoryAsync(
+        string path,
+        CancellationToken cancellationToken = default)
+    {
+        path = await ValidateWritableDirectoryAsync(path, cancellationToken).ConfigureAwait(false);
+        await configStore.UpdateAsync(
+            config => config with { EditorOutputDirectory = path },
+            cancellationToken).ConfigureAwait(false);
+        return await BuildSnapshotAsync(cancellationToken).ConfigureAwait(false);
+    }
+
     public async Task<SettingsSnapshot> SetThemeAsync(
         string theme,
         CancellationToken cancellationToken = default)
@@ -66,10 +77,10 @@ public sealed class SettingsApplicationService(
 
     private Task<SettingsSnapshot> BuildSnapshotAsync(CancellationToken cancellationToken)
     {
-        // Vụ kẹt nút Tải media 05/10: KHÔNG đợi quét dung lượng (900k file,
-        // hàng chục phút). Trả ngay số cũ (hoặc 0 lần đầu) + quét nền; số
-        // hiển thị ở Cài đặt tự refresh sau. Đường settings không bao giờ
-        // được treo UI vì thống kê.
+        // Download media button stuck issue 05/10: do NOT wait for the usage scan (900k files,
+        // tens of minutes). Return the previous number immediately (or 0 the first time) + scan in
+        // the background; the figures shown in Settings refresh afterwards. The settings path must never
+        // hang the UI because of statistics.
         if (!storageUsageReader.TryGetLast(out var storage))
             storage = new StorageUsage(0, 0, 0, 0, 0);
         storageUsageReader.RefreshInBackground(paths);

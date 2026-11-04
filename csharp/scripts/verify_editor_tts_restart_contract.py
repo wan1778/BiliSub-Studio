@@ -5,7 +5,7 @@ def read(path): return (ROOT / path).read_text(encoding="utf-8")
 def require(condition, message):
     if not condition: raise SystemExit("FAIL: " + message)
 service = read("csharp/src/BiliSubStudio.Core/Editor/LocalTtsService.cs")
-worker = read("internal/tts/worker.py")
+worker = read("internal/vieneu/worker.py")
 installer = read("csharp/src/BiliSubStudio.Core/Editor/LocalTtsInstaller.cs")
 editor = read("csharp/src/BiliSubStudio.App/Pages/EditorPage.xaml.cs")
 require("GenerateTtsButton.IsEnabled = voiceBlockReason is null;" in editor
@@ -13,9 +13,12 @@ require("GenerateTtsButton.IsEnabled = voiceBlockReason is null;" in editor
         "restart must re-enable after the active owner releases")
 require("finally { _gate.Release(); }" in installer and "finally { _generationGate.Release(); }" in service,
         "cancellation must release installation and generation gates")
-require('var partial = destination + ".partial";' in installer and "resume=True" in installer,
-        "Drive download must retain resumable partial bytes")
-require("MatchesAsync(partial, file" in installer, "resumed downloads must verify reviewed content hash")
+require("var sourceHash = await HashAsync(BundledWorker, cancellationToken);" in installer
+        and "File.Move(temporary, Worker, overwrite: true);" in installer,
+        "the bundled VieNeu worker must refresh the installed copy by content hash")
+require("manifest.WorkerSha256 == HashFile(Worker)" in installer
+        and "manifest.WorkerSha256 == HashFile(BundledWorker)" in installer,
+        "runtime readiness must verify installed and bundled worker bytes")
 identity = worker.split("def cache_identity(", 1)[1].split("def load_clip(", 1)[0]
 for marker in ("VOICE_REVISION", "PACKAGES", "worker_sha", 'cue["id"]', 'cue["cue_start"]', 'cue["cue_end"]',
                'cue["voice_start"]', 'cue["voice_end"]', 'cue["timing_source"]', "text"):

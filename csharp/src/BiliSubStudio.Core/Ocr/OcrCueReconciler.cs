@@ -16,10 +16,10 @@ public static class OcrCueReconciler
     // blanks (0.55s+/0.667s field evidence) stay outside. Pixel still decides:
     // Same merges, Different/Unavailable keeps separate + NeedsReview.
     private const double IdenticalTextMicroGapSeconds = 0.25;
-    // Cặp trùng y hệt hở (micro-gap, 0.5s]: spec ghim CẤM pixel-verify
-    // (OcrExactGapRegression#11) nhưng im lặng là sai — gắn review để user
-    // nghe và gộp/xóa tay (18/09: cặp 关于战神篇 hở đúng 0.3s của user).
-    // Trên 0.5s coi như thoại lặp thật (dưới hẳn bằng chứng blank 0.55s+).
+    // Exact duplicate pairs with a gap (micro-gap, 0.5s]: the pinned spec FORBIDS pixel-verify
+    // (OcrExactGapRegression#11) but silence is wrong — flag review so the user
+    // can listen and merge/delete by hand (18/09: user's 关于战神篇 pair with exactly a 0.3s gap).
+    // Above 0.5s treat as genuine repeated dialogue (below that boundary is the 0.55s+ blank evidence).
     private const double IdenticalReviewGapSeconds = 0.5;
     private const double SimilarVariantMinSimilarity = 0.82;
     private const double SimilarVariantGapSeconds = 0.9;
@@ -35,7 +35,7 @@ public static class OcrCueReconciler
             : continuationWindow;
     }
 
-    // Legacy/no-pixel sync: không merge cross-cue, chỉ normalize + giữ tách (deterministic unit tests, không FFmpeg).
+    // Legacy/no-pixel sync: no cross-cue merge, only normalize + keep separated (deterministic unit tests, no FFmpeg).
     public static IReadOnlyList<OcrCue> MergeTouchingIdentical(IEnumerable<OcrCue> cues)
     {
         var normalized = new List<OcrCue>();
@@ -47,11 +47,11 @@ public static class OcrCueReconciler
         return normalized;
     }
 
-    // Production async: bắt buộc videoPath + comparer + CancellationToken. Thiếu => Unavailable => giữ tách + NeedsReview.
-    // continuationWindow: visual-continuation window cho MỌI boundary (mặc định Epsilon = chỉ touching/overlap).
-    // Production luôn truyền 3.0/nativeFps (OcrScanner), không truyền tay số lớn: blank thật dài hơn
-    // 3 native frame là instance mới (field evidence 0.667s/0.55s), phải tách kể cả text giống hệt.
-    // Không phụ thuộc text pattern: temporal continuity + spatial continuity + Pixel Same mới merge.
+    // Production async: requires videoPath + comparer + CancellationToken. Missing => Unavailable => keep separated + NeedsReview.
+    // continuationWindow: visual-continuation window for EVERY boundary (default Epsilon = only touching/overlap).
+    // Production always passes 3.0/nativeFps (OcrScanner), never pass a large number by hand: a real blank longer than
+    // 3 native frames is a new instance (field evidence 0.667s/0.55s), must stay separated even with identical text.
+    // Independent of text patterns: only temporal continuity + spatial continuity + Pixel Same merge.
     public static async Task<IReadOnlyList<OcrCue>> MergeTouchingIdenticalAsync(IEnumerable<OcrCue> cues, string videoPath, IPixelComparer comparer, CancellationToken cancellationToken, double continuationWindow = Epsilon, Action<int, int>? onProgress = null)
     {
         var normalized = new List<OcrCue>();
@@ -63,8 +63,8 @@ public static class OcrCueReconciler
         return await MergeAdjacentAsync(normalized, videoPath, comparer, cancellationToken, continuationWindow, onProgress);
     }
 
-    // Giữ overload sync 3 tham số cho contract tests hiện tại (sẽ migrate sang Async). Sync không gọi FFmpeg, chỉ dùng comparer sync? Tạm thời: nếu comparer null/video rỗng => Unavailable.
-    // Để không block thread pool, sync overload này KHÔNG gọi async comparer; nó chỉ dùng cho tests với fake sync (sẽ xóa sau khi migrate hết sang Async).
+    // Keep the 3-parameter sync overload for the current contract tests (will migrate to Async). Sync does not call FFmpeg, only uses a sync comparer? For now: if comparer is null or video is empty => Unavailable.
+    // To avoid blocking the thread pool, this sync overload does NOT call the async comparer; it is only for tests with a sync fake (will be removed once everything migrates to Async).
     public static IReadOnlyList<OcrCue> MergeTouchingIdentical(IEnumerable<OcrCue> cues, string? videoPath, IPixelComparer? comparer) => MergeTouchingIdentical(cues);
 
     private static PixelComparison UnavailableComparison()
@@ -83,8 +83,8 @@ public static class OcrCueReconciler
         return await comparer.CheckAsync(videoPath, obsA, obsB, cancellationToken);
     }
 
-    // Provenance đầy đủ cho pixel verify: cả hai observation biên tồn tại, box hợp lệ,
-    // SourcePts + timebase hợp lệ, Geometry exact đã lưu (không reconstruct từ Start/End).
+    // Full provenance for pixel verify: both boundary observations exist, boxes are valid,
+    // SourcePts + timebase are valid, exact Geometry is already stored (no reconstruction from Start/End).
     public static bool HasPixelProvenance(OcrCue cue)
         => HasPixelProvenance(cue.FirstObservation) && HasPixelProvenance(cue.LastObservation);
 
@@ -116,10 +116,10 @@ public static class OcrCueReconciler
         bool IsPureExact);
 
     // Generic visual-boundary candidacy: temporal continuity (gap trong continuation window
-    // tính bằng native frames, KHÔNG sampling Hz) + spatial continuity (cùng subtitle location,
-    // provenance thật). KHÔNG yêu cầu text phải exact/substitution/punctuation/dash-like.
-    // Text helpers cũ chỉ cho CandidateReason diagnostic, không phải coverage bắt buộc:
-    // boundary hợp lệ temporal+spatial luôn có đường tới pixel verifier dù text là gì.
+    // measured in native frames, NOT sampling Hz) + spatial continuity (same subtitle location,
+    // real provenance). Does NOT require text to be exact/substitution/punctuation/dash-like.
+    // Old text helpers serve only CandidateReason diagnostics, not mandatory coverage:
+    // a boundary valid in temporal+spatial terms always has a path to the pixel verifier whatever the text is.
     private sealed record VisualCandidacy(
         bool TemporalOk,
         bool Blocked,
@@ -150,7 +150,7 @@ public static class OcrCueReconciler
             || !IsSpatiallyCompatible(obsA, obsB))
             return new VisualCandidacy(true, true, false, "spatial-or-provenance-blocked",
                 false, false, false, false, false, false, false);
-        // Diagnostic subtype: text pattern cũ chỉ để trace/prioritize, không gate.
+        // Diagnostic subtype: the old text pattern is only for trace/prioritization, not gating.
         var canMergeFlicker = IsShortSingleSubstitutionFlicker(previous, cue);
         var isIdentical = IsIdentical(previous, cue);
         var isDashIdentical = isIdentical && !string.Equals(previous.Text, cue.Text, StringComparison.Ordinal);
@@ -169,9 +169,9 @@ public static class OcrCueReconciler
             isPureExact, isDuplicate, canMergeFlicker, isDashDropout, isPunctVariant);
     }
 
-    // Cheap spatial filter trong crop space (cùng Geometry mới so được, không reconstruct).
-    // Chỉ loại mismatch rõ ràng (khác vùng subtitle); mọi thứ còn lại để pixel quyết định.
-    // Không merge dựa trên bbox.
+    // Cheap spatial filter in crop space (same Geometry is comparable now, no reconstruction).
+    // Only clear mismatches (different subtitle region) are excluded; everything else is left to the pixel gate.
+    // No merging based on bbox.
     internal static bool IsSpatiallyCompatible(PixelObservation left, PixelObservation right)
     {
         var geometry = left.Geometry;
@@ -210,9 +210,9 @@ public static class OcrCueReconciler
     }
 
     // Chain link generic: temporal trong window + provenance + spatial-compatible.
-    // Split tại non-chain boundary cho kết quả đúng bằng full reconcile: merge bắt buộc
-    // candidate (temporal+spatial) + Pixel Same; không còn A/B/A riêng nên không có
-    // hiệu ứng nào vượt qua boundary. Không phụ thuộc text.
+    // Split at a non-chain boundary for results identical to full reconcile: merge requires a
+    // candidate (temporal+spatial) + Pixel Same; there is no separate A/B/A anymore so no
+    // effect can cross the boundary. Independent of text.
     internal static bool IsChainBoundary(OcrCue previous, OcrCue cue, double continuationWindow = Epsilon)
     {
         if (cue.Start - previous.End > AllowedGapSeconds(previous, cue, continuationWindow) + Epsilon) return false;
@@ -222,9 +222,9 @@ public static class OcrCueReconciler
         return IsSpatiallyCompatible(obsA, obsB);
     }
 
-    // Reconcile incremental: reconciledPrefix (view đã đúng tới offer trước) + freshCommitted mới.
-    // Chỉ reconcile window cuối (tailWindow cue của prefix + toàn bộ fresh, mở rộng ngược qua chain
-    // generic tới safe boundary); prefix trước split giữ nguyên. Không phụ thuộc text.
+    // Incremental reconcile: reconciledPrefix (view already correct up to the previous offer) + new freshCommitted.
+    // Only reconcile the final window (the prefix's tailWindow cues + all fresh, extended backwards through the generic chain
+    // to a safe boundary); the prefix before the split stays untouched. Independent of text.
     //
     // SUA OUT-OF-ORDER (vu live-split p02): multi-lane arrival muon co the chen fresh
     // TRUOC tail (lane cham gui cue cu trong khi view da co cue tuong lai). Tinh start
@@ -277,9 +277,9 @@ public static class OcrCueReconciler
         return combined.Take(start).Concat(merged).Concat(combined.Skip(hi)).ToArray();
     }
 
-    // Đánh giá một boundary đúng logic MergeAdjacentAsync dùng để merge:
-    // generic visual candidate (temporal+spatial) + pixel gate. MergeAdjacentAsync gọi hàm này
-    // nên trace log và production không drift. Không phụ thuộc text pattern.
+    // Evaluate a boundary with exactly the logic MergeAdjacentAsync uses to merge:
+    // a generic visual candidate (temporal+spatial) + pixel gate. MergeAdjacentAsync calls this
+    // function so trace logs and production do not drift. Independent of text patterns.
     internal static async Task<BoundaryEvaluation> EvaluateBoundaryAsync(
         OcrCue previous,
         OcrCue cue,
@@ -338,8 +338,8 @@ public static class OcrCueReconciler
 
     private static OcrCue SelectCanonical(OcrCue a, OcrCue b)
     {
-        // Evidence toàn instance, không biến text: ConfidentSupportCount trước,
-        // rồi RawSupportCount, confidence, duration. Normalization chỉ dùng comparison.
+        // Whole-instance evidence, text-independent: ConfidentSupportCount first,
+        // then RawSupportCount, confidence, duration. Normalization is used for comparison only.
         if (a.ConfidentSupportCount != b.ConfidentSupportCount) return a.ConfidentSupportCount > b.ConfidentSupportCount ? a : b;
         if (a.RawSupportCount != b.RawSupportCount) return a.RawSupportCount > b.RawSupportCount ? a : b;
         if (Math.Abs(a.Confidence - b.Confidence) > 1e-9) return a.Confidence > b.Confidence ? a : b;
@@ -374,8 +374,8 @@ public static class OcrCueReconciler
     private static bool IsDashRune(int value) =>
         value is '\u2010' or '\u2011' or '\u2012' or '\u2013' or '\u2014' or '\u2015' or '-' or '—';
 
-    // 一 (U+4E00, một nét ngang) hay bị OCR đọc nhầm với —/—— và ngược lại.
-    // Chỉ dùng trong candidate relation dưới đây, không đưa vào DashNormalize/IsIdentical.
+    // 一 (U+4E00, a single horizontal stroke) is often OCR-misread as —/—— and vice versa.
+    // Used only in the candidate relation below, not added to DashNormalize/IsIdentical.
     private static bool IsDashConfusableRune(int value) => IsDashRune(value) || value == '一';
 
     private static bool IsPureDashText(string s)
@@ -407,8 +407,8 @@ public static class OcrCueReconciler
 
     private static bool IsDashTailDropoutCandidate(OcrCue left, OcrCue right)
     {
-        // Case thật 97-99: full caption ending dash(es) <-> pure dash fragment.
-        // Chỉ quyết định candidate để gọi pixel, merge vẫn phải Same.
+        // Real case 97-99: full caption ending dash(es) <-> pure dash fragment.
+        // Only decides the candidate to call pixel; merge still has to result in Same.
         var leftPure = IsPureDashText(left.Text);
         var rightPure = IsPureDashText(right.Text);
         if (leftPure && rightPure) return true;
@@ -427,8 +427,8 @@ public static class OcrCueReconciler
 
     private static bool IsDashConfusableTailCandidate(string left, string right)
     {
-        // Mở rộng cho 一 lẫn với —/—— ở cuối câu (case thật 130↔131: —— ↔ 一).
-        // Lone 一 vs lone — cũng là candidate (review qua pixel), không tự merge.
+        // Extended to 一 mixed with —/—— at sentence end (real case 130↔131: —— ↔ 一).
+        // Lone 一 vs lone — is also a candidate (reviewed via pixel), not merged on its own.
         var leftRunes = left.EnumerateRunes().ToArray();
         var rightRunes = right.EnumerateRunes().ToArray();
         if (leftRunes.Length == 1 && rightRunes.Length == 1
@@ -440,9 +440,9 @@ public static class OcrCueReconciler
         return left.Length > leftCore.Length || right.Length > rightCore.Length;
     }
 
-    // Dấu câu được strip khi so candidate (không rewrite output): CJK U+3000-U+303F, fullwidth
-    // U+FF00-U+FF0F, general punctuation U+2000-U+206F và ASCII tương ứng. Không hardcode từng dấu
-    // của fixture; canonical output vẫn chọn từ cue evidence (SelectCanonical).
+    // Punctuation is stripped when comparing candidates (does not rewrite output): CJK U+3000-U+303F, fullwidth
+    // U+FF00-U+FF0F, general punctuation U+2000-U+206F and the corresponding ASCII. No per-mark hardcoding
+    // for fixtures; the canonical output is still chosen from cue evidence (SelectCanonical).
     private static bool IsPunctuationMark(int value) =>
         value is ',' or '.' or '!' or '?' or ';' or ':' or '\'' or '"' or '(' or ')' or '[' or ']' or '-' ||
         (value >= 0x2000 && value <= 0x206F) ||
@@ -461,8 +461,8 @@ public static class OcrCueReconciler
 
     private static bool IsPunctuationOnlyVariant(string left, string right)
     {
-        // Giống nhau sau khi bỏ punctuation, khác biệt tổng ≤2 rune (insert/delete/substitute dấu nhỏ).
-        // Chỉ PROPOSE candidate cho pixel verifier; merge vẫn bắt buộc PixelCheckResult.Same.
+        // Equal after removing punctuation, with a total difference of ≤2 runes (small insert/delete/substitute).
+        // Only PROPOSE a candidate for the pixel verifier; merge still requires PixelCheckResult.Same.
         var leftRunes = left.EnumerateRunes().ToArray();
         var rightRunes = right.EnumerateRunes().ToArray();
         if (Math.Abs(leftRunes.Length - rightRunes.Length) > 2) return false;
@@ -473,20 +473,20 @@ public static class OcrCueReconciler
     }
 
     // Single generic pass: temporal continuity + spatial continuity + PixelCheckResult.Same
-    // mới merge. Chain A/B/C/... collapse xuyên suốt trong một pass (output[^1] chaining):
-    // không còn A/B/A riêng theo text pattern. Different/Unavailable/blocked/out-of-window
-    // giữ tách (+NeedsReview khi temporal dính mà không merge được). Không phụ thuộc text.
+    // merge. Chain A/B/C/... collapses throughout in a single pass (output[^1] chaining):
+    // there is no separate A/B/A by text pattern anymore. Different/Unavailable/blocked/out-of-window
+    // stay separated (+NeedsReview when temporally adjacent yet unmergeable). Independent of text.
     private static async Task<List<OcrCue>> MergeAdjacentAsync(IEnumerable<OcrCue> cues, string videoPath, IPixelComparer comparer, CancellationToken cancellationToken, double continuationWindow = Epsilon, Action<int, int>? onProgress = null)
     {
         var ordered = cues.ToArray();
         var totalBoundaries = Math.Max(0, ordered.Length - 1);
         var checkedBoundaries = 0;
         var output = new List<OcrCue>();
-        // Chain flag (field 672-674, boundary 673→674): sau khi fast path gộp 1 cặp canonical
-        // (强+強 → 强), boundary kế TIẾP là pure-exact (merged 强 + 674 强) nhưng vẫn cùng 1 run
-        // flicker. Flag sống TRONG 1 lượt loop (không lưu record, không qua checkpoint):
-        // boundary exact-touching nối tiếp run canonical thì gộp nối, boundary exact độc lập
-        // (timebase 一万年, replay ???) flag=false nên vẫn đi pixel như các pin cũ ghim.
+        // Chain flag (field 672-674, boundary 673→674): after the fast path merges one canonical
+        // pair (强+強 → 强), the NEXT boundary is pure-exact (merged 强 + 674 强) but still in the same flicker
+        // run. The flag lives WITHIN a single loop pass (no record saved, no checkpoint involvement):
+        // an exact-touching boundary continuing a canonical run gets chained-merged, a standalone exact
+        // boundary (timebase 一万年, replay ???) has flag=false so it still goes to pixel as the old pins require.
         var prevWasCanonicalMerge = false;
         foreach (var cue in ordered)
         {
@@ -494,32 +494,32 @@ public static class OcrCueReconciler
             var previous = output[^1];
             onProgress?.Invoke(checkedBoundaries + 1, totalBoundaries);
             checkedBoundaries++;
-            // Canonical-touching fast path (field 672-674 强/強): chữ giống nhau sau canonical
-            // NHƯNG KHÁC ở dash-level (IsIdentical false), dính/liền nhau (gap<=0, không có chỗ
-            // cho blank thật chen vào) và cùng vùng chữ có provenance thì là 1 instance bị OCR
-            // flicker chẻ ra — gộp thẳng, MIỄN pixel (KHÔNG gọi comparer: EvaluateBoundaryAsync
-            // bên dưới luôn gọi pixel cho mọi candidate nên đặt fast path TRƯỚC nó).
-            // Pixel so union-crop của box rung giữa 2 lần đọc và vote Different ngay cả trên
-            // cùng caption, nên nó không bao giờ được làm người gác cửa ở đây. Blank thật
-            // (0.55s+ field evidence) luôn vượt epsilon touching nên không lọt. Dash-identical
-            // (——/—) CỐ Ý NGOẠI TRỪ: OcrTimeBaseContract + OcrReplayContract ghim Different→tách
-            // cho chúng (machinery dash-dropout/micro-gap riêng đã tune), không đụng. Chữ khác
-            // (rác 666, thế chữ 设/没) rớt IsCanonicalIdentical và đi đường pixel + review cũ.
-            // Chain nối (boundary 673→674): sau 1 lần fast-merge, output[^1] mang chính tả thắng
-            // (强) nên boundary kế là pure-exact — nhưng vẫn cùng run flicker. prevWasCanonicalMerge
-            // cho phép gộp nối mà KHÔNG cần pixel; boundary exact độc lập (flag=false) vẫn pixel.
+            // Canonical-touching fast path (field 672-674 强/強): text is equal after canonicalization
+            // BUT DIFFERENT at dash level (IsIdentical false), touching/adjacent (gap<=0, no room
+            // for a real blank to squeeze in) and sharing a text region with provenance, then it is one instance
+            // that OCR flicker split apart — merge directly, WITHOUT pixel (do NOT call the comparer: EvaluateBoundaryAsync
+            // below always calls pixel for every candidate, so this fast path must come BEFORE it).
+            // Pixel compares the union-crop of boxes jittering between 2 reads and votes Different even on
+            // the same caption, so it must never be the gatekeeper here. A real blank
+            // (0.55s+ field evidence) always exceeds the epsilon touching so it cannot slip through. Dash-identical
+            // (——/—) is DELIBERATELY EXCLUDED: OcrTimeBaseContract + OcrReplayContract pin Different→separated
+            // for those (their own dash-dropout/micro-gap machinery is already tuned), do not touch. Other text
+            // (junk 666, character swaps 设/没) fails IsCanonicalIdentical and takes the old pixel + review path.
+            // Chain follow-on (boundary 673→674): after one fast-merge, output[^1] carries the winning spelling
+            // (强) so the next boundary is pure-exact — but still in the same flicker run. prevWasCanonicalMerge
+            // allows chained merging WITHOUT pixel; a standalone exact boundary (flag=false) still goes to pixel.
             var obsA = previous.LastObservation;
             var obsB = cue.FirstObservation;
-            // Same-text fast path (chính sách 21/09 sửa 22/09: CHỈ micro-gap ≤0.25s):
-            // byte-identical + khe ≤ IdenticalTextMicroGapSeconds (0.25s)
-            // → gộp thẳng, MIỄN pixel + provenance. Lý do: gap<0 là 2 lane cùng
-            // đọc 1 caption (Cả Lớp 19/09, 78 cặp); khe 0..0.25s là 1 caption bị
-            // tracker chẻ oan — pixel trên union-crop từng vote Different oan
-            // vì box rung 1-2px (comment dưới thừa nhận), đẻ ra hàng chục
-            // cặp trùng sót trong SRT (touch0=12, ≤0.25s=33 trên 6 export).
-            // Blank THẬT field đo được bắt đầu từ 0.325s+ (OcrGenericBoundaryProperty)
-            // nên nằm ngoài vùng này; dash-identical (——/—) không phải byte-equal
-            // nên vẫn đi đường pixel cũ như contract ghim.
+            // Same-text fast path (policy 21/09, amended 22/09: ONLY micro-gap ≤0.25s):
+            // byte-identical + gap ≤ IdenticalTextMicroGapSeconds (0.25s)
+            // → merge directly, WITHOUT pixel + provenance. Reason: gap<0 is 2 lanes reading the
+            // same caption (Ca Lop 19/09, 78 pairs); a 0..0.25s gap is one caption wrongly
+            // split by the tracker — pixel on the union-crop used to vote Different wrongly
+            // because of 1-2px box jitter (the comment below admits this), producing dozens
+            // of missed duplicates in the SRT (touch0=12, ≤0.25s=33 across 6 exports).
+            // Field-measured REAL blanks start from 0.325s+ (OcrGenericBoundaryProperty)
+            // so they fall outside this range; dash-identical (——/—) is not byte-equal
+            // so it still takes the old pixel path as the pinned contract requires.
             if (cue.Start - previous.End <= IdenticalTextMicroGapSeconds
                 && previous.Text is { Length: > 0 }
                 && string.Equals(previous.Text, cue.Text, StringComparison.Ordinal))
@@ -562,23 +562,23 @@ public static class OcrCueReconciler
         return output;
     }
 
-    // Verdict dùng chung cho pass chính + pass hồi tố sau-Cleanup (không drift):
-    // ngoài window -> giữ im, không review; candidate + pixel Same -> cue gộp;
-    // còn lại -> tách + review cả hai.
+    // Shared verdict for the main pass and the retroactive post-Cleanup pass (no drift):
+    // outside the window -> keep silent, no review; candidate + pixel Same -> merge cues;
+    // everything else -> separate + review both.
     private static (OcrCue? Merged, bool ReviewBoth) ResolveEvaluatedBoundary(
         OcrCue previous, OcrCue cue, BoundaryEvaluation eval)
     {
-        // Blank thật (ngoài continuation window): 2 visual instances, giữ nguyên không review flag.
+        // Real blank (outside the continuation window): 2 visual instances, keep as-is with no review flag.
         if (!eval.GapWithinWindow) return (null, false);
-        // Temporal dính nhưng spatial/provenance block, hoặc pixel Different/Unavailable:
-        // giữ tách + NeedsReview cả hai.
+        // Temporally adjacent but blocked by spatial/provenance, or pixel Different/Unavailable:
+        // keep separated + NeedsReview on both.
         if (!eval.IsCandidate || eval.Pixel != PixelCheckResult.Same) return (null, true);
         var stableText = eval.DuplicateStableText;
         if (stableText is null)
         {
             var canonical = SelectCanonical(previous, cue);
-            // DashNormalize comparison-only: không rewrite output Text.
-            // Nếu isDashDropout, giữ full caption (bên dài hơn), không để dash fragment thắng vì support.
+            // DashNormalize is comparison-only: does not rewrite output Text.
+            // If isDashDropout, keep the full caption (the longer side), do not let a dash fragment win on support.
             if (eval.IsDashDropout && !eval.IsIdentical && !eval.IsDuplicate && !eval.CanMergeFlicker)
             {
                 var leftLen = previous.Text.EnumerateRunes().Count();
@@ -590,24 +590,24 @@ public static class OcrCueReconciler
                 stableText = canonical.Text;
             }
         }
-        // Provenance mở rộng 2 đầu: First = left-most First, Last = right-most Last (kể cả null, không backfill).
-        // Support disjoint fragments: cộng dồn. Tracker đảm bảo reconciler-input không share observation
-        // (các cue touching/disjoint theo Start/End); nếu overlap, đây là upper-bound và vẫn an toàn vì
-        // quyết định merge đã pixel-gate, không dùng support để merge.
-        // NeedsReview OR-preservation: Same ở boundary này không xóa review từ boundary khác.
+        // Provenance extended at both ends: First = left-most First, Last = right-most Last (including null, no backfill).
+        // Support of disjoint fragments: summed. The tracker guarantees reconciler-input shares no observation
+        // (cues touching/disjoint by Start/End); if there is overlap, this is an upper bound and still safe because
+        // the merge decision is already pixel-gated and does not use support to merge.
+        // NeedsReview OR-preservation: Same at this boundary does not remove reviews from other boundaries.
         return (MergePair(previous, cue, stableText), false);
     }
 
-    // Hồi tố sau-Cleanup (18/09): Cleanup xóa mảnh/phantom ở giữa (hoặc gộp
-    // 2 cue kề thành 1) khiến 2 cue kề nhau MỚI mà pixel chưa từng verify —
-    // field: 27 cặp trùng y hệt hở 0.067-0.3s trong video user (review=False,
-    // pixel chưa chạy). Chỉ chấm pixel cặp kề-MỚI (so cặp kề pre-cleanup theo
-    // (Start,Text) tuyệt đối — Start ổn định qua Cleanup vì merge giữ Start
-    // trái, drop xóa nguyên cue); cặp đã kề thì KHÔNG gọi pixel lại (không
-    // lật quyết định pass chính). Riêng tín hiệu review cho cặp trùng hở
-    // (micro-gap, 0.5s] thì áp cho MỌI cặp kề (kể cả đã kề từ trước — pass
-    // chính để im lặng theo spec, ở đây chỉ thêm cờ cho user nghe và quyết,
-    // không gọi pixel nên không phạm spec đã ghim).
+    // Retroactive post-Cleanup pass (18/09): Cleanup removes fragments/phantoms in the middle (or merges
+    // 2 adjacent cues into 1), producing NEWLY adjacent cue pairs that pixel never verified —
+    // field: 27 exact duplicate pairs with 0.067-0.3s gaps in the user's video (review=False,
+    // pixel never ran). Only pixel-check the NEWLY adjacent pairs (compared against pre-cleanup adjacent pairs by
+    // absolute (Start,Text) — Start is stable through Cleanup because merge keeps the left
+    // Start and drop removes the whole cue); already-adjacent pairs do NOT get pixel re-checked (to avoid
+    // overturning the main pass's decision). Only the review signal for gapped duplicate
+    // pairs (micro-gap, 0.5s] applies to EVERY adjacent pair (including ones already adjacent before — the main
+    // pass deliberately stays silent per spec; here we only add the flag so the user can listen and decide,
+    // and no pixel call is made so the pinned spec is not violated).
     public static async Task<(IReadOnlyList<OcrCue> Cues, int Merges)> MergeCleanupAdjacentsAsync(
         IReadOnlyList<OcrCue> preCleanup,
         IReadOnlyList<OcrCue> postCleanup,
@@ -631,13 +631,13 @@ public static class OcrCueReconciler
             if (cue is null) continue;
             if (output.Count == 0) { output.Add(cue); continue; }
             var previous = output[^1];
-            // Cặp trùng y hệt hở (micro-gap, 0.5s]: cùng chữ + hở nghi vấn
-            // (flicker hay hô lặp thật?) mà spec cấm pixel-verify — gắn review
-// cả hai để user nghe và quyết (không gộp bừa, không im lặng).
-            // Ngoài 0.5s: thoại lặp thật, giữ im. Trong micro-gap: pass chính
-            // đã xử (pixel/review), không đụng.
-            // 21/09: pass chính đã gộp ≤0.25s. Vùng (0.25s, 0.5s] CHỈ review,
-            // KHÔNG gộp — evidence 0.325s blank thật (OcrGenericBoundaryProperty).
+            // Exact duplicate pairs with a gap (micro-gap, 0.5s]: same text + a suspicious gap
+            // (flicker or a genuine repeated line?) for which the spec forbids pixel-verify — flag review
+// on both so the user can listen and decide (no blind merging, no silence).
+            // Above 0.5s: genuine repeated dialogue, stay silent. Within the micro-gap: the main pass
+            // already handled it (pixel/review), do not touch.
+            // 21/09: the main pass already merged ≤0.25s. The (0.25s, 0.5s] range is review ONLY,
+            // NOT merged — evidence of a real 0.325s blank (OcrGenericBoundaryProperty).
             var identicalGap = cue.Start - previous.End;
             if (string.Equals(previous.Text, cue.Text, StringComparison.Ordinal)
                 && identicalGap > IdenticalTextMicroGapSeconds
@@ -647,7 +647,7 @@ public static class OcrCueReconciler
                 output.Add(cue with { NeedsReview = true });
                 continue;
             }
-            // Đã kề từ trước (cùng Start+Text kề nhau) -> pass chính đã xử.
+            // Already adjacent before (same Start+Text next to each other) -> the main pass already handled it.
             if (prePairs.Contains((previous.Start, previous.Text, cue.Start, cue.Text)))
             {
                 output.Add(cue);
@@ -673,13 +673,13 @@ public static class OcrCueReconciler
         return (output, merges);
     }
 
-    // Tai phân xử cặp trùng khe RỘNG (21/09, báo cáo lặp SRT của user): pass
-    // chính cố ý giữ cặp chữ-y-hệt khe > 0.5s vì có thể là thoại lặp thật.
-    // Nhưng caption tĩnh bị tracker chẻ oan khi hụt chữ > 0.5s cũng ở vùng đó.
-    // Phân xử: khe trong (0.5s, 8s] + chữ khớp sau normalize + MỘT đoạn thoại
-    // Whisper phủ liên tục qua khe (không từng có khoảng im giữa hai lần hiện
-    // chữ) → 1 caption hiển thị suốt, gộp span. Khe im thật (kéo dài chứng tỏ
-    // chữ tắt rồi bật lại — thoại lặp thật) → giữ. Không có tai → giữ nguyên.
+    // Ear adjudicates WIDE-gap duplicate pairs (21/09, user's SRT duplicate report): the main
+    // pass deliberately keeps identical-text pairs with gaps > 0.5s because they may be genuine repeated dialogue.
+    // But static captions wrongly split by the tracker when characters were missed with gaps > 0.5s also live in that range.
+    // Adjudication: an inner gap (0.5s, 8s] + text matching after normalization + ONE Whisper speech
+    // segment covering the gap continuously (never any silence between the two text
+    // appearances) → one caption displayed throughout, merge the span. A real silence gap (a long gap proving
+    // the text turned off then on again — genuine repeated dialogue) → keep. No ear available → keep unchanged.
     public static IReadOnlyList<OcrCue> MergeSpeechCoveredIdentical(
         IReadOnlyList<OcrCue> cues,
         IReadOnlyList<EditorSpeechSegment>? speechSegments)

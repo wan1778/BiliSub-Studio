@@ -5,9 +5,9 @@ using BiliSubStudio.Core.Ocr;
 
 namespace BiliSubStudio.Core.ContractTests;
 
-// File .bak chống crash chỉ cần lúc đang quét; quét xong sạch thì tự xóa cho
-// gọn đĩa (vài chục MB). File chính + sổ tay (loại/fix) giữ nguyên để tiếp
-// tục/xuất lại. Tạm dừng/hủy/lỗi thì không dọn.
+// The .bak crash-guard file is only needed during a scan; once the scan finishes cleanly it deletes itself to
+// save disk space (tens of MB). The main file + the journals (exclusion/fix) are kept for
+// resume/re-export. Paused/cancelled/errored scans do not clean up.
 internal static class OcrCheckpointBackupContract
 {
     [ModuleInitializer]
@@ -82,7 +82,7 @@ internal static class OcrCheckpointBackupContract
             await (Task)deleteBackupAsync.Invoke(store, [request, CancellationToken.None])!;
             Check(Directory.GetFiles(checkpointDir, "*.json.bak").Length == 0, ".bak phải bị xóa sau quét xong");
             Check(Directory.GetFiles(checkpointDir, "*.json").Length == 1, "file checkpoint chính phải còn nguyên");
-            // Mất rồi gọi nữa cũng không được throw.
+            // Already gone, calling again must not throw either.
             await (Task)deleteBackupAsync.Invoke(store, [request, CancellationToken.None])!;
             Check(Directory.GetFiles(checkpointDir, "*.json").Length == 1, "gọi dọn thừa làm mất file chính");
         }

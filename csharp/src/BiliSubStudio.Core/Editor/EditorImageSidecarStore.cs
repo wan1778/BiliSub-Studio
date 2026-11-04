@@ -12,9 +12,10 @@ public sealed record EditorImageSidecarEntry(
     uint PixelWidth,
     uint PixelHeight);
 
-// Ảnh/logo của project editor nằm trong sidecar riêng cạnh project JSON.
-// Ghi phải nguyên tử: tạo file tạm, đóng handle rồi mới Move (chia sẻ handle
-// đang mở làm MoveFileEx trả ERROR_SHARING_VIOLATION 0x20 — đúng lỗi 23/10).
+// Editor project images/logos live in a dedicated sidecar next to the project
+// JSON. Writes must be atomic: create a temporary file, close the handle, then
+// Move (sharing an open handle makes MoveFileEx return
+// ERROR_SHARING_VIOLATION 0x20 — exactly the 23/10 incident).
 public static class EditorImageSidecarStore
 {
     private const int MoveAttempts = 5;
@@ -52,7 +53,7 @@ public static class EditorImageSidecarStore
                 stream.Flush(flushToDisk: true);
             }
 
-            MoveWithRetry(temporary, path);
+            await MoveWithRetryAsync(temporary, path);
         }
         finally
         {
@@ -83,7 +84,7 @@ public static class EditorImageSidecarStore
         CleanupOrphanTemps(path);
     }
 
-    // Dọn file tạm còn sót từ lần ghi bị hủy/treo trước đó.
+    // Remove temporary files left behind by an earlier cancelled or hung write.
     public static int CleanupOrphanTemps(string path)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
@@ -109,7 +110,7 @@ public static class EditorImageSidecarStore
         return removed;
     }
 
-    private static void MoveWithRetry(string source, string destination)
+    private static async Task MoveWithRetryAsync(string source, string destination)
     {
         for (var attempt = 1; ; attempt++)
         {
@@ -120,8 +121,8 @@ public static class EditorImageSidecarStore
             }
             catch (IOException) when (attempt < MoveAttempts)
             {
-                // Defender/indexer có thể giữ handle trong vài chục ms.
-                Thread.Sleep(MoveRetryDelayMilliseconds * attempt);
+                // Defender/indexer co the giu handle trong vai chuc ms.
+                await Task.Delay(MoveRetryDelayMilliseconds * attempt).ConfigureAwait(false);
             }
         }
     }

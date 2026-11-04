@@ -3,11 +3,11 @@ using BiliSubStudio.Core.Ocr;
 namespace BiliSubStudio.Core.ContractTests;
 
 // Canonical-touching merge (field 672-674 强/強 + preview splits 679-681, 666):
-// Paddle đổi giản↔phồn từng khung nên text sau DashNormalize vẫn khác nhau;
-// IsCanonicalIdentical dùng chung bảng SubtitleTracker thì chúng là 1 caption.
-// Cặp canonical-identical DÍNH NHAU (gap<=0) + cùng vùng chữ có provenance thì gộp
-// thẳng, MIỄN pixel (pixel so crop rung và vote Different ngay trên cùng caption).
-// Chữ khác (rác 666, thế chữ 设/没) KHÔNG bao giờ đi đường này: vẫn pixel + review.
+// Paddle flips simplified↔traditional frame by frame, so text after DashNormalize
+// still differs; IsCanonicalIdentical shares the SubtitleTracker table so they are 1 caption.
+// A canonical-identical pair TOUCHING (gap<=0) in the same text region with provenance merges
+// directly WITHOUT pixel (the pixel comparison of a shaky crop votes Different on the same caption).
+// Different text (garbage 666, substituted glyphs 设/没) never goes this way: still pixel + review.
 internal static class OcrCanonicalMergeContract
 {
     private static readonly OcrRegion TestRoi = new(0, 0, 1, 1);
@@ -28,7 +28,7 @@ internal static class OcrCanonicalMergeContract
     {
         var ct = CancellationToken.None;
 
-        // 0. Bảng canonical dùng chung: 强/強 + dash ——/— là identical; rác/thế chữ thì không.
+        // 0. Shared canonical table: 强/強 + dash ——/— are identical; garbage/substituted glyphs are not.
         Check(OcrCueReconciler.IsCanonicalIdentical(
             Prov(0, 1, "来了李道一的最强剑", 0.99), Prov(1, 2, "来了李道一的最強剑", 0.97)),
             "canonical table must treat 强/強 as identical");
@@ -42,7 +42,7 @@ internal static class OcrCanonicalMergeContract
             Prov(0, 1, "设人会站着等你", 0.99), Prov(1, 2, "没人会站着等你", 0.98)),
             "single substitution must NOT be canonical-identical");
 
-        // 1. Field 672-674: 强/強 touching + pixel Different mà vẫn gộp, KHÔNG gọi pixel.
+        // 1. Field 672-674: 强/強 touching + pixel Different yet still merges, WITHOUT calling pixel.
         var hostile = new FakePixelComparer(PixelCheckResult.Different);
         var flicker = new[] {
             Prov(1431.300, 1432.500, "来了李道一的最强剑", 0.99),
@@ -56,8 +56,8 @@ internal static class OcrCanonicalMergeContract
         Check(merged[0].Text == "来了李道一的最强剑",
             "merged spelling must keep evidence winner (higher confidence), never rewritten");
 
-        // 2. Exact identical touching + pixel Different: policy 21/09 cho phép merge
-        // byte-identical ≤0.5s MIỄN pixel. Dash-level (——/—) vẫn đi pixel cũ.
+        // 2. Exact identical touching + pixel Different: the 21/09 policy allows merging
+        // byte-identical ≤0.5s WITHOUT pixel. Dash-level (——/—) still goes through the old pixel path.
         var hostile2 = new FakePixelComparer(PixelCheckResult.Different);
         var exact = new[] {
             Prov(100.000, 101.000, "没人会站着等你", 0.99),
@@ -66,9 +66,9 @@ internal static class OcrCanonicalMergeContract
         var exactMerged = await OcrCueReconciler.MergeTouchingIdenticalAsync(exact, "v.mp4", hostile2, ct);
         Check(exactMerged.Count == 1, "exact identical touching now merges without pixel (policy 21/09)");
         Check(hostile2.Calls == 0, "byte-identical ≤0.5s merges without pixel");
-        // Dash-level vẫn pixel-gated: test dash-pair ở test OcrExactGapRegression.
+        // Dash-level stays pixel-gated: the dash-pair test lives in OcrExactGapRegression.
 
-        // 3. Identical nhưng cách blank thật 5s: TÁCH, không gọi pixel (an toàn blank).
+        // 3. Identical but separated by a real 5s blank: SPLIT, no pixel call (blank safety).
         var gapPx = new FakePixelComparer(PixelCheckResult.Same);
         var gapped = new[] {
             Prov(200.000, 201.000, "没人会站着等你", 0.99),
@@ -78,7 +78,7 @@ internal static class OcrCanonicalMergeContract
         Check(gappedMerged.Count == 2, "real 5s blank must keep identical captions separate");
         Check(gapPx.Calls == 0, "gap beyond touching must not reach pixel comparer");
 
-        // 4. Rác 666 (dài hơn 2 chữ) touching + pixel Different: TÁCH + review cả hai.
+        // 4. Garbage 666 (longer than 2 glyphs) touching + pixel Different: SPLIT + review both.
         var garbagePx = new FakePixelComparer(PixelCheckResult.Different);
         var garbage = new[] {
             Prov(1420.967, 1421.367, "叶知秋，你确实很强共卡", 0.99),
@@ -90,7 +90,7 @@ internal static class OcrCanonicalMergeContract
         Check(garbageMerged[0].NeedsReview && garbageMerged[1].NeedsReview,
             "split pair must carry NeedsReview flags");
 
-        // 5. Thế chữ 设/没 touching + pixel Different: TÁCH + review (không tự chọn chính tả).
+        // 5. Substituted glyphs 设/没 touching + pixel Different: SPLIT + review (no picking a spelling).
         var substPx = new FakePixelComparer(PixelCheckResult.Different);
         var subst = new[] {
             Prov(1446.233, 1446.500, "设人会站着等你", 0.99),

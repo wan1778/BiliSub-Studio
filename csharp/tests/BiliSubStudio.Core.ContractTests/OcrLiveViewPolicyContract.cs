@@ -2,8 +2,8 @@ using BiliSubStudio.Core.Ocr;
 
 namespace BiliSubStudio.Core.ContractTests;
 
-// Live cue list UX policy: auto-follow khi ở cuối + incremental render qua common prefix.
-// Không phụ thuộc text pattern; pure logic, chạy không cần UI/video.
+// Live cue list UX policy: auto-follow when at the end + incremental render via
+// the common prefix. No text pattern dependency; pure logic, runs without UI/video.
 internal static class OcrLiveViewPolicyContract
 {
     public static Task RunAsync()
@@ -27,13 +27,13 @@ internal static class OcrLiveViewPolicyContract
         Check(OcrLiveViewPolicy.CommonCuePrefixLength([a, b], [a, b]) == 2, "identical => full");
         Check(OcrLiveViewPolicy.CommonCuePrefixLength([a, b], [a, b, c]) == 2, "appended tail => old count");
         Check(OcrLiveViewPolicy.CommonCuePrefixLength([a, b, c], [a, b]) == 2, "shrunk list => new count");
-        // Tail merge: cùng count, cue cuối đổi End/Text => prefix = count-1.
+        // Tail merge: same count, last cue changes End/Text => prefix = count-1.
         var merged = new OcrCue(2, 5, "再见朋友", .8);
         Check(OcrLiveViewPolicy.CommonCuePrefixLength([a, b, c], [a, merged]) == 1, "tail merge => first-changed index");
-        // Confidence/support/review đổi NHƯNG Start/End/Text giữ => vẫn common (không rebuild vô ích).
+        // Confidence/support/review change BUT Start/End/Text stay => still common (no useless rebuild).
         var sameIdentity = b with { Confidence = .1, RawSupportCount = 99, ConfidentSupportCount = 50, NeedsReview = true };
         Check(OcrLiveViewPolicy.CommonCuePrefixLength([a, b], [a, sameIdentity]) == 2, "metadata-only change must stay common");
-        // Text đổi giữa chừng => dừng đúng index.
+        // Text changes mid-list => stop at exactly that index.
         var edited = new OcrCue(2, 3, "再见！", .8);
         Check(OcrLiveViewPolicy.CommonCuePrefixLength([a, b, c], [a, edited, c]) == 1, "mid-list edit => first-changed index");
         Check(OcrLiveViewPolicy.CommonCuePrefixLength([a], [b]) == 0, "first differs => 0");
@@ -47,7 +47,7 @@ internal static class OcrLiveViewPolicyContract
         Check(prefix == 10000, "10k append-only prefix must be 10000");
         Check(sw.Elapsed < TimeSpan.FromSeconds(1), $"10k prefix scan must be trivial (took {sw.Elapsed.TotalMilliseconds:0}ms)");
 
-        // Overload cho dòng pipeline (live-quét-xong = SRT): cùng semantics.
+        // Overload for the pipeline rows (live-scan-done = SRT): same semantics.
         var ra = new OcrExportRow(1, 2, "你好", false);
         var rb = new OcrExportRow(2, 3, "再见", true);
         Check(OcrLiveViewPolicy.CommonRowPrefixLength([ra, rb], [ra, rb]) == 2, "rows identical => full");

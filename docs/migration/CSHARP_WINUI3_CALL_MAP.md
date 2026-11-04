@@ -193,13 +193,10 @@ Source (full width)
 ```text
 SettingsPage / Đăng nhập
   -> AccountPage
-  -> BilibiliAuthService.StartQrAsync / PollQrAsync
+  -> BilibiliAuthService.StartQrAsync / PollQrAsync (native passport QR)
   -> QrMatrixEncoder -> native Canvas
-  -> ChromeSessionBridge.SyncAsync (optional Chrome login handoff)
-      -> ChromeLoginBridgeServer (ephemeral 127.0.0.1 port + one-time token + per-install page secret)
-      -> launches the user's Chrome -> BiliSub Bridge extension verifies the secret and reads the Bilibili session cookie header
-      -> BilibiliAuthService.SetCookieAsync (validate + DPAPI save)
-  -> official passport login page opened as a normal Chrome tab (AccountPage no longer opens BrowserLoginWindow)
+  -> BilibiliAuthService.SetCookieAsync (manual SESSDATA paste: validate + DPAPI save)
+  -> BilibiliDeviceCookieProvider (buvid3/buvid4 from /x/frontend/finger/spi, merged into the stored session)
   -> SessionStore -> Windows DPAPI -> Data/session.bin
   -> ApplicationLog status/error without cookie contents
 ```
@@ -546,7 +543,7 @@ package_windows_candidate.ps1
 
 - `BiliSubStudio.Core` has no WinUI/WinRT UI dependency.
 - WinUI pages do not spawn FFmpeg/Python/yt-dlp directly.
-- No `/api` UI adapter, `BiliSubStudioCore.exe` or fixed secondary backend port exists in the C# production path. The only WebView2 host is the isolated official Bilibili login window; it has no custom login form. The Chrome session bridge is an in-process ephemeral loopback listener used only to receive the Bilibili session cookie header from the explicitly installed BiliSub Bridge Chrome extension; it renders no login UI and never reads a browser cookie database.
+- No `/api` UI adapter, `BiliSubStudioCore.exe` or fixed secondary backend port exists in the C# production path. There is no WebView2 host and no browser-extension handoff: Bilibili sign-in is either the native passport QR flow or a manually pasted cookie, both validated against the official `nav` endpoint before the session is stored with Windows DPAPI.
 - Go production directories are not imported or invoked by the C# application.
 - Update discovery and payload hosting are GitHub-only; transactional update safety remains owned by `UpdateService`.
 - The transient-CDN hardening changes only video transport classification/retry/degradation; it does not alter OCR scanner topology, editor render algorithms, metadata ownership or the unified Media UI contract.

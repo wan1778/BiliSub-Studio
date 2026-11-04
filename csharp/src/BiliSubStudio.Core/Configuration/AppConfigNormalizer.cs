@@ -14,6 +14,11 @@ public static class AppConfigNormalizer
         var ocrOutputDirectory = string.IsNullOrWhiteSpace(config.OcrOutputDirectory)
             ? outputDirectory
             : config.OcrOutputDirectory;
+        // One-time seed so an existing install keeps exporting where it used to;
+        // from then on the per-tab folders are independent of each other.
+        var editorOutputDirectory = string.IsNullOrWhiteSpace(config.EditorOutputDirectory)
+            ? outputDirectory
+            : config.EditorOutputDirectory;
         var subtitleFormat = config.SubtitleFormat is "srt" or "txt" or "json"
             ? config.SubtitleFormat
             : "srt";
@@ -36,6 +41,7 @@ public static class AppConfigNormalizer
             Theme = theme,
             OutputDirectory = outputDirectory,
             OcrOutputDirectory = ocrOutputDirectory,
+            EditorOutputDirectory = editorOutputDirectory,
             SubtitleFormat = subtitleFormat,
             VideoSpeed = videoSpeed,
             VideoContainer = videoContainer,

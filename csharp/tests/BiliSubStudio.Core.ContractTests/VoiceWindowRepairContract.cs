@@ -4,10 +4,12 @@ using BiliSubStudio.Core.Editor;
 
 namespace BiliSubStudio.Core.ContractTests;
 
-// Vá cửa sổ voice (23/09): mảnh timecode hẹp (<0.15s) không giọng nào đọc vừa
-// nên worker giữ im lặng oan. Chỉ gộp mảnh trùng Y HỆT vào câu lành kề và nới
-// mảnh hẹp vào khoảng im PHẢI (07/10: cấm lùi Start sớm hơn giờ sub); không
-// đụng chữ, không lấn câu khác, không đổi thứ tự, không sửa danh sách gốc.
+// Voice window repair (23/09): narrow timecode slivers (<0.15s) are too short for
+// any voice to read, so the worker stays unfairly silent. Only merge slivers that
+// are EXACTLY identical into an adjacent healthy cue, and widen narrow slivers into
+// the trailing (right) silent gap (07/10: Start must not move earlier than the
+// subtitle time); do not touch the text, do not invade other cues, do not reorder,
+// do not mutate the source list.
 internal static class VoiceWindowRepairContract
 {
     [ModuleInitializer]
@@ -46,7 +48,7 @@ internal static class VoiceWindowRepairContract
     private static EditorSubtitleCue Cue(string id, double start, double end, string vietnamese) =>
         new(id, "1", "", start, end, "nguồn", vietnamese);
 
-    // Mảnh trùng y hệt sau câu lành (vụ #3372/#3373: 0.133s + hở 0.833s + câu lành cùng chữ).
+    // A sliver exactly duplicating the following healthy cue (cases #3372/#3373: 0.133s + a 0.833s gap + a healthy cue with identical text).
     private static void DuplicateSliverAbsorbedForward()
     {
         var repaired = Repair([
@@ -68,7 +70,7 @@ internal static class VoiceWindowRepairContract
         Check(repaired[0].Start == 10.0 && repaired[0].End == 11.6, "khung câu lành phải phủ cả mảnh");
     }
 
-    // Khác dấu câu là khác chữ: không gộp, chỉ nới mảnh vào khoảng im.
+    // Differing punctuation means different text: do not merge, only widen the sliver into the silent gap.
     private static void NearDuplicateNotAbsorbedButExtended()
     {
         var repaired = Repair([
@@ -80,7 +82,7 @@ internal static class VoiceWindowRepairContract
         Check(repaired[1].Start == 21.0 && repaired[1].End == 22.0, "câu lành không được đụng");
     }
 
-    // Mảnh chạm khít câu khác chữ thì không có chỗ nới -> giữ nguyên.
+    // A sliver exactly touching a cue with different text has no room to widen -> keep it unchanged.
     private static void TouchingFragmentsUntouched()
     {
         var repaired = Repair([
@@ -91,7 +93,7 @@ internal static class VoiceWindowRepairContract
         Check(repaired[0].Start == 40.0 && repaired[0].End == 40.134, "mảnh chạm khít phải giữ nguyên");
     }
 
-    // Thoại lặp lành mạnh chạm nhau không bao giờ bị gộp oan.
+    // Healthy repeated dialogue touching each other must never be merged by mistake.
     private static void HealthyRepeatUntouched()
     {
         var repaired = Repair([
@@ -102,7 +104,7 @@ internal static class VoiceWindowRepairContract
         Check(repaired[0].End == 21.0 && repaired[1].Start == 21.0, "khung câu lành phải giữ nguyên");
     }
 
-    // Mảnh kẹt giữa 2 câu chạm khít thì không có chỗ nới.
+    // A sliver boxed between two exactly touching cues has no room to widen.
     private static void BoxedSliverUntouched()
     {
         var repaired = Repair([
@@ -114,7 +116,7 @@ internal static class VoiceWindowRepairContract
         Check(repaired[1].Start == 31.0 && repaired[1].End == 31.1, "mảnh kẹt phải giữ nguyên cho worker xử lý");
     }
 
-    // Khoảng im dài thì nới tối đa 2s, không nuốt cả khoảng im.
+    // A long silent gap widens the sliver by at most +2s rightward; it must not swallow the whole gap.
     private static void ExtensionCapped()
     {
         var repaired = Repair([
@@ -125,8 +127,9 @@ internal static class VoiceWindowRepairContract
         Check(repaired[0].End == 102.1, "nới phải chừa khoảng im, tối đa +2s");
     }
 
-    // Mảnh hở với câu trước thì GIỮ NGUYÊN Start (07/10: cấm nới lùi sớm
-    // hơn giờ sub) — chỉ nới phải khi có khe sau, không thì worker xử lý.
+    // A sliver with a gap before it KEEPS its Start unchanged (07/10: widening backward earlier than
+    // the subtitle time is forbidden) - it widens rightward only when a trailing gap exists, otherwise
+    // the worker deals with it.
     private static void BackwardExtended()
     {
         var repaired = Repair([

@@ -3,9 +3,9 @@ using BiliSubStudio.Core.Ocr;
 
 namespace BiliSubStudio.Core.ContractTests;
 
-// Guard chữ nền tĩnh + cảnh báo thiếu sub (18/09, khóa plan với QA ngoài).
-// Test bằng timeline dựng tay theo đúng format QA đã duyệt (mỗi case: tên,
-// timeline, speech, kỳ vọng, biên ngược).
+// Guard against static background text + a missing-subtitle warning (18/09, plan locked with external QA).
+// Tested with hand-built timelines in exactly the QA-approved format (each case: name,
+// timeline, speech, expected result, reverse boundary).
 internal static class OcrBannerGuardContract
 {
     public static Task RunAsync()
@@ -28,8 +28,8 @@ internal static class OcrBannerGuardContract
     private static EditorSpeechSegment Seg(double start, double end, string text) =>
         new(start, end, text, -0.2, 0.0, [], "uncertain", 0, 0);
 
-    // Test (a)-thuận QA: caption giữ 25s trong im lặng nhưng khớp tai 1 lần
-    // ở đầu -> miễn vĩnh viễn -> giữ nguyên.
+    // QA test (a)-forward: a caption held for 25s in silence but matching the ear once
+    // at the start -> permanent exemption -> left intact.
     private static void CaptionHeldWithOneEarMatchKeeps()
     {
         var cues = new[] { Cue(10.0, 35.0, "深海的秘密") };
@@ -38,8 +38,8 @@ internal static class OcrBannerGuardContract
         Check(drops.Count == 0, "caption từng khớp tai phải miễn guard");
     }
 
-    // Test (a)-ngược QA: cùng dạng caption nhưng CÂM HOÀN TOÀN, 1 mạch 50s
-    // trong video 180s -> drop đúng đánh đổi + log ghi rõ lý do.
+    // QA test (a)-reverse: the same caption shape but COMPLETELY MUTE, a straight 50s
+    // inside a 180s video -> drop at the correct trade-off + a log stating the reason clearly.
     private static void MuteLongQuoteDrops()
     {
         var cues = new[] { Cue(10.0, 60.0, "深海的秘密") };
@@ -49,8 +49,8 @@ internal static class OcrBannerGuardContract
             "lý do drop phải ghi rõ ngưỡng để người duyệt thấy");
     }
 
-    // Test (b1) QA: watermark 1.8s-bật/0.2s-tắt suốt 0-120s (video 130s,
-    // cộng dồn ~83%) + thoại khác hẳn -> drop TOÀN BỘ mọi đợt.
+    // QA test (b1): a 1.8s-on/0.2s-off watermark throughout 0-120s (a 130s video,
+    // accumulating ~83%) + entirely different speech -> drop EVERY batch.
     private static void BlinkingWatermarkDrops()
     {
         var cues = new List<OcrCue>();
@@ -61,8 +61,8 @@ internal static class OcrBannerGuardContract
         Check(drops.Count == cues.Count, $"watermark nhấp nháy phải drop hết {cues.Count} đợt");
     }
 
-    // Test (b2) QA: chorus "啦啦啦" lặp 15 lần (pattern y hệt watermark) nhưng
-    // CÓ tiếng hát khớp -> chỉ cần 1 lần khớp là miễn cả cụm -> giữ hết.
+    // QA test (b2): a "啦啦啦" chorus repeated 15 times (an exact watermark pattern) but
+    // WITH matching singing -> one match exempts the whole cluster -> keep everything.
     private static void RepeatedChorusWithSingingKeeps()
     {
         var cues = new List<OcrCue>();
@@ -77,8 +77,8 @@ internal static class OcrBannerGuardContract
         Check(drops.Count == 0, "chorus có hát khớp phải giữ hết dù lặp như watermark");
     }
 
-    // Điểm (e) QA: 3 biến thể OCR của cùng watermark phải gộp 1 nhóm (fuzzy
-    // >= 0.85) rồi drop chung — không biến thể nào thoát lẻ.
+    // QA point (e): 3 OCR variants of the same watermark must group into 1 cluster (fuzzy
+    // >= 0.85) then drop together — no variant escapes alone.
     private static void FuzzyVariantsGrouped()
     {
         var variants = new[] { "CHANNEL XYZ", "CHANNEL XY", "CHANNEL  XYZ" };
@@ -92,7 +92,7 @@ internal static class OcrBannerGuardContract
         Check(drops.Count == cues.Count, "biến thể watermark phải gộp nhóm và drop hết");
     }
 
-    // Fix #1 ở tầng guard: thoại ngắn trong im lặng (tỷ lệ nhỏ) -> giữ.
+    // Fix #1 at the guard layer: short dialogue in silence (a small ratio) -> keep.
     private static void SilentDialogueKeeps()
     {
         var cues = new[] { Cue(5.0, 7.0, "你好吗"), Cue(20.0, 22.0, "我很好") };
@@ -100,7 +100,7 @@ internal static class OcrBannerGuardContract
         Check(drops.Count == 0, "thoại ngắn trong im lặng phải giữ");
     }
 
-    // Watermark tĩnh full video, không tiếng -> drop (share ~100%).
+    // A static full-video watermark with no audio -> drop (share ~100%).
     private static void StaticFullVideoWatermarkDrops()
     {
         var cues = new[] { Cue(0.0, 180.0, "摄制组出品") };
@@ -108,19 +108,19 @@ internal static class OcrBannerGuardContract
         Check(drops.Count == 1, "watermark full video phải drop");
     }
 
-    // Việc 3: đoạn có tiếng mà không cue nào phủ -> 1 cảnh báo có timestamp.
+    // Task 3: a segment with audio that no cue covers -> exactly 1 warning with a timestamp.
     private static void MissingSubWarnsUncoveredSpeech()
     {
         var speech = new[] { Seg(10.0, 14.0, "台词内容缺字幕"), Seg(50.0, 54.0, "有字幕的台词") };
         var cues = new[] { Cue(49.0, 55.0, "有字幕的台词") };
         var warnings = OcrMissingSubWarning.Find(speech, cues, 180.0);
         Check(warnings.Count == 1, "đoạn thiếu sub phải báo đúng 1");
-        // (Không assert số thập phân: format theo locale máy, có thể là 9,7.)
+        // (No decimal assertion: the format follows the machine locale, it may be 9,7.)
         Check(warnings[0].Contains("thiếu sub", StringComparison.Ordinal), "cảnh báo phải nêu thiếu sub");
         Check(warnings[0].Contains("台词内容缺字幕", StringComparison.Ordinal), "cảnh báo phải trích nội dung đoạn thiếu");
     }
 
-    // Việc 3: thoại đã có cue phủ + không speech -> im (không spam).
+    // Task 3: speech already covered by a cue + no speech -> silent (no spam).
     private static void MissingSubSilentWhenCovered()
     {
         var speech = new[] { Seg(50.0, 54.0, "有字幕的台词") };

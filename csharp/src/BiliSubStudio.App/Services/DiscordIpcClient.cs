@@ -4,9 +4,10 @@ using System.Text.Json;
 
 namespace BiliSubStudio.App.Services;
 
-// Discord Game IPC thuần (không gói ngoài): named pipe discord-ipc-0..9,
-// handshake client_id rồi SET_ACTIVITY. Best-effort tuyệt đối: Discord tắt
-// hay pipe lỗi thì báo false, không bao giờ ném ra ngoài làm hỏng app.
+// Plain Discord Game IPC (no external package): the named pipes
+// discord-ipc-0..9, a client_id handshake, then SET_ACTIVITY. Strictly
+// best-effort: if Discord is closed or the pipe fails, report false and never
+// throw outward in a way that breaks the app.
 internal sealed class DiscordIpcClient : IDisposable
 {
     private static readonly JsonSerializerOptions Json = new() { WriteIndented = false };

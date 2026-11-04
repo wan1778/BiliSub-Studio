@@ -11,6 +11,16 @@ public sealed partial class EditorPage
 {
     private async void PlayerPlayPause_Click(object sender, RoutedEventArgs e)
     {
+        try { await TogglePlaybackAsync(); }
+        catch (Exception error) { ReportEditorCommandFailure("phát/tạm dừng preview", error); }
+    }
+
+    /// <summary>
+    /// Play/pause the preview. The Play/Pause button and the Space shortcut
+    /// share this command, so there are not two separate playback logics.
+    /// </summary>
+    private async Task TogglePlaybackAsync()
+    {
         try { await _playback.ToggleAsync(); }
         catch (OperationCanceledException) { StatusText.Text = "Đã dừng tạo bản xem trước."; }
         catch (Exception error) { StatusText.Text = "Preview bản chỉnh: " + error.Message; }
@@ -106,18 +116,30 @@ public sealed partial class EditorPage
 
         private void ResumeFromCurrentFrame() => _player?.Play();
 
-        private Task PlayFromStartAsync() => LoadSegmentAsync(PreviewStartTime(), play: true);
+        private Task PlayFromStartAsync() => LoadSegmentAsync(PlaybackStartTime(), play: true);
 
-        /// <summary>Mốc bắt đầu preview trên dải ghép (tính theo thời gian dải).</summary>
+        /// <summary>Preview start mark on the composed timeline (expressed in timeline time).</summary>
         private double PreviewStartTime()
         {
             var (clip, _, timelineStart) = _page.LocateTimelineClip(0);
             if (!_page.IsPrimaryTimelineClip(clip)) return timelineStart;
             var trim = _page.CurrentTrimRange();
-            return timelineStart + Math.Max(0, trim.Start - clip.Start);
+            return timelineStart + Math.Max(0, trim.Start - clip.SourceIn);
         }
 
-        /// <summary>Giới hạn cuối của đoạn đang phát, tính trong file nguồn của clip.</summary>
+        /// <summary>
+        /// Preview start mark when play is pressed: the CURRENT PLAYHEAD
+        /// POSITION, but never earlier than the timeline's start mark (the part
+        /// trimmed out of the exported file is not played in the preview
+        /// either).
+        /// </summary>
+        private double PlaybackStartTime()
+        {
+            var duration = _page.TimelineDuration;
+            return EditorTimelinePlaybackStart.Resolve(_page.Timeline.Value, PreviewStartTime(), duration);
+        }
+
+        /// <summary>End limit of the currently playing segment, expressed in the clip's source file.</summary>
         private double ActiveClipLimit
         {
             get
@@ -133,14 +155,14 @@ public sealed partial class EditorPage
             }
         }
 
-        /// <summary>Đổi thời gian trong file nguồn của clip sang thời gian trên dải ghép.</summary>
+        /// <summary>Converts a time in the clip's source file to a time on the composed timeline.</summary>
         private double TimelinePositionForSource(double sourcePosition)
         {
             if (_activeClip is not { } clip) return sourcePosition;
-            return _activeClipTimelineStart + (sourcePosition - clip.Start);
+            return _activeClipTimelineStart + (sourcePosition - clip.SourceIn);
         }
 
-        private Task ReplayFromStartAsync() => PlayFromStartAsync();
+        private Task ReplayFromStartAsync() => LoadSegmentAsync(PreviewStartTime(), play: true);
 
         internal async Task EnterFullscreenAsync()
         {
@@ -198,7 +220,7 @@ public sealed partial class EditorPage
                 if (snapshot.Ended)
                 {
                     PauseAtCurrentFrame();
-                    _page.StatusText.Text = "Đã xem hết khoảng giữ lại. Bấm Play để phát lại từ mốc đầu.";
+                    _page.StatusText.Text = "Đã xem hết dải thời gian. Bấm Play để phát lại từ mốc đầu.";
                 }
                 else if (snapshot.Playing) ResumeFromCurrentFrame();
                 else PauseAtCurrentFrame();
@@ -276,6 +298,8 @@ public sealed partial class EditorPage
             await _page.UpdateFrameAsync();
             _page.StatusText.Text = "Đã về khung chỉnh tại vị trí hiện tại.";
             _page.RefreshEditorActions();
+            // Playback has stopped: write out the pending playhead position (one time).
+            _page.NotifyEditorPlaybackStopped();
         }
 
         internal async Task SeekAsync(double sourcePosition)
@@ -432,7 +456,7 @@ public sealed partial class EditorPage
             if (play) player.Play();
             if (announcePlayback)
                 _page.StatusText.Text =
-                    $"Đang xem bản chỉnh từ {FormatClock(timelinePosition)}. Preview sẽ tiếp tục đến hết khoảng giữ lại.";
+                    $"Đang xem bản chỉnh từ {FormatClock(timelinePosition)}. Preview sẽ tiếp tục đến hết dải thời gian.";
             if (previousPath is not null && !string.Equals(previousPath, _previewPath, StringComparison.OrdinalIgnoreCase))
                 await _page._application.DeleteEditorPreviewSegmentAsync(previousPath);
         }
@@ -484,13 +508,19 @@ public sealed partial class EditorPage
                 rendered = null;
             }
             catch (OperationCanceledException) { }
-            catch { }
+            catch (Exception error)
+            {
+                BiliSubStudio.App.Services.StartupDiagnostics.WriteException("editor-preview-prefetch", error);
+            }
             finally
             {
                 if (rendered is not null)
                 {
                     try { await _page._application.DeleteEditorPreviewSegmentAsync(rendered.Path); }
-                    catch { }
+                    catch (Exception error)
+                    {
+                        BiliSubStudio.App.Services.StartupDiagnostics.WriteException("editor-preview-prefetch-cleanup", error);
+                    }
                 }
             }
         }
@@ -509,7 +539,7 @@ public sealed partial class EditorPage
             ++_playbackRevision;
             await _previewRequests.CancelAsync();
             try { await _prefetchTask; }
-            catch { }
+            catch (Exception error) { System.Diagnostics.Debug.WriteLine("editor-preview-prefetch-cancel: " + error); }
             _prefetchTask = Task.CompletedTask;
             _foregroundRendering = false;
             await DiscardPrefetchedSegmentAsync();
@@ -562,6 +592,9 @@ public sealed partial class EditorPage
         private void PlayerPositionChanged(MediaPlaybackSession sender, object args)
         {
             if (_isUnloading || !IsPreviewMode) return;
+            // While dragging the playhead, the user holds the position and the
+            // player must not drag the playhead back.
+            if (_page._timelinePlayheadDragging) return;
             var seconds = TimelinePositionForSource(
                 _sourceStart + Math.Clamp(sender.Position.TotalSeconds, 0, _sourceDuration));
             _page.DispatcherQueue.TryEnqueue(() =>
@@ -600,7 +633,7 @@ public sealed partial class EditorPage
             catch (Exception error) { _page.StatusText.Text = "Không tiếp tục được preview: " + error.Message; }
         }
 
-        /// <summary>Chuyển sang clip kế tiếp trên dải ghép khi đoạn hiện tại đã hết.</summary>
+        /// <summary>Moves to the next clip on the composed timeline when the current segment ends.</summary>
         private async Task<bool> ContinueWithNextClipAsync()
         {
             if (_activeClip is not { } clip) return false;

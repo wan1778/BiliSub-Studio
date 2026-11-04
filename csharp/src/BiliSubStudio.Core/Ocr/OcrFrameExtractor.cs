@@ -16,8 +16,8 @@ public static partial class OcrFrameExtractor
 
     public sealed record ShowInfoFrame(int N, long Pts, double PtsTime);
 
-    // Probe cache theo (path + size + mtime): ffprobe chạy nhiều lần cho cùng video trong
-    // một scan/replay (lane start, window compute, mỗi pixel check). File đổi => key đổi, không stale.
+    // Probe cache keyed by (path + size + mtime): ffprobe runs many times for the same video in
+    // one scan/replay (lane start, window compute, every pixel check). File changes => key changes, never stale.
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<(string Path, long Size, DateTime Written), VideoProbe?> ProbeCache = new();
 
     public static async Task<VideoProbe?> ProbeAsync(ToolManager tools, ProcessRunner processes, string videoPath, CancellationToken cancellationToken)
@@ -66,14 +66,14 @@ public static partial class OcrFrameExtractor
                     streamDuration = sd;
                 else if (key == "start_time" && double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var st) && double.IsFinite(st))
                 {
-                    // stream start_time ưu tiên, format start_time fallback. Domain absolute = media + start.
+                    // stream start_time takes priority, format start_time is the fallback. Absolute domain = media + start.
                     if (!hasStart) { startTime = Math.Max(0, st); hasStart = true; }
                 }
             }
             if (w <= 0 || h <= 0) return null;
             var frameDuration = fps > 0 ? 1.0 / fps : 0;
             var tbNum = 0; var tbDen = 0;
-            // Parse lại time_base rational để giữ exact Num/Den cho provenance validation.
+            // Re-parse the rational time_base to keep exact Num/Den for provenance validation.
             foreach (var line in result.StandardOutput.Split(['\n', '\r'], StringSplitOptions.RemoveEmptyEntries))
             {
                 var kv2 = line.Split('=', 2);
@@ -176,7 +176,7 @@ public static partial class OcrFrameExtractor
             if (process.ExitCode != 0) return null;
             var frames = ParseShowInfoFrames(stderr);
             if (frames.Count != 1) return null;
-            // Exact integer PTS match: frame dùng phải đúng SourcePts đã request. Không lấy frame gần nhất.
+            // Exact integer PTS match: the frame used must be exactly the requested SourcePts. Never take the nearest frame.
             if (expectedSourcePts.HasValue && frames[0].Pts != expectedSourcePts.Value) return null;
             var decodedPts = frames[0].PtsTime;
             var delta = decodedPts - requestedPts;
@@ -199,7 +199,7 @@ public static partial class OcrFrameExtractor
     public static IReadOnlyList<ShowInfoFrame> ParseShowInfoFrames(string stderr)
     {
         var list = new List<ShowInfoFrame>();
-        // Chỉ nhận line từ video filter showinfo, parse record hoàn chỉnh n/pts/pts_time.
+        // Only accept lines from the video filter showinfo, parsing complete n/pts/pts_time records.
         foreach (var line in stderr.Split(['\n', '\r'], StringSplitOptions.RemoveEmptyEntries))
         {
             if (!ShowInfoLinePattern.IsMatch(line)) continue;

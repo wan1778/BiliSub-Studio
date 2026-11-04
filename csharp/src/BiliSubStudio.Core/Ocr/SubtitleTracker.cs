@@ -11,9 +11,9 @@ internal sealed class SubtitleTracker
     // lasted only about 67 ms but previously passed whenever Paddle returned
     // two or more glyphs consistently.
     private const double MinimumEvidenceSeconds = .20;
-    // Cầu flicker (video Cả Lớp 19/09: 1 câu chẻ 3-5 cue): blank thật cần
-    // ≥0.55s (field evidence) nên chữ quay lại trong 0.5s sau chốt thì là cùng
-    // caption flicker — NỐI cue cũ thay vì mở cue mới.
+    // Flicker bridge (video Ca Lop 19/09: 1 sentence split into 3-5 cues): a real blank needs
+    // ≥0.55s (field evidence) so text returning within 0.5s after closing means the same
+    // caption flickering — CONNECT the old cue instead of opening a new one.
     private const double BridgeGapSeconds = 0.5;
     private readonly double _frameSpan;
     private readonly double _candidateGap;
@@ -83,7 +83,7 @@ internal sealed class SubtitleTracker
         _emptyHits = 0;
         _lastCommittedText = null;
         _lastCommittedEnd = 0;
-        // Giữ khả năng bridge qua resume: nhớ cue chốt cuối đã nạp.
+        // Preserve bridging across resume: remember the last closed cue from the loaded state.
         if (_committed.Count > 0)
         {
             _lastCommittedText = _committed[^1].Text;
@@ -293,11 +293,11 @@ internal sealed class SubtitleTracker
     private void PromoteCandidate(double frameDuration)
     {
         if (_candidate is null) return;
-        // Bridge: active đã chốt vì blank mà chữ tương đương quay lại trong
-        // BridgeGapSeconds thì NỐI cue vừa chốt (giữ Start, nối End, cộng
-        // support) thay vì mở cue mới. Chỉ nối khi candidate DÀI HƠN HOẶC BẰNG
-        // (fade-in/flicker-return): caption ngắn thật sau câu dài ("你走吧" rồi
-        // "走") KHÔNG nối — giữ tách như cũ.
+        // Bridge: if active closed due to a blank and equivalent text returns within
+        // BridgeGapSeconds, CONNECT the just-closed cue (keep Start, extend End, add
+        // support) instead of opening a new cue. Only connect when the candidate is LONGER THAN OR EQUAL TO
+        // (fade-in/flicker-return): a genuinely short caption after a long sentence ("你走吧" then
+        // "走") is NOT connected — keep separated as before.
         if (_active is null && _lastCommittedText is not null && _committed.Count > 0
             && _candidate.Start - _lastCommittedEnd <= BridgeGapSeconds
             && _candidate.Text.EnumerateRunes().Count() >= _lastCommittedText.EnumerateRunes().Count()
@@ -386,7 +386,7 @@ internal sealed class SubtitleTracker
         if (_sourceRoi is null) return null;
         if (result.Lines is null || result.Lines.Count == 0) return null;
         if (sourcePts is null || _sourceTimeBase is null) return null;
-        // Validate PtsTime ≈ SourcePts * Num/Den trong rounding nhỏ (timebase/2 + epsilon). Sai => Unavailable.
+        // Validate PtsTime ≈ SourcePts * Num/Den within a small rounding tolerance (timebase/2 + epsilon). Wrong => Unavailable.
         var expected = sourcePts.Value * (_sourceTimeBase.Num / (double)_sourceTimeBase.Den);
         var tbSeconds = _sourceTimeBase.Num / (double)_sourceTimeBase.Den;
         if (Math.Abs(atAbsolute - expected) > Math.Max(tbSeconds, 1e-6))
@@ -536,7 +536,7 @@ internal sealed class SubtitleTracker
         // Field-evidence additions (each caused a real cue split in production):
         // - 强/強: 15/9 lane 0 flicker 672-674 (1431-1433s), Paddle alternated per frame.
         // - 镇/鎮: p06 flicker khe 0.1s (IsShortSingleSubstitutionFlicker comment).
-        // - 凉/涼: p02 chém 1 cue thành 3 (TOMTAT v1.3).
+        // - 凉/涼: p02 chops 1 cue into 3 (TOMTAT v1.3).
         '強' => '强', '鎮' => '镇', '涼' => '凉',
         _ => value,
     };

@@ -3,9 +3,9 @@ using System.Drawing.Imaging;
 
 namespace BiliSubStudio.Core.Ocr;
 
-// Cắt JPEG theo vùng tương đối (probe style: cắt đúng ROI để worker đo vành chữ).
-// Windows-only (GDI+), fail-open: hỏng là trả null, caller dùng ảnh gốc.
-// Không bao giờ throw (trừ Dispose pattern chuẩn).
+// Crop a JPEG by a relative region (probe style: crop exactly the ROI so the worker measures the text outline).
+// Windows-only (GDI+), fail-open: on corruption return null and the caller uses the original image.
+// Never throws (except for the standard Dispose pattern).
 public static class OcrImageCrop
 {
     public static byte[]? CropJpeg(byte[]? jpeg, double x, double y, double width, double height)

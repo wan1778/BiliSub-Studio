@@ -60,17 +60,17 @@ internal static class EditorVoiceCuePlanner
         return cues.Where(cue => VietnameseTtsTextNormalizer.HasSpeakableUnits(cue.VietnameseText)).ToArray();
     }
 
-    // Vá cửa sổ voice trước khi đọc (23/09): mảnh timecode quá hẹp (<0.15s)
-    // thì không giọng nào đọc vừa -> worker giữ im lặng oan. Vá bằng 2 cách,
-    // đều KHÔNG đụng chữ, KHÔNG lấn câu khác, KHÔNG đổi thứ tự; 07/10 thêm:
-    // KHÔNG lùi Start sớm hơn giờ sub (chỉ nới End phải):
-    // 1. Hấp thụ mảnh trùng Y HỆT: mảnh hẹp kề (hở 0..1s, không chồng) với câu
-    //    chữ y hệt từng chữ thì gộp vào câu lành (giữ Id + chữ câu lành, nới
-    //    khung phủ cả mảnh). Chỉ gộp khi một bên hẹp + một bên lành nên thoại
-    //    lặp lành mạnh không bao giờ bị gộp oan.
-    // 2. Nới mảnh hẹp còn lại vào khoảng im PHẢI (tối đa 2s, chừa 0.05s
-    //    với câu sau). Mảnh chạm khít 2 bên thì không có chỗ nới -> giữ nguyên
-    //    cho worker xử lý (im lặng + cờ review, hiếm).
+    // Patch the voice window before reading (23/09): a too-narrow timecode sliver (<0.15s) cannot be
+    // read by any voice -> the worker keeps an unfair silence. Two patch mechanisms, both
+    // NOT touching text, NOT encroaching on another line, NOT changing order; 07/10 addition:
+    // do NOT move Start earlier than the subtitle time (only extend End to the right):
+    // 1. Absorb an EXACTLY identical sliver: a narrow adjacent sliver (gap 0..1s, no overlap) whose text
+    //    matches letter for letter is merged into the healthy line (keeping its Id + text, extending the
+    //    frame to cover the sliver). Merge only when one side is narrow and the other healthy so healthy
+    //    repeated dialogue is never merged by mistake.
+    // 2. Extend the remaining narrow sliver into the RIGHT silence (max 2s, leaving 0.05s
+    //    before the next line). A sliver touching both sides has no room to extend -> leave as is
+    //    for the worker to handle (silence + review flag, rare).
     public static IReadOnlyList<EditorSubtitleCue> RepairVoiceWindows(IReadOnlyList<EditorSubtitleCue> source)
     {
         ArgumentNullException.ThrowIfNull(source);
@@ -131,8 +131,8 @@ internal static class EditorVoiceCuePlanner
             if (index + 1 < absorbed.Count)
             {
                 var next = absorbed[index + 1];
-                // Chỉ nới phải khi hở thật (chừa 0.05s với câu sau); chạm khít thì thôi.
-                // Không nới lùi Start (07/10): giờ sub là tuyệt đối, voice không đọc sớm.
+                // Extend to the right only when there is a real gap (leaving 0.05s before the next line); stop if they touch exactly.
+                // Never extend Start backwards (07/10): the subtitle time is absolute, the voice must not read early.
                 if (next.Start - NeighborClearanceSeconds > end)
                     end = Math.Min(next.Start - NeighborClearanceSeconds, end + MaxExtendSeconds);
             }
@@ -141,18 +141,18 @@ internal static class EditorVoiceCuePlanner
         return repaired;
     }
 
-    // Nới cue CHẬT bằng khe im kề PHẢI (01/10, luật L-bệnh; 07/10 user bắt
-    // buộc sub hiện là voice đọc luôn nên CẤM mượn khe trái: Start không bao
-    // giờ lùi sớm hơn giờ sub, chỉ End nới phải lấy chỗ đọc. Cue cần pace
-    // vượt nhịp tự nhiên (need > 1) được mượn thời gian từ khoảng hở PHẢI để
-    // hạ need — trị gốc thay vì ép voice. KHÔNG trần cố định: mượn đúng số
-    // thiếu (required - window), lấy tới đâu khe phải cho tới đó (chừa 0.05s
-    // với cue sau), không bao giờ lấn/vượt cue khác, không đụng chữ, không
-    // đổi thứ tự, Start giữ nguyên tuyệt đối. Chỉ VieNeu (cần bảng pace
-    // preset); Piper giữ nguyên. Chạy sau RepairVoiceWindows, trước MapToCues
-    // để manifest/validator thấy khung đã nới là ground truth. Khe phải không
-    // đủ thì worker atempo ≤1.5x (micro 2.5x) gánh phần còn lại (vẫn review).
-    // Không phụ thuộc thứ tự duyệt (biên nào cũng tính từ cue gốc).
+    // Widen a TIGHT cue using the adjacent RIGHT silence (01/10, the L-pathological rule; 07/10 the user
+    // requires that the subtitle shown is also what the voice reads, so borrowing the left gap is FORBIDDEN:
+    // Start never goes earlier than the subtitle time, only End extends to the right for reading room.
+    // A cue whose pace requirement exceeds natural pace (need > 1) borrows time from the RIGHT gap
+    // to lower need — fixing the cause instead of forcing the voice. NO fixed ceiling: borrow exactly
+    // the missing amount (required - window), taking as much as the right gap allows (leaving 0.05s
+    // before the next cue), never encroaching/overrunning another cue, not touching text, not
+    // changing order, Start kept absolutely fixed. VieNeu only (needs the pace
+    // preset table); Piper stays as is. Runs after RepairVoiceWindows, before MapToCues
+    // so manifest/validator see the widened frame as ground truth. If the right gap is not
+    // enough, the worker's atempo ≤1.5x (micro 2.5x) picks up the rest (still review).
+    // Not dependent on traversal order (every boundary is computed from the original cue).
     public static IReadOnlyList<EditorSubtitleCue> WidenTightWindows(
         IReadOnlyList<EditorSubtitleCue> source, string voice, double durationSeconds)
     {
@@ -172,14 +172,14 @@ internal static class EditorVoiceCuePlanner
                 widened.Add(cue);
                 continue;
             }
-            // Đo GPU 02-03/10 (Ngọc Huyền 4.36 chữ/s): overhead cue ngắn theo
-            // số chữ, vì mào đầu prosody + đuôi dấu câu rơi vào chữ cuối:
-            // 1 chữ "Dung" +0.19s; 2 chữ "Đừng hoảng." +0.52s, "Cẩn thận."
-            // +0.66s, "Không động." +0.67s ("Vào đi." bloat +0.9s); 3 chữ
-            // "Đừng cựa quậy." +0.35s. Không tier này estimator need 0.999
-            // (vừa khít oan) rồi worker chết ở need thực 1.7-2.1x (vụ #2837,
-            // #6470). Khe không đủ thì worker atempo/micro-band + review gánh
-            // phần còn lại (trần giữ nguyên, không nới).
+            // GPU measurement 02-03/10 (Ngoc Huyen 4.36 chars/s): short-cue overhead scales by
+            // character count, because the prosody lead-in and the trailing punctuation fall on the last char:
+            // 1 char "Dung" +0.19s; 2 chars "Đừng hoảng." +0.52s, "Cẩn thận."
+            // +0.66s, "Không động." +0.67s ("Vào đi." bloat +0.9s); 3 chars
+            // "Đừng cựa quậy." +0.35s. Without this tier the estimator reports need 0.999
+            // (falsely an exact fit) and then the worker dies at the real need of 1.7-2.1x (issues #2837,
+            // #6470). If the gap is insufficient, the worker's atempo/micro-band + review cover
+            // the remainder (the ceiling stays as is, no widening).
             var overhead = words <= 1 ? .27 : words == 2 ? .70 : words <= 4 ? .40 : 0;
             var required = words / pace + overhead;
             var need = required / window;
@@ -189,22 +189,36 @@ internal static class EditorVoiceCuePlanner
                 continue;
             }
             var shortfall = required - window;
-            // Chỉ mượn khe PHẢI (07/10): Start giữ nguyên giờ sub để voice
-            // không bao giờ đọc sớm; End nới phải lấy chỗ đọc (chừa 0.05s với
-            // cue sau). rightEdge tính từ cue gốc (Start cue sau không bao giờ
-            // bị nới sớm nữa) nên thứ tự duyệt không ảnh hưởng kết quả.
+            // Borrow the RIGHT gap first (07/10): the subtitle appears when the voice
+            // speaks, so the voice never reads early while any trailing silence exists.
+            // rightEdge is computed from the original cue (the next cue's Start is never
+            // extended earlier any more), so traversal order does not affect the result.
             var rightEdge = index == source.Count - 1
                 ? durationSeconds
                 : source[index + 1].Start - NeighborClearanceSeconds;
             var rightAvail = Math.Max(0, rightEdge - cue.End);
-            if (rightAvail <= 0)
-            {
-                widened.Add(cue);
-                continue;
-            }
             var take = Math.Min(shortfall, rightAvail);
             var end = Math.Min(durationSeconds, cue.End + take);
-            widened.Add(end == cue.End ? cue : cue with { End = end });
+            var remaining = shortfall - take;
+            // F1 (17/11, user-approved): when the trailing gap runs out, a cue used to lose
+            // the tail of its sentence (the heard defect in an exported video), because the
+            // 1.5x pace ceiling cannot cover the shortfall either. Borrow the LEFT gap instead
+            // - reading slightly EARLY is allowed, and the voice is capped at MaxLeadSeconds so
+            // it never drifts away from its subtitle. Only the remainder after the right gap is
+            // borrowed, and the left edge keeps the 0.05s clearance from the previous cue.
+            var start = cue.Start;
+            if (remaining > 1e-9)
+            {
+                // The left edge uses the PREVIOUS cue's already-widened End (that cue may
+                // have borrowed into this very gap), so a lead never touches its neighbour.
+                var leftEdge = index == 0 || widened.Count < index
+                    ? 0
+                    : widened[widened.Count - 1].End + NeighborClearanceSeconds;
+                var leftAvail = Math.Max(0, cue.Start - leftEdge);
+                var lead = Math.Min(remaining, Math.Min(leftAvail, TtsTimingLimits.MaxLeadSeconds));
+                if (lead > 1e-9) start = Math.Max(0, cue.Start - lead);
+            }
+            widened.Add(start == cue.Start && end == cue.End ? cue : cue with { Start = start, End = end });
         }
         return widened;
     }

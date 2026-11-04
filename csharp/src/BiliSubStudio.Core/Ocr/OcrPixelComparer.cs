@@ -9,11 +9,11 @@ public sealed record PixelComparison(PixelCheckResult Result, FrameSample Left, 
 
 public interface IPixelComparer
 {
-    // Chỉ được gọi sau reconciler generic visual gate (adjacent + temporal continuity
-    // native-frame + spatial-compatible + provenance thật). Không yêu cầu text pattern:
-    // pixel là final gate duy nhất (Same mới merge). Tuyệt đối không dùng để scan/merge
-    // arbitrary cue pairs: pixel không phân biệt được same-text different-instance qua blank dài,
-    // nên far/non-continuation repeats không bao giờ tới được đây nhờ temporal gate.
+    // Only called after the reconciler's generic visual gate (adjacent + temporal continuity
+    // in native frames + spatial-compatible + real provenance). No text pattern required:
+    // pixel is the only final gate (only Same merges). Never use it to scan/merge
+    // arbitrary cue pairs: pixel cannot distinguish same-text different-instance across a long blank,
+    // so far/non-continuation repeats never reach here thanks to the temporal gate.
     Task<PixelComparison> CheckAsync(string videoPath, PixelObservation left, PixelObservation right, CancellationToken cancellationToken);
 }
 
@@ -28,9 +28,9 @@ public sealed class ProductionPixelComparer : IPixelComparer
     private readonly Processes.ProcessRunner? _processes;
     private readonly Processes.OwnedProcessGroup? _owner;
 
-    // Cache theo (video + SourcePtsA + SourcePtsB + sharedCrop): cùng một boundary
-    // (trace log + merge production, live + final replay) không decode lại.
-    // Instance-scope (một comparer một scan) nên không leak qua scans.
+    // Cache keyed by (video + SourcePtsA + SourcePtsB + sharedCrop): the same one boundary
+    // (trace log + production merge, live + final replay) never decodes again.
+    // Instance-scope (one comparer per scan) so it does not leak across scans.
     private readonly Dictionary<(string Video, long First, long Second, System.Drawing.Rectangle Crop), PixelComparison> _comparisonCache = new();
     private readonly object _cacheGate = new();
 
@@ -120,10 +120,10 @@ public sealed class ProductionPixelComparer : IPixelComparer
         string videoPath, PixelObservation left, PixelObservation right, System.Drawing.Rectangle shared)
         => (videoPath, left.SourcePts!.Value, right.SourcePts!.Value, shared);
 
-    // Sidecar pxv: xuất verdict RÕ RÀNG cho file đệm (bỏ path — identity file cover),
-    // và nạp lại đầu scan sau. Chỉ Same/Different (Unavailable tính lại, xem OcrSidecar).
-    // Metrics (ssim/fg/edge) KHÔNG persist: verdict đủ cho merge; trace diagnostic
-    // (ReconcileRangeAsync) hiện trống cho hit từ sidecar — chấp nhận được.
+    // Sidecar pxv: export CLEAR verdicts for the cache file (path dropped — file identity covers it),
+    // and reload them at the start of the next scan. Only Same/Different (Unavailable is recomputed, see OcrSidecar).
+    // Metrics (ssim/fg/edge) are NOT persisted: the verdict is enough for merge; the diagnostic trace
+    // (ReconcileRangeAsync) shows empty for sidecar hits — acceptable.
     public IReadOnlyList<(long First, long Second, System.Drawing.Rectangle Crop, PixelCheckResult Result)> Snapshot()
     {
         lock (_cacheGate)
@@ -156,7 +156,7 @@ public sealed class ProductionPixelComparer : IPixelComparer
 
     // Threshold production v1 (calibration 30 + 20 hard samples, line-bbox):
     // SAME: SSIM min 0.626, Edge min 0.857. DIFFERENT touching/handoff: SSIM max 0.196, Edge max 0.298.
-    // ForegroundIoU chỉ telemetry (SAME min 0.477 vs DIFFERENT handoff 0.525, không clean separation).
+    // ForegroundIoU is telemetry only (SAME min 0.477 vs DIFFERENT handoff 0.525, no clean separation).
     private const double SameMinSsim = 0.55;
     private const double SameMinEdgeIou = 0.80;
     private const double DifferentMaxSsim = 0.30;
@@ -170,7 +170,7 @@ public sealed class ProductionPixelComparer : IPixelComparer
         return PixelCheckResult.Unavailable;
     }
 
-    // Single source of truth: OCR filter và comparer dùng chung TryPlanOcrFrame.
+    // Single source of truth: the OCR filter and the comparer share TryPlanOcrFrame.
     public static OcrFrameGeometry? TryPlanOcrFrame(int sourceWidth, int sourceHeight, OcrRegion roi, int canvasW = 1280, int canvasH = 320)
     {
         if (sourceWidth <= 0 || sourceHeight <= 0 || canvasW <= 0 || canvasH <= 0) return null;
@@ -199,20 +199,20 @@ public sealed class ProductionPixelComparer : IPixelComparer
 
     public static string BuildOcrFilter(OcrFrameGeometry g, bool enhanced)
     {
-        // Dùng integer chính xác từ planner, không dùng force_original_aspect_ratio (tránh đoán rounding FFmpeg).
+        // Uses exact integers from the planner, not force_original_aspect_ratio (avoids guessing FFmpeg rounding).
         var baseFilter = $"crop={g.SourceCropW}:{g.SourceCropH}:{g.SourceCropX}:{g.SourceCropY},scale={g.ContentW}:{g.ContentH}:flags=fast_bilinear,pad={g.CanvasW}:{g.CanvasH}:{g.ContentLeft}:{g.ContentTop}:black";
         return enhanced ? baseFilter + ",eq=contrast=1.25:brightness=0.03,unsharp=5:5:0.8" : baseFilter;
     }
 
     public static System.Drawing.Rectangle ToSourceRect(PixelObservation obs, int sourceWidth, int sourceHeight)
     {
-        // Dùng exact Geometry đã lưu cho chính frame đó. Null (fallback/checkpoint cũ) => Unavailable, không recompute đoán.
+        // Uses the exact Geometry stored for that very frame. Null (fallback/old checkpoint) => Unavailable, no guessing recompute.
         var g = obs.Geometry;
         if (g is null) return System.Drawing.Rectangle.Empty;
         if (obs.SourceRoi is null) return System.Drawing.Rectangle.Empty;
         if (sourceWidth <= 0 || sourceHeight <= 0) return System.Drawing.Rectangle.Empty;
         var box = obs.BoxInOcrCrop;
-        // Intersect với ContentRect trước. Empty => Unavailable (bbox trong padding).
+        // Intersect with ContentRect first. Empty => Unavailable (bbox inside padding).
         var ix1 = Math.Max(box.Left, g.ContentLeft);
         var iy1 = Math.Max(box.Top, g.ContentTop);
         var ix2 = Math.Min(box.Right, g.ContentLeft + g.ContentW);
@@ -222,7 +222,7 @@ public sealed class ProductionPixelComparer : IPixelComparer
         var cy1 = (iy1 - g.ContentTop) / (double)g.ContentH;
         var cx2 = (ix2 - g.ContentLeft) / (double)g.ContentW;
         var cy2 = (iy2 - g.ContentTop) / (double)g.ContentH;
-        // Partial-overlap: phần giao vẫn map đúng, phần padding bị cắt bỏ ở trên.
+        // Partial-overlap: the intersecting part still maps correctly, the padding part is cut away above.
         var srcX1 = g.SourceCropX + cx1 * g.SourceCropW;
         var srcY1 = g.SourceCropY + cy1 * g.SourceCropH;
         var srcX2 = g.SourceCropX + cx2 * g.SourceCropW;

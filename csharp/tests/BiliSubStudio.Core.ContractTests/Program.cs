@@ -39,7 +39,6 @@ internal static class Program
         ("download endpoint race selects fastest route and short-body dribble rotates fast", DownloadEndpointContract.RunAsync),
         ("resolve retries only transient network blips, never auth blocks", DownloadResilienceContract.ResolveRetryClassificationAsync),
         ("download 412 failures tell the user to re-login once", DownloadResilienceContract.SessionGuidanceAsync),
-        ("Chrome login bridge accepts only its one-time token and Bilibili cookies", ChromeLoginBridgeContractAsync),
         ("stale yt-dlp refreshes weekly and permanent resolve errors stay actionable", ResolveToolPolicyAsync),
         ("OCR probe memory fallback preserves every transition score", OcrProbeChunkContractAsync),
         ("fully stalled route fails fast instead of hanging forever", DownloadResilienceContract.StallDetectorAsync),
@@ -68,7 +67,6 @@ internal static class Program
         ("editor preview cache removes normal and crash leftovers", EditorPreviewCacheCleanupContractAsync),
         ("Whisper word timing maps pauses and karaoke ASS", EditorSpeechTimingKaraokeContractAsync),
         ("ASR checkpoint replacement retries file locks and preserves recoverable state", EditorAsrCheckpointContract.RunAsync),
-        ("local NghiTTS manifest and rhythm grouping stay pinned", LocalTtsContractAsync),
         ("voice track mixes identically for keep duck mute", EditorVoiceMixContractAsync),
         ("editor final render validates streams duration and audio policy", EditorRenderValidationContractAsync),
         ("editor export dialog settings map H264 H265 quality size FPS GPU and audio to FFmpeg", EditorExportSettingsContractAsync),
@@ -88,6 +86,20 @@ internal static class Program
         ("editor timeline maps seconds to pixels, clamps zoom and virtualizes the viewport", EditorTimelineLayoutContract.RunAsync),
         ("editor timeline retiming keeps SRT timecodes and never overlaps neighbor cues", EditorSubtitleRetimingContract.RunAsync),
         ("editor timeline composes multiple clips and maps timeline time back to source time", EditorTimelineCompositionContract.RunAsync),
+        ("editor timeline trims clip edges, grabs them within 10 screen pixels and snaps edges within 9 screen pixels", EditorTimelineEditingContract.RunAsync),
+        ("editor timeline history undoes and redoes clip edits and drops the pending redo", EditorTimelineHistoryContract.RunAsync),
+        ("editor timeline clip body drag reorders clips and marks the insertion slot", EditorTimelineClipMoveContract.RunAsync),
+        ("editor playhead snaps to media frames, persists per project and follows the viewport", EditorTimelinePlayheadContract.RunAsync),
+        ("editor per-clip SRT binds to timeline clip ids and drops stale or missing bindings", EditorClipSubtitleContract.RunAsync),
+        ("editor import pairs each video with its Vietnamese sidecar SRT by name and episode number", EditorSidecarSubtitlesContract.RunAsync),
+        ("editor playhead can be dragged on the strip and playback starts from it", EditorTimelinePlaybackStartContract.RunAsync),
+        ("editor playhead grab zone is wide enough and only opens on the ruler band", EditorTimelinePlayheadGrabContract.RunAsync),
+        ("editor timeline lanes stack effects subtitles video voice and the panel fits them all", EditorTimelineLaneContract.RunAsync),
+        ("voice waveform peaks decode in 20 ms buckets and the cache follows the voice file", EditorVoiceWaveformContract.RunAsync),
+        ("editor timeline strip keeps an empty working tail as long as the video behind it", EditorTimelineTailContract.RunAsync),
+        ("editor playhead saves on seek with debounce and never while playing", EditorPlayheadSaveContract.RunAsync),
+        ("editor shortcuts are declared once and conflicts are detected", EditorShortcutsContract.RunAsync),
+        ("editor composed export normalizes every segment and joins them into one file", EditorComposedExportContract.RunAsync),
         ("editor clean effect removes objects with direct delogo and strength-free persistence", EditorCleanEffectContract.RunAsync),
         ("editor Mosaic strength drives pixelated Preview Export dimensions", EditorMosaicStrengthContractAsync),
         ("editor Cover is opaque strength-free and preserves Preview Export geometry", EditorCoverEffectContractAsync),
@@ -175,6 +187,8 @@ internal static class Program
         ("portable update rolls back the previous runtime on invalid payload", UpdateRollbackContractAsync),
         ("bug reports redact secrets and Windows user paths", BugReportSanitizationContractAsync),
         ("public OCR API does not expose internal installer", OcrPublicApiContractAsync),
+        ("collection part URLs switch the p selector and preserve every other parameter", BilibiliPartUrlContract),
+        ("browser session import reads the Bilibili session out of local Chromium and Firefox cookie stores", BrowserCookieReaderContract.RunAsync),
     ];
 
     private static async Task<int> Main(string[] arguments)
@@ -193,8 +207,8 @@ internal static class Program
             return await BilibiliSubtitleRuntimeContract.RunAsync(biliBvid, biliCookieFile);
         if (arguments is ["--asr-voice-runtime", var asrRoot, var asrVideo, var asrSrt])
             return await EditorAsrVoiceRuntimeContract.RunAsync(asrRoot, asrVideo, asrSrt);
-        if (arguments is ["--nghi-tts-runtime", var ttsRoot, var ttsVideo])
-            return await EditorNghiTtsRuntimeContract.RunAsync(ttsRoot, ttsVideo);
+        if (arguments is ["--composed-export-runtime", var composedRoot, var composedTools])
+            return await EditorComposedExportContract.RunRuntimeAsync(composedRoot, composedTools);
         if (arguments is ["--ocr-lane-ffmpeg", var ffmpeg, var source, var decoder])
             return await OcrLaneCoverageRegression.RunFfmpegAsync(ffmpeg, source, decoder == "nvdec");
         if (arguments is ["--fixture-hold-open"])
@@ -258,6 +272,7 @@ internal static class Program
             Equal("dark", config.Theme);
             Equal(paths.DefaultDownloads, config.OutputDirectory);
             Equal(paths.DefaultDownloads, config.OcrOutputDirectory);
+            Equal(paths.DefaultDownloads, config.EditorOutputDirectory);
             Equal("srt", config.SubtitleFormat);
             Equal("fast", config.VideoSpeed);
             Equal("mp4", config.VideoContainer);
@@ -274,7 +289,7 @@ internal static class Program
             True(json.EndsWith('\n'), "config.json must end with a single LF");
             foreach (var name in new[]
             {
-                "theme", "output_dir", "ocr_output_dir", "sub_format", "video_speed", "video_container",
+                "theme", "output_dir", "ocr_output_dir", "editor_output_dir", "sub_format", "video_speed", "video_container",
                 "video_mode", "check_updates", "ocr_device", "ocr_top", "ocr_bottom",
                 "ocr_left", "ocr_right",
             })
@@ -313,6 +328,7 @@ internal static class Program
             Equal("dark", config.Theme);
             Equal(paths.DefaultDownloads, config.OutputDirectory);
             Equal(paths.DefaultDownloads, config.OcrOutputDirectory);
+            Equal(paths.DefaultDownloads, config.EditorOutputDirectory);
             Equal("srt", config.SubtitleFormat);
             Equal("fast", config.VideoSpeed);
             Equal("mp4", config.VideoContainer);
@@ -390,6 +406,19 @@ internal static class Program
             Equal(ocrOutput, changed.Config.OcrOutputDirectory);
             True(Directory.Exists(ocrOutput), "application boundary did not create OCR output directory");
 
+            // The Edit tab owns its own folder: moving the download folder must
+            // not retarget the Editor export folder, and the other way around.
+            var editorOutput = Path.Combine(root, "EditorOutput");
+            changed = await service.SetEditorOutputDirectoryAsync($"  {editorOutput}  ");
+            Equal(editorOutput, changed.Config.EditorOutputDirectory);
+            Equal(output, changed.Config.OutputDirectory);
+            True(Directory.Exists(editorOutput), "application boundary did not create Editor output directory");
+
+            var downloadOnly = Path.Combine(root, "DownloadOnly");
+            changed = await service.SetOutputDirectoryAsync($"  {downloadOnly}  ");
+            Equal(downloadOnly, changed.Config.OutputDirectory);
+            Equal(editorOutput, changed.Config.EditorOutputDirectory);
+
             changed = await service.SetThemeAsync(" LIGHT ");
             Equal("light", changed.Config.Theme);
             changed = await service.SetUpdateCheckAsync(false);
@@ -398,14 +427,15 @@ internal static class Program
             await ThrowsAsync<ArgumentException>(() => service.SetThemeAsync("system"));
             await ThrowsAsync<ArgumentException>(() => service.SetOutputDirectoryAsync("  "));
             await ThrowsAsync<ArgumentException>(() => service.SetOcrOutputDirectoryAsync("  "));
+            await ThrowsAsync<ArgumentException>(() => service.SetEditorOutputDirectoryAsync("  "));
         });
     }
 
     private static async Task StorageUsageCachedAsync()
     {
-        // Vụ 27/09: đổi thư mục lưu treo 3-5 phút vì mỗi Set* đợi quét đệ quy
-        // toàn bộ Data/Tools/Ocr/Temp/Cache. Lần đọc 2 trong TTL phải trả cache
-        // (không thấy file mới), đổi setting không bao giờ chờ quét đĩa.
+        // Incident 27/09: changing the save directory hung for 3-5 minutes because every Set* waited on a
+        // recursive scan of all of Data/Tools/Ocr/Temp/Cache. A read within the TTL must return the cache
+        // (not seeing new files), and changing a setting must never wait on a disk scan.
         await WithTemporaryRootAsync(async root =>
         {
             var paths = AppPaths.FromRoot(root);
@@ -462,8 +492,8 @@ internal static class Program
         });
     }
 
-    // Vụ mất config 16/09: Update trước Initialize mà ghi defaults là xóa sạch
-    // cấu hình user. Từ nay Update tự nạp file trước (dưới cùng gate).
+    // The lost-config incident 16/09: Update before Initialize writing defaults wiped the
+    // user's entire configuration. From now on Update loads the file itself first (under the same gate).
     private static async Task ConfigUpdateBeforeInitializeLoadsAsync()
     {
         await WithTemporaryRootAsync(async root =>
@@ -581,9 +611,9 @@ internal static class Program
         });
     }
 
-    // Field 2026-09-05: CDN báo Content-Range total 43,9 MB cho audio metadata
-    // 74,6 MB. Mọi check segment/assemble đều dùng total ảo nên file thiếu vẫn
-    // "hoàn tất" và ra file mất tiếng từ giữa. Total ảo phải nổ to.
+    // Field 2026-09-05: the CDN reported a Content-Range total of 43.9 MB for 74.6 MB of audio metadata.
+    // Every segment check/assemble used the phantom total, so an under-size file still
+    // "completed" and produced a file losing audio from the middle. The phantom total must explode loudly.
     private static async Task RangeProbeTotalMismatchAsync()
     {
         await WithTemporaryRootAsync(async root =>
@@ -627,9 +657,9 @@ internal static class Program
         return Task.CompletedTask;
     }
 
-    // Field 2026-09-06: output fallback thiếu của lần trước phải bị xóa đầu
-    // lần fallback sau (nếu không --no-overwrites tái dùng file hỏng), nhưng
-    // .part/.ytdl resume và prefix stream khác phải giữ nguyên.
+    // Field 2026-09-06: the output fallback from the previous attempt must be deleted at the start of the
+    // next fallback (otherwise --no-overwrites reuses a broken file), but the .part/.ytdl resume and
+    // the stream prefix must be left untouched.
     private static Task FallbackStaleCleanupAsync()
     {
         return WithTemporaryRootAsync(root =>
@@ -658,8 +688,8 @@ internal static class Program
         });
     }
 
-    // MethodBase.Invoke bọc lỗi vào TargetInvocationException: mở ra để assert
-    // đúng InvalidDataException của gate, không phải lỗi reflection.
+    // MethodBase.Invoke wraps errors in TargetInvocationException: unwrap so the assert hits the
+    // gate's InvalidDataException, not a reflection error.
     private static void ExpectInvalidData(Func<object?> action)
     {
         try
@@ -815,6 +845,10 @@ internal static class Program
             "plain still-frame Preview lost its lightweight path");
         True(!plainArguments.Contains("ass=filename=", StringComparison.Ordinal),
             "plain still-frame Preview unexpectedly enabled ASS");
+        // A video with a full-range colour range makes the mjpeg encoder refuse it ("Non full-range
+        // YUV is non-standard"), so the non-standard standard must be allowed.
+        True(plainArguments.Contains("-c:v mjpeg -strict unofficial", StringComparison.Ordinal),
+            "still-frame Preview must allow non-standard YUV for the mjpeg encoder");
         return Task.CompletedTask;
     }
 
@@ -1220,39 +1254,6 @@ internal static class Program
         });
     }
 
-    private static Task LocalTtsContractAsync()
-    {
-        var assembly = typeof(VideoEditorService).Assembly;
-        var installer = assembly.GetType("BiliSubStudio.Core.Editor.LocalTtsInstaller")
-            ?? throw new InvalidOperationException("missing LocalTtsInstaller type");
-        static object? Constant(Type type, string name) => type.GetField(name, BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public)?.GetRawConstantValue();
-        Equal("1.4.2", Constant(installer, "PiperVersion")?.ToString());
-        True((Constant(installer, "PiperWheel")?.ToString() ?? string.Empty).EndsWith("#sha256=9c4a3a11f5889ea9d0df4414dce2bd9bee5ce7d9cf604c8fd5e307441d4c031f", StringComparison.Ordinal),
-            "Piper Windows wheel hash drift");
-        Equal("62e57b18157ed213b3863a7a8a35b14d3404554b", Constant(installer, "VoiceRevision")?.ToString());
-        Equal("deepman3909", Constant(installer, "MaleVoice")?.ToString());
-        Equal("calmwoman3688", Constant(installer, "FemaleVoice")?.ToString());
-        Equal(63_516_050L, (long)(Constant(installer, "VoiceModelBytes") ?? 0L));
-        Equal("1fb3a404e9927c87367d4175e8cad24ffc6d9959af29888c38682e5ec621056c", Constant(installer, "MaleModelSha256")?.ToString());
-        Equal("8db60d8afc50dc0921fd3a1b0b942813f44cc3744dbe2534617f2b8726096e7e", Constant(installer, "FemaleModelSha256")?.ToString());
-
-        var service = assembly.GetType("BiliSubStudio.Core.Editor.LocalTtsService")
-            ?? throw new InvalidOperationException("missing LocalTtsService type");
-        var method = service.GetMethod("BuildRhythmGroups", BindingFlags.Static | BindingFlags.NonPublic)
-            ?? throw new InvalidOperationException("missing TTS rhythm grouping policy");
-        var cue = new EditorSubtitleCue("rhythm-cue-0001", "1", "00:00:01,000 --> 00:00:05,000", 1, 5, "你好", "Xin chào đạo hữu");
-        var timing = new EditorCueSpeechTiming(cue.Id, 1, 5, 1.2, 4.7, .2, .3,
-            [new EditorWordTiming("你", 1.2, 2, .9), new EditorWordTiming("好", 3, 4.7, .9)],
-            [new EditorPauseTiming(2, 3)], "female_like", .8, 210);
-        var groups = ((System.Collections.IEnumerable)method.Invoke(null, [cue, timing, "Xin chào đạo hữu", "female"])!).Cast<object>().ToArray();
-        Equal(2, groups.Length);
-        var firstType = groups[0].GetType();
-        Equal(1.2d, (double)(firstType.GetProperty("Start")?.GetValue(groups[0]) ?? 0d));
-        Equal(2d, (double)(firstType.GetProperty("End")?.GetValue(groups[0]) ?? 0d));
-        True(!string.IsNullOrWhiteSpace(firstType.GetProperty("Text")?.GetValue(groups[0])?.ToString()), "TTS first rhythm group lost Vietnamese text");
-        return Task.CompletedTask;
-    }
-
     private static Task EditorVoiceMixContractAsync()
     {
         var method = typeof(VideoEditorService).GetMethod("BuildVoiceAudioFilter", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public)
@@ -1269,10 +1270,10 @@ internal static class Program
         var mute = Graph(new EditorAudioSettings("mute", 0));
         True(!mute.Contains("[0:a]", StringComparison.Ordinal), "mute+voice unexpectedly kept source audio");
         True(mute.Contains("[voicea]anull[aout]", StringComparison.Ordinal), "mute+voice did not route TTS to output");
-        // 09/10 vụ voice chỗ to chỗ nhỏ + 11/10 vụ kéo gain là phập phù:
-        // nhánh voice: loudnorm (nền -18) -> acompressor nhẹ (ghìm đỉnh,
-        // 11/10 AB: dí trần ở gain 2.0 giảm 147->52, swing p95 tốt nhất)
-        // -> gain user -> alimiter (lưới an toàn). Gain to không còn bơm limiter.
+        // 09/10 voice sometimes loud sometimes quiet + 11/10 gain drags with pumping:
+        // voice branch: loudnorm (base -18) -> a light acompressor (peak control,
+        // 11/10 AB: clamping at gain 2.0 drops from 147 to 52, p95 swing best)
+        // -> user gain -> alimiter (safety net). A large gain no longer pumps the limiter.
         var voiceChain = keep.Split("[voicea]")[0].Split(";")[^1];
         True(voiceChain.Contains("loudnorm=I=-18:TP=-1.5:LRA=7", StringComparison.Ordinal), "voice leveling (loudnorm) missing from voice chain");
         True(voiceChain.Contains("acompressor=threshold=-24dB:ratio=3:attack=20:release=200:makeup=6dB", StringComparison.Ordinal), "voice glue compressor missing from voice chain");
@@ -1322,8 +1323,8 @@ internal static class Program
             VietnameseTtsTextNormalizer.Normalize("Hôm nay 02/03/2026 lúc 09:05"));
         Equal("ba phẩy hai phần trăm", VietnameseTtsTextNormalizer.Normalize("3,2%"));
         Equal("một trăm hai mươi ba", VietnameseTtsTextNormalizer.Normalize("123"));
-        // 10/10 vụ voice đánh vần chữ IN HOA: cả cue không có chữ thường thì
-        // gập để đọc liền mạch; viết tắt lẻ trong câu thường thì giữ nguyên.
+        // 10/10 voice spelling words in CAPITALS: a cue with no lowercase letters is lowercased
+        // to be read fluently; a lone abbreviation inside a normal sentence is kept as is.
         Equal("phim được thuyết minh bởi trang phây-búc mê tu tiên",
             VietnameseTtsTextNormalizer.Normalize("PHIM ĐƯỢC THUYẾT MINH BỞI\r\nTRANG PHÂY-BÚC MÊ TU TIÊN"));
         Equal("a!", VietnameseTtsTextNormalizer.Normalize("A!"));
@@ -1776,7 +1777,7 @@ internal static class Program
             "NormalizeRegions", BindingFlags.Static | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("missing Cover persistence normalization policy");
         var normalized = (IReadOnlyList<EditRegion>)normalizeMethod.Invoke(null,
-            [new[] { new EditRegion(.1, .2, .3, .25, "cover", 37, true, 0, 10, "cover-persisted") }, 10d, false])!;
+            [new[] { new EditRegion(.1, .2, .3, .25, "cover", 37, true, 0, 10, "cover-persisted") }, 10d, 10d, false])!;
         Equal(EditorCoverEffect.StoredStrength, normalized[0].Strength);
 
         var region = new EditRegion(.1, .2, .3, .25, "cover", EditorCoverEffect.StoredStrength, true, 0, 10, "cover");
@@ -2107,6 +2108,13 @@ internal static class Program
 
             var firstStore = new EditorProjectStore(paths);
             var created = await firstStore.LoadOrCreateAsync(video, width, height, duration, CancellationToken.None);
+            var secondVideo = Path.Combine(root, "region-reopen-second.mp4");
+            await File.WriteAllBytesAsync(secondVideo, sourceBytes);
+            var timeline = new EditorTimelineProject(
+            [
+                new EditorTimelineClip(EditorTimelineComposition.PrimaryClipId, video, 0, 60, "source"),
+                new EditorTimelineClip("reopen-second", secondVideo, 0, 70, "second"),
+            ]);
             var editedDocument = new EditorRegionDocument();
             editedDocument.Reset([]);
             EditRegion[] expected =
@@ -2114,9 +2122,14 @@ internal static class Program
                 new(.101, .202, .303, .204, "blur", 18, false, 1.25, 5.75, "reopen-blur"),
                 new(.55, .15, .2, .2, "mosaic", 12, true, 0, duration, "reopen-mosaic"),
                 new(.02, .03, .1, .08, "cover", 0, false, 10, 20, "reopen-cover"),
+                // The primary clip ends at 60s but the composed strip continues
+                // to 130s: region time must keep the part that covers segment 2.
+                new(.3, .2, .2, .2, "blur", 18, false, 60, 130, "reopen-extended"),
             ];
             foreach (var region in expected) editedDocument.Add(region);
-            await firstStore.SaveAsync(created with { Regions = editedDocument.Regions.ToArray() }, CancellationToken.None);
+            await firstStore.SaveAsync(
+                created with { Regions = editedDocument.Regions.ToArray(), Timeline = timeline },
+                CancellationToken.None);
             var sourceAfterFirstSave = await File.ReadAllBytesAsync(video);
             True(sourceBytes.SequenceEqual(sourceAfterFirstSave),
                 "saving region project overwrote source media bytes");
@@ -2145,8 +2158,8 @@ internal static class Program
             True(sourceBytes.SequenceEqual(sourceAfterSecondSave),
                 "repeated region project reopen/save changed source media bytes");
 
-            // RELINK (kiểu Adobe): file di chuyển sang đường dẫn mới nhưng cùng
-            // nội dung thì nối lại được, giữ nguyên regions; file lạ bị từ chối.
+            // RELINK (Adobe-style): a file moved to a new path but with identical
+            // content can be re-linked and its regions are preserved; a foreign file is rejected.
             var movedVideo = Path.Combine(root, "region-reopen-moved.mp4");
             await File.WriteAllBytesAsync(movedVideo, sourceBytes);
             var relinked = await secondStore.RelinkAsync(
@@ -3045,8 +3058,9 @@ internal static class Program
         var blocked = YtDlpResolver.DescribeResolveFailure(
             extractor,
             new HttpRequestException("Bilibili API HTTP 412.", null, HttpStatusCode.PreconditionFailed));
-        True(blocked.Contains("Đồng bộ lại từ Chrome", StringComparison.Ordinal),
-            "412 did not point the user back to the Chrome session sync");
+        True(blocked.Contains("412", StringComparison.Ordinal) &&
+            blocked.Contains("đăng nhập lại bằng QR", StringComparison.Ordinal),
+            "412 did not point the user back to a fresh Bilibili login");
         return Task.CompletedTask;
     }
 
@@ -3066,79 +3080,6 @@ internal static class Program
         True(noShadow.BandChangeScores is null && noShadow.EdgeDensity is null,
             "missing shadow fields must stay absent after a split");
         return Task.CompletedTask;
-    }
-
-    private static async Task ChromeLoginBridgeContractAsync()
-    {
-        string? imported = null;
-        await using var server = new ChromeLoginBridgeServer("test-page-secret", (cookie, _) =>
-        {
-            imported = cookie;
-            return Task.FromResult("Tester");
-        });
-        using var http = new HttpClient(new HttpClientHandler { UseProxy = false });
-        var page = await http.GetStringAsync(server.Url);
-        True(page.Contains("name=\"bilisub-bridge\"", StringComparison.Ordinal), "bridge page meta tag missing");
-        True(page.Contains("name=\"bilisub-bridge-secret\"", StringComparison.Ordinal), "bridge page secret meta tag missing");
-        True(page.Contains("test-page-secret", StringComparison.Ordinal), "bridge page secret missing");
-        True(page.Contains(server.Token, StringComparison.Ordinal), "bridge page token missing");
-        True(!page.Contains("<input", StringComparison.OrdinalIgnoreCase), "bridge page must not host a login form");
-
-        var sessionUrl = new Uri(new Uri(server.Url), "/session");
-        using var bad = await http.PostAsync(
-            sessionUrl,
-            new StringContent("{\"token\":\"wrong\",\"sessdata\":\"x\"}", System.Text.Encoding.UTF8, "application/json"));
-        Equal(HttpStatusCode.Forbidden, bad.StatusCode);
-
-        using var response = await http.PostAsync(
-            sessionUrl,
-            new StringContent(
-                JsonSerializer.Serialize(new
-                {
-                    token = server.Token,
-                    sessdata = "test-session",
-                    cookies = "SESSDATA=test-session; buvid3=device-1; b_nut=1"
-                }),
-                System.Text.Encoding.UTF8,
-                "application/json"));
-        Equal(HttpStatusCode.OK, response.StatusCode);
-        Equal("SESSDATA=test-session; buvid3=device-1; b_nut=1", imported);
-        Equal("Tester", await server.WaitForSessionAsync(TimeSpan.FromSeconds(2), CancellationToken.None));
-
-        string? mismatchImported = null;
-        await using var mismatch = new ChromeLoginBridgeServer("test-page-secret", (cookie, _) =>
-        {
-            mismatchImported = cookie;
-            return Task.FromResult("Mismatch");
-        });
-        using var mismatchResponse = await http.PostAsync(
-            new Uri(new Uri(mismatch.Url), "/session"),
-            new StringContent(
-                JsonSerializer.Serialize(new
-                {
-                    token = mismatch.Token,
-                    sessdata = "test-session",
-                    cookies = "SESSDATA=other-session; buvid3=device-1"
-                }),
-                System.Text.Encoding.UTF8,
-                "application/json"));
-        Equal(HttpStatusCode.BadRequest, mismatchResponse.StatusCode);
-        True(mismatchImported is null, "mismatched session cookies must not reach the importer");
-
-        string? legacyImported = null;
-        await using var legacy = new ChromeLoginBridgeServer("test-page-secret", (cookie, _) =>
-        {
-            legacyImported = cookie;
-            return Task.FromResult("LegacyTester");
-        });
-        using var legacyResponse = await http.PostAsync(
-            new Uri(new Uri(legacy.Url), "/session"),
-            new StringContent(
-                JsonSerializer.Serialize(new { token = legacy.Token, sessdata = "legacy-session" }),
-                System.Text.Encoding.UTF8,
-                "application/json"));
-        Equal(HttpStatusCode.OK, legacyResponse.StatusCode);
-        Equal("SESSDATA=legacy-session", legacyImported);
     }
 
     private static ResolvedStream FixtureStream(long size) => new(StreamKind.Video, "v1", "https://fixture.invalid/video", new Dictionary<string, string>(), size, 1080, "m4s", 1);
@@ -3239,6 +3180,26 @@ internal static class Program
         try { action(); }
         catch (TException) { return; }
         throw new InvalidOperationException($"expected exception {typeof(TException).Name}");
+    }
+
+    private static Task BilibiliPartUrlContract()
+    {
+        // Selecting a part must not disturb any other query parameter, and a
+        // re-selection must replace the previous p= instead of accumulating.
+        Equal(3, BilibiliPartUrl.ReadPart("https://www.bilibili.com/video/BV1xx?p=3&vd_source=abc"));
+        Equal(0, BilibiliPartUrl.ReadPart("https://www.bilibili.com/video/BV1xx?vd_source=abc"));
+        Equal("https://www.bilibili.com/video/BV1xx?p=3",
+            BilibiliPartUrl.WithPart("https://www.bilibili.com/video/BV1xx", 3));
+        // The p selector may land at either end of the query; what matters is
+        // that it replaces the old part instead of accumulating with it.
+        Equal("https://www.bilibili.com/video/BV1xx?vd_source=abc&p=2",
+            BilibiliPartUrl.WithPart("https://www.bilibili.com/video/BV1xx?p=4&vd_source=abc", 2));
+        Equal("https://www.bilibili.com/video/BV1xx?spm=xyz",
+            BilibiliPartUrl.StripPart("https://www.bilibili.com/video/BV1xx?p=9&spm=xyz"));
+        Equal("https://www.bilibili.com/video/BV1xx",
+            BilibiliPartUrl.WithPart("https://www.bilibili.com/video/BV1xx?p=4", 1).Replace("?p=1", string.Empty));
+        Equal("", BilibiliPartUrl.WithPart(string.Empty, 2));
+        return Task.CompletedTask;
     }
 
     private static void ThrowsReflection<TException>(Action action)

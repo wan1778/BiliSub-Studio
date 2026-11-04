@@ -4,9 +4,9 @@ using BiliSubStudio.Core.Ocr;
 
 namespace BiliSubStudio.Core.ContractTests;
 
-// Nghe riêng (Whisper-only, 23/09): mã project ổn định theo vân file để dừng
-// rồi nối đúng sổ; đọc sổ dở chịu được file thiếu/hỏng (không bao giờ throw
-// ra UI đang hiện trực tiếp).
+// Listen-only (Whisper-only, 23/09): the project id is stable across the file fingerprint so stopping
+// and resuming reattaches to the right journal; reading a partial journal tolerates missing/corrupt files (it never throws
+// out to the live UI).
 internal static class OcrListenContract
 {
     public static Task RunAsync()

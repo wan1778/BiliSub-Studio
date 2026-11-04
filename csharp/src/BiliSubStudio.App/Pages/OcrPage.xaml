@@ -170,7 +170,10 @@
                                     <TextBox Grid.Column="1" x:Name="AutoSaveDirectoryBox" IsReadOnly="True" AutomationProperties.Name="Thư mục tự lưu SRT OCR" />
                                     <Button Grid.Column="2" x:Name="AutoSaveFolderButton" Click="ChooseAutoSaveFolder_Click" Content="Chọn thư mục" Style="{StaticResource SecondaryButtonStyle}" />
                                 </Grid>
-                                <TextBlock FontSize="10" Foreground="{ThemeResource MutedTextBrush}" Text="OCR hoàn tất sẽ tự lưu SRT vào thư mục đã chọn." TextWrapping="Wrap" />
+                                <CheckBox x:Name="AutoSaveBesideVideoCheckBox" Content="Lưu SRT kế bên từng video (mặc định)" IsChecked="True"
+                                          Checked="AutoSaveBesideVideo_Changed" Unchecked="AutoSaveBesideVideo_Changed" />
+                                <TextBlock FontSize="10" Foreground="{ThemeResource MutedTextBrush}"
+                                           Text="Mặc định: mỗi video trong hàng chợ OCR xong sẽ lưu SRT ngay kế bên video đó (video ở thư mục nào thì SRT ra thư mục đó). Tắt tuỳ chọn này để lưu tất cả vào một thư mục chung." TextWrapping="Wrap" />
                             </StackPanel>
                         </Border>
                         <Border Style="{StaticResource CardBorderStyle}">

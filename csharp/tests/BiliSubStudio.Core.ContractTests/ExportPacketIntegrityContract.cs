@@ -5,10 +5,11 @@ using BiliSubStudio.Core.Editor;
 
 namespace BiliSubStudio.Core.ContractTests;
 
-// 08/10 vụ 123.mp4: file xuất rải 654 điểm packet audio suy biến
-// (duration ~23 micro-giây, bình thường 23 mili-giây) + rớt voice cục bộ
-// vài giây mà quét onset trung vị không thấy. Hợp đồng: bộ phân tích packet
-// phải bắt được duration suy biến, DTS đi ngược, và bỏ qua priming đầu file.
+// 08/10 123.mp4 incident: the exported file was scattered with 654 degenerate
+// audio packet points (duration ~23 microseconds, normally 23 milliseconds) plus
+// a local voice drop of a few seconds that the median-onset scan did not see.
+// Contract: the packet analyzer must catch degenerate durations, backward DTS,
+// and ignore leading-file priming.
 internal static class ExportPacketIntegrityContract
 {
     [ModuleInitializer]
@@ -37,8 +38,8 @@ internal static class ExportPacketIntegrityContract
         if (!condition) throw new InvalidOperationException("ExportPacketIntegrityContract: " + message);
     }
 
-    // ffprobe luôn in dấu chấm thập phân; Row phải format Invariant (máy
-    // user culture vi-VN dấu phẩy sẽ làm parse sai).
+    // ffprobe always prints a decimal point; Row must format Invariant (on a
+    // machine with vi-VN user culture the comma decimal separator parses wrong).
     private static string Row(double pts, double duration) =>
         "packet," + pts.ToString("0.000000", CultureInfo.InvariantCulture)
         + "," + pts.ToString("0.000000", CultureInfo.InvariantCulture)

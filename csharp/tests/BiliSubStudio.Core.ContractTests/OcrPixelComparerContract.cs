@@ -10,8 +10,8 @@ internal static class OcrPixelComparerContract
         var geo = new OcrFrameGeometry(0, 0, 1920, 1080, 1280, 320, 0, 0, 1280, 320);
         var tb = new RationalTimeBase(1, 90000);
         long spts = 5000000;
-        // Full provenance để pair vượt generic gate (temporal+spatial) tới comparer.
-        // Thiếu provenance => blocked tách + NeedsReview, KHÔNG gọi comparer (test 1).
+        // Full provenance so the pair passes the generic gate (temporal+spatial) to the comparer.
+        // Missing provenance => blocked, split + NeedsReview, do NOT call the comparer (test 1).
         OcrCue Cue(double s, double e, string t, double c, double pts) => new(s, e, t, c, 0, 0, false,
             new PixelObservation(pts, new OcrBox(10, 10, 200, 40), roi, geo, Interlocked.Increment(ref spts), tb),
             new PixelObservation(pts, new OcrBox(10, 10, 200, 40), roi, geo, Interlocked.Increment(ref spts), tb));

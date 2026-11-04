@@ -12,10 +12,10 @@ function Invoke-Checked {
         [string[]]$ArgumentList
     )
 
-    # Windows PowerShell 5.1 gom stderr của lệnh native thành error record;
-    # với ErrorActionPreference=Stop, các contract script viết log ra stderr
-    # (vd unittest dots) sẽ dừng gate dù exit code là 0. Chỉ exit code mới
-    # được xem là kết quả của gate.
+    # Windows PowerShell 5.1 merges stderr of a native command into an error record;
+    # with ErrorActionPreference=Stop, contract scripts that write logs to stderr
+    # (e.g. unittest dots) would stop the gate even though the exit code is 0. Only the
+    # exit code is treated as the result of the gate.
     $previousPreference = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     try { & $FilePath @ArgumentList }
@@ -147,10 +147,30 @@ Invoke-Checked python @("csharp/scripts/verify_editor_voice_generate_contract.py
 Invoke-Checked python @("csharp/scripts/verify_editor_voice_duration_contract.py")
 Invoke-Checked python @("internal/vieneu/test_preload_probes.py")
 Invoke-Checked python @("internal/vieneu/test_tail_repeat.py")
+Invoke-Checked python @("internal/vieneu/test_overflow_placement.py")
+Invoke-Checked python @("internal/vieneu/test_word_loss_order.py")
 Invoke-Checked python @("internal/asr/test_chunk_rescue.py")
 Invoke-Checked python @("csharp/scripts/verify_editor_tts_cancel_contract.py")
 Invoke-Checked python @("csharp/scripts/verify_editor_tts_restart_contract.py")
 Invoke-Checked python @("csharp/scripts/verify_editor_preview_unload_contract.py")
+    Invoke-Checked python @("csharp/scripts/verify_editor_timeline_composition_contract.py")
+    Invoke-Checked python @("csharp/scripts/verify_editor_timeline_ruler_contract.py")
+    Invoke-Checked python @("csharp/scripts/verify_editor_timeline_trim_snap_contract.py")
+    Invoke-Checked python @("csharp/scripts/verify_editor_timeline_zoom_contract.py")
+    Invoke-Checked python @("csharp/scripts/verify_editor_timeline_playhead_contract.py")
+    Invoke-Checked python @("csharp/scripts/verify_editor_shortcuts_contract.py")
+    Invoke-Checked python @("csharp/scripts/verify_editor_timeline_history_move_contract.py")
+    Invoke-Checked python @("csharp/scripts/verify_editor_timeline_drag_feedback_contract.py")
+    Invoke-Checked python @("csharp/scripts/verify_editor_timeline_playhead_drag_contract.py")
+    Invoke-Checked python @("csharp/scripts/verify_editor_timeline_playhead_grab_contract.py")
+    Invoke-Checked python @("csharp/scripts/verify_editor_timeline_lane_order_contract.py")
+    Invoke-Checked python @("csharp/scripts/verify_editor_timeline_effect_resize_contract.py")
+    Invoke-Checked python @("csharp/scripts/verify_editor_timeline_media_contract.py")
+    Invoke-Checked python @("csharp/scripts/verify_editor_timeline_tail_contract.py")
+    Invoke-Checked python @("csharp/scripts/verify_editor_toolbar_contract.py")
+    Invoke-Checked python @("csharp/scripts/verify_editor_workspace_layout_contract.py")
+    Invoke-Checked python @("csharp/scripts/verify_editor_ui_contract.py")
+    Invoke-Checked python @("csharp/scripts/verify_editor_composed_export_contract.py")
 Invoke-Checked python @("csharp/scripts/generate_csharp_code_map.py", "--check")
 Invoke-Checked python @("csharp/scripts/verify_global_log_ui_contract.py")
 Invoke-Checked python @("csharp/scripts/verify_logging_contract.py")
@@ -158,8 +178,7 @@ Invoke-Checked python @("csharp/scripts/verify_ocr_worker_contract.py")
 Invoke-Checked python @("csharp/scripts/verify_ocr_scanner_contract.py")
 Invoke-Checked python @("csharp/scripts/verify_ocr_nvdec_resilience_contract.py")
 Invoke-Checked python @("csharp/scripts/verify_media_native_metadata_contract.py")
-Invoke-Checked python @("csharp/scripts/verify_browser_login_contract.py")
-Invoke-Checked python @("csharp/scripts/verify_chrome_bridge_contract.py")
+Invoke-Checked python @("csharp/scripts/verify_account_login_contract.py")
 Invoke-Checked python @("csharp/scripts/verify_asr_hybrid_contract.py")
 Invoke-Checked python @("csharp/scripts/verify_asr_checkpoint_contract.py")
 Invoke-Checked dotnet @("restore", "csharp/BiliSubStudio.sln", "-p:Platform=x64", "-p:NuGetAudit=false")
@@ -194,9 +213,9 @@ if ((Get-Sha256 $asrWorker) -ne (Get-Sha256 $sourceAsrWorker)) {
     throw "published ASR worker differs from embedded source"
 }
 $translationSkill = "$publish/Assets/Translation/dich-trung-tu-tien.zip"
-$ttsWorker = "$publish/Assets/TTS/worker.py"
-if (-not (Test-Path $ttsWorker -PathType Leaf) -or (Get-Sha256 $ttsWorker) -ne (Get-Sha256 "internal/tts/worker.py")) {
-    throw "published TTS worker differs from reviewed NGHI source"
+$ttsWorker = "$publish/Assets/TTS/worker-vieneu.py"
+if (-not (Test-Path $ttsWorker -PathType Leaf) -or (Get-Sha256 $ttsWorker) -ne (Get-Sha256 "internal/vieneu/worker.py")) {
+    throw "published TTS worker differs from reviewed VieNeu source"
 }
 if (-not (Test-Path $translationSkill -PathType Leaf)) { throw "publish missing integrated translation skill" }
 $sourceTranslationSkill = "internal/translation/dich-trung-tu-tien.zip"

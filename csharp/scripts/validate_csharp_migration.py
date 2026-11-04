@@ -34,11 +34,6 @@ REQUIRED = [
     CSHARP / "src/BiliSubStudio.App/Pages/EditorPage.xaml",
     CSHARP / "src/BiliSubStudio.Core/Application/BiliSubApplication.cs",
     CSHARP / "src/BiliSubStudio.Core/Authentication/SessionStore.cs",
-    CSHARP / "src/BiliSubStudio.Core/Authentication/ChromeLoginBridgeServer.cs",
-    CSHARP / "src/BiliSubStudio.App/Services/ChromeSessionBridge.cs",
-    CSHARP / "src/BiliSubStudio.App/ChromeExtension/manifest.json",
-    CSHARP / "src/BiliSubStudio.App/ChromeExtension/bridge-secret.js",
-    CSHARP / "scripts/verify_chrome_bridge_contract.py",
     CSHARP / "src/BiliSubStudio.Core/Configuration/AppConfig.cs",
     CSHARP / "src/BiliSubStudio.Core/Maintenance/UpdateService.cs",
     CSHARP / "src/BiliSubStudio.Core/Processes/WindowsProcessContainment.cs",
@@ -62,6 +57,7 @@ EXPECTED_JSON_FIELDS = (
     "theme",
     "output_dir",
     "ocr_output_dir",
+    "editor_output_dir",
     "sub_format",
     "video_speed",
     "video_container",
@@ -213,18 +209,8 @@ app_files = [
     if path.suffix in {".cs", ".xaml"} and not ({"obj", "bin"} & set(path.parts))
 ]
 app_sources = "\n".join(read(path) for path in app_files)
-# WebView2 is forbidden as the production UI shell, but the embedded browser
-# login window is the one intentional host: it is the only way to read a
-# Bilibili session without asking the user to paste cookies.
-browser_login_files = {"BrowserLoginWindow.xaml", "BrowserLoginWindow.xaml.cs"}
-app_sources_without_browser_login = "\n".join(
-    read(path) for path in app_files if path.name not in browser_login_files
-)
 for marker in ("http://localhost", "https://localhost", "WebView2", "BiliSubStudioCore.exe", '"/api/'):
-    require(marker not in app_sources_without_browser_login, f"production C# UI contains forbidden marker {marker}")
-webview_owners = {path.name for path in app_files if "WebView2" in read(path)}
-require(webview_owners <= browser_login_files,
-        f"WebView2 leaked outside the browser login window: {sorted(webview_owners - browser_login_files)}")
+    require(marker not in app_sources, f"production C# UI contains forbidden marker {marker}")
 require('SizeChanged="' not in app_sources and not re.search(r"\b(?:Page|RootGrid)_SizeChanged\b", app_sources),
         "layout must not mutate main grids from SizeChanged")
 
@@ -345,14 +331,20 @@ toggle_playback = playback_source.split("internal async Task ToggleAsync()", 1)[
 preview_start_block = ""
 if "private double PreviewStartTime()" in playback_source:
     preview_start_block = playback_source.split("private double PreviewStartTime()", 1)[1].split("private double ActiveClipLimit", 1)[0]
+playback_start_block = ""
+if "private double PlaybackStartTime()" in playback_source:
+    playback_start_block = playback_source.split("private double PlaybackStartTime()", 1)[1].split("private double ActiveClipLimit", 1)[0]
 require("await PlayFromStartAsync();" in toggle_playback
         and "SetModeAsync(enabled: true, play: true)" not in toggle_playback
-        and "_page.Timeline.Value" not in toggle_playback
         # a887af4: processed playback honors the trim range instead of hard-coded zero.
-        and ("private Task PlayFromStartAsync() => LoadSegmentAsync(_page.CurrentTrimRange().Start, play: true);" in playback_source
-             or ("private Task PlayFromStartAsync() => LoadSegmentAsync(PreviewStartTime(), play: true);" in playback_source
-                 and "_page.CurrentTrimRange()" in preview_start_block)),
-        "PREVIEW-04 initial Play must start from the trim start instead of the edit/seek position")
+        # 2026-10-27: the first Play starts at the CURRENT playhead, never before
+        # the trim start, so the preview does not jump back to the head of the strip.
+        and "private Task PlayFromStartAsync() => LoadSegmentAsync(PlaybackStartTime(), play: true);" in playback_source
+        and "EditorTimelinePlaybackStart.Resolve(" in playback_source
+        and "_page.Timeline.Value" in playback_start_block
+        and "PreviewStartTime()" in playback_start_block
+        and "_page.CurrentTrimRange()" in preview_start_block,
+        "PREVIEW-04 initial Play must start from the current playhead and never before the trim start")
 require("if (IsPlaying) PauseAtCurrentFrame();" in toggle_playback
         and "private void PauseAtCurrentFrame() => _player?.Pause();" in playback_source
         and "SetModeAsync(enabled: false" not in toggle_playback
@@ -399,13 +391,13 @@ replay_load_source = playback_source.split("private async Task LoadSegmentCoreAs
 require("internal bool HasEnded { get; private set; }" in playback_source
         and playback_source.count("internal bool HasEnded { get; private set; }") == 1
         and "if (HasEnded) await ReplayFromStartAsync();" in toggle_playback
-        and "private Task ReplayFromStartAsync() => PlayFromStartAsync();" in playback_source
+        and "private Task ReplayFromStartAsync() => LoadSegmentAsync(PreviewStartTime(), play: true);" in playback_source
         and "_page.DispatcherQueue.TryEnqueue(() => _ = ContinueAfterSegmentAsync());" in playback_source
         and "private async Task CompletePlaybackAsync()" in playback_source
         and "await CompletePlaybackAsync();" in playback_source
         and "HasEnded = true;" in playback_source
         and "HasEnded = false;" in replay_load_source,
-        "PREVIEW-11 replay must use an explicit controller-owned ended state and restart from source zero")
+        "PREVIEW-11 replay must use an explicit controller-owned ended state and restart from the start marker")
 fullscreen_roundtrip = playback_source.split("internal async Task EnterFullscreenAsync()", 1)[1].split("internal void SetMuted", 1)[0]
 require("await _playback.ToggleFullscreenAsync();" in playback_source
         and "private readonly record struct FullscreenSnapshot(" in playback_source
@@ -613,7 +605,8 @@ require('x:Name="StartBox"' in editor_xaml
         and "EditorUseCurrentEndButton" not in parity_fixes_source
         and "private void SetTimedBoundaryFromCurrent(bool setStart)" in timed_input_source
         and "if (ApplyInputsToDocument()) NotifyEditorCompositeChanged();" in timed_input_source
-        and "StartBox.Maximum = EndBox.Maximum = _media.Duration;" in editor_main
+        and "RefreshRegionTimeLimits();" in editor_main
+        and "StartBox.Maximum = maximum;" in editor_main
         and "EditorUseCurrentStartButton.IsEnabled = EditorUseCurrentEndButton.IsEnabled = editable && !WholeToggle.IsOn;" in editor_main
         and "EditorRegionTimeScope.CreateDefaultTimedRange(" in whole_toggle_source
         and "EditorRegionTimeScope.Normalize(" in editor_main
@@ -634,7 +627,7 @@ require('x:Name="UndoButton"' in editor_xaml
         and "_document.Undo()" in undo_owner_source
         and "_draftRegion = null;" in undo_owner_source
         and "else SetCoordinateBoxes(0, 0, 0, 0);" in undo_owner_source
-        and 'DocumentChanged("Đã hoàn tác.");' in undo_owner_source
+        and 'DocumentChanged("Đã hoàn tác thay đổi vùng hiệu ứng.");' in undo_owner_source
         and "TryUndoDocument()" in undo_key_source
         and "Undo_Click(" not in undo_key_source
         and "InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Control)" in undo_key_source
@@ -653,7 +646,7 @@ require('x:Name="RedoButton"' in editor_xaml
         and "_document.Redo()" in redo_owner_source
         and "_draftRegion = null;" in redo_owner_source
         and "else SetCoordinateBoxes(0, 0, 0, 0);" in redo_owner_source
-        and 'DocumentChanged("Đã làm lại.");' in redo_owner_source
+        and 'DocumentChanged("Đã làm lại thay đổi vùng hiệu ứng.");' in redo_owner_source
         and "TryRedoDocument()" in undo_key_source
         and "Redo_Click(" not in undo_key_source
         and "e.Key == VirtualKey.Y" in undo_key_source
@@ -673,7 +666,7 @@ require('x:Name="RemoveRegionButton"' in editor_xaml
         and "_draftRegion = null;" in delete_owner_source
         and "else SetCoordinateBoxes(0, 0, 0, 0);" in delete_owner_source
         and 'DocumentChanged("Đã xóa vùng chọn. Có thể Hoàn tác.");' in delete_owner_source
-        and "if (TryDeleteSelectedRegion()) e.Handled = true;" in undo_key_source
+        and "if (!TryDeleteSelectedRegion()) return false;" in undo_key_source
         and "_document.RemoveSelected()" not in undo_key_source
         and "RemoveRegion_Click(" not in undo_key_source
         and "VirtualKey.Delete" in undo_key_source
@@ -681,7 +674,7 @@ require('x:Name="RemoveRegionButton"' in editor_xaml
         and "editor Delete preserves neighboring selection and exact undo redo history" in contract_tests_source,
         "BLUR-14 Delete must have one guarded owner that clears stale inputs and preserves exact selection history persistence and Preview state")
 # 2026-09-25: region presets retired at the user's request — the Effect tab is
-# drag-to-create only, no "Mờ sub dưới"/"Mosaic logo" preset buttons remain.
+# drag-to-create only, no "Blur sub below"/"Mosaic logo" preset buttons remain.
 # EditorRegionGeometry keeps only the tested geometry helpers (no CreatePreset).
 blur_reopen_source = editor_main.split("private async Task OpenVideoAsync()", 1)[1].split("private async Task SaveCurrentSourceStateForSwitchAsync()", 1)[0]
 blur_snapshot_source = editor_main.split("private EditorProject ProjectSnapshot()", 1)[1].split("private void RefreshEditorActions()", 1)[0]
@@ -696,8 +689,8 @@ require("candidateProject = await _application.LoadEditorProjectAsync(candidateP
         and "await UpdateFrameAsync();" in blur_reopen_source
         and "QueueProjectSave();" in blur_reopen_source
         and "Regions = _document.Regions.ToArray()," in blur_snapshot_source
-        and "var regions = NormalizeRegions(loaded.Regions, source.Duration, normalizeStored: true);" in region_document_source
-        and "Regions = NormalizeRegions(project.Regions, normalizedSource.Duration, normalizeStored: false)," in region_document_source
+        and "RegionTimeLimit(loaded, source.Duration), normalizeStored: true);" in region_document_source
+        and "RegionTimeLimit(project, normalizedSource.Duration), normalizeStored: false)," in region_document_source
         and "editor project reopen preserves exact region order geometry identity and source bytes" in contract_tests_source,
         "BLUR-16 project reopen must hydrate the exact persisted region document and prove stable non-destructive roundtrip")
 require("BuildFilterCore(sliced, subtitleAss, \"previewbase\", requireEdit: false)" in video_editor_source
@@ -708,7 +701,8 @@ require("BuildFilterCore(sliced, subtitleAss, \"previewbase\", requireEdit: fals
         and video_editor_source.count("RegionPixels(region, request.SourceWidth, request.SourceHeight)") == 1
         and ("_page.CurrentEditRequest(_page.PreviewSubtitleBurn())" in editor_partials
              or "_page.TimelineClipEditRequestAsync(" in editor_partials)
-        and editor_partials.count("var request = CurrentEditRequest(subtitle) with") == 2
+        and editor_partials.count("var request = CurrentEditRequest(subtitle) with")
+            + editor_partials.count("await CurrentComposedEditRequestAsync(subtitle)") == 2
         and editor_partials.count("_jobId = _application.StartEditor(request);") == 2
         and "Regions = _document.Regions.ToArray()," in editor_main
         and "editor Preview and Export preserve exact normalized region geometry within one pixel" in contract_tests_source,
@@ -826,7 +820,7 @@ asr_installer = read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalAsrInstaller.c
 asr_service = read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalAsrService.cs")
 asr_worker = read(ROOT / "internal/asr/worker.py")
 attributes = read(ROOT / ".gitattributes")
-for worker_path in ("internal/ocr/worker.py text eol=lf", "internal/asr/worker.py text eol=lf", "internal/tts/worker.py text eol=lf"):
+for worker_path in ("internal/ocr/worker.py text eol=lf", "internal/asr/worker.py text eol=lf", "internal/vieneu/worker.py text eol=lf"):
     require(worker_path in attributes, f"Windows worker byte provenance missing {worker_path}")
 for marker in (
     'FasterWhisperVersion = "1.2.1"', 'CTranslate2Version = "4.8.1"',
@@ -875,52 +869,47 @@ require("executionMode, LocalAsrInstaller.ListenModelId" in application,
 
 tts_installer = read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalTtsInstaller.cs")
 tts_service = read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalTtsService.cs")
-tts_worker = read(ROOT / "internal/tts/worker.py")
+tts_timing = read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalTtsService.Timing.cs")
+tts_worker = read(ROOT / "internal/vieneu/worker.py")
 for marker in (
-    'VieneuEngine = "vieneu-tts"',
-    'VieneuModelRevision = "61b85e3d937fbbacb387714180e8182823512523"',
-    'VieneuTimingAlgorithm = "whole-cue-vieneu-natural-first-v1"',
-    "PrepareVieneuAsync",
+    'Engine = "vieneu-tts"',
+    'EngineVersion = "vieneu-v3-turbo-1"',
+    'ModelRevision = "61b85e3d937fbbacb387714180e8182823512523"',
+    'TimingAlgorithm = "whole-cue-vieneu-natural-first-v1"',
+    "PrepareAsync",
     "worker-vieneu.py",
-    "IsVieneuVoice",
+    "VieneuBackboneConfig",
+    "Voice = TtsVoiceCatalog.DefaultVoice",
+    "EnsureVieneuModelsAsync",
 ):
-    require(marker in tts_installer, f"VieNeu pilot installer contract missing {marker}")
+    require(marker in tts_installer, f"VieNeu installer contract missing {marker}")
 catalog = read(CSHARP / "src/BiliSubStudio.Core/Editor/TtsVoiceCatalog.cs")
-for marker in ('VieneuPrefix', "VoiceOptions", "FoldSlug", "DisplayLabel"):
+for marker in ('VieneuPrefix', "DefaultVoice", "VoiceOptions", "FoldSlug", "DisplayLabel", "VieneuPresetLabels"):
     require(marker in catalog, f"VieNeu voice catalog contract missing {marker}")
-for marker in ("EngineFor(", "TimingAlgorithmFor(", "VoiceRevisionFor(",
-               "!(isVieneu && cue.FitMethod == atempoMethod)"):
-    require(marker in tts_service + read(CSHARP / "src/BiliSubStudio.Core/Editor/LocalTtsService.Timing.cs"),
-            f"VieNeu service routing contract missing {marker}")
-vieneu_worker = read(ROOT / "internal/vieneu/worker.py")
-for marker in ("ATEMPO_METHOD", "VieneuVoice", "strip_emotion_tags", "resolve_preset_label",
-               "VIENEU_SAMPLE_RATE", "soxr"):
-    require(marker in vieneu_worker, f"VieNeu pilot worker contract missing {marker}")
-for marker in (
-    'EngineVersion = "nghi-tts-1.0.0"',
-    'ModelRepository = "nghimestudio/nghitts"',
-    'ModelRevision = "2140977786d76d834736c059dacfa553d4931dac2b2c7aaaea438bb2aa9da697"',
-    'Voice = "ngoc_huyen"', "971f57f8d504223fee5b40d664f503cf769baf7db21f7d2ae0554a75d07de2f8",
-    "DownloadVerifiedAsync", "MatchesAsync", "EnsurePrivatePythonAsync",
-):
-    require(marker in tts_installer, f"NGHI local installer contract missing {marker}")
-for retired in ("Kokoro", "synth_sine", "DummyModelBytes", "MirrorModelUrl"):
+for marker in ("LocalTtsInstaller.EngineVersion", "LocalTtsInstaller.TimingAlgorithm",
+               "LocalTtsInstaller.VoiceRevision", "TtsVoiceCatalog.DefaultVoice"):
+    require(marker in tts_service, f"VieNeu service routing contract missing {marker}")
+for marker in ("VieneuMaxTempoFactor = 1.51", "VieneuMicroMaxTempoFactor = 3.01",
+               "VieneuMinTempoFactor = 1.0 / 1.4", "OverflowBudgetFrames = 66150",
+               'cue.FitMethod is not ("vieneu-natural" or "vieneu-atempo")'):
+    require(marker in tts_timing, f"VieNeu timing validator contract missing {marker}")
+for retired in ("Kokoro", "synth_sine", "DummyModelBytes", "MirrorModelUrl", "nghi-tts", "nghimestudio/nghitts"):
     require(retired not in tts_installer + tts_service + tts_worker,
             f"unverified/retired TTS returned to production: {retired}")
-require('TimingAlgorithm = "whole-cue-piper-natural-first-v17"' in tts_installer
-        and 'TIMING_ALGORITHM = "whole-cue-piper-natural-first-v17"' in tts_worker,
-        "Whisper duration policy/cache identity drifted")
+require('TIMING_ALGORITHM = "whole-cue-vieneu-natural-first-v1"' in tts_worker,
+        "VieNeu duration policy/cache identity drifted")
 for marker in ("LocalTtsInstaller.TimingAlgorithm", "BuildWholeCue", "GenerateSampleAsync", "OwnedProcessGroup",
                "SamePath(reportedResult, resultPath)", "await processes.StopAsync()"):
     require(marker in tts_service, f"local TTS ownership contract missing {marker}")
-for marker in ("PiperVoice.load", "voice.synthesize(text, syn_config=syn_config)", "cache_identity", "sha256",
-               "SynthesisConfig(length_scale=length_scale)", "voice-master.flac", '"event": "cue"', '"event": "block"',
-               "member_tempo", '"self-check-silence"', '"spoken_text"', "is_vietnamese_speakable",
-               "longest_fitting_prefix", '"truncate-voice"', "_cached_phonemize"):
-    require(marker in tts_worker, f"NGHI worker contract missing {marker}")
+for marker in ("ENGINE = \"vieneu-tts\"", 'ENGINE_VERSION = "vieneu-v3-turbo-1"',
+               "class VieneuVoice", "ATEMPO_METHOD", "FIT_METHOD", "cache_identity", "sha256",
+               "voice-master.flac", '"event": "cue"', '"event": "block"',
+               "member_tempo", '"spoken_text"', "longest_fitting_prefix",
+               '"truncate-voice"', "overflow_budget_frames", "clip_overlap_pairs"):
+    require(marker in tts_worker, f"VieNeu worker contract missing {marker}")
 for forbidden in ("asetrate=", "rubberband=", "atrim="):
     require(forbidden not in tts_worker, f"speech-cutting or pitch-shifting filter returned: {forbidden}")
-for required in ("atempo=", '"piper-atempo"', "tempo_fit_clip", "MAX_TEMPO_ATTEMPTS = 6"):
+for required in ("atempo=", '"vieneu-atempo"', "tempo_fit_clip", "MAX_TEMPO_ATTEMPTS = 6"):
     require(required in tts_worker, f"bounded dynamic-tempo fallback missing: {required}")
 require("MIN_RATE_SCALE = .30" in tts_worker
         and "MIN_ACTUAL_SPEED = 1.0" in tts_worker

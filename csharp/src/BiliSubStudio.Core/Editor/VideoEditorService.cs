@@ -25,7 +25,8 @@ public sealed record VideoEditRequest(
     double MosaicScaleX = 1,
     double MosaicScaleY = 1,
     EditorTrimRange? Trim = null,
-    EditorExportSettings? Export = null);
+    EditorExportSettings? Export = null,
+    IReadOnlyList<VideoEditSegment>? Segments = null);
 
 public sealed record EditorSubtitleBurn(
     IReadOnlyList<EditorSubtitleCue> Cues,
@@ -38,7 +39,7 @@ public sealed record VideoEditResult(string OutputPath);
 
 public sealed record EditorPreviewSegment(string Path, double SourceStart, double Duration);
 
-public sealed class VideoEditorService
+public sealed partial class VideoEditorService
 {
     internal const long RenderSafetyReserveBytes = 512L * 1024 * 1024;
     internal const int RenderPreflightSourceMultiplier = 2;
@@ -59,6 +60,10 @@ public sealed class VideoEditorService
     public async Task<VideoEditResult> RunAsync(AppJob job, VideoEditRequest request)
     {
         var token = job.CancellationToken;
+        // Multi-segment composition: each segment is rendered separately then concatenated into one file.
+        // The single-source export path (below) is kept entirely intact for legacy projects.
+        if (request.Segments is { Count: > 1 } segments)
+            return await RunComposedAsync(job, request, segments);
         var input = Path.GetFullPath(request.InputPath.Trim());
         var inputInfo = new FileInfo(input);
         if (!inputInfo.Exists || inputInfo.Length <= 0) throw new FileNotFoundException("Video nguồn không hợp lệ.", input);
@@ -123,9 +128,9 @@ public sealed class VideoEditorService
             export, encoder, exportGraph.OutputLabel);
         job.Set("rendering", 1, "Đang chuẩn bị xuất video...");
         job.Log($"Video Editor: {request.Regions.Count} vùng, giữ {trim.Start:0.000}-{trim.End:0.000}s ({trim.Duration:0.000}s), codec={export.Codec}/{encoder.Name}, quality={export.Quality}, size={exportGraph.Dimensions.Width}x{exportGraph.Dimensions.Height}, fps={(export.FrameRate?.ToString("0.###", CultureInfo.InvariantCulture) ?? "source")}, audio={audio.SourceMode}/{audio.SourceGain:0.00}/{export.AudioBitrateKbps}k, voice={(voice is null ? "off" : "local")}, output {output}");
-        // 08/10 vụ fail oan 27 phút render vì câu kiểm tra sau xuất hỏng:
-        // chạy thử công cụ kiểm tra (1 giây trên file nguồn) TRƯỚC khi render
-        // dài — hỏng là fail trong vài giây, không bao giờ mất nửa tiếng nữa.
+        // 08/10 case of a false failure after 27 minutes of render because the post-export check statement reported corruption:
+        // dry-run the check tool (1 second of the source file) BEFORE rendering
+        // long — corruption now fails within a few seconds, never losing half an hour again.
         job.Set("rendering", 1, "Đang kiểm tra công cụ xác minh file xuất...");
         var preflightArgs = BuildAudioPacketDumpArguments(input).ToList();
         preflightArgs.Insert(preflightArgs.Count - 1, "-read_intervals");
@@ -231,12 +236,12 @@ public sealed class VideoEditorService
         await VerifyExportPacketIntegrityAsync(job, path, cancellationToken);
     }
 
-    // Chốt đồng bộ voice-sub sau xuất (08/10, user: preview khớp mà file xuất
-    // lệch): đo tiếng voice thật trong file xuất tại ~12 mốc giờ rồi so với
-    // giờ sub — trung vị lệch quá 1s (≥5 mốc đo được) là fail job tại chỗ,
-    // không lọt file lỗi; lẻ tẻ thì warn. Không bao giờ fail oan: ngưỡng phát
-    // hiện (0.09 + giữ 0.1s) nằm trên nền nhạc duck, trung vị miễn nhiễm điểm
-    // lỗi, thiếu mốc đo thì bỏ qua. Vài phút trên job xuất nửa tiếng.
+    // Lock in voice-subtitle sync after export (08/10, user: the preview matched but the exported file
+    // was off): measure the real voice audio inside the exported file at ~12 time markers then compare to the
+    // subtitle times — a median offset over 1s (≥5 measurable markers) fails the job right there,
+    // never letting a bad file slip through; scattered outliers only warn. Never falsely fails: the detection
+    // threshold (0.09 + 0.1s hold) sits above the ducked music bed, the median is immune to bad
+    // points, and a missing measured marker is skipped. A few minutes on a half-hour export job.
     private async Task VerifyExportVoiceSyncAsync(
         AppJob job,
         string ffmpeg,
@@ -300,10 +305,10 @@ public sealed class VideoEditorService
                 }
             }
             if (onset >= 0) offsets.Add((cueStart, onset / (double)sampleRate));
-            // 08/10 vụ 123.mp4: voice mất vài giây cục bộ trong file xuất
-            // (master vẫn có) — onset trung vị không bắt được lỗ thủng hẹp.
-            // So năng lượng xuất vs master tại cùng mốc: master to mà xuất
-            // nhỏ hơn 1/4 thì voice đã rớt khỏi file ở chỗ đó.
+            // 08/10 case of 123.mp4: the voice dropped out for a few seconds locally in the exported file
+            // (the master still had it) — median onset did not catch the narrow hole.
+            // Compare export vs master energy at the same marker: if the master is loud but the export
+            // is less than 1/4 as loud, the voice has dropped out of the file at that spot.
             try
             {
                 var masterPcm = await _processes.CaptureBytesAsync(ffmpeg,
@@ -355,9 +360,9 @@ public sealed class VideoEditorService
         return Math.Sqrt(sum / count);
     }
 
-    // 08/10 vụ fail oan 27 phút render vì cờ ffprobe sai (-nostdin chỉ
-    // ffmpeg mới có): tách builder để contract test khóa lại — cấm lọt cờ
-    // chỉ-ffmpeg vào lệnh ffprobe, thiếu cờ bắt buộc là fail test.
+    // 08/10 case of a false failure after 27 minutes of render due to a wrong ffprobe flag (-nostdin exists only in
+    // ffmpeg): split out the builder so a contract test locks it down — ffmpeg-only flags must never
+    // leak into the ffprobe command, and a missing required flag fails the test.
     public static IReadOnlyList<string> BuildAudioPacketDumpArguments(string path)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
@@ -881,7 +886,7 @@ public sealed class VideoEditorService
         {
             arguments.AddRange(["-vf", "scale=1280:-2:force_original_aspect_ratio=decrease", "-map", "0:v:0"]);
         }
-        arguments.AddRange(["-an", "-sn", "-dn", "-q:v", "4", "-c:v", "mjpeg", "-f", "image2pipe", "pipe:1"]);
+        arguments.AddRange(["-an", "-sn", "-dn", "-q:v", "4", "-c:v", "mjpeg", "-strict", "unofficial", "-f", "image2pipe", "pipe:1"]);
         return arguments;
     }
 
@@ -925,13 +930,13 @@ public sealed class VideoEditorService
             }
             else if (effect == "clean")
             {
-                // delogo nội suy pixel xung quanh đè lên vùng chọn (họ BCC Wire
-                // Remover cơ bản: dây, logo góc, mic). Đã kiểm thật ffmpeg:
-                // delogo đòi vùng nằm strictly trong khung (chừa >=1px mỗi
-                // bên) — x=0 hay crop-đè-nguyên-crop nổ "Logo area is outside
-                // of the frame" — nên đánh trực tiếp trên khung bằng tọa độ
-                // tuyệt đối + kẹp mép; enable timeline chạy trực tiếp (đã kiểm
-                // thật). Strength bất động như cover (delogo tự nội suy).
+                // delogo interpolates the pixels around the marked area (the BCC Wire
+                // Remover family, basically: wires, corner logos, mic stands). Verified for real on ffmpeg:
+                // delogo requires the area to sit strictly inside the frame (leaving >=1px on each
+                // side) — x=0 or a crop stacked onto another crop blows up with "Logo area is outside
+                // of the frame" — so draw it directly on the frame using
+                // absolute coordinates + clamp to the edge; the timeline enable runs it directly (verified
+                // for real). Strength is inert like cover (delogo interpolates by itself).
                 var left = Math.Clamp(x, 1, Math.Max(1, request.SourceWidth - 2));
                 var top = Math.Clamp(y, 1, Math.Max(1, request.SourceHeight - 2));
                 var right = Math.Clamp(x + width, left + 1, request.SourceWidth - 1);
@@ -1107,36 +1112,36 @@ public sealed class VideoEditorService
         return track with { Path = path, Gain = Math.Clamp(track.Gain, 0, 4) };
     }
 
-    // 08/10 vụ 123.mp4 (user bắt tìm nguyên nhân, không cần gác cổng):
-    // file nguồn rip sẵn có 654 điểm timestamp audio suy biến (~70s/lần,
-    // quét toàn file nguồn ra đúng 654 điểm y hệt bản xuất) — graph cũ
-    // asetpts+amix kế thừa nguyên si sang file xuất, trình xem vấp mỗi điểm.
-    // Sửa gốc: làm sạch timestamp ngay nhánh nhạc nguồn bằng
-    // aresample=async (bù micro-lệch/gấp khúc thành đơn điệu, không nghe ra);
-    // nhánh voice (FLAC tự sinh, sample-exact) giữ nguyên từng mẫu để khớp giờ
-    // tuyệt đối. Dùng chung preview + export nên hai đường khớp nhau.
-    // 09/10 vụ voice chỗ to chỗ nhỏ (user báo trong-cue và giữa-các-cue):
-    // đo trên voice-master thật (6266 cue): swing trong-cue trung vị 9.2dB
-    // (p95 35.2dB), spread giữa-cue p5-p95 5.5dB, 3 cue peak >= -1dBFS — mà cả
-    // pipeline (synth -> pace -> ráp master -> mix) không có khâu cân nào.
-    // Thử AB trên lát cắt 70s thật: dynaudnorm LÀM TỆ HƠN (san peak nhưng
-    // banh RMS spread 5.0->7.4dB, 6 cue dí trần) nên loại; loudnorm thắng vòng 1
-    // (spread 5.0->4.1dB, về đúng target I=-18, không peak mới, LRA 7.4->7.1).
-    // 11/10 vụ kéo gain to lên là phập phù/hụt hơi: đo AB cùng lát cắt ở gain
-    // 2.0 — chuỗi cũ limiter đánh liên tục (147 frame dí trần/700 = pumping),
-    // bỏ limiter thì clip thật 4156 mẫu (limiter bắt buộc ở lại). Thêm
-    // acompressor NHẸ trước gain theo đúng sách broadcast (compressor làm đều,
-    // limiter chỉ bắt đỉnh lọt; limiter gánh chính gây flat/breathy): makeup 4dB
-    // banh spread (5.0->5.6, nâng tails + release chạy qua khoảng lặng), makeup
-    // 0dB sạch nhất nhưng baseline -4.5dB. Chốt threshold -24dB + makeup 6dB:
-    // dí trần 147->52, swing p95 22.6->18.7 (tốt nhất), spread 5.1->5.4 (nhích
-    // +0.3dB không đáng kể), 0 clip, tỉ số RMS filtered/raw min 1.79 (biên
-    // validator 0.25 an toàn). Baseline 100% -2.4dB (đã báo user).
-    // Sửa tại render: loudnorm đặt mức nền -18 -> acompressor ghìm đỉnh nhẹ
-    // (threshold -24dB, ratio 3, attack 20ms, release 200ms theo nhịp nói) ->
-    // makeup bù có kiểm soát -> volume=G của user -> alimiter chốt trần.
-    // Nhánh voice FLAC sample-exact giữ nguyên từng mẫu giờ giấc — chỉ mức
-    // loudness đổi, timestamp không đụng (không ảnh hưởng vụ aresample 08/10).
+    // 08/10 case of 123.mp4 (the user demanded the root cause, no gate needed):
+    // the ripped source file already has 654 degraded audio timestamp points (~70s each,
+    // a full scan of the source file yields exactly the same 654 points as the export) — the old graph
+    // inherited the defect wholesale via asetpts+amix into the exported file, and every player stumbles on each point.
+    // Root fix: clean the timestamps directly on the source music branch with
+    // aresample=async (turns micro-drift/jumps into a monotonic stream, inaudible);
+    // the voice branch (self-generated FLAC, sample-exact) keeps every sample to match the timing
+    // absolutely. Shared by preview + export so both paths agree.
+    // 09/10 case of uneven voice loudness (the user reported it both within cues and between cues):
+    // measured on the real voice master (6266 cues): within-cue swing median 9.2dB
+    // (p95 35.2dB), between-cue spread p5-p95 5.5dB, 3 cues with peaks >= -1dBFS — yet the whole
+    // pipeline (synth -> pace -> master assembly -> mix) has no leveling stage at all.
+    // A/B tested on a real 70s clip: dynaudnorm makes it WORSE (it flattens peaks but
+    // widens the RMS spread 5.0->7.4dB, and 6 cues hit the ceiling) so it is out; loudnorm wins round 1
+    // (spread 5.0->4.1dB, landing on the correct target I=-18, no new peaks, LRA 7.4->7.1).
+    // 11/10 case of turning the gain up making the sound pumping/running out of breath: measured A/B on the same clip at gain
+    // 2.0 — the old chain's limiter fires continuously (147 clipped frames/700 = pumping),
+    // and removing the limiter means 4156 real samples clip (the limiter must stay). Add a
+    // LIGHT acompressor before the gain, exactly as broadcast books describe it (the compressor evens things out,
+    // the limiter only catches peaks that slip through; a limiter doing the main work causes flat/breathy): 4dB makeup
+    // widens the spread (5.0->5.6, raising tails while release runs across the silences), 0dB makeup
+    // is cleanest but the baseline is -4.5dB. Settled on threshold -24dB + 6dB makeup:
+    // clipped frames 147->52, p95 swing 22.6->18.7 (best), spread 5.1->5.4 (a slight
+    // +0.3dB, negligible), 0 clipped, minimum RMS filtered/raw ratio 1.79 (the validator's
+    // 0.25 bound is safe). Baseline 100% -2.4dB (already reported to the user).
+    // Fixed at render time: loudnorm sets the floor level -18 -> acompressor lightly holds down peaks
+    // (threshold -24dB, ratio 3, attack 20ms, release 200ms tuned to the speaking rhythm) ->
+    // controlled makeup -> volume=G from the user -> alimiter locks the ceiling.
+    // The sample-exact FLAC voice branch keeps every sample's timing — only the
+    // loudness level changes, timestamps are untouched (no impact on the 08/10 aresample case).
     public static string BuildVoiceAudioFilter(EditorAudioSettings audio, EditorVoiceTrack voice, int voiceInputIndex, double sourceStart)
     {
         var relativeDelay = Math.Max(0, voice.Start - sourceStart);

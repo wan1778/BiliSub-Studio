@@ -60,7 +60,8 @@ require(
     "EXPORT-07 Blur region no longer qualifies as base edit",
 )
 require(
-    "var request = CurrentEditRequest(subtitle) with" in images,
+    ("var request = CurrentEditRequest(subtitle) with" in images
+     or "await CurrentComposedEditRequestAsync(subtitle)" in images),
     "EXPORT-07 Blur-only must use the normal Editor render service",
 )
 
@@ -135,7 +136,7 @@ require(
     "EXPORT-07 Blur-only Keep must preserve source audio when present",
 )
 require(
-    'await ValidateRenderedOutputAsync(\n                temporary, trim.Duration, voice is not null || audio.SourceMode != "mute",\n                exportGraph.Dimensions, export.Codec, export.FrameRate, token);'
+    'await ValidateRenderedOutputAsync(\n                job, temporary, trim.Duration, voice is not null || audio.SourceMode != "mute",\n                exportGraph.Dimensions, export.Codec, export.FrameRate, renderRequest.Subtitle?.Cues,\n                trim.Start, voice?.Path, token);'
     in video,
     "EXPORT-07 output validation path changed unexpectedly",
 )

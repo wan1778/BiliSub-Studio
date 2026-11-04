@@ -70,7 +70,7 @@ public sealed class MediaPreviewService
         [
             "-hide_banner", "-loglevel", "error", "-nostdin", "-ss", Math.Max(0, seconds).ToString("0.000", System.Globalization.CultureInfo.InvariantCulture),
             "-i", input, "-map", "0:v:0", "-an", "-sn", "-dn", "-frames:v", "1",
-            "-vf", "scale=1280:-2:force_original_aspect_ratio=decrease", "-q:v", "4", "-c:v", "mjpeg", "-f", "image2pipe", "pipe:1",
+            "-vf", "scale=1280:-2:force_original_aspect_ratio=decrease", "-q:v", "4", "-c:v", "mjpeg", "-strict", "unofficial", "-f", "image2pipe", "pipe:1",
         ], cancellationToken);
         return frame.Length > 0 ? frame : throw new InvalidDataException("Frame preview rỗng.");
     }

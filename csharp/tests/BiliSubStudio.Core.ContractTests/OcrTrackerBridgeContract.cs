@@ -3,11 +3,11 @@ using BiliSubStudio.Core.Ocr;
 
 namespace BiliSubStudio.Core.ContractTests;
 
-// Cầu flicker tracker (video Cả Lớp 19/09: 1 câu chẻ 3-5 cue khi flicker —
-// VD 2546.7s Ăn Mày 1 câu chẻ 3, 731s Cả Lớp notebook flicker): active đã
-// chốt vì 2 blank mà chữ tương đương quay lại trong 0.5s thì NỐI cue cũ
-// (giữ Start, nối End, cộng support) thay vì mở cue mới.
-// SubtitleTracker là internal nên đi reflection như OcrTrackerModeRegression.
+// Tracker flicker bridge (Ca Lop video 19/09: 1 sentence splitting into 3-5 cues on flicker —
+// e.g. 2546.7s An May 1 sentence splits into 3, 731s Ca Lop notebook flicker): an active cue
+// closed after 2 blanks with an equivalent text returning within 0.5s JOINS the old cue
+// (keep Start, extend End, add support) instead of opening a new cue.
+// SubtitleTracker is internal, so go through reflection like OcrTrackerModeRegression.
 internal static class OcrTrackerBridgeContract
 {
     [System.Runtime.CompilerServices.ModuleInitializer]
@@ -83,7 +83,7 @@ internal static class OcrTrackerBridgeContract
 
     private static void BridgeJoinsGrowingReturn()
     {
-        // Fade-in: bản đọc ngắn trước, đủ câu sau — cùng caption, nối.
+        // Fade-in: a short earlier reading, enough of the later sentence — same caption, join.
         var driver = new Driver();
         driver.At(0.0, "老龙卫");
         driver.At(0.2, "老龙卫");
@@ -98,7 +98,7 @@ internal static class OcrTrackerBridgeContract
 
     private static void BridgeRefusesShorterCaption()
     {
-        // Thoại ngắn thật sau câu dài ("你走吧" rồi "走") — KHÔNG nối.
+        // A genuinely short line after a long one ("你走吧" then "走") — do NOT join.
         var driver = new Driver();
         driver.At(0.0, "你走吧");
         driver.At(0.2, "你走吧");
@@ -113,7 +113,7 @@ internal static class OcrTrackerBridgeContract
 
     private static void BridgeRefusesWideGap()
     {
-        // Quay lại sau 0.6s (>0.5s) — blank thật, giữ tách.
+        // Returning after 0.6s (>0.5s) — a real blank, keep them split.
         var driver = new Driver();
         driver.At(0.0, "测试字幕");
         driver.At(0.2, "测试字幕");

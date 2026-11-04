@@ -4,8 +4,8 @@ using BiliSubStudio.Core.Ocr;
 namespace BiliSubStudio.Core.ContractTests;
 
 // LIVE INCREMENTAL RECONCILE regression (field 109-113):
-// committed boundary mới -> tail reconcile pixel-gated ngay, preview sạch không đợi Pause.
-// Fixture: A/B dash variant touching, C dash-dropout (—), D exact, E câu khác hẳn.
+// a new committed boundary -> pixel-gated tail reconcile immediately, a clean preview without waiting for Pause.
+// Fixture: A/B dash variant touching, C dash-dropout (—), D exact, E an entirely different cue.
 internal static class OcrLiveTailContract
 {
     private static readonly OcrRegion TestRoi = new(0.05, 0.65, 0.90, 0.29);
@@ -25,25 +25,25 @@ internal static class OcrLiveTailContract
     }
 
     private static OcrCue CueA() => Prov(46.633, 47.733, ChainText, 0.99);
-    // Policy 21/09: A-B không byte-identical (dash variant) để blocking comparer được gọi
-    // Vẫn merge được vì pixel Same cho dash variant.
+    // Policy 21/09: A-B is not byte-identical (dash variant) so the blocking comparer gets called.
+    // It still merges because the pixel says Same for a dash variant.
     private static OcrCue CueB() => Prov(47.733, 48.333, "殿主，有那些那些那些那些可能—", 0.98);
     private static OcrCue CueC() => Prov(48.333, 48.800, "殿主，有没有一种可能—", 0.97);
     private static OcrCue CueD() => Prov(48.800, 49.400, ChainText, 0.99);
-    // E là instance thật mới: frame đầu tiên của nó KHÔNG được trùng Pts với frame cuối của D
-    // (pxi D chốt ở 49.400, handoff đổi chữ ngay frame sau => E.First = 49.433 = 1 native frame).
-    // Verdict Same iff 2 observation cùng Pts (frame vật lý) => D↔E Different tự nhiên.
+    // E is a genuinely new instance: its first frame Pts must not duplicate D's last frame
+    // (D's pxi locks at 49.400, the handoff changes text on the very next frame => E.First = 49.433 = 1 native frame).
+    // The verdict is Same iff both observations share a Pts (the same physical frame) => D↔E is naturally Different.
     private static OcrCue CueE() => Prov(49.400, 51.133, "陈长安硬打天罚", 0.99, firstPtsOverride: 49.433);
 
-    // Verdict theo boundary: Same trong instance, Different qua handoff (mô phỏng pixel thật).
-    // So theo Pts (media time của frame quan sát) vì đó là giá trị comparer thật nhận;
-    // SourcePts luôn distinct per observation (không dùng được để so boundary).
+    // Verdict per boundary: Same inside an instance, Different across a handoff (simulating a real pixel).
+    // Compared by Pts (the media time of the observed frame) because that is the value the real comparer receives;
+    // SourcePts is always distinct per observation (unusable for boundary comparison).
     private static PixelCheckResult Verdict(PixelObservation left, PixelObservation right) =>
         Math.Abs(left.Pts - right.Pts) < 1e-9 ? PixelCheckResult.Same : PixelCheckResult.Different;
 
     public static async Task RunAsync()
     {
-        // 1: live dash-variant pair merge ngay sau committed boundary (đúng 1 pixel check).
+        // 1: a live dash-variant pair merges right after the committed boundary (exactly 1 pixel check).
         using (var live = new OcrLiveTailReconciler())
         {
             var same = new ScriptedPixelComparer(Verdict);
@@ -53,13 +53,13 @@ internal static class OcrLiveTailContract
             Check(view.Count == 1, $"live exact pair must merge right after boundary (got {view.Count})");
             Check(view[0].Start == 46.633 && view[0].End == 48.333 && view[0].Text == ChainText && !view[0].NeedsReview,
                 "live merged cue must span 46.633-48.333 without review flag");
-            // A-B là dash variant (không byte-identical) nên tốn đúng 1 pixel check, Same → gộp.
+            // A-B is a dash variant (not byte-identical) so it costs exactly 1 pixel check, Same → merge.
             Check(same.Calls == 1, $"dash-variant pair must cost one pixel check (calls={same.Calls})");
             await live.StopAsync();
         }
 
-        // 2+3: dash chain 109-112 collapse qua từng incremental offer, E giữ riêng, không Pause.
-        // Generic gate: D-E (handoff) VẪN tới verifier, Different => tách + NeedsReview.
+        // 2+3: the dash chain 109-112 collapses through each incremental offer, E stays separate, no Pause.
+        // Generic gate: D-E (handoff) STILL reaches the verifier, Different => split + NeedsReview.
         using (var live = new OcrLiveTailReconciler())
         {
             var same = new ScriptedPixelComparer(Verdict);
@@ -75,7 +75,7 @@ internal static class OcrLiveTailContract
             var afterD = await WaitIdleAsync(live);
             Check(afterD.Count == 1 && afterD[0].Start == 46.633 && afterD[0].End == 49.400 && afterD[0].Text == ChainText,
                 "live tail must collapse 109-112 into 46.633-49.400 without Pause");
-            // A-B dash (1) + B-C dash variant Same (1) + C-D byte-identical sau gộp → fast-path (0) = 2 calls.
+            // A-B dash (1) + B-C dash variant Same (1) + C-D byte-identical after merging → fast-path (0) = 2 calls.
             Check(same.Calls == 2, $"109-112 chain must cost 2 pixel checks (calls={same.Calls})");
             live.AppendCommitted([CueE()]);
             var afterE = await WaitIdleAsync(live);
@@ -89,7 +89,7 @@ internal static class OcrLiveTailContract
             await live.StopAsync();
         }
 
-        // 4: stale reconcile result không overwrite tail mới hơn.
+        // 4: a stale reconcile result must not overwrite the newer tail.
         using (var live = new OcrLiveTailReconciler())
         {
             var blocking = new BlockingPixelComparer();
@@ -98,18 +98,18 @@ internal static class OcrLiveTailContract
             blocking.WaitEntered(TimeSpan.FromSeconds(15));
             live.AppendCommitted([CueC(), CueD(), CueE()]);
             blocking.Release();
-            // Blocking comparer trả Same mọi boundary trong window => chain A-E collapse thành 1 cue.
+            // The blocking comparer returns Same for every in-window boundary => the A-E chain collapses into 1 cue.
             var view = await WaitIdleAsync(live);
             Check(view.Count == 1 && view[0].Start == 46.633 && view[0].End == 51.133 && view[0].Text == ChainText,
                 "stale run must be discarded; fresh full-window run with Same must collapse A-E");
-            // Stale run: A-B dash variant → 1 pixel check (bị chặn) rồi bị hủy khi C/D/E tới.
+            // Stale run: A-B dash variant → 1 pixel check (blocked) then cancelled when C/D/E arrive.
             // Fresh run: A-B (1) + B-C (1) + C-D identical fast-path (0) + D-E (1, blocking Same) = 3 calls.
             Check(blocking.Calls == 4, $"discarded run (1) + fresh run (3) must total 4 checks (calls={blocking.Calls})");
             Check(live.AppliedRevision == live.Revision, "applied revision must catch up to latest revision");
             await live.StopAsync();
         }
 
-        // 5: active provisional không bao giờ thành committed.
+        // 5: an active provisional never becomes committed.
         using (var live = new OcrLiveTailReconciler())
         {
             var same = new ScriptedPixelComparer(Verdict);
@@ -123,7 +123,7 @@ internal static class OcrLiveTailContract
             var committed = Prov(46.633, 47.733, ChainText, 0.99);
             live.AppendCommitted([committed]);
             await WaitIdleAsync(live);
-            // Merge pipeline normalize/create bản copy nên so fields, không so reference.
+            // The merge pipeline normalizes/creates copies, so compare fields, not references.
             Check(live.CommittedView.Count == 1 && live.CommittedView[0].Start == 46.633 && live.CommittedView[0].End == 47.733,
                 "committed view must hold only committed cues");
             var composed2 = live.ViewWithActive(active);
@@ -132,7 +132,7 @@ internal static class OcrLiveTailContract
             await live.StopAsync();
         }
 
-        // 6: incremental offers == full reconcile cho cùng input, và chỉ trả chi phí tail.
+        // 6: incremental offers == full reconcile for the same input, and only pay the tail cost.
         using (var live = new OcrLiveTailReconciler())
         {
             var all = Stream24();
@@ -151,19 +151,19 @@ internal static class OcrLiveTailContract
                 Check(incremental[i].Start == full[i].Start && incremental[i].End == full[i].End
                     && incremental[i].Text == full[i].Text && incremental[i].NeedsReview == full[i].NeedsReview,
                     $"incremental cue {i} differs from full reconcile");
-            // Tail-only + fast path: 10 exact pairs gộp pixel-free (0); offer3 chain1-2 Same (1),
-            // chain đã gộp vs chain3 byte-identical → fast-path (0), chain-tail Different (1) = 2.
-            // Between-instance boundaries (gap > window) không gọi comparer.
+            // Tail-only + fast path: 10 exact pairs merge pixel-free (0); offer3 chain1-2 Same (1),
+            // the already-merged chain vs chain3 byte-identical → fast-path (0), chain-tail Different (1) = 2.
+            // Between-instance boundaries (gap > window) do not call the comparer.
             Check(same.Calls == 2, $"incremental must pay tail-only cost, not full rescan (calls={same.Calls})");
             await live.StopAsync();
         }
 
-        // 7: resume seed hiển thị bulk ngay lập tức, append sau chỉ trả chi phí tail.
+        // 7: a resume seed exposes the bulk immediately, a later append only pays the tail cost.
         using (var live = new OcrLiveTailReconciler())
         {
             var bulk = Enumerable.Range(0, 10).Select(i => Prov(10 * (i + 1), 10 * (i + 1) + 1, "散句" + (i + 1), 0.99)).ToArray();
             live.ResetCommitted(bulk);
-            // Chưa Start/worker: view đã phải có đủ bulk đã normalize.
+            // No Start/worker yet: the view must already hold the full normalized bulk.
             Check(live.CommittedView.Count == 10, $"resume must expose restored history immediately (got {live.CommittedView.Count})");
             Check(live.CommittedView[0].Start == 10 && live.CommittedView[9].Start == 100, "seeded view must preserve order");
             var same = new ScriptedPixelComparer(Verdict);
@@ -195,9 +195,9 @@ internal static class OcrLiveTailContract
                 "cleaned resume seed must preserve the union span");
         }
 
-        // 8: out-of-order multi-lane arrival (vu live-split p02): prefix co san 10 cue
-        // tuong lai (> TailWindow), fresh la cap dash-variant TOI TRE o qua khu.
-        // Cu: gop thanh 1 (pixel Same) thay vi nam tho song doi.
+        // 8: out-of-order multi-lane arrival (the live-split p02 case): the prefix already holds 10
+        // future cues (> TailWindow) and the fresh arrival is a LATE dash-variant pair from the past.
+        // Expected: merge into 1 (pixel Same) instead of living side by side.
         using (var live = new OcrLiveTailReconciler())
         {
             var futures = Enumerable.Range(0, 10).Select(i => Prov(1000 + 10 * i, 1000 + 10 * i + 1, "后来" + (i + 1), 0.99)).ToArray();
@@ -218,7 +218,7 @@ internal static class OcrLiveTailContract
         }
     }
 
-    // 10 exact pairs (T1-T10) + dash chain 3 + 1 distinct = 24 cues, offer 3 đợt.
+    // 10 exact pairs (T1-T10) + a 3-dash chain + 1 distinct = 24 cues, delivered in 3 offers.
     private static OcrCue[] Stream24()
     {
         var cues = new List<OcrCue>();
@@ -242,8 +242,8 @@ internal static class OcrLiveTailContract
         {
             if (live.AppliedRevision == live.Revision && live.AppliedRevision >= 0)
             {
-                // AppliedRevision bắt kịp nhưng worker có thể vừa nhận offer mới;
-                // ổn định qua 2 lần đọc liên tiếp.
+                // AppliedRevision has caught up but the worker may have just taken a new offer;
+                // stabilize by reading twice in a row.
                 await Task.Delay(50);
                 if (live.AppliedRevision == live.Revision) return live.CommittedView;
             }

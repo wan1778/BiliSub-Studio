@@ -74,11 +74,13 @@ for token in (
 # Voice each qualify as base edit; without Image/logo the same request runs directly.
 for token in (
     "var subtitle = CompletedSubtitleBurn();",
-    'var hasBaseEdit = _document.Regions.Count > 0 || subtitle is not null || _audioSettings.SourceMode != "keep" || _voiceTrack is not null || trimChanged;',
+    'var hasBaseEdit = _document.Regions.Count > 0 || subtitle is not null || _audioSettings.SourceMode != "keep" || _voiceTrack is not null || trimChanged || hasComposedClips;',
     "if (!hasImages)",
-    "var request = CurrentEditRequest(subtitle) with",
 ):
     require(token in images, f"EXPORT-12 final orchestration lost: {token}")
+require("var request = CurrentEditRequest(subtitle) with" in images
+        or "await CurrentComposedEditRequestAsync(subtitle)" in images,
+        "EXPORT-12 final orchestration lost: the export must start from the shared request owner")
 
 # Audio persistence/normalization has exactly Keep, Duck and Mute semantics.
 for token in (

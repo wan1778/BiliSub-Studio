@@ -158,8 +158,8 @@ internal static class EditorAsrCheckpointContract
             frontier = 0, complete = false, cues = Array.Empty<object>() };
         async Task<string> DeviceAsync(string key = "expected")
         {
-            // P1.1 (27/09): signature thêm expectedModelRevision (small-model
-            // split) — checkpoint phải khớp đúng revision mới.
+            // P1.1 (27/09): the signature adds expectedModelRevision (small-model
+            // split) - a checkpoint must match exactly the revision it expects.
             var task = (Task)load.Invoke(service, [path, key, revision, CancellationToken.None, null])!;
             await task;
             var value = task.GetType().GetProperty("Result")!.GetValue(task)!;

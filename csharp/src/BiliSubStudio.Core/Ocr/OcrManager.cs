@@ -19,17 +19,17 @@ public sealed class OcrManager : IAsyncDisposable
     private readonly List<Task> _retiredInference = [];
     private string _deviceMode = "auto";
     private string _activeMode = string.Empty;
-    // Model tier đang chạy trong pool: Accurate = Medium, Balanced/Fast =
-    // Mobile (28/09; trước đó Small). Mặc định Medium (hành vi cũ); đổi tier
-    // là rebuild. Mobile nhẹ hơn Small nên mọi luật small-tier (grow cap 4,
-    // OOM backstop) áp dụng nguyên.
+    // Model tier currently running in the pool: Accurate = Medium, Balanced/Fast =
+    // Mobile (28/09; previously Small). Defaults to Medium (old behaviour); changing tier
+    // forces a rebuild. Mobile is lighter than Small so every small-tier rule (grow cap 4,
+    // OOM backstop) applies unchanged.
     private string _activeDetModel = OcrInstaller.DetectionModel;
     private string _activeRecModel = OcrInstaller.RecognitionModel;
-    // OOM backstop cho grow small-tier (26/09): 2 death không kế hoạch liên
-    // tiếp trong pool grown thì ghim, lần quét sau không grow nữa. Không bao
-    // giờ shrink giữa scan (request đang bay giữ worker reference; dispose
-    // giữa chừng sẽ strand chúng) — ghim áp dụng ở lần start sau, scan này
-    // chạy tiếp bằng replacement 1:1 có sẵn.
+    // OOM backstop for small-tier growth (26/09): 2 unplanned deaths in a row
+    // inside a grown pool pins it, and the next scan grows no more. Never
+    // shrink mid-scan (in-flight requests hold worker references; disposing
+    // halfway would strand them) — the pin applies on the next start, while this scan
+    // continues via the existing 1:1 replacement.
     private int _smallTierDeaths;
     private bool _smallGrowSuppressed;
     private string _lastSmallTierGrowReason = string.Empty;
@@ -40,15 +40,15 @@ public sealed class OcrManager : IAsyncDisposable
         || (string.Equals(_activeDetModel, OcrInstaller.MobileDetectionModel, StringComparison.Ordinal)
         && string.Equals(_activeRecModel, OcrInstaller.MobileRecognitionModel, StringComparison.Ordinal));
 
-    // Tier-aware worker cap (26/09): Small được tới 4 (model nhẹ), các tier
-    // khác giữ luật WorkerTarget cũ. Mọi clamp (configure/resume/grow) đi qua
-    // đây để resume không cắt pool 4 về 2 và cold build không vượt cap.
+    // Tier-aware worker cap (26/09): Small may go up to 4 (light model), other tiers
+    // keep the old WorkerTarget rule. All clamps (configure/resume/grow) pass through
+    // here so resume does not cut a pool of 4 down to 2 and a cold build does not exceed the cap.
     private int EffectiveWorkerCapLocked(string mode, int requested) =>
         IsSmallTierActiveLocked() && !string.Equals(mode, "cpu", StringComparison.OrdinalIgnoreCase)
             ? Math.Min(OcrTopologyBenchmark.SmallTierMaxWorkers, Math.Max(1, requested))
             : OcrTopologyBenchmark.WorkerTarget(mode, requested);
 
-    // Snapshot cho scanner validation (tự giữ gate; caller không giữ gate).
+    // Snapshot for scanner validation (holds the gate itself; the caller does not).
     internal async Task<int> EffectiveWorkerTargetAsync(string mode, int lanes, CancellationToken cancellationToken)
     {
         await _gate.WaitAsync(cancellationToken);
@@ -65,9 +65,9 @@ public sealed class OcrManager : IAsyncDisposable
     private long _probeImages;
     private long _workerReplacements;
     private long _plannedRecycles;
-    // Recycle chủ động chống suy giảm theo giờ: worker là fungible (cache chỉ là perf,
-    // lỗi đã tự xóa) nên cho về hưu sau ngần này ảnh, so le nhau, đúng điểm an toàn.
-    // ~25k ảnh ≈ 2h ở 3.5 ảnh/s/worker. Tuổi tính theo worker incarnation (worker mới đẻ = 0).
+    // Proactive recycling against performance degradation over time: a worker is fungible (cache is only for perf,
+    // errors are self-destructing) so retire it after this many images, staggered, at a genuinely safe point.
+    // ~25k images ≈ 2h at 3.5 images/s/worker. Age is per worker incarnation (a freshly spawned worker starts at 0).
     private const long RecycleAfterImages = 25000;
 
     internal OcrManager(AppPaths paths, HardwareService hardware, OcrInstaller installer)
@@ -294,9 +294,9 @@ public sealed class OcrManager : IAsyncDisposable
         finally { _gate.Release(); }
     }
 
-    // One-shot grow sau topology lock, khi chưa có traffic (scanner gọi trước
-    // vòng lane). Chỉ Small tier (model nhẹ) + VRAM đủ + chưa bị ghim OOM.
-    // Trả về số worker hiện tại (không đổi nếu không đủ điều kiện).
+    // One-shot grow after the topology lock, while there is no traffic yet (the scanner calls it before
+    // the lane loop). Only Small tier (light model) + enough VRAM + not pinned by OOM.
+    // Returns the current worker count (unchanged if conditions are not met).
     public async Task<int> TryGrowSmallTierAsync(int lanes, CancellationToken cancellationToken)
     {
         await _gate.WaitAsync(cancellationToken);
@@ -348,8 +348,8 @@ public sealed class OcrManager : IAsyncDisposable
         finally { _gate.Release(); }
     }
 
-    // Lý do không mở rộng small tier (log cho người dùng): card nhỏ, RAM bị
-    // siết, hoặc lane NVDEC đã ăn phần VRAM còn lại.
+    // Reason small-tier growth is skipped (logged for the user): small card, RAM
+    // squeezed, or NVDEC lanes already ate the remaining VRAM.
     internal static string DescribeSmallTierGrowBlock(HardwareResourceSnapshot live, int lanes)
     {
         if (!live.VramTelemetryAvailable)
@@ -370,9 +370,9 @@ public sealed class OcrManager : IAsyncDisposable
 
     internal string SmallTierGrowReason => _lastSmallTierGrowReason;
 
-    // OOM backstop: death không kế hoạch thứ 2 trong pool grown thì ghim —
-    // lần quét sau không grow nữa. Chỉ ghi cờ (không mutate pool ở đây).
-    // Gọi dưới _gate, sau replace thành công.
+    // OOM backstop: the 2nd unplanned death inside a grown pool pins it —
+    // the next scan grows no more. Only sets the flag (does not mutate the pool here).
+    // Called under _gate, after a successful replace.
     private void NoteSmallTierDeathLocked()
     {
         if (!IsSmallTierActiveLocked()
@@ -404,8 +404,8 @@ public sealed class OcrManager : IAsyncDisposable
         return await RunBatchInternalAsync(imageBase64, cancellationToken, recoverShortBlank, activeShortText, onPerf);
     }
 
-    // Đường batch nội bộ cho OcrBatchScope (vét batch): validation ở worker client
-    // giữ nguyên, ở đây chỉ đếm + recovery như đường public.
+    // Internal batch path for OcrBatchScope (batch scavenging): validation in the worker client
+    // stays intact, here we only count + recover as on the public path.
     internal Task<IReadOnlyList<OcrResult>> RunBatchInternalAsync(
         IReadOnlyList<string> imageBase64,
         CancellationToken cancellationToken,
@@ -420,9 +420,9 @@ public sealed class OcrManager : IAsyncDisposable
             cancellationToken);
     }
 
-    // Scope vét batch theo scan: gom request đơn lẻ đang chờ sẵn thành batch worker.
-    // = 4 (parity 15/9 bằng worker thật đang chạy: text/box giống hệt 8/8, nhanh 1.53x;
-    // worker từ chối batch >4 nên cap theo worker, không theo protocol).
+    // Per-scan batch scavenging scope: coalesce pending single requests into a worker batch.
+    // = 4 (parity 15/9 with the real running worker: text/box identical 8/8, 1.53x faster;
+    // the worker rejects batches >4 so the cap follows the worker, not the protocol).
     // Contract test ghim == 4.
     public static int BatchCoalesceCap = 4;
 
@@ -437,11 +437,11 @@ public sealed class OcrManager : IAsyncDisposable
         {
             _manager = manager;
             _ = scanToken;
-            // Cap 1: không dựng batcher, SubmitAsync đi đường cũ từng ảnh.
-            // workerCountProvider cho batcher biết pool rộng bao nhiêu để hold
-            // gom mate đúng lúc (busy mới hold, idle chạy ngay như cũ). Đọc
-            // live mỗi lần check (pool có thể rebuild) — lệch chút cũng vô hại
-            // vì đây chỉ là heuristic gom batch, không phải gate đúng/sai.
+            // Cap 1: do not build a batcher, SubmitAsync takes the old per-image path.
+            // workerCountProvider tells the batcher how wide the pool is so it can hold
+            // and coalesce mates at the right moment (only hold when busy, run immediately when idle). Read
+            // live on every check (the pool may rebuild) — being slightly off is harmless
+            // because this is only a batch-coalescing heuristic, not a correctness gate.
             if (BatchCoalesceCap > 1)
                 _batcher = new OcrRequestBatcher(manager.DispatchBatchAsync, BatchCoalesceCap, workerCountProvider);
         }
@@ -462,8 +462,8 @@ public sealed class OcrManager : IAsyncDisposable
         public ValueTask DisposeAsync() => _batcher?.DisposeAsync() ?? ValueTask.CompletedTask;
     }
 
-    // Style probe đi đường lease worker trực tiếp (1 lần lúc bắt đầu quét,
-    // không qua batcher). Worker cũ/lỗi -> ném -> scanner fail-open về "off".
+    // The style probe goes through a direct worker lease (once at scan start,
+    // not via the batcher). An old/erroring worker -> throws -> the scanner fails open to "off".
     public Task<IReadOnlyList<OcrSubtitleStyle.FrameScore>> ProbeSubtitleStyleAsync(
         IReadOnlyList<string> imageBase64,
         CancellationToken cancellationToken)
@@ -473,11 +473,11 @@ public sealed class OcrManager : IAsyncDisposable
 
     private static readonly OcrPerfSample ZeroPerf = new(0, 0, 0, 0, 0, 0);
 
-    // Production dispatch cho batcher: 1 batch = 1 worker call (recovery/retry giữ
-    // nguyên qua ExecuteWithRecoveryAsync). Token là scope-stop (chỉ fire khi dispose):
-    // pause hủy member TCS ngay (lane thoát nhanh), GPU chạy nốt batch mồ côi trong
-    // giới hạn timeout rồi bỏ kết quả — không giết worker (tránh replacement storm).
-    // Perf fan-out giữ tổng EXACT: member đầu gánh cả batch, còn lại sample 0.
+    // Production dispatch for the batcher: 1 batch = 1 worker call (recovery/retry stay
+    // intact via ExecuteWithRecoveryAsync). The token is a scope-stop (only fires on dispose):
+    // pause cancels member TCS entries immediately (the lane exits fast), the GPU finishes the orphan batch within
+    // the timeout limit then discards the result — do not kill the worker (avoids a replacement storm).
+    // Perf fan-out keeps the total EXACT: the first member absorbs the whole batch, the rest sample 0.
     private async Task DispatchBatchAsync(
         IReadOnlyList<OcrRequestBatcher.Pending> batch,
         CancellationToken scopeToken)
@@ -707,13 +707,13 @@ public sealed class OcrManager : IAsyncDisposable
         !cancellationToken.IsCancellationRequested
         && (error is OcrWorkerUnavailableException or TimeoutException || !worker.IsAlive);
 
-    // Recycle chủ động (chống "quét càng lâu càng chậm"): worker quá tuổi thì về hưu
-    // DÙ ĐANG KHỎE, đẻ worker mới thay chỗ — reset phân mảnh CUDA/nóng tích lũy/vé số
-    // ảnh độc. Chạy trên đường ReplaceWorkerAsync có sẵn (giữ _gate, mổ pool an toàn).
-    // Fail-open tuyệt đối: mọi lỗi (pool rebuild giữa chừng, cancel, khởi động hỏng)
-    // đều trả worker cũ về phục vụ tiếp + reset tuổi (không churn _gate mỗi request);
-    // pool đang què (thiếu worker sống) thì bỏ qua lượt (để recovery lo).
-    // Single-worker pool: vẫn recycle (nghỉ ~30s nạp model mỗi ~2h, có chặn trên).
+    // Proactive recycling (against "the longer a scan runs, the slower it gets"): a worker past its age limit retires
+    // EVEN WHILE HEALTHY, spawning a new worker to take its place — resetting CUDA fragmentation/accumulated heat/RNG
+    // image pool churn. Runs on the existing ReplaceWorkerAsync path (keeps _gate, surgical pool edits).
+    // Absolute fail-open: every error (mid-run pool rebuild, cancel, failed startup)
+    // returns the old worker for continued service + resets its age (no _gate churn per request);
+    // a crippled pool (missing live workers) skips this round (leave it to recovery).
+    // Single-worker pools still recycle (~30s pause to load the model every ~2h, capped).
     private async Task<OcrWorkerClient> MaybeRecycleAsync(
         OcrWorkerClient worker,
         Channel<OcrWorkerClient> channel,
@@ -745,8 +745,8 @@ public sealed class OcrManager : IAsyncDisposable
         CancellationToken cancellationToken,
         bool planned = false)
     {
-        // Recycle chủ động KHÔNG tính vào WorkerReplacements-do-chết (đếm riêng planned):
-        // 2 số này là bằng chứng nghiệm thu time-invariance (chết≈0, recycle đều).
+        // Proactive recycling does NOT count toward WorkerReplacements-by-death (counted separately as planned):
+        // these two numbers are acceptance evidence for time-invariance (deaths≈0, recycling even).
         if (!planned) Interlocked.Increment(ref _workerReplacements);
         await _gate.WaitAsync(cancellationToken);
         try

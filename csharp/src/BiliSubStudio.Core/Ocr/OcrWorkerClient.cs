@@ -26,8 +26,8 @@ internal sealed class OcrWorkerClient : IAsyncDisposable
     private readonly StringBuilder _stderrTail = new();
     private Task? _stderrCompletion;
     private long _requestId;
-    // Tuổi worker (số ảnh inference đã phục vụ thành công, không tính probe): dùng cho
-    // recycle chủ động chống suy giảm theo giờ + pháp y treo (biết worker chết lúc bao nhiêu tuổi).
+    // Worker age (number of inference images served successfully, probes excluded): used for
+    // proactive recycling against degradation over time + hang forensics (knowing a worker's age when it died).
     private long _imagesServed;
 
     // Single-arg construction keeps the historical Medium default (test-frame
@@ -157,9 +157,9 @@ internal sealed class OcrWorkerClient : IAsyncDisposable
         string? activeShortText = null,
         Action<OcrPerfSample>? onPerf = null)
     {
-        // Giới hạn theo worker ĐANG CHẠY (parity 15/9: worker 27/8 từ chối batch >4),
-        // không theo protocol repo mới (8). Batch 5-8 trước đây nổ ở worker thành
-        // OcrRecognitionException ở window/refinement — fail ngay client cho rõ.
+        // Limit follows the RUNNING worker (parity 15/9: worker 27/8 rejects batches >4),
+        // not the new repo protocol (8). Batches of 5-8 previously blew up in the worker as an
+        // OcrRecognitionException at window/refinement — fail immediately in the client to be clear.
         if (imageBase64.Count is < 1 || imageBase64.Count > OcrRequestBatcher.WorkerBatchLimit || imageBase64.Any(string.IsNullOrWhiteSpace))
             throw new ArgumentException($"Batch OCR phải có từ 1 đến {OcrRequestBatcher.WorkerBatchLimit} ảnh hợp lệ.", nameof(imageBase64));
         var payload = new Dictionary<string, object?>
@@ -211,9 +211,9 @@ internal sealed class OcrWorkerClient : IAsyncDisposable
         catch { return null; }
     }
 
-    // Mức lọc tách chữ khỏi nền cho lượt quét ("medium"|"strong"), scanner tự đo
-    // lúc bắt đầu rồi gán 1 lần. Mỗi lượt quét GÁN LẠI từ đầu (off -> null)
-    // nên không rò sang lượt khác.
+    // Filter level separating text from background for a scan ("medium"|"strong"), the scanner measures
+    // it at startup then assigns it once. Every scan RE-ASSIGNS from scratch (off -> null)
+    // so it does not leak into another scan.
     internal static readonly AsyncLocal<string?> AmbientStyleFilter = new();
 
     private static void ApplyAmbientStyleFilter(Dictionary<string, object?> payload)
@@ -222,8 +222,8 @@ internal sealed class OcrWorkerClient : IAsyncDisposable
             payload["style_filter"] = AmbientStyleFilter.Value;
     }
 
-    // Đo kiểu sub (style probe): worker trả điểm từng khung ROI. Worker cũ không
-    // có op -> lỗi -> caller fail-open về "off".
+    // Measure subtitle style (style probe): the worker returns per-frame ROI scores. An old worker without
+    // the op -> error -> the caller fails open to "off".
     public async Task<IReadOnlyList<OcrSubtitleStyle.FrameScore>> ProbeSubtitleStyleAsync(
         IReadOnlyList<string> imageBase64,
         CancellationToken cancellationToken)
@@ -345,9 +345,9 @@ internal sealed class OcrWorkerClient : IAsyncDisposable
                 if (line is null) throw await ClosedExceptionAsync("OCR worker đóng khi đang xử lý.");
                 JsonDocument document;
                 try { document = JsonDocument.Parse(line); }
-                // Paddle/PaddleOCR có thể in diagnostic thẳng ra STDOUT (thay vì stderr):
-                // trước đây vứt hẳn (continue) nên worker gào đúng nguyên nhân mà C# vẫn chờ
-                // tới 90s rồi giết oan. Giữ lại vào đuôi pháp y để ca treo tới có tang chứng.
+                // Paddle/PaddleOCR may print diagnostics straight to STDOUT (instead of stderr):
+                // previously discarded entirely (continue), so the worker screamed the exact cause while C# still waited
+                // 90s and then killed it wrongly. Keep it into the forensic tail so hang cases have evidence.
                 catch (JsonException) { NoteProtocolNoise(line); continue; }
                 using (document)
                 {
@@ -419,8 +419,8 @@ internal sealed class OcrWorkerClient : IAsyncDisposable
         }
     }
 
-    // Giũ rác stdout-protocol vào cùng đuôi stderr (chung giới hạn 16KB, cắt dòng dài):
-    // Paddle traceback/OOM in ra stdout là tang chứng treo quý nhất, trước đây bị vứt.
+    // Sift stdout-protocol junk into the same stderr tail (shared 16KB limit, long lines truncated):
+    // Paddle tracebacks/OOM printed to stdout are the most precious hang evidence, previously discarded.
     private void NoteProtocolNoise(string line)
     {
         if (string.IsNullOrWhiteSpace(line)) return;
@@ -572,8 +572,8 @@ internal sealed class OcrWorkerClient : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        // Gọi 2 lần phải an toàn: lane-finally (OcrManager) và teardown pool có thể
-        // cùng hủy một worker (vu double-dispose lam hong test recovery).
+        // Calling twice must be safe: lane-finally (OcrManager) and pool teardown may
+        // cancel the same worker (the double-dispose case that broke the recovery test).
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         try { await StopAsync(); }
         finally { _requestGate.Dispose(); }

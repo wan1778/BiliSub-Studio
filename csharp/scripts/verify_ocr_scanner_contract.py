@@ -287,10 +287,19 @@ def main() -> int:
             '"_Chinese.partial.srt"' in page and "ExportButton.IsEnabled = _cues.Count > 0;" in page,
             "OCR checkpoint cannot be exported as an explicitly partial recovery SRT")
     require("AutoSaveDirectoryBox" in page_xaml and "ChooseAutoSaveFolder_Click" in page_xaml and
-            "OCR hoàn tất sẽ tự lưu SRT" in page_xaml and "IFolderPickerService" in page and
+            "Mặc định: mỗi video trong hàng chợ OCR xong sẽ lưu SRT ngay kế bên video đó" in page_xaml and "IFolderPickerService" in page and
             "SetOcrOutputDirectoryAsync" in page and "ExportCurrentSrtAsync(autoSaveDirectory, recovery: false, exportRequest: request)" in page and
             "Đã quét xong và tự lưu SRT" in page,
             "OCR page does not expose and persist a dedicated auto-save folder or export final SRT automatically")
+    # OCR-SRT-BESIDE-VIDEO: a queued scan must land its SRT next to ITS OWN
+    # video, so a queue that mixes folders does not dump every SRT into one place.
+    require("AutoSaveBesideVideoCheckBox" in page_xaml and "AutoSaveBesideVideo_Changed" in page,
+            "OCR must expose the beside-the-video auto-save choice")
+    require("private string AutoSaveDirectoryFor(string? videoPath)" in page
+            and "AutoSaveDirectoryFor(request.Path)" in page,
+            "each queued scan must resolve its auto-save folder from the video it is scanning")
+    require("_autoSaveBesideVideo" in page and "_autoSaveBesideVideo = false;" in page,
+            "picking a shared folder must be the explicit opt-out from beside-the-video")
     require('path + ".tmp-" + Guid.NewGuid().ToString("N")' in application and
             "File.Move(temporary, path);" in application,
             "OCR SRT publication is not atomic")

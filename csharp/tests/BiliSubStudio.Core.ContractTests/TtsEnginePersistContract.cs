@@ -6,11 +6,11 @@ using BiliSubStudio.Core.Editor;
 
 namespace BiliSubStudio.Core.ContractTests;
 
-// 08/10 (user: thoát project vào lại mất voice, phải chạy lại): NormalizeTts
-// cũ chỉ chấp nhận tuple engine NGHI nên mọi voice VieNeu bị lặng lẽ trả null
-// MỖI LẦN LƯU — disk không bao giờ giữ Tts. Hợp đồng: chấp nhận cả 2 tuple
-// engine nguyên bộ (engine+version+cặp voice khớp nhau), rev manifest chấp
-// nhận cả 2 revision đã pin; tuple trộn/lạ vẫn bị loại (không nới lỏng).
+// 08/10 (user: exiting and re-entering a project lost the voice and had to be regenerated): the old
+// NormalizeTts only accepted the NGHI engine tuple, so every VieNeu voice was silently returned as null
+// ON EVERY SAVE - disk never kept the Tts. Contract: accept both full engine tuples (engine + version +
+// matching voice pair), the manifest review accepts both pinned revisions; mixed/foreign tuples are still
+// rejected (no loosening).
 internal static class TtsEnginePersistContract
 {
     private const string VieneuEngine = "vieneu-tts";

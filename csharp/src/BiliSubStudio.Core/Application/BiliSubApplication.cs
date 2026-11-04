@@ -69,7 +69,7 @@ public sealed class BiliSubApplication : IAsyncDisposable
         var pythonBootstrap = new OcrInstaller(paths, _http, Processes);
         _ocr = new OcrManager(paths, Hardware, pythonBootstrap);
         _asr = new LocalAsrService(paths, new LocalAsrInstaller(paths, pythonBootstrap, Processes), Tools, Processes, Hardware);
-        // Tai nghe Whisper đã bỏ khỏi đường quét OCR (22/09); _asr giữ lại cho tab Edit/voice.
+        // Whisper listening was removed from the OCR scan path (22/09); _asr is kept for the Edit/voice tab.
         _ocrScanner = new OcrScanner(Tools, Processes, _ocr, Hardware, new OcrCheckpointStore(paths), paths);
         _tts = new LocalTtsService(paths, new LocalTtsInstaller(paths, pythonBootstrap, Processes), Tools, Processes);
     }
@@ -108,6 +108,23 @@ public sealed class BiliSubApplication : IAsyncDisposable
         return await Resolver.GetMetadataAsync(url, cookieFile, cancellationToken);
     }
 
+    private async Task EnsureBilibiliSessionAsync(AppJob job)
+    {
+        var probe = await Authentication.ProbeAsync(job.CancellationToken);
+        if (!probe.HasSession)
+        {
+            job.Warn("Chưa đăng nhập Bilibili: chỉ tải được bản giới hạn (thường 480p).");
+            return;
+        }
+        if (probe.Expired)
+        {
+            await Sessions.DeleteAsync(job.CancellationToken);
+            job.Warn(probe.Message + " Phiên cũ đã bị xóa để tránh lỗi 412; tải tiếp ở chế độ ẩn danh (tối đa 480p), dán cookie mới ở trang Đăng nhập để lấy 720p+.");
+            return;
+        }
+        if (!probe.Valid) job.Warn(probe.Message);
+    }
+
     public string StartVideo(VideoDownloadRequest request)
     {
         var bundledMedia = request.MediaBundle;
@@ -133,6 +150,7 @@ public sealed class BiliSubApplication : IAsyncDisposable
                 ? Config.OutputDirectory
                 : Path.GetFullPath(request.OutputDirectory.Trim());
             Directory.CreateDirectory(outputDirectory);
+            await EnsureBilibiliSessionAsync(job);
             var cookie = await Sessions.WriteNetscapeFileAsync(job.CancellationToken);
 
             if (!bundledMedia)
@@ -503,10 +521,10 @@ public sealed class BiliSubApplication : IAsyncDisposable
 
     public string StartLocalTranslationPreparation(EditorTranslationModelMode mode = EditorTranslationModelMode.Quality)
     {
-        if (Jobs.HasActiveJobs) throw new InvalidOperationException("Hãy hoàn tất hoặc hủy tác vụ Media/OCR/Editor đang chạy trước khi chuẩn bị AI dịch.");
         var job = Jobs.Create("translation-prepare", cleanupAwareCancel: true);
         _ = RunJobAsync(job, async () =>
         {
+            await WaitForExclusiveSlotAsync(job, "Chuẩn bị AI dịch", job.CancellationToken);
             await _translation.PrepareAsync(job, mode);
             job.Finish(null, "AI local và skill dịch đã sẵn sàng.", _translation.StatusFor(mode));
         });
@@ -515,10 +533,10 @@ public sealed class BiliSubApplication : IAsyncDisposable
 
     public string StartEditorTranslation(EditorTranslationRequest request)
     {
-        if (Jobs.HasActiveJobs) throw new InvalidOperationException("Hãy hoàn tất hoặc hủy tác vụ Media/OCR/Editor đang chạy trước khi Vietsub.");
         var job = Jobs.Create("translation", cleanupAwareCancel: true);
         _ = RunJobAsync(job, async () =>
         {
+            await WaitForExclusiveSlotAsync(job, "Vietsub", job.CancellationToken);
             var result = await _translation.TranslateAsync(job, request);
             job.Finish(null, "Đã Vietsub và lưu: " + result.OutputPath, result);
         });
@@ -528,10 +546,10 @@ public sealed class BiliSubApplication : IAsyncDisposable
     public string StartEditorAsr(EditorAsrRequest request)
     {
         if (request.ExecutionMode is not ("cpu" or "gpu" or "hybrid")) throw new ArgumentException("Chế độ ASR không hợp lệ.");
-        if (Jobs.HasActiveJobs) throw new InvalidOperationException("Hãy hoàn tất hoặc hủy tác vụ Media/OCR/Editor đang chạy trước khi phân tích nhịp thoại.");
         var job = Jobs.Create("editor-asr", cleanupAwareCancel: true);
         _ = RunJobAsync(job, async () =>
         {
+            await WaitForExclusiveSlotAsync(job, "Phân tích nhịp thoại", job.CancellationToken);
             await _configStore.UpdateAsync(config => config with { AsrExecutionMode = request.ExecutionMode }, job.CancellationToken);
             var result = await _asr.TranscribeAsync(job, request);
             job.Finish(null, $"Whisper timing hoàn tất: {result.SegmentCount} đoạn / {result.WordCount} từ.", result);
@@ -541,26 +559,31 @@ public sealed class BiliSubApplication : IAsyncDisposable
 
     public string StartEditorTtsSample(string voice)
     {
-        if (Jobs.HasActiveJobs) throw new InvalidOperationException("Hãy hoàn tất hoặc hủy tác vụ đang chạy trước khi nghe thử.");
         var job = Jobs.Create("editor-tts", cleanupAwareCancel: true);
         _ = RunJobAsync(job, async () =>
         {
+            await WaitForExclusiveSlotAsync(job, "Nghe thử giọng", job.CancellationToken);
             var result = await _tts.GenerateSampleAsync(job, voice);
-            job.Finish(null, "Đã tạo mẫu Ngọc Huyền bằng model NGHI local.", result);
+            job.Finish(null, "Đã tạo mẫu giọng VieNeu local.", result);
         });
         return job.Id;
     }
 
     public string StartEditorTts(EditorTtsRequest request)
     {
-        if (Jobs.HasActiveJobs) throw new InvalidOperationException("Hãy hoàn tất hoặc hủy tác vụ Media/OCR/Editor đang chạy trước khi tạo voice Việt.");
         var job = Jobs.Create("editor-tts", cleanupAwareCancel: true);
         _ = RunJobAsync(job, async () =>
         {
+            await WaitForExclusiveSlotAsync(job, "Tạo voice Việt", job.CancellationToken);
             var result = await _tts.GenerateAsync(job, request);
-            job.Finish(null, result.ReviewCount == 0
-                ? "Đã tạo voice Việt local và fit toàn bộ timing."
-                : $"Đã tạo voice Việt local; {result.ReviewCount} câu cần xem lại.", result);
+            // F1 (17/11): the run's quality verdict, not just a review count -
+            // a review count alone covers every cue and says nothing.
+            var summary =
+                $"Đã tạo voice Việt local · {result.Cues.Count} câu · đọc đủ chữ {result.Cues.Count - result.ShortenedCues} "
+                + $"· tràn vào khoảng lặng {result.SpilledCues}";
+            job.Finish(null, result.ShortenedCues == 0
+                ? summary + "."
+                : summary + $"· ⚠ {result.ShortenedCues} câu bị rút gọn lời (xem Nhật ký để sửa timecode SRT).", result);
         });
         return job.Id;
     }
@@ -642,15 +665,15 @@ public sealed class BiliSubApplication : IAsyncDisposable
         var job = Jobs.Create("ocrscan", pausable: true);
         _ = RunJobAsync(job, async () =>
         {
-            // Lọc thời gian (17/09) nằm TRONG pipeline OCR: luôn chạy, không
-            // toggle, không key, không AI. Scanner tự chấm ca nghi bằng logic
-            // thời gian (chữ đứng yên = keep, di chuyển = drop).
+            // Time filtering (17/09) lives INSIDE the OCR pipeline: it always runs, with no
+            // toggle, no key, no AI. The scanner itself flags suspicious cues using timing
+            // logic (static text = keep, moving text = drop).
             await _configStore.UpdateAsync(config => config with { OcrDevice = request.Device }, job.CancellationToken);
             var result = await _ocrScanner.RunAsync(job, request, startMode, resumeRegionOverride);
             if (!result.Paused)
             {
-                // Quét xong sạch: dọn file .bak chống crash cho gọn đĩa (giữ
-                // checkpoint chính + sổ tay). Best-effort, không chặn hoàn tất.
+                // Clean scan complete: delete crash-guard .bak files to free disk space (the
+                // main checkpoint and the hand notes are kept). Best-effort, never blocks completion.
                 try { await _ocrScanner.DeleteCheckpointBackupAsync(request, CancellationToken.None); }
                 catch { }
                 job.Finish(null, $"Đã quét xong: {result.Cues.Count} câu · {result.RealtimeSpeed:0.0}× realtime", result);
@@ -659,21 +682,22 @@ public sealed class BiliSubApplication : IAsyncDisposable
         return job.Id;
     }
 
-    // Nghe riêng (Whisper-only, 23/09): chỉ chạy tai nghe lấy lời thoại rồi
-    // xuất SRT, không đụng đường mắt đọc. Checkpoint ASR có sẵn nên dừng
-    // giữa chừng chạy lại tự nối. Mã project "nghe-…" tách khỏi project Edit.
-    // 27/09: tai nghe dùng large-v3-turbo riêng (Edit giữ small); checkpoint
-    // khóa theo revision model nên sổ nghe small cũ không bị đọc nhầm.
+    // Standalone listening (Whisper-only, 23/09): runs only speech recognition to get the
+    // transcript then exports SRT, without touching the OCR reading path. An ASR checkpoint
+    // exists, so stopping midway and rerunning resumes automatically. The "nghe-…" project
+    // code is separate from Edit projects. 27/09: listening uses its own large-v3-turbo
+    // (Edit keeps small); the checkpoint locks on model revision so an old small listening
+    // notebook cannot be read by mistake.
     public (string JobId, string ProjectId) StartOcrListen(string videoPath, double duration, string executionMode = "gpu")
     {
         if (string.IsNullOrWhiteSpace(videoPath)) throw new ArgumentException("Chưa chọn video.", nameof(videoPath));
         if (!(duration > 0) || !double.IsFinite(duration)) throw new ArgumentException("Video chưa có thời lượng.", nameof(duration));
         if (executionMode is not ("cpu" or "gpu" or "hybrid")) throw new ArgumentException("Chế độ ASR không hợp lệ.", nameof(executionMode));
-        if (Jobs.HasActiveJobs) throw new InvalidOperationException("Hãy hoàn tất hoặc hủy tác vụ Media/OCR/Editor đang chạy trước khi nghe.");
         var projectId = OcrListenProjectId(videoPath, duration);
         var job = Jobs.Create("ocr-listen", cleanupAwareCancel: true);
         _ = RunJobAsync(job, async () =>
         {
+            await WaitForExclusiveSlotAsync(job, "Nghe", job.CancellationToken);
             var result = await _asr.TranscribeAsync(job, new EditorAsrRequest(projectId, Path.GetFullPath(videoPath.Trim()), duration, executionMode, LocalAsrInstaller.ListenModelId));
             job.Finish(null, $"Nghe xong: {result.SegmentCount} đoạn / {result.WordCount} từ.", result);
         });
@@ -691,10 +715,12 @@ public sealed class BiliSubApplication : IAsyncDisposable
     public string OcrListenSrtPath(string projectId) =>
         Path.Combine(Paths.Data, "Projects", "ASR", projectId + ".zh.srt");
 
-    // Xóa sổ dở + sub đã xuất của lần nghe để "Nghe lại từ đầu" thật sự từ đầu.
-    // 27/09: AsrCheckpointFile.PublishAsync luôn giữ bản trước ở ".bak" và
-    // LoadCheckpointAsync fallback sang ".bak" khi file chính mất. Bản cũ chỉ
-    // xóa file chính -> backend hồi sinh từ .bak, nghe lại vẫn nối điểm cũ.
+    // Delete the unfinished checkpoint and exported subtitles of the listening run so that
+    // "Listen again from the beginning" truly starts from the beginning.
+    // 27/09: AsrCheckpointFile.PublishAsync always keeps the previous version at ".bak" and
+    // LoadCheckpointAsync falls back to ".bak" when the main file is missing. The old code
+    // only deleted the main file -> the backend resurrected it from .bak, so re-listening
+    // still resumed at the old point.
     public void RemoveOcrListenCheckpoint(string projectId)
     {
         if (string.IsNullOrWhiteSpace(projectId)) return;
@@ -705,8 +731,8 @@ public sealed class BiliSubApplication : IAsyncDisposable
         }
     }
 
-    // Đọc chữ nghe được tới hiện tại từ checkpoint ASR (ghi atomic nên đọc
-    // giữa chừng an toàn; hỏng/thiếu -> rỗng, không bao giờ throw).
+    // Read the text recognized so far from the ASR checkpoint (writes are atomic, so reading
+    // midway is safe; corrupt/missing -> empty, never throws).
     public IReadOnlyList<OcrCue> ReadOcrListenCues(string projectId)
     {
         if (string.IsNullOrWhiteSpace(projectId)) return [];
@@ -766,13 +792,13 @@ public sealed class BiliSubApplication : IAsyncDisposable
     }
 
     /// <summary>
-    /// Replay reconciliation từ checkpoint đã lưu mà KHÔNG gọi PaddleOCR (không scan frames, không worker).
-    /// Chỉ extract đúng frame A/B tại candidate boundaries bằng provenance đã lưu.
+    /// Replay reconciliation from a saved checkpoint WITHOUT calling PaddleOCR (no frame scanning, no worker).
+    /// Only extracts the exact A/B frames at candidate boundaries using the saved provenance.
     /// Policy reuse: candidate heuristic, temporal gap, punctuation/dash relation, pixel threshold,
-    /// SSIM/Edge classification, final preview reconciliation. KHÔNG dùng để chứng minh tracker correctness
-    /// (OCR worker, model, bbox generation, sampling/filter, tracker observation, PTS acquisition, ROI đổi
-    /// => phải Targeted/Full Fresh Scan lại). Provenance thiếu/cũ => CheckpointNotEligibleForReplayException.
-    /// continuationWindow null => suy ra từ probe như production; truyền explicit để test determinism.
+    /// SSIM/Edge classification, final preview reconciliation. NOT used to prove tracker correctness
+    /// (OCR worker, model, bbox generation, sampling/filter, tracker observation, PTS acquisition, ROI change
+    /// => a Targeted/Full Fresh Scan is required instead). Missing/stale provenance => CheckpointNotEligibleForReplayException.
+    /// continuationWindow null => inferred from the probe like production; pass it explicitly for test determinism.
     /// </summary>
     public async Task<IReadOnlyList<OcrCue>> ReconcileCheckpointAsync(
         OcrScanRequest request,
@@ -797,10 +823,10 @@ public sealed class BiliSubApplication : IAsyncDisposable
     }
 
     /// <summary>
-    /// Replay reconciliation chỉ trên khoảng [startMedia, endMedia), giữ tối đa 1 cue context mỗi phía.
-    /// Không OCR lại. Trả cues đã merge + trace chẩn đoán từng boundary kề (candidate reason, gap,
-    /// texts, SourcePts, bbox, SSIM/FG/Edge, PixelResult, merge/no-merge). Double pixel-extraction
-    /// (1 lần cho trace log + 1 lần trong merge production) được chấp nhận cho diagnostic scope nhỏ.
+    /// Replay reconciliation only over the range [startMedia, endMedia), keeping at most 1 context cue per side.
+    /// No re-OCR. Returns merged cues + a diagnostic trace for each adjacent boundary (candidate reason, gap,
+    /// texts, SourcePts, bbox, SSIM/FG/Edge, PixelResult, merge/no-merge). The double pixel extraction
+    /// (once for the trace log + once in the production merge) is accepted for this small diagnostic scope.
     /// </summary>
     public async Task<(IReadOnlyList<OcrCue> Cues, IReadOnlyList<BoundaryTrace> Trace)> ReconcileRangeAsync(
         OcrScanRequest request,
@@ -850,9 +876,9 @@ public sealed class BiliSubApplication : IAsyncDisposable
     }
 
     /// <summary>
-    /// Targeted Fresh Scan trên đoạn [startMedia, endMedia) bằng đúng production mode/preset.
-    /// Dùng OcrScanRequest.ScanStartOffset nên checkpoint key riêng, không collide full-scan.
-    /// Chỉ cân nhắc full video scan sau khi targeted scan PASS.
+    /// Targeted Fresh Scan over [startMedia, endMedia) using exactly the production mode/preset.
+    /// Uses OcrScanRequest.ScanStartOffset so it has its own checkpoint key and never collides with a full scan.
+    /// Only consider a full video scan after the targeted scan PASSES.
     /// </summary>
     public string StartTargetedOcrScan(OcrScanRequest baseRequest, double startMedia, double endMedia, OcrScanStartMode startMode)
     {
@@ -871,9 +897,9 @@ public sealed class BiliSubApplication : IAsyncDisposable
     public Task<int> AppendOcrFixesAsync(OcrScanRequest request, IReadOnlyList<OcrCueFix> additions, CancellationToken cancellationToken) => _ocrScanner.SaveFixesAsync(request, additions, cancellationToken);
 
     /// <summary>
-    /// Dọn process OCR/FFmpeg mồ côi từ phiên app trước bị tắt đột ngột hoặc
-    /// crash. Chỉ gọi một lần khi khởi động app, lúc instance này chưa sở hữu
-    /// worker nào. Không bao giờ ném; trả về số process đã dọn.
+    /// Cleans up orphan OCR/FFmpeg processes from a previous app session that was killed abruptly or
+    /// crashed. Called only once at app startup, while this instance does not yet own
+    /// any worker. Never throws; returns the number of processes cleaned up.
     /// </summary>
     public int ReapOrphanOcrProcesses() => OcrOrphanReaper.Reap(Paths);
 
@@ -887,9 +913,9 @@ public sealed class BiliSubApplication : IAsyncDisposable
         if (!name.EndsWith(".srt", StringComparison.OrdinalIgnoreCase)) name += ".srt";
         var path = FileNamePolicy.UniquePath(Path.Combine(directory, name));
         var temporary = path + ".tmp-" + Guid.NewGuid().ToString("N");
-        // Loại trừ câu rác đã duyệt (danh sách ngoài checkpoint): bỏ TRƯỚC khi
-        // normalize/sửa — câu còn lại đi đường cũ y hệt (đánh số lại tự động,
-        // giờ các câu khác giữ nguyên). Không danh sách = đường cũ y hệt.
+        // Exclude reviewed junk cues (list kept outside the checkpoint): remove them BEFORE
+        // normalize/fix — the remaining cues go through the exact old path (numbered again automatically, so the
+        // other cues are unchanged). No list = the exact old path.
         var built = OcrExportPipeline.Build(cues, exclusions, fixes);
         var warnings = built.Warnings.ToList();
         if (built.Excluded > 0)
@@ -1019,8 +1045,39 @@ public sealed class BiliSubApplication : IAsyncDisposable
         catch (Exception error) { job.Finish(error, error.Message); }
     }
 
-    // Giờ SRT duy nhất (18/09): ủy quyền cho pipeline chung để live hiện đúng
-    // milligiây như file (trước đây ToString fff cắt ngọn, lệch 1ms ở biên).
+    // EXCLUSIVE-SLOT (04/11): heavy local jobs (ASR, voice, Vietsub AI) share the GPU, so
+    // only one may run at a time. Refusing the click ("Hãy hoàn tất hoặc hủy tác vụ ... đang
+    // chạy") forced the user to cancel a media download just to start a voice job. The new job
+    // now WAITS its turn instead: it reports "Đang chờ tác vụ khác xong..." and starts by
+    // itself the moment the running job finishes. The resource guard itself is unchanged -
+    // nothing ever runs in parallel - and the waiting job stays fully cancellable.
+    private async Task WaitForExclusiveSlotAsync(AppJob job, string what, CancellationToken cancellationToken)
+    {
+        int BusyCount()
+        {
+            var count = 0;
+            foreach (var snapshot in Jobs.ActiveSnapshots())
+                if (!string.Equals(snapshot.Id, job.Id, StringComparison.Ordinal) && !snapshot.Done)
+                    count++;
+            return count;
+        }
+
+        if (BusyCount() == 0) return;
+        job.Set("waiting", 0, $"Đang chờ tác vụ khác xong rồi {what}...");
+        var deadline = DateTime.UtcNow.AddMinutes(120);
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (BusyCount() == 0) return;
+            if (DateTime.UtcNow >= deadline)
+                throw new InvalidOperationException(
+                    "Tác vụ khác vẫn chưa xong sau 120 phút chờ; hãy thử lại khi nó hoàn tất hoặc hủy nó đi.");
+            await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken);
+        }
+    }
+
+    // Single SRT time source (18/09): delegates to the shared pipeline so the live view matches the
+    // milliseconds in the file (previously ToString fff truncated, off by 1ms at boundaries).
     private static string SrtTime(double seconds) => OcrExportPipeline.FormatSrtTime(seconds);
 
     public async ValueTask DisposeAsync()

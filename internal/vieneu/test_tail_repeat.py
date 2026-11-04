@@ -75,7 +75,7 @@ class RepeatGuardTest(unittest.TestCase):
         self.assertEqual(self.w.punct_swap_variants("Đi nào."), ["Đi nào!"])
         self.assertEqual(self.w.punct_swap_variants("Xong rồi。"), ["Xong rồi！"])
         self.assertEqual(self.w.punct_swap_variants("Êtes-vous prêt?"), ["Êtes-vous prêt."])
-        # V2: cue ngắn hay nhân đôi kết bằng !/? thì có đường đổi ngược về .
+        # V2: a short cue that often doubles when ending in !/? has a way to swap back to .
         self.assertEqual(self.w.punct_swap_variants("Đi nào!"), ["Đi nào."])
         self.assertEqual(self.w.punct_swap_variants("Sao cơ?"), ["Sao cơ."])
         self.assertEqual(self.w.punct_swap_variants("Nhanh lên!!"), ["Nhanh lên!"])
@@ -84,7 +84,7 @@ class RepeatGuardTest(unittest.TestCase):
         self.assertEqual(self.w.punct_swap_variants("Không dấu câu cuối"), [])
 
     def test_punct_swap_multi_beats_single(self):
-        # Đuôi nhiều dấu chỉ gập 1 lần, không đẻ bản lỗi kiểu "Nhanh lên!.".
+        # A multi-mark tail folds only once, never emitting an invalid variant like “Nhanh lên!.”.
         variants = self.w.punct_swap_variants("Nhanh lên!!")
         self.assertEqual(variants, ["Nhanh lên!"])
         self.assertTrue(all(not v.endswith("!.") for v in variants))
@@ -97,7 +97,7 @@ class RepeatGuardTest(unittest.TestCase):
         self.assertTrue(self.w.final_pick_repeats(p, "đi nào"))
 
     def test_final_gate_quiet_on_clean(self):
-        # Nhịp thật (4 đơn vị ~1.2s, dưới ngưỡng dài-bất-thường 1.6s).
+        # A real rhythm (4 units ~1.2s, below the 1.6s abnormal-length threshold).
         clean = np.concatenate([noisy_burst(11, 0.4), noisy_burst(22, 0.4), noisy_burst(33, 0.4)])
         p = self.root / "clean.wav"
         write_wav(p, clean)
@@ -121,7 +121,7 @@ class RepeatGuardTest(unittest.TestCase):
         self.assertFalse(self.w.final_pick_repeats(self.root / "nope.wav", "a"))
 
     def test_duration_tripwire(self):
-        # 1 chữ đọc 0.7s (vượt 0.55s) là nghi; 0.4s thì yên; câu dài miễn.
+        # One word read in 0.7s (over 0.55s) is suspect; 0.4s is safe; long sentences are exempt.
         long = self.root / "long.wav"
         write_wav(long, noisy_burst(1, 0.7))
         self.assertTrue(self.w.too_long_for_text(int(0.7 * 22050), "Không!"))
@@ -132,7 +132,7 @@ class RepeatGuardTest(unittest.TestCase):
         self.assertFalse(self.w.too_long_for_text(0, "Không!"))
 
     def test_two_burst_detector(self):
-        # Hai cụm tone sạch cách nhau 0.3s im: đếm đúng 2, không đếm nhầm.
+        # Two clean tone bursts separated by 0.3s of silence: count exactly 2, no false count.
         def tone(seconds):
             t = np.arange(int(seconds * 22050)) / 22050
             return (0.5 * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
@@ -147,8 +147,8 @@ class RepeatGuardTest(unittest.TestCase):
         self.assertEqual(self.w.speech_bursts(self.root / "nope.wav"), 0)
 
     def test_unified_gate_catches_acf_blind_short_double(self):
-        # Hai nửa KHÁC nhau (ACF thấp), tổng 0.5s dưới ngưỡng dài 0.55s,
-        # 1 chữ ≤3 đơn vị + 2 cụm cách 0.2s im -> cửa 2-cụm nổ.
+        # Two DIFFERENT halves (low ACF), 0.5s total, below the 0.55s length threshold,
+        # 1 word <=3 units + 2 bursts separated by 0.2s of silence -> the 2-burst gate fires.
         a = noisy_burst(31, 0.15)
         b = noisy_burst(32, 0.15)
         gap = np.zeros(int(0.2 * 22050), dtype=np.float32)

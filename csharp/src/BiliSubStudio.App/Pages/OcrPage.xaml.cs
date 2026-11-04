@@ -23,28 +23,32 @@ public sealed partial class OcrPage : Page
     private readonly IFilePickerService _picker;
     private readonly IFolderPickerService _folderPicker;
     private string _ocrOutputDirectory = string.Empty;
+    // OCR-DEFAULT-SRT: by default every finished scan writes its SRT next to
+    // its own source video, so a queue that mixes folders still lands each SRT
+    // in the folder the video came from. Picking a folder turns this off.
+    private bool _autoSaveBesideVideo = true;
     private string? _path;
     private MediaPreviewInfo? _media;
     private string? _jobId;
     private OcrScanRequest? _checkpointRequest;
     private OcrScanRequest? _activeRequest;
-    // Request của mục hàng chờ đang quét (để Hủy/Tạm dừng đúng mục ngay cả
-    // khi user đã chọn video khác để setup tiếp).
+    // Request of the queue item currently being scanned (so Cancel/Pause hits the
+    // right item even after the user has selected another video to set up).
     private OcrScanRequest? _queueActiveRequest;
     private bool _cancelInProgress;
     private bool _listening;
-    // Hàng chờ OCR (09/10): quét nhiều video nối tiếp, mỗi video giữ setup
-    // riêng lúc thêm, lỗi bỏ qua chạy tiếp, chỉ sống trong phiên app.
+    // OCR queue (09/10): several videos are scanned one after another, each video
+    // keeps its own setup at enqueue time, failures are skipped and scanning continues, all session-only.
     private readonly OcrScanQueue _ocrQueue = new();
     private readonly ObservableCollection<OcrQueueItem> _ocrQueueView = [];
     private bool _queueRunning;
-    // Preview tách khỏi setup (10/10, vụ preview dính video thêm sau cùng):
-    // _path/_media = video đang setup để quét; _viewPath/_viewMedia = video
-    // đang hiện trong player. Bấm mục hàng chờ chỉ đổi view, quét không đụng.
+    // Preview is separate from setup (10/10, the case where the preview stuck to the
+    // last video added): _path/_media = the video being set up for scanning;
+    // _viewPath/_viewMedia = the video shown in the player. Clicking a queue item only changes the view; scanning is untouched.
     private string? _viewPath;
     private MediaPreviewInfo? _viewMedia;
     private readonly Dictionary<string, MediaPreviewInfo> _viewMediaCache = new(StringComparer.OrdinalIgnoreCase);
-    // Mục hàng chờ đang quét (để bôi đen, nút Về video đang quét, cue click).
+    // The queue item currently being scanned (for highlighting, the back-to-scanning-video button, cue clicks).
     private OcrQueueItem? _queueScanningItem;
     private double _lastSafeFrontier;
     private bool _syncingQueueSelect;
@@ -52,31 +56,31 @@ public sealed partial class OcrPage : Page
         _viewPath is not null && string.Equals(_viewPath, _path, StringComparison.OrdinalIgnoreCase);
     private string? _listenProjectId;
     private IReadOnlyList<OcrCue> _cues = [];
-    // Dòng đang hiển thị = dòng pipeline chung (OcrExportRow: Start/End/Text
-    // đã loại-trừ/đắp-fix/normalize/trim — live-quét-xong = SRT theo cấu trúc).
+    // Displayed rows come from the shared pipeline (OcrExportRow: Start/End/Text
+    // after exclusion/fill-fix/normalize/trim — live-after-scan equals the structured SRT).
     private IReadOnlyList<OcrExportRow> _visibleCues = [];
-    // Chế độ hiển thị: true = quét xong/dừng (list qua pipeline chung, bằng
-    // SRT); false = đang quét (list tạm từ accumulator + journal, bản chất
-    // chưa chốt nên chỉ là preview).
+    // Display mode: true = scan finished/stopped (list through the shared pipeline,
+    // equal to the SRT); false = scanning in progress (a temporary list from the
+    // accumulator + journal, provisional by nature so it is only a preview).
     private bool _authoritative;
     private IReadOnlyList<OcrExportRow> _displayRows = [];
     private IReadOnlyList<OcrCueExclusion>? _displayExclusions;
     private IReadOnlyList<OcrCueFix>? _displayFixes;
     private string _displayDropNote = "";
-    // LIFO các câu user tự xoá khỏi list chốt (21/09): mỗi phần tử là entry đã
-    // ghi vào .exclude.json + số thứ tự lúc xoá (để báo lại khi hoàn tác).
-    // Hoàn tác = gỡ đúng entry đó khỏi file — quyết định của user vẫn nằm
-    // ngoài checkpoint, resume/quét lại không đụng.
+    // LIFO of rows the user deleted by hand from the finalized list (21/09): each
+    // element is an entry written to .exclude.json plus its row number at deletion
+    // time (so it can be reported when undoing). Undo removes exactly that entry
+    // from the file — the user's decision lives outside the checkpoint, so resume/re-scan leave it alone.
     private readonly Stack<(OcrCueExclusion Entry, int RowNumber)> _manualDeletes = new();
-    // Verdict lọc thời gian trên bảng live: câu nào bị drop thì ẨN khỏi list
-    // (list = SRT 100%). Đọc từ nhật ký temporal đang ghi live lúc quét
-    // (append-only nên so số lượng là đủ; đổi là vẽ lại toàn bảng 1 lần).
+    // Time-filter verdicts over the live table: a dropped sentence is HIDDEN from
+    // the list (the list equals the SRT 100%). Read from the temporal journal
+    // written live during scanning (append-only, so comparing counts is enough; on change the whole table is redrawn once).
     private Dictionary<string, OcrCueVerdict> _judgeMarks = new(StringComparer.Ordinal);
     private readonly OcrLiveCueAccumulator _liveCues = new();
     private DateTimeOffset _nextCueRenderAt;
     private bool _cueViewDirty;
-    // Live-follow: true khi viewport đang ở cuối danh sách (tự follow cue mới),
-    // false khi user tự scroll lên xem cue cũ (giữ nguyên vị trí, resume khi quay lại gần cuối).
+    // Live-follow: true when the viewport is at the end of the list (new cues are
+    // followed automatically), false when the user scrolled up to see old cues (position is kept, following resumes once back near the end).
     private bool _userAtEnd = true;
     private ScrollViewer? _cueScrollViewer;
     private OcrRegion _region = new(0.05, 0.65, 0.90, 0.29);
@@ -119,9 +123,9 @@ public sealed partial class OcrPage : Page
         judgeTimer.Start();
     }
 
-    // Test-only stress hook (chỉ chạy với flag --ocr-list-stress, không ảnh hưởng production):
-    // load synthetic cues qua đúng RenderCues production, scroll đầu/giữa/cuối, đếm realized
-    // containers, kiểm tra follow/selection, ghi kết quả ra file. Không scan video.
+    // Test-only stress hook (only runs with the --ocr-list-stress flag, no production impact):
+    // loads synthetic cues through the production RenderCues path, scrolls to the top/middle/bottom, counts realized
+    // containers, checks follow/selection and writes the results to a file. No video scanning.
     internal async Task RunCueListStressAsync(int count, string resultPath)
     {
         var report = new List<string>();
@@ -130,8 +134,8 @@ public sealed partial class OcrPage : Page
         {
             AttachCueListScroll();
             if (_cueScrollViewer is null) throw new InvalidOperationException("no ListView ScrollViewer");
-            // Cue bắt đầu từ t=100 để Timeline.Value=0 không khớp cue nào (loại nhiễu selection
-            // khỏi phép đo follow/scroll; selection test riêng ở dưới).
+            // Cues start at t=100 so Timeline.Value=0 matches no cue (keeps selection noise
+            // out of the follow/scroll measurement; the selection test is separate, below).
             _cues = Enumerable.Range(0, count)
                 .Select(i => new OcrCue(100 + i * 2.0, 100 + i * 2.0 + 1.5, $"Cue {i + 1} 测试字幕内容", .9))
                 .ToList();
@@ -148,24 +152,24 @@ public sealed partial class OcrPage : Page
             await ScrollCueListTo(_cueScrollViewer.ScrollableHeight);
             Record($"realizedEnd={CountRealizedCueItems()}");
 
-            // C1: đang ở cuối -> append -> tự follow.
+            // C1: at the end -> append -> follows automatically.
             var maxBefore = _cueScrollViewer.ScrollableHeight;
             AppendStressCues(50);
             Record($"followAtEnd={IsNearCueListEnd()} offsetBefore={maxBefore:0} offsetAfter={_cueScrollViewer.VerticalOffset:0} maxAfter={_cueScrollViewer.ScrollableHeight:0}");
 
-            // C2: scroll lên đầu -> append nhiều -> KHÔNG kéo xuống.
+            // C2: scrolled up to the top -> append many -> does NOT scroll down.
             await ScrollCueListTo(0);
             var topBefore = _cueScrollViewer.VerticalOffset;
             AppendStressCues(100);
             Record($"noYankOnScrollUp={Math.Abs(_cueScrollViewer.VerticalOffset - topBefore) < OcrLiveViewPolicy.FollowThresholdPx} offsetBefore={topBefore:0} offsetAfter={_cueScrollViewer.VerticalOffset:0}");
 
-            // C3: quay lại gần cuối -> append -> follow lại.
+            // C3: back near the end -> append -> follows again.
             await ScrollCueListTo(_cueScrollViewer.ScrollableHeight - 32);
             AppendStressCues(50);
             Record($"resumeNearEnd={IsNearCueListEnd()}");
 
-            // D: selection giữ qua scroll xa. Mở rộng Timeline range theo synthetic times
-            // để seek không bị clamp về Maximum mặc định (tránh round-trip giả do clamp).
+            // D: selection survives far scrolling. The Timeline range is widened to the synthetic times
+            // so a seek is not clamped to the default Maximum (avoids a false round-trip caused by clamping).
             Timeline.Maximum = 100 + count * 2.0 + 1000;
             CueList.SelectedIndex = 1234;
             await Task.Delay(200);
@@ -187,9 +191,9 @@ public sealed partial class OcrPage : Page
         await System.IO.File.WriteAllTextAsync(resultPath, string.Join(Environment.NewLine, report) + Environment.NewLine);
     }
 
-    // Test-only soak (chỉ chạy với flag --ocr-soak-video/--ocr-soak-out):
-    // dựng đúng trạng thái "OCR xong" như PickVideo + resume checkpoint mới nhất
-    // (player thật, cues authoritative, journal, timer) nhưng KHÔNG quét.
+    // Test-only soak (only runs with the --ocr-soak-video/--ocr-soak-out flags):
+    // builds exactly the "OCR finished" state like PickVideo + resuming the newest
+    // checkpoint (real player, authoritative cues, journal, timer) but does NOT scan.
     internal async Task<string> LoadSoakStateAsync(string videoPath)
     {
         try
@@ -251,8 +255,8 @@ public sealed partial class OcrPage : Page
         }
     }
 
-    // Test-only: quét Fresh thật trên video soak đã load (chế độ nhanh/cpu/4 lane
-    // cho xong trong vài phút). Trả Task để harness đảo tab giữa chừng.
+    // Test-only: a real Fresh scan on the loaded soak video (fast/cpu/4 lanes so
+    // it finishes in a few minutes). Returns a Task so the harness can switch tabs in the middle.
     internal Task StartSoakScanAsync()
     {
         SelectValue(ScanModeBox, "fast");
@@ -358,6 +362,8 @@ public sealed partial class OcrPage : Page
         var bottom = _application.Config.OcrBottom / 100d;
         _region = OcrCheckpointStoreProxy.Normalize(new OcrRegion(left, top, right - left, bottom - top));
         SetOcrOutputDirectory(_application.Config.OcrOutputDirectory);
+        AutoSaveBesideVideoCheckBox.IsChecked = _autoSaveBesideVideo;
+        RefreshAutoSaveDirectoryBox();
         for (var index = 0; index < DeviceBox.Items.Count; index++)
         {
             if (string.Equals(DeviceBox.Items[index]?.ToString(), _application.Config.OcrDevice, StringComparison.OrdinalIgnoreCase))
@@ -372,8 +378,8 @@ public sealed partial class OcrPage : Page
 
     private async void PickVideo_Click(object sender, RoutedEventArgs e)
     {
-        // Hàng chạy vẫn cho chọn video khác để setup tiếp (trạng thái quét
-        // dùng snapshot riêng, không đụng); chỉ chặn job quét đơn lẻ.
+        // While the queue runs, another video may still be selected for setup (the
+        // scan state uses its own snapshot and is untouched); only a lone scan job is blocked.
         if (_jobId is not null && !_queueRunning)
         {
             StatusText.Text = "Đang quét OCR; hãy Tạm dừng hoặc Hủy trước khi đổi video.";
@@ -387,8 +393,8 @@ public sealed partial class OcrPage : Page
             _activeRequest = null;
             if (!_queueRunning)
             {
-                // Giữa lúc hàng chạy mà xóa cue live thì mất đuôi đang quét
-                // (quét refille sau 2s nhưng giật + mất vị trí cuộn).
+                // Clearing live cues while the queue is running loses the tail being
+                // scanned (the scan refills after 2s but the list jumps and the scroll position is lost).
                 _cues = [];
                 _visibleCues = [];
                 _authoritative = false;
@@ -436,10 +442,10 @@ public sealed partial class OcrPage : Page
             var restoredNote = string.Empty;
             if (!checkpoint.Exists)
             {
-                // Vụ 06/10: ROI/mode mặc định sau khởi động lệch với lúc quét
-                // nên inspect miss dù checkpoint còn. Tra hồ sơ cùng video,
-                // khôi phục đúng ROI/mode đã quét rồi inspect lại bằng key
-                // chuẩn — resume lại chạy, user không phải vẽ tay.
+                // The 06/10 case: default ROI/mode after startup differs from the one used when
+                // scanning, so the inspect misses even though the checkpoint still exists. Look
+                // up the same-video profiles, restore the exact ROI/mode that were scanned and
+                // inspect again with the standard key — resume works again and the user no longer has to redraw by hand.
                 var sameVideo = _application.FindOcrVideoCheckpoints(selected);
                 var newest = sameVideo.FirstOrDefault();
                 if (newest is not null)
@@ -591,15 +597,15 @@ public sealed partial class OcrPage : Page
     {
         if (_path is null || _media is null)
         {
-            // Không bao giờ câm lặng: mọi nhánh từ chối đều báo rõ lý do.
+            // Never silent: every rejecting branch reports the reason clearly.
             StatusText.Text = "Chưa chọn video để quét/tiếp tục.";
             Services.StartupDiagnostics.Write("ocr-scan-click", "ignored: no video loaded");
             return;
         }
         if (string.Equals(Selected(SourceBox), "listen", StringComparison.Ordinal))
         {
-            // Hàng chờ chỉ nhận quét OCR: đang queue mà gạt sang Nghe thì chặn
-            // để khỏi chồng job Nghe lên job quét.
+            // The queue only accepts OCR scans: while queuing, switching to Listen is
+            // blocked so a Listen job is not stacked on top of a scan job.
             if (_queueRunning)
             {
                 StatusText.Text = "Hàng chờ chỉ quét OCR; gạt Nguồn chữ về Mắt đọc để cho video tiếp vào hàng.";
@@ -608,9 +614,9 @@ public sealed partial class OcrPage : Page
             await StartListenAsync();
             return;
         }
-        // Gỡ kẹt câm (15/10: bấm Tiếp tục mà đứng im, log không dòng nào):
-        // _jobId còn nhưng job đã xong/mất (kẹt giữa chừng) thì reset để nút
-        // bấm có tác dụng trở lại, thay vì kẹt ở nhánh "Đang quét dở" mãi.
+        // Un-stick the silent freeze (15/10: pressing Continue did nothing, not a
+        // single log line): when _jobId remains but the job already finished or was
+        // lost (stalled midway), reset it so the buttons work again instead of sitting in the "scan in progress" branch forever.
         if (_jobId is not null
             && (!_application.Jobs.TryGet(_jobId, out var liveJob)
                 || liveJob is null
@@ -619,8 +625,8 @@ public sealed partial class OcrPage : Page
             Services.StartupDiagnostics.Write("ocr-scan-click", "healed stale _jobId " + _jobId);
             _jobId = null;
         }
-        // Quét = cho video đang setup vào hàng + tự chạy nối tiếp. Đang quét
-        // vẫn setup video khác được; bấm Quét là nối vào hàng, driver tự lấy.
+        // Scanning = enqueue the video being set up + run the queue in sequence.
+        // While scanning, another video can still be set up; pressing Scan appends to the queue and the driver picks it up on its own.
         foreach (var active in _ocrQueue.Items)
         {
             if (active.Status == OcrQueueItemStatus.Scanning
@@ -663,7 +669,7 @@ public sealed partial class OcrPage : Page
         {
             StatusText.Text = "Hàng chờ đang bận xử lý mục khác; đợi xong rồi bấm lại.";
             Services.StartupDiagnostics.Write("ocr-scan-click", "ignored: queue driver running");
-            return; // driver đang chạy sẽ tự lấy mục mới.
+            return; // the running driver will pick up the new item on its own.
         }
         if (_jobId is not null)
         {
@@ -679,7 +685,7 @@ public sealed partial class OcrPage : Page
         catch (Exception error)
         {
             StatusText.Text = "Hàng chờ lỗi: " + error.Message;
-            progressed = true; // đã báo lỗi rõ, không chạy fallback đè lên.
+            progressed = true; // the error was reported clearly; no fallback is run on top of it.
         }
         finally
         {
@@ -696,9 +702,9 @@ public sealed partial class OcrPage : Page
             await TryDirectCheckpointResumeAsync();
     }
 
-    // ---- Hàng chờ OCR (09/10): quét nhiều video nối tiếp, mỗi video giữ
-    // setup riêng lúc thêm (đường dẫn + ROI + chế độ + thiết bị + luồng).
-    // Lỗi bỏ qua chạy tiếp, chỉ sống trong phiên app, chỉ quét OCR.
+    // ---- OCR queue (09/10): several videos are scanned in sequence, each video
+    // keeps its own setup at enqueue time (path + ROI + mode + device + lanes).
+    // Failures are skipped and scanning continues; it lives only for the app session and only scans OCR.
     private void SyncQueueView()
     {
         var selectedId = (QueueList.SelectedItem as OcrQueueItem)?.Id;
@@ -720,9 +726,9 @@ public sealed partial class OcrPage : Page
                 {
                     if (item.Id == id)
                     {
-                        // Rebuild sau Lên/Xuống/đếm lại KHÔNG được bắn preview: gán
-                        // selection dưới cờ gác, chỉ khôi phục highlight — preview và
-                        // khung ROI overlay giữ nguyên view mà user đang xem.
+                        // A rebuild after Up/Down/re-count must NOT trigger a preview: selection is
+                        // assigned under a guard flag and only the highlight is restored — the preview
+                        // and the ROI overlay keep the view the user is looking at.
                         _syncingQueueSelect = true;
                         try { QueueList.SelectedItem = item; }
                         finally { _syncingQueueSelect = false; }
@@ -746,9 +752,9 @@ public sealed partial class OcrPage : Page
 
     private OcrQueueItem? SelectedQueueItem() => QueueList.SelectedItem as OcrQueueItem;
 
-    // Xem preview 1 mục hàng chờ: CHỈ đổi view (player/khung/giờ), không đụng
-    // setup (_path/_region/ô mode) nên quét đang chạy không ảnh hưởng và bấm
-    // Quét sau đó vẫn đúng cấu hình đã vẽ.
+    // Previewing one queue item: ONLY the view changes (player/frame/time), the
+    // setup (_path/_region/mode box) is untouched, so a running scan is not
+    // affected and pressing Scan afterwards still uses the configuration drawn.
     private async Task ShowQueueVideoAsync(OcrQueueItem item, bool seekFrontier = false)
     {
         if (string.IsNullOrWhiteSpace(item.VideoPath)) return;
@@ -864,8 +870,8 @@ public sealed partial class OcrPage : Page
             var item = _ocrQueue.TakeNext();
             if (item is null)
             {
-                // Ma kẹt (15/10): mục còn Scanning nhưng không còn job OCR nào
-                // sống — đưa về Paused để resume, thay vì cả hàng đứng im.
+                // Stuck ghost (15/10): the item is still Scanning but no OCR job is alive
+                // any more — move it back to Paused so it can be resumed instead of freezing the whole queue.
                 var ghost = _ocrQueue.ActiveItem;
                 if (ghost is not null && !HasLiveOcrScanJob() && _ocrQueue.RequeueStuck(ghost.Id))
                 {
@@ -876,8 +882,8 @@ public sealed partial class OcrPage : Page
                 if (item is null) break;
             }
             tookAny = true;
-            // Số thứ tự hiển thị = thứ tự xử lý thực tế đợt chạy này (video
-            // xong tự rời hàng nên không đếm lại trong list được).
+            // The displayed number is the real processing order of this run (a finished
+            // video leaves the queue by itself, so the list cannot be renumbered).
             var position = doneCount + failedCount + 1;
             QueueStatusText.Text = $"Đang quét video thứ {position} (còn {_ocrQueue.WaitingCount} chờ): {item.DisplayName}.";
             MediaPreviewInfo media;
@@ -958,7 +964,7 @@ public sealed partial class OcrPage : Page
             _queueActiveRequest = null;
             _queueScanningItem = null;
             QueueViewScanningButton.Visibility = Visibility.Collapsed;
-            // Mở lại nút Quét để setup video tiếp theo ngay khi mục này xong.
+            // Re-enable the Scan button so the next video can be set up as soon as this item finishes.
             if (_jobId is null) RefreshRegionActions();
         }
         QueueStatusText.Text = $"Hàng chờ xong: {doneCount} video xong"
@@ -970,9 +976,9 @@ public sealed partial class OcrPage : Page
     private bool HasLiveOcrScanJob() =>
         _application.Jobs.ActiveSnapshots().Any(snapshot => string.Equals(snapshot.Kind, "ocrscan", StringComparison.Ordinal));
 
-    // Lưới an toàn cuối (15/10): hàng chờ không nhả được mục nào (trống/kẹt)
-    // nhưng checkpoint còn trên đĩa thì tiếp tục trực tiếp, khỏi phụ thuộc
-    // hàng. Khôi phục đúng setup của checkpoint (cơ chế 06/10) để key khớp.
+    // Final safety net (15/10): when the queue cannot release any item (empty/stuck)
+    // but a checkpoint still exists on disk, resume it directly instead of
+    // depending on the queue. The checkpoint's exact setup is restored (the 06/10 mechanism) so the key matches.
     private async Task TryDirectCheckpointResumeAsync()
     {
         try
@@ -1009,9 +1015,9 @@ public sealed partial class OcrPage : Page
         }
     }
 
-    // Nghe riêng (Whisper-only): hiện trực tiếp % + giờ + chữ từ checkpoint,
-    // dừng giữ sổ dở, nút Nghe lại từ đầu (RestartButton) xóa sổ nghe lại;
-    // Hủy và xóa khi idle cũng xóa sạch. Xong thì copy sub ra chỗ sub OCR.
+    // Separate Listen session (Whisper-only): shows % + time + text live from the
+    // checkpoint, stopping keeps the partial session, the listen-from-scratch
+    // button (RestartButton) deletes the listen session for a fresh one; Cancel-and-delete while idle clears it too. When finished, the subtitle is copied to where the OCR subtitle lives.
     private async Task StartListenAsync(bool fromScratch = false)
     {
         if (_path is null || _media is null || !(_media.Duration > 0) || _jobId is not null) return;
@@ -1125,8 +1131,8 @@ public sealed partial class OcrPage : Page
                         var name = BiliSubStudio.Core.IO.FileNamePolicy.Sanitize(
                             Path.GetFileNameWithoutExtension(_path) + "_Whisper_Chinese.srt",
                             "BiliSub_Whisper_Chinese.srt");
-                        Directory.CreateDirectory(_ocrOutputDirectory);
-                        var dest = Path.Combine(_ocrOutputDirectory, name);
+                        Directory.CreateDirectory(AutoSaveDirectoryFor(_path));
+                        var dest = Path.Combine(AutoSaveDirectoryFor(_path), name);
                         File.Copy(_application.OcrListenSrtPath(projectId), dest, overwrite: true);
                         StatusText.Text = "Đã nghe xong và lưu SRT: " + dest;
                     }
@@ -1143,7 +1149,7 @@ public sealed partial class OcrPage : Page
         }
         if (_jobId == runningId)
         {
-            // Job mất khỏi sổ mà vòng poll chưa dọn: coi như dừng, giữ chữ đã nghe.
+            // The job vanished from the book before the poll loop cleaned up: treat it as stopped and keep the heard text.
             _jobId = null;
             _listening = false;
             ScanButton.Content = "Nghe tiếp";
@@ -1165,7 +1171,7 @@ public sealed partial class OcrPage : Page
         TestFrameButton.IsEnabled = false;
         SelectRegionButton.IsEnabled = false;
         ScanButton.IsEnabled = true;
-        // Nút nghe chế độ nghe luôn hiện: Nghe lại từ đầu (xóa sổ) + Hủy và xóa.
+        // The listen-mode buttons are always shown: listen from scratch (clears the session) + cancel and delete.
         RestartButton.Content = "Nghe lại từ đầu";
         RestartButton.Visibility = Visibility.Visible;
         RestartButton.IsEnabled = true;
@@ -1213,7 +1219,7 @@ public sealed partial class OcrPage : Page
         }
     }
 
-    // Hủy và xóa (idle): xóa sổ nghe + sub đã lưu, dọn bảng, về trạng thái chưa nghe.
+    // Cancel and delete (idle): deletes the listen session + saved subtitle, clears the table and returns to the never-listened state.
     private async Task CancelListenDeleteAsync()
     {
         var projectId = TryListenProjectId();
@@ -1247,10 +1253,10 @@ public sealed partial class OcrPage : Page
         await Task.CompletedTask;
     }
 
-    // Một nguồn sự thật cho nút chế độ mắt (27/09: vụ nghe->mắt kẹt nút
-    // "Nghe lại từ đầu" vì nhánh về mắt chỉ dựng ScanButton, quên Restart/
-    // Cancel/telemetry — nhãn một đằng hành động một nẻo, bấm là quét OCR
-    // trong khi nhãn ghi Nghe). Mọi đường về mắt idle đều qua đây.
+    // One source of truth for the eye-mode buttons (27/09: the listen->eye switch
+    // got stuck on the "listen from scratch" button because the eye branch only
+    // built ScanButton and forgot Restart/Cancel/telemetry — label and action
+    // disagreed, so clicking ran an OCR scan while the label said Listen). Every return to idle eye mode goes through here.
     private void ApplyEyeModeControls()
     {
         RestoreIdleControls();
@@ -1270,14 +1276,14 @@ public sealed partial class OcrPage : Page
 
     private void SourceBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        // Sự kiện nổ ngay trong lúc trang đang dựng (SelectedIndex mặc định):
-        // nút bấm chưa có nên bỏ qua, mặc định vốn là mắt đọc.
+        // The event fires while the page is still being built (the default
+        // SelectedIndex): the buttons do not exist yet, so it is skipped; the default is the eye (OCR) mode anyway.
         if (ScanButton is null || TelemetryText is null) return;
         if (_jobId is not null) return;
         if (!string.Equals(Selected(SourceBox), "listen", StringComparison.Ordinal))
         {
-            // Về mắt đọc: dựng lại TOÀN BỘ nút theo trạng thái OCR hiện tại
-            // (không chỉ ScanButton — bài học vụ kẹt nhãn Nghe ở chế độ Mắt).
+            // Return to eye mode: rebuild ALL buttons from the current OCR state
+            // (not just ScanButton — the lesson from the case where the Listen label got stuck in Eye mode).
             ApplyEyeModeControls();
             return;
         }
@@ -1305,7 +1311,7 @@ public sealed partial class OcrPage : Page
         if (_path is null || _media is null || _jobId is not null || _queueRunning) return;
         if (string.Equals(Selected(SourceBox), "listen", StringComparison.Ordinal))
         {
-            // Nghe lại từ đầu: xóa sổ nghe + sub đã lưu, nghe lại thật sự mới.
+            // Listen from scratch: delete the listen session + saved subtitle so this is a genuinely new listen session.
             var projectId = TryListenProjectId();
             if (projectId is null) return;
             try
@@ -1323,8 +1329,8 @@ public sealed partial class OcrPage : Page
             return;
         }
         var request = _checkpointRequest ?? BuildRequest();
-        // Chống mất dữ liệu do bấm nhầm "Quét lại từ đầu": checkpoint còn
-        // tiến độ thì hỏi rõ, mặc định giữ + tiếp tục (nút Quét tự resume).
+        // Guard against losing data by pressing "scan from scratch" by mistake: when
+        // the checkpoint still holds progress, ask explicitly and default to keep + continue (the Scan button resumes on its own).
         try
         {
             var existing = await _application.InspectOcrCheckpointAsync(request, CancellationToken.None);
@@ -1372,7 +1378,7 @@ public sealed partial class OcrPage : Page
         }
     }
 
-    // Kết thúc 1 lượt quét (dùng cho cả quét đơn và driver hàng chờ).
+    // Ends one scan pass (used for both a lone scan and the queue driver).
     private enum QueueScanEnd
     {
         Done,
@@ -1384,7 +1390,7 @@ public sealed partial class OcrPage : Page
     private async Task<(QueueScanEnd End, string? ExportedPath, string? Detail)> StartScanAsync(
         OcrScanRequest request, OcrScanStartMode startMode, OcrRegion? regionOverride = null, OcrQueueItem? queueItem = null, bool queueMode = false)
     {
-        var autoSaveDirectory = _ocrOutputDirectory;
+        var autoSaveDirectory = AutoSaveDirectoryFor(request.Path);
         var resuming = startMode == OcrScanStartMode.Resume;
         if (!resuming)
         {
@@ -1402,10 +1408,10 @@ public sealed partial class OcrPage : Page
         }
         else
         {
-            // Resume: giữ nguyên danh sách pause-authoritative đang hiển thị và
-            // seed accumulator từ nó. Snapshot rolling sau đó reconcile tiếp về
-            // phía trước, thay vì xóa sạch list rồi chờ telemetry refill.
-            // Quét chạy lại -> list về chế độ tạm (preview) cho tới khi xong.
+            // Resume: keep the currently displayed pause-authoritative list and seed
+            // the accumulator from it. The rolling snapshot afterwards reconciles
+            // forward, instead of wiping the list and waiting for telemetry to refill it.
+            // A re-run scan returns the list to temporary (preview) mode until it finishes.
             _authoritative = false;
             _liveCues.Seed(_cues);
             _cueViewDirty = true;
@@ -1418,9 +1424,9 @@ public sealed partial class OcrPage : Page
         var runningId = _application.StartOcrScan(request, startMode, regionOverride);
         _jobId = runningId;
         OcrScanResult? latestResult = null;
-        // 09/10 vụ nút Chọn video xám khi hàng chạy: quét trong hàng thì KHÔNG
-        // khóa control setup (user setup video tiếp theo giữa chừng); quét đơn
-        // giữ nguyên khóa chặt như cũ. Chỉ khóa thứ nguy hiểm thật.
+        // The 09/10 case where the Pick video button was greyed out while the queue ran:
+        // a queued scan does NOT lock the setup controls (the user can set up the next
+        // video in the meantime); a lone scan keeps the old hard lock. Only genuinely dangerous controls are locked.
         PickVideoButton.IsEnabled = queueMode;
         DeviceBox.IsEnabled = queueMode;
         ScanModeBox.IsEnabled = queueMode;
@@ -1653,8 +1659,8 @@ public sealed partial class OcrPage : Page
         ScanModeBox.IsEnabled = false;
         SourceBox.IsEnabled = false;
         LanesBox.IsEnabled = false;
-        // Tam dung van cho sua ROI: Scan_Click so ReadRegion() voi _checkpointRequest.Region
-        // va truyen regionOverride (giu checkpoint key). Device/mode/lane khoa vi doi la doi key.
+        // Pause still allows editing the ROI: Scan_Click compares ReadRegion() against
+        // _checkpointRequest.Region and passes regionOverride (keeping the checkpoint key). Device/mode/lanes are locked because changing them changes the key.
         SelectRegionButton.IsEnabled = _media is not null;
         ScanButton.Content = "Tiếp tục";
         CancelButton.Content = "Hủy và xóa";
@@ -1693,7 +1699,7 @@ public sealed partial class OcrPage : Page
         try
         {
             var recovery = _checkpointRequest is not null;
-            var exported = await ExportCurrentSrtAsync(_ocrOutputDirectory, recovery);
+            var exported = await ExportCurrentSrtAsync(AutoSaveDirectoryFor(_path), recovery);
             var message = recovery ? "Đã xuất SRT phục hồi chưa hoàn chỉnh: " + exported.Path : "Đã xuất: " + exported.Path;
             if (exported.Warnings.Count > 0)
                 message += " · lưu ý: " + string.Join(" · ", exported.Warnings.Take(3));
@@ -1766,6 +1772,10 @@ public sealed partial class OcrPage : Page
             if (selected is null) return;
             var snapshot = await _application.Settings.SetOcrOutputDirectoryAsync(selected, CancellationToken.None);
             SetOcrOutputDirectory(snapshot.Config.OcrOutputDirectory);
+            // Picking a folder IS the opt-out from beside-the-video.
+            _autoSaveBesideVideo = false;
+            AutoSaveBesideVideoCheckBox.IsChecked = false;
+            RefreshAutoSaveDirectoryBox();
             StatusText.Text = "Đã chọn thư mục tự lưu SRT: " + _ocrOutputDirectory;
         }
         catch (Exception error)
@@ -1774,15 +1784,15 @@ public sealed partial class OcrPage : Page
         }
     }
 
-    // exportRequest: request của mục đang quét — xuất đúng tên file + sổ
-    // loại/fix của mục đó ngay cả khi user đã chọn video khác để setup tiếp.
-    // null = dùng trạng thái trang hiện tại (nút Xuất tay).
+    // exportRequest: the request of the item being scanned — exports the exact
+    // file name + that item's exclusion/fix sets even after the user has chosen
+    // another video to set up. null = use the page's current state (the manual Export button).
     private async Task<BiliSubStudio.Core.Application.BiliSubApplication.OcrExportResult> ExportCurrentSrtAsync(
         string outputDirectory, bool recovery, OcrScanRequest? exportRequest = null)
     {
         var suffix = recovery ? "_Chinese.partial.srt" : "_Chinese.srt";
-        // Danh sách loại trừ câu lọc xóa + file fix (best-effort tuyệt đối:
-        // thiếu/hỏng là xuất như cũ, không bao giờ chặn export).
+        // The exclusion list for filtered-out sentences + the fix file (absolutely
+        // best-effort: a missing/corrupt file exports as before, never blocking the export).
         IReadOnlyList<BiliSubStudio.Core.Ocr.OcrCueExclusion>? exclusions = null;
         IReadOnlyList<BiliSubStudio.Core.Ocr.OcrCueFix>? fixes = null;
         try
@@ -1794,10 +1804,10 @@ public sealed partial class OcrPage : Page
         catch { }
         var exported = await _application.ExportOcrAsync(
             _cues, outputDirectory, Path.GetFileNameWithoutExtension(exportRequest?.Path ?? _path) + suffix, CancellationToken.None, exclusions, fixes);
-        // Đồng bộ display sau xuất (18/09): list hiển thị nạp lại đúng sổ vừa
-        // dùng để xuất — file sổ có thể đổi dưới chân app đang chạy (judge ghi
-        // tiếp, thao tác tay ngoài) mà journal không đổi nên không trigger
-        // reload; không đồng bộ thì live và SRT lệch nhau oan.
+        // Sync the display after export (18/09): the displayed list reloads exactly
+        // the sets just used to export — the set files can change under a running
+        // app (the judge keeps writing, hand edits outside it) while the journal
+        // does not change, so no reload is triggered; without syncing, the live list and the SRT drift apart for no reason.
         if (_authoritative) await ReloadDisplayRowsAsync();
         return exported;
     }
@@ -1805,13 +1815,47 @@ public sealed partial class OcrPage : Page
     private void SetOcrOutputDirectory(string path)
     {
         _ocrOutputDirectory = path;
-        AutoSaveDirectoryBox.Text = path;
-        ToolTipService.SetToolTip(AutoSaveDirectoryBox, path);
+        RefreshAutoSaveDirectoryBox();
+    }
+
+    /// <summary>Where a finished scan writes its SRT: beside its own video by
+    /// default, or the shared folder once the user picked one.</summary>
+    private string AutoSaveDirectoryFor(string? videoPath)
+    {
+        if (_autoSaveBesideVideo && !string.IsNullOrWhiteSpace(videoPath))
+        {
+            try
+            {
+                var directory = Path.GetDirectoryName(Path.GetFullPath(videoPath));
+                if (!string.IsNullOrWhiteSpace(directory) && Directory.Exists(directory)) return directory;
+            }
+            catch (ArgumentException) { }
+            catch (System.IO.IOException) { }
+        }
+        return _ocrOutputDirectory;
+    }
+
+    private void RefreshAutoSaveDirectoryBox()
+    {
+        AutoSaveDirectoryBox.Text = _autoSaveBesideVideo
+            ? "Kế bên từng video"
+            : _ocrOutputDirectory;
+        ToolTipService.SetToolTip(
+            AutoSaveDirectoryBox,
+            _autoSaveBesideVideo
+                ? "Mỗi video OCR xong sẽ lưu SRT ngay trong thư mục chứa video đó."
+                : _ocrOutputDirectory);
+    }
+
+    private void AutoSaveBesideVideo_Changed(object sender, RoutedEventArgs e)
+    {
+        _autoSaveBesideVideo = AutoSaveBesideVideoCheckBox.IsChecked == true;
+        RefreshAutoSaveDirectoryBox();
     }
 
     private bool MergeLiveCueSnapshot(IReadOnlyList<OcrCue> incoming)
     {
-        // Snapshot lúc đang quét là tạm -> list về chế độ preview.
+        // A snapshot taken while scanning is provisional -> the list returns to preview mode.
         _authoritative = false;
         var changed = _liveCues.Merge(incoming);
         _cueViewDirty |= changed;
@@ -1830,9 +1874,9 @@ public sealed partial class OcrPage : Page
 
     private void ApplyAuthoritativeCues(IReadOnlyList<OcrCue> cues)
     {
-        // Final cues đã qua ReconcileAsync (pixel-gated) trong OcrScanner. List
-        // hiển thị đi qua pipeline chung (OcrExportPipeline) với cùng sổ
-        // loại/fix như export -> live-quét-xong = SRT theo cấu trúc.
+        // Final cues have gone through ReconcileAsync (pixel-gated) in OcrScanner. The
+        // displayed list goes through the shared pipeline (OcrExportPipeline) with
+        // the same exclusion/fix sets as the export -> live-after-scan equals the structured SRT.
         _liveCues.Clear();
         _cues = cues.OrderBy(cue => cue.Start).ToArray();
         _authoritative = true;
@@ -1849,8 +1893,8 @@ public sealed partial class OcrPage : Page
         ApplyAuthoritativeCues(cues);
     }
 
-    // Nạp sổ loại/fix (best-effort như export) rồi dựng lại dòng hiển thị từ
-    // cùng pipeline với export. Không đụng checkpoint/judgment — chỉ đọc.
+    // Loads the exclusion/fix sets (best-effort, like the export) and rebuilds the
+    // displayed rows from the same pipeline as the export. It does not touch the checkpoint/judgment — read-only.
     private async Task ReloadDisplayRowsAsync()
     {
         try
@@ -1876,9 +1920,9 @@ public sealed partial class OcrPage : Page
 
     private void RefreshJudgeMarks()
     {
-        // Đọc nhật ký lọc thời gian (ghi live lúc quét), đổi là vẽ lại bảng
-        // để dòng bị drop biến mất ngay. Best-effort tuyệt đối: lỗi là thôi,
-        // bảng cũ giữ.
+        // Reads the time-filter journal (written live during scanning); on change the
+        // table is redrawn so dropped rows disappear immediately. Absolutely
+        // best-effort: on error it just stops and the old table is kept.
         try
         {
             if (_path is null)
@@ -1898,17 +1942,17 @@ public sealed partial class OcrPage : Page
             _judgeMarks = map;
             _visibleCues = [];
             RenderCues();
-            // Chế độ chốt: verdict mới luôn đi kèm file loại/fix đã ghi trước
-            // (judge ghi file TRƯỚC journal) -> nạp lại để list = SRT mới nhất.
+            // Finalized mode: a new verdict always comes with exclusion/fix files that
+            // were written first (the judge writes the file BEFORE the journal) -> reload so the list equals the newest SRT.
             if (_authoritative) _ = ReloadDisplayRowsAsync();
         }
         catch { }
     }
 
-    // Danh sách live = SRT 100%: dòng nào bộ lọc quyết drop (có verdict drop
-    // trong journal — tương đương exclusion đã ghi, export sẽ loại) thì ẨN
-    // khỏi list luôn, không gắn badge. Dòng nào có verdict fix thì hiện CHỮ
-    // ĐÃ SỬA (export đắp chữ đó). Số thứ tự = số thứ tự trong SRT.
+    // The live list equals the SRT exactly: any row the filter decides to drop (a drop
+    // verdict in the journal — equivalent to a written exclusion, which the export
+    // will remove) is HIDDEN from the list immediately, with no badge. A row with a
+    // fix verdict shows the FIXED TEXT (the export fills that text in). Row numbers match the SRT's numbering.
     private bool IsDroppedByFilter(OcrCue cue) =>
         _judgeMarks.TryGetValue(OcrJudgeBadge.Key(cue.Start, cue.Text), out var verdict)
         && verdict is not null
@@ -1934,11 +1978,11 @@ public sealed partial class OcrPage : Page
 
     private void RenderCues()
     {
-        // Incremental render: chỉ rebuild rows từ first-changed index (tail merge/append),
-        // prefix giữ nguyên nên ListView virtualization không realize lại hàng nghìn containers.
-        // Mirror invariant cũ: CueList.Items[i] <-> _visibleCues[i] (selection/edit giữ nguyên).
-        // HAI CHẾ ĐỘ (18/09): quét xong -> dòng pipeline chung (bằng SRT theo
-        // cấu trúc); đang quét -> dòng tạm như cũ (journal + phantom).
+        // Incremental render: only rows from the first-changed index are rebuilt (tail merge/append),
+        // the prefix is unchanged so the ListView virtualization does not realize thousands of containers again.
+        // The old mirror invariant still holds: CueList.Items[i] <-> _visibleCues[i] (selection/edit are preserved).
+        // TWO MODES (18/09): scan finished -> shared-pipeline rows (equal to the structured
+        // SRT); scanning in progress -> temporary rows as before (journal + phantom).
         IReadOnlyList<OcrExportRow> rows = _authoritative ? _displayRows : BuildProvisionalRows();
         var common = OcrLiveViewPolicy.CommonRowPrefixLength(_visibleCues, rows);
         var appended = rows.Count > _visibleCues.Count;
@@ -1946,16 +1990,16 @@ public sealed partial class OcrPage : Page
         for (var index = common; index < rows.Count; index++)
         {
             var cue = rows[index];
-            // Giờ dùng chung hàm format với SRT (làm tròn ms) — trước đây live
-            // cắt ngọn fff nên lệch 1ms ở biên.
+            // Now the same formatting function as the SRT is used (ms rounding) — previously
+            // the live path cut off the fff tail, causing a 1ms shift at the boundary.
             var start = OcrExportPipeline.FormatSrtTime(cue.Start);
             var end = OcrExportPipeline.FormatSrtTime(Math.Max(cue.Start, cue.End));
             var text = string.Join(" / ", cue.Text.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries));
             var row = $"{index + 1}.  {start} → {end}  ·  {text}{(cue.NeedsReview ? "  ⚠" : "")}";
-            // Lý do review (19/09): dòng ⚠️ mà có verdict fix giữ-chữ trong
-            // journal (F2 tai-im / F5 tai-phát-hiện-sai-chữ) thì hiện gợi ý
-            // ngay trên dòng để người duyệt khỏi mò — tra key Start|Text
-            // (fix giữ chữ nên key khớp chữ đang hiện).
+            // Reason for review (19/09): a ⚠️ row with a keep-text fix verdict in the journal
+            // (F2 mis-hearing / F5 mis-detected-text) shows the hint right on the row so
+            // the reviewer does not have to hunt for it — the key is looked up by
+            // Start|Text (a fix keeps the text, so the key matches the text shown).
             if (cue.NeedsReview
                 && _judgeMarks.TryGetValue(OcrJudgeBadge.Key(cue.Start, cue.Text), out var mark)
                 && mark is not null
@@ -1977,9 +2021,9 @@ public sealed partial class OcrPage : Page
         CueCountText.Text = _authoritative && _displayDropNote.Length > 0
             ? $"{rows.Count} câu{_displayDropNote}"
             : $"{rows.Count} câu";
-        // Auto-follow: chỉ scroll khi có cue mới VÀ user đang ở cuối. User scroll lên xem
-        // cue cũ => giữ nguyên vị trí; quay lại gần cuối => ViewChanged bật follow, resume.
-        // Cuộn là việc trang trí: kẹt layout thì bỏ qua, không được gãy app.
+        // Auto-follow: only scrolls when there is a new cue AND the user is at the end.
+        // If the user scrolls up to see old cues the position is kept; once back near the
+        // end, ViewChanged turns follow back on and it resumes. Scrolling is cosmetic: if layout hangs, skip it, never break the app.
         if (appended && _userAtEnd && CueList.Items.Count > 0)
         {
             try
@@ -1994,9 +2038,9 @@ public sealed partial class OcrPage : Page
         UpdateManualEditButtons();
     }
 
-    // Dòng tạm lúc đang quét (bản chất chưa chốt): giữ nguyên logic cũ — ẩn cue
-    // journal-drop, hiện chữ journal-fix, lọc phantom như Cleanup. Chữ/giờ/STT
-    // ở đây là preview, file SRT cuối vẫn do pipeline chốt.
+    // Temporary rows during scanning (provisional by nature): keep the old logic —
+    // hide journal-drop cues, show journal-fix text and filter phantoms like Cleanup.
+    // Text/times/row numbers here are a preview; the final SRT file is still produced by the finalized pipeline.
     private IReadOnlyList<OcrExportRow> BuildProvisionalRows()
     {
         var ordered = _cues.OrderBy(cue => cue.Start).ToArray();
@@ -2012,9 +2056,9 @@ public sealed partial class OcrPage : Page
     {
         UpdateManualEditButtons();
         if (_syncingCue || CueList.SelectedIndex < 0 || CueList.SelectedIndex >= _visibleCues.Count) return;
-        // Bấm cue live giữa lúc quét mà preview đang ở video khác (setup) thì
-        // đưa preview về đúng video đang quét TRƯỚC rồi mới tua — trước đây
-        // tua nhầm player video setup rồi kẹp giờ sai khung.
+        // Clicking a live cue mid-scan while the preview is on another video (setup):
+        // bring the preview back to the video being scanned FIRST and only then seek —
+        // previously it seeked the setup video's player by mistake and then clamped to the wrong frame time.
         if (_queueRunning && _queueScanningItem is not null
             && !string.Equals(_viewPath, _queueScanningItem.VideoPath, StringComparison.OrdinalIgnoreCase))
         {
@@ -2043,11 +2087,11 @@ public sealed partial class OcrPage : Page
         }
     }
 
-    // Xoá/hoàn-tác tay trên danh sách ĐÃ CHỐT (21/09): thao tác chỉ ghi/gỡ sổ
-    // loại trừ (.exclude.json) — checkpoint giữ nguyên, list & SRT đi qua cùng
-    // OcrExportPipeline nên câu biến mất/trở lại và số thứ tự tự dồn ngay.
-    // Chỉ cho phép ở chế độ authoritative (quét xong/tạm dừng): list đang quét
-    // là tạm, text trên dòng chưa chắc khớp cue gốc để ghi exclusion đúng.
+    // Hand delete/undo on the FINALIZED list (21/09): the operation only writes or
+    // removes an exclusion set (.exclude.json) — the checkpoint is untouched, the
+    // list and SRT go through the same OcrExportPipeline so the sentence
+    // disappears/reappears and row numbers renumber themselves immediately. Only
+    // allowed in authoritative mode (scan finished/paused): the scanning list is temporary and the text on the row may not match the original cue needed to write a correct exclusion.
     private void UpdateManualEditButtons()
     {
         DeleteCueButton.IsEnabled = _authoritative
@@ -2062,8 +2106,15 @@ public sealed partial class OcrPage : Page
         UpdateManualEditButtons();
     }
 
-    private async void DeleteCue_Click(object sender, RoutedEventArgs e) =>
-        await DeleteSelectedCueAsync();
+    private async void DeleteCue_Click(object sender, RoutedEventArgs e)
+    {
+        try { await DeleteSelectedCueAsync(); }
+        catch (Exception error)
+        {
+            Services.StartupDiagnostics.WriteException("ocr-delete-cue", error);
+            StatusText.Text = error.Message;
+        }
+    }
 
     private void CueList_KeyDown(object sender, KeyRoutedEventArgs e)
     {
@@ -2081,8 +2132,8 @@ public sealed partial class OcrPage : Page
         }
         var row = _visibleCues[CueList.SelectedIndex];
         var rowNumber = CueList.SelectedIndex + 1;
-        // Dòng hiển thị có thể đang là chữ ĐÃ FIX — exclusion phải ghi chữ GỐC
-        // của cue trong checkpoint thì export mới khớp (match Start ±1ms + Text).
+        // The displayed row may be showing FIXED text — the exclusion must record the
+        // ORIGINAL cue text from the checkpoint so the export matches (match by Start ±1ms + Text).
         var cue = _cues.LastOrDefault(candidate =>
             Math.Abs(candidate.Start - row.Start) <= OcrExportExclusions.StartToleranceSeconds);
         if (cue is null)
@@ -2114,8 +2165,15 @@ public sealed partial class OcrPage : Page
         UpdateManualEditButtons();
     }
 
-    private async void UndoDeleteCue_Click(object sender, RoutedEventArgs e) =>
-        await UndoDeleteAsync();
+    private async void UndoDeleteCue_Click(object sender, RoutedEventArgs e)
+    {
+        try { await UndoDeleteAsync(); }
+        catch (Exception error)
+        {
+            Services.StartupDiagnostics.WriteException("ocr-undo-delete-cue", error);
+            StatusText.Text = error.Message;
+        }
+    }
 
     private async Task UndoDeleteAsync()
     {
@@ -2144,7 +2202,7 @@ public sealed partial class OcrPage : Page
         try
         {
             _ = ReadRegion();
-            // Hàng chạy vẫn cho setup video tiếp theo (bấm Quét là nối vào hàng).
+            // While the queue runs, the next video can still be set up (pressing Scan appends to the queue).
             ready = _media is not null && (_jobId is null || _queueRunning);
         }
         catch (ArgumentException)
@@ -2301,7 +2359,7 @@ public sealed partial class OcrPage : Page
     private void ApplyRegionVisual()
     {
         if (_viewMedia is null || PreviewCanvas.ActualWidth <= 0 || PreviewCanvas.ActualHeight <= 0) return;
-        // Xem video khác (không phải setup): giấu khung ROI, chỉ nhìn.
+        // Viewing another video (not the setup one): hide the ROI frame, just watch.
         RoiRectangle.Visibility = ViewingSetupVideo ? Visibility.Visible : Visibility.Collapsed;
         if (!ViewingSetupVideo) return;
         var region = ReadRegion();
@@ -2325,11 +2383,11 @@ public sealed partial class OcrPage : Page
             : new Rect(0, (PreviewCanvas.ActualHeight - PreviewCanvas.ActualWidth / source) / 2, PreviewCanvas.ActualWidth, PreviewCanvas.ActualWidth / source);
     }
 
-    // 09/10 vụ xác trang OCR đè tab khác: frame gỡ trang cũ ra khi cây hình
-    // còn nặng (ListView nghìn cue + ảnh frame + player ngậm video) thì swap
-    // dở dang — trang mới đã vào mà xác cũ không rớt. Chuẩn bị TRƯỚC khi gỡ:
-    // gỡ surface player + trả về frame tĩnh để cây cũ nhẹ, dỡ sạch trong 1 nhịp.
-    // Không dispose player (giữ video/preview), quay lại tab là gắn lại.
+    // The 09/10 case where the OCR page's frame covered other tabs: tearing the old
+    // page's frame off while the visual tree was still heavy (a ListView with
+    // thousands of cues + frame image + a player holding video) left the swap
+    // un-finished — the new page was in but the old frame did not fall away. Prepare
+    // BEFORE removing: detach the player surface and return to a static frame so the old tree is light, then tear down fully in one tick. The player is not disposed of (video/preview is kept); returning to the tab reattaches it.
     internal void PrepareForTabSwitch()
     {
         try
@@ -2346,7 +2404,7 @@ public sealed partial class OcrPage : Page
 
     private void OcrPage_Loaded(object sender, RoutedEventArgs e)
     {
-        // Quay lại tab: gắn lại player đã gỡ lúc đi.
+        // Returning to the tab: reattach the player that was detached when leaving.
         try
         {
             if (_player is not null) PreviewPlayer.SetMediaPlayer(_player);
@@ -2358,9 +2416,9 @@ public sealed partial class OcrPage : Page
     {
         if (_player is not null)
         {
-            // 09/10 vụ phát đen hình: dispose player cũ mà không gỡ khỏi
-            // element (như tab Biên tập vẫn làm) thì surface xác còn ngậm —
-            // gán player mới đè lên dễ đen (có tiếng, không lỗi).
+            // The 09/10 case of a black playback picture: disposing the old player without
+            // detaching it from the element (as the Edit tab still does) leaves the old
+            // frame's surface holding it — assigning a new player on top easily blacks out (audio present, no error).
             _player.PlaybackSession.PositionChanged -= PlayerPositionChanged;
             _player.Pause();
             _player.Source = null;
@@ -2385,7 +2443,7 @@ public sealed partial class OcrPage : Page
         player.PlaybackSession.PositionChanged += PlayerPositionChanged;
         player.MediaOpened += (_, _) => DispatcherQueue.TryEnqueue(() =>
         {
-            // Mở được nhưng không có track hình đọc được thì báo rõ thay vì đen im lặng.
+            // If it opens but no readable video track is found, say so clearly instead of staying black and silent.
             if (ReferenceEquals(player, _player) && player.PlaybackSession.NaturalVideoHeight == 0)
                 StatusText.Text = "Video mở được nhưng không có track hình đọc được; dùng frame FFmpeg bên dưới.";
         });
@@ -2411,7 +2469,7 @@ public sealed partial class OcrPage : Page
         if (_player is null) return;
         if (enabled)
         {
-            // Khẳng định lại binding (trị surface xác sau đổi video/chuyển tab).
+            // Re-assert the binding (fixes a stale surface after changing video or switching tabs).
             PreviewPlayer.SetMediaPlayer(_player);
             _player.PlaybackSession.Position = TimeSpan.FromSeconds(Math.Max(0, Timeline.Value));
             if (play) _player.Play();
@@ -2444,8 +2502,8 @@ public sealed partial class OcrPage : Page
 
     private void SyncCueSelection(double seconds)
     {
-        // Đồng bộ highlight theo timeline là việc trang trí: kẹt layout thì bỏ
-        // qua, không được gãy app.
+        // Syncing the timeline highlight is cosmetic: if layout hangs, skip it,
+        // never break the app.
         try
         {
             if (_visibleCues.Count == 0) return;
@@ -2463,8 +2521,8 @@ public sealed partial class OcrPage : Page
             try
             {
                 CueList.SelectedIndex = index;
-                // Selection vẫn bám timeline, nhưng chỉ scroll khi đang follow cuối —
-                // user scroll lên xem cue cũ thì highlight di chuyển mà không bị kéo xuống.
+                // Selection still follows the timeline, but it only scrolls while following
+                // the end — when the user scrolls up to see old cues the highlight moves without dragging the list down.
                 if (index >= 0 && _userAtEnd) CueList.ScrollIntoView(CueList.Items[index]);
             }
             finally

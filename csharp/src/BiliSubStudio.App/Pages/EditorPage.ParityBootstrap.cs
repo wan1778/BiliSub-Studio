@@ -1,6 +1,7 @@
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Shapes;
 
 namespace BiliSubStudio.App.Pages;
 
@@ -29,6 +30,7 @@ public sealed partial class EditorPage
                 _editorCoreInitialized = true;
             }
 
+            InitializeWorkspaceLayout();
             EnsureEditorExportProgressTimer();
             StartVoiceArtifactMonitor();
             InitializeTimeline();
@@ -91,7 +93,7 @@ public sealed partial class EditorPage
         _editorChooseOutputButton = ExportDialogChooseDirectoryButton;
         _editorOpenOutputButton = ExportDialogOpenDirectoryButton;
         _editorAutoCompositeToggle = EditorAutoCompositeToggle;
-        ExportDialogDirectoryBox.Text = _application.Config.OutputDirectory;
+        ExportDialogDirectoryBox.Text = _application.Config.EditorOutputDirectory;
         EnsureVoiceSampleUi();
 
         // PLAYER-UI-02: polish the compact transport without changing playback ownership or handlers.
@@ -162,6 +164,11 @@ public sealed partial class EditorPage
         })
         {
             toolButton.Click += ShellTool_Click;
+            // NAV-03: focus is its own visual state (the accent cue under the
+            // label); the system focus border is off so focus never looks like
+            // the active (checked) tool and the two cannot override each other.
+            toolButton.GotFocus += ShellTool_GotFocus;
+            toolButton.LosingFocus += ShellTool_LostFocus;
         }
         ImageSourceList.SelectionChanged += ImageList_SelectionChanged;
         ImageOverlayCanvas.PointerPressed += ImageOverlay_PointerPressed;
@@ -242,35 +249,40 @@ public sealed partial class EditorPage
 
     private bool _voiceModelItemsFilled;
 
-    // Dropdown giọng: NGHI mặc định + 25 preset VieNeu (1 nguồn sự thật từ
-    // TtsVoiceCatalog). Giữ SelectedIndex 0 để smoke test default không đổi.
+    // Voice dropdown: 25 VieNeu presets (single source of truth from
+    // TtsVoiceCatalog). No hardcoded XAML item so it cannot duplicate or
+    // drift from the catalog.
     private void EnsureVoiceModelItems()
     {
         if (_voiceModelItemsFilled || VoiceModelBox is null) return;
         _voiceModelItemsFilled = true;
-        foreach (var (tag, content) in BiliSubStudio.Core.Editor.TtsVoiceCatalog.VoiceOptions.Skip(1))
+        var options = BiliSubStudio.Core.Editor.TtsVoiceCatalog.VoiceOptions;
+        foreach (var (tag, content) in options)
             VoiceModelBox.Items.Add(new ComboBoxItem { Tag = tag, Content = content });
-        if (VoiceModelBox.SelectedIndex < 0) VoiceModelBox.SelectedIndex = 0;
+        var defaultIndex = -1;
+        for (var index = 0; index < options.Count; index++)
+            if (string.Equals(options[index].Tag, BiliSubStudio.Core.Editor.TtsVoiceCatalog.DefaultVoice, StringComparison.Ordinal))
+            {
+                defaultIndex = index;
+                break;
+            }
+        VoiceModelBox.SelectedIndex = defaultIndex < 0 ? 0 : defaultIndex;
         RefreshVoiceEngineChips();
     }
 
     private void VoiceModelBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        // SelectionChanged nổ ngay trong lúc XAML parse (SelectedIndex=0) khi
-        // các chip chưa tồn tại — bỏ qua, EnsureVoiceModelItems dựng lại sau.
-        if (sender is not ComboBox box || VoiceEngineChipText is null || VoiceRuntimeChipText is null) return;
-        var tag = (box.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? string.Empty;
-        var vieneu = BiliSubStudio.Core.Editor.TtsVoiceCatalog.IsVieneuVoice(tag);
-        VoiceEngineChipText.Text = vieneu ? "VieNeu-TTS" : "NGHI-TTS";
-        VoiceRuntimeChipText.Text = vieneu ? "GPU" : "ONNX";
+        // SelectionChanged fires during XAML parse (SelectedIndex=0) before the
+        // chips exist — skip it; EnsureVoiceModelItems rebuilds them afterwards.
+        if (sender is not ComboBox || VoiceEngineChipText is null || VoiceRuntimeChipText is null) return;
+        RefreshVoiceEngineChips();
     }
 
     private void RefreshVoiceEngineChips()
     {
         if (VoiceEngineChipText is null || VoiceRuntimeChipText is null) return;
-        var vieneu = BiliSubStudio.Core.Editor.TtsVoiceCatalog.IsVieneuVoice(SelectedVoiceModel());
-        VoiceEngineChipText.Text = vieneu ? "VieNeu-TTS" : "NGHI-TTS";
-        VoiceRuntimeChipText.Text = vieneu ? "GPU" : "ONNX";
+        VoiceEngineChipText.Text = "VieNeu-TTS";
+        VoiceRuntimeChipText.Text = "GPU";
     }
 
     async void VoiceSample_Click(object sender, RoutedEventArgs e)
@@ -440,6 +452,29 @@ public sealed partial class EditorPage
         SyncShellPlayerControls();
     }
 
+    void ShellTool_GotFocus(object sender, RoutedEventArgs e)
+    {
+        // NAV-03: one owner keeps the focus cue in sync for every tool.
+        if (sender is ToggleButton tool) SetShellToolFocusCue(tool, focused: true);
+    }
+
+    void ShellTool_LostFocus(object sender, RoutedEventArgs e)
+    {
+        if (sender is ToggleButton tool) SetShellToolFocusCue(tool, focused: false);
+    }
+
+    static void SetShellToolFocusCue(ToggleButton button, bool focused)
+    {
+        if (button.Content is not Grid grid) return;
+        foreach (var child in grid.Children)
+        {
+            if (child is Rectangle { Tag: string tag } cue && string.Equals(tag, "FocusCue", StringComparison.Ordinal))
+            {
+                cue.Visibility = focused ? Visibility.Visible : Visibility.Collapsed;
+            }
+        }
+    }
+
     void SyncShellPlayerControls()
     {
         PlayerPlayPauseButton.Content = _playback.IsPlaying ? "⏸" : "▶";
@@ -450,8 +485,8 @@ public sealed partial class EditorPage
     void ValidateUiShellLayoutForSmoke(object sender, SizeChangedEventArgs e)
     {
         if (WorkspaceGrid.ActualWidth < 500 || WorkspaceGrid.ActualHeight < 250) return;
-        if (WorkspaceGrid.ColumnDefinitions.Count != 3)
-            throw new InvalidOperationException("Editor shell phải có đúng ba cột Source / Player / Details.");
+        if (WorkspaceGrid.ColumnDefinitions.Count != 5 || WorkspaceGrid.RowDefinitions.Count != 3)
+            throw new InvalidOperationException("Editor shell phải có đúng 3 cột nội dung + 2 cột splitter và hàng timeline.");
         if (SourceColumn.ActualWidth < 110)
             throw new InvalidOperationException($"Source quá hẹp: {SourceColumn.ActualWidth:0}px.");
         if (PlayerColumn.ActualWidth < 210)

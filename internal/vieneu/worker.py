@@ -15,8 +15,8 @@ from pathlib import Path
 
 ENGINE = "vieneu-tts"
 ENGINE_VERSION = "vieneu-v3-turbo-1"
-# Backbone pin (HF rev đã verify tải được, không token). SDK tự quản cache;
-# worker chỉ kiểm tra rev + file backbone tồn tại, hash đầy đủ do installer pin.
+# Backbone pin: the HF revision was verified to download without a token. The SDK
+# manages its own cache; the worker only checks the revision and that the backbone file exists, with the full hash pinned by the installer.
 MODEL_REVISION = "61b85e3d937fbbacb387714180e8182823512523"
 MODEL_SHA256 = "61b85e3d937fbbacb387714180e8182823512523"
 TIMING_ALGORITHM = "whole-cue-vieneu-natural-first-v1"
@@ -24,16 +24,16 @@ VOICE_REVISION = MODEL_REVISION + ":" + TIMING_ALGORITHM
 VOICE_NAME = "Hải Đăng"
 SAMPLE_RATE = 22050
 VIENEU_SAMPLE_RATE = 48000
-# VieNeu không có núm tốc độ native như Piper: chỉ đọc nhịp tự nhiên, vừa
-# khung thì pad, chật thì rút gọn/atempo/nhóm (toàn đồ engine-agnostic).
-# base = length = 1.0 nên mọi bound validator (scale .30-1.20, preferred band)
-# giữ nguyên ý nghĩa mà không cần nhánh riêng.
+# VieNeu has no native speed control like Piper: it only reads at its natural
+# pace. A window that is too loose is padded, too tight is condensed / atempoed /
+# grouped (all engine-agnostic). Since base == length == 1.0, every validator bound
+# (scale .30-1.20, preferred band) keeps its meaning with no separate branch.
 FIT_METHOD = "vieneu-natural"
-# Batch synth tự nhiên (30/09, RTX 3050 4GB): profile 8 cue đọc đơn tốn 98%
-# thời gian ở synth GPU tuần tự (RTF 0.255). Đo 16 câu (~55s audio):
-# batch8 RTF 0.071 peak 3251MB, batch16 RTF 0.061 peak 3283MB, batch32 RTF
-# 0.065 peak 3283MB (bão hòa, không nhanh thêm). Chốt 16: nhanh nhất mà peak
-# vẫn cách trần 4GB ~800MB. Vượt là fallback đọc đơn, không chết job.
+# Natural batch synth (30/09, RTX 3050 4GB): an 8-cue single-read profile spends
+# 98% of its time in sequential GPU synth (RTF 0.255). Measured on 16 sentences
+# (~55s of audio): batch8 RTF 0.071 peak 3251MB, batch16 RTF 0.061 peak 3283MB,
+# batch32 RTF 0.065 peak 3283MB (saturated, no further gain). Fixed at 16: the
+# fastest option while peak still stays ~800MB below the 4GB ceiling. Above that the read falls back to single, never killing the job.
 BATCH_SYNTH_SIZE = 16
 MAX_SYNTHESIS_ATTEMPTS = 12
 MAX_GROUP_SYNTHESIS_ATTEMPTS = 12
@@ -48,38 +48,40 @@ MIN_RATE_SCALE = .30
 MAX_RATE_SCALE = 1.20
 MIN_ACTUAL_SPEED = 1.0
 MAX_ACTUAL_SPEED = 100.0
-# Luật pace (01/10 + micro-band 02/10, user duyệt 1.8x rồi 2.0x; chỉ
-# VieNeu): tăng tốc KHÔNG vượt 1.5x mọi đường (đơn, nhóm, dự phòng), NGOẠI
-# TRỪ cue micro (khung <1.1s) được 2.0x vì carrier prosody từ đơn (~1.0s) mà
-# seed nào cũng bó tay (vụ "Vâng" need 1.97x); cue rộng stretch tối đa 1.4x
-# thời lượng (pace không dưới ~0.71x). HARD_MAX_SPEED áp trên need
-# (input/target); factor ghi record có thể chạm ~1.5005 do FIT_HEADROOM +
-# TEMPO_RETRY_MARGIN nên trần record là 1.51 (micro: 3.01 tương ứng). C#
-# mirror y hệt theo window, comment lý do.
+# Pace rule (01/10 + micro-band 02/10, user approved 1.8x then 2.0x; VieNeu
+# only): never exceed 1.5x on every path (single, group, fallback), EXCEPT micro
+# cues (window <1.1s) which are allowed 2.0x because their prosody carrier already
+# starts at ~1.0s and no seed can fit it (the “Vâng” case needing 1.97x); wide cues
+# stretch at most 1.4x of duration (pace never below ~0.71x). HARD_MAX_SPEED applies
+# on top of the need (input/target); the factor written to the record can reach
+# ~1.5005 due to FIT_HEADROOM + TEMPO_RETRY_MARGIN, so the record ceiling is 1.51
+# (micro: 3.01 correspondingly). The C# mirror follows the window exactly, with the reason commented.
 HARD_MAX_SPEED = 1.5
 HARD_MAX_FACTOR = 1.51
-# Micro-band (02/10 2.0x, user 07/10 nghe thu mo 2.5x, user 25/10 mo 3.0x): cue micro
-# (khung <1.1s, thuong 1-3 chu) mang carrier prosody co dinh (~1.0s cho
-# tu don nhu "Cam") nen need thuc 1.5-3.0x ma seed nao cung bo tay;
-# atempo tren clip <1s hau nhu trong suot nen tran rieng 3.0x (record
-# 3.01 theo cung margin FIT+T margin). Moi cue con lai giu 1.5x. Luon
-# review (duong tempo). C# mirror y het theo window.
+# Micro-band (02/10 2.0x; user raised the demo threshold to 2.5x on 07/10 and to
+# 3.0x on 25/10): micro cues (window <1.1s, usually 1-3 words) carry a fixed
+# prosody carrier (~1.0s for a single word like “Cảm”) so the real need is
+# 1.5-3.0x and no seed can manage it. atempo on a clip under 1s is almost
+# transparent, hence the separate 3.0x ceiling (record 3.01 under the same FIT+T
+# margin). Every other cue keeps 1.5x. Always review (the tempo path). The C# mirror follows the window exactly.
 MICRO_MAX_SPEED = 3.0
 MICRO_MAX_FACTOR = 3.01
 MICRO_WINDOW_FRAMES = round(1.1 * SAMPLE_RATE)
-# Overflow (user duyet): cue don qua dai (truncate chi giu <50% chu) thi doc
-# NGUYEN CAU toc do toi tran window-cap, cho tran khung toi da 3.0s, chap nhan
-# de len 1-2 cue sau (khong doi timeline de khoi lech sub hang loat). Chi cue
-# don (khong sentence-group/sample). Luon review + spoken_text day du de truy
-# vet. C# mirror y het (OverflowBudgetFrames).
+# Overflow (user duyet): a single cue that is too long may read the WHOLE
+# sentence at the window speed cap and spill into following silence. The
+# absolute ceiling is 3.0s, but the real per-cue budget is the free gap to the
+# next cue's start (see overflow_budget_frames): spilling into the next cue's
+# window is the repeat-reading bug (tail of cue A + head of cue B).
+# Only single cues (never sentence-group/sample). Always review + full
+# spoken_text for traceability. C# mirrors the placement rule.
 OVERFLOW_MAX_SECONDS = 3.0
 OVERFLOW_MAX_FRAMES = int(OVERFLOW_MAX_SECONDS * SAMPLE_RATE)
-# Tran tre placement nhom (07/10, user BAT BUOC sub hien la voice phai
-# doc luon): thanh vien sentence-group dat voice tre hon gio sub du 1
-# frame cung khong nhan — tang atempo trong tran (giu dong nhat toc do
-# nhom, C# khong can doi) hoac raise de tang tren tach don (single co
-# widen/muon khe + review, dat dung gio). Som hon sub van duoc (voice
-# dang doc khi sub hien la dung). Khong sua chu, khong vuot pace.
+# Group placement lag ceiling (07/10; user REQUIRES the voice to keep reading when
+# the subtitle appears): a sentence-group member may place its voice later than the
+# subtitle time, but not by even one frame -- either raise atempo within the ceiling
+# (keeping group speed uniform, no C# change needed) or raise so the layer above
+# splits into singles (a single gets widen/later gap + review, placed at the right
+# time). Earlier than the subtitle is still fine (the voice is already reading when the subtitle appears). Never edit the text, never exceed the pace ceiling.
 GROUP_MAX_LAG_SECONDS = 0.0
 GROUP_MAX_LAG_FRAMES = int(GROUP_MAX_LAG_SECONDS * SAMPLE_RATE)
 
@@ -97,9 +99,9 @@ def cap_speed_for(target_frames: int) -> float:
 
 def cap_factor_for(target_frames: int) -> float:
     return MICRO_MAX_FACTOR if micro_allowed(target_frames) else HARD_MAX_FACTOR
-# Seeded-retry (02/10): raw chạm đúng 1.440s giữa các lần chạy độc lập =
-# model truncate giữa chừng ở max-length (prosody đứt đoạn). Bản raw chạm
-# ngưỡng này không bao giờ được nhận làm voice, dù trimmed có vừa.
+# Seeded-retry (02/10): the raw output landing on exactly 1.440s across independent
+# runs means the model truncated mid-way at max-length (broken prosody). A raw
+# output hitting this threshold is never accepted as a voice, even if the trimmed version fits.
 SEED_TRUNC_SUSPECT_FRAMES = round(1.435 * SAMPLE_RATE)
 SLOW_MIN_SPEED = 1.0 / 1.4
 SLOW_MIN_FACTOR = 1.0 / 1.4
@@ -118,13 +120,20 @@ MAX_GROUP_ACTUAL_SPEED = MAX_ACTUAL_SPEED
 MAX_GROUP_GAP_FRAMES = 5512
 MAX_GROUP_DURATION_FRAMES = 300 * SAMPLE_RATE
 MAX_GROUP_CUES = 512
+# Lead budget (17/11, user-approved bounded "read early"): a cue with no room on
+# either side used to lose the tail of its sentence, because neither the pace
+# ceiling nor the trailing gap could cover it. Reading up to 1.0s EARLY into the
+# previous cue's silence keeps every word without touching the pace ceiling.
+# Mirrored by EditorVoiceCuePlanner + LocalTtsService.ReadResultAsync exactly.
+MAX_LEAD_SECONDS = 1.0
+MAX_LEAD_FRAMES = round(MAX_LEAD_SECONDS * SAMPLE_RATE)
 SILENCE_AMPLITUDE = 32
 SILENCE_GUARD_FRAMES = round(.05 * SAMPLE_RATE)
-# P1 (02/10): model đắp ~0.02-0.07s im tuyệt đối trước mọi cue ngắn.
+# P1 (02/10): the model layers ~0.02-0.07s of absolute silence before every short cue.
 LEADING_SILENCE_GUARD_FRAMES = round(.005 * SAMPLE_RATE)
 MIN_PREFERRED_RATE_SCALE = .70
 MAX_PREFERRED_RATE_SCALE = 1.0
-# Gói pilot (bản chính xác do installer pin khi đấu C# sau).
+# Pilot package set (exact versions, pinned by the installer ahead of the C# match).
 PACKAGES = {"torch": "2.8.0+cu128", "torchaudio": "2.8.0+cu128", "transformers": "4.57.6",
             "vieneu": "3.8.3", "soxr": "1.1.0", "vietnormalizer": None, "numpy": None}
 MIN_SPEECH_FRAMES = round(.10 * SAMPLE_RATE)
@@ -225,14 +234,14 @@ def read_wav(path: Path):
     import numpy as np
     with wave.open(str(path), "rb") as source:
         if (source.getnchannels(), source.getsampwidth(), source.getframerate()) != (1, 2, SAMPLE_RATE):
-            raise ValueError("NGHI clip must be mono PCM16 at 22050 Hz")
+            raise ValueError("VieNeu clip must be mono PCM16 at 22050 Hz")
         frames = source.getnframes()
         data = source.readframes(frames)
     if frames <= 0 or len(data) != frames * 2:
-        raise ValueError("NGHI clip is empty or truncated")
+        raise ValueError("VieNeu clip is empty or truncated")
     samples = np.frombuffer(data, dtype="<i2").astype(np.float32) / 32768.0
     if not np.isfinite(samples).all() or float(np.max(np.abs(samples))) < 0.0001:
-        raise ValueError("NGHI clip is silent or invalid")
+        raise ValueError("VieNeu clip is silent or invalid")
     # This is a signal-integrity check, not proof of intelligible speech or voice quality.
     return samples
 
@@ -249,6 +258,43 @@ def cue_window(cue: dict):
     if start < 0 or frames <= 0:
         raise ValueError("Source speech window has no PCM samples")
     return start, frames
+
+
+def overflow_budget_frames(cues: list[dict], index: int, active_cue: dict, total_frames: int) -> int:
+    """Free frames between this cue's own window and the next cue's start.
+
+    Overflow may only consume real silence. Extending into the next cue's
+    window makes the listener hear the tail of cue A followed by the head of
+    cue B, which is the reported repeat-reading bug. The last cue may use the
+    remaining source duration.
+    """
+    start, frames = cue_window(active_cue)
+    next_start = (round(cues[index + 1]["cue_start"] * SAMPLE_RATE)
+                  if index + 1 < len(cues) else total_frames)
+    return max(0, next_start - (start + frames))
+
+
+def clip_overlap_pairs(clips: list[dict]) -> list[dict]:
+    """Every overlapping clip pair, with cue ids, frames and milliseconds.
+
+    ``unexpected`` is true when the right clip starts at or after the left
+    cue's own visible window end, i.e. the overlap cannot be explained by
+    overlapping source subtitles and must be a placement bug.
+    """
+    ordered = sorted(clips, key=lambda clip: (clip["start_sample"], clip.get("id", "")))
+    active: list[dict] = []
+    overlaps: list[dict] = []
+    for clip in ordered:
+        active = [item for item in active
+                  if item["start_sample"] + item["frames"] > clip["start_sample"]]
+        for item in active:
+            overlap = item["start_sample"] + item["frames"] - clip["start_sample"]
+            window_end = item.get("window_end_sample", item["start_sample"] + item["frames"])
+            overlaps.append({"left": item.get("id", "?"), "right": clip.get("id", "?"),
+                             "frames": overlap, "seconds": overlap / SAMPLE_RATE,
+                             "unexpected": clip["start_sample"] >= window_end})
+        active.append(clip)
+    return overlaps
 
 
 def padding_budget(target_frames: int) -> int:
@@ -404,10 +450,10 @@ def native_record_valid(record: dict, target_frames: int, natural_sample: bool,
     native_reference = record.get("native_reference_frames", 0)
     group_native = record.get("group_native_frames", 0)
     actual_speed = record.get("actual_speed_factor", 0)
-    # Luật pace (01/10 + micro-band 02/10 2.0x, user 07/10 mo 2.5x):
-    # record tempo (nhanh/chậm) nằm trong [SLOW_MIN_SPEED, 1.51] chung
-    # hoặc [.., 2.51] khi khung <1.1s; record thường giữ nguyên [1, 100]
-    # như cũ. C# mirror y hệt theo window.
+    # Pace rule (01/10 + micro-band 02/10 2.0x, user 07/10 raised the demo threshold to
+    # 2.5x): the tempo record (fast or slow) must sit in [SLOW_MIN_SPEED, 1.51] normally,
+    # or [.., 2.51] when the window is <1.1s; ordinary records still keep [1, 100] as
+    # before. The C# mirror follows the window exactly.
     cap_factor = cap_factor_for(target_frames)
     if tempo_fallback:
         actual_bounds = SLOW_MIN_SPEED <= actual_speed <= cap_factor
@@ -441,10 +487,10 @@ def native_record_valid(record: dict, target_frames: int, natural_sample: bool,
     if attempts == 1:
         if scale != base:
             return False
-        # 30/09 (VieNeu, không vòng scale): atempo ngay lượt 1 là bình thường
-        # (probe tự nhiên rồi atempo, không vòng lặp scale như Piper) nên
-        # native != generated ở record tempo là trung thực, không phải dối.
-        # Điều kiện native==generated chỉ áp cho lượt tự nhiên (non-tempo).
+        # 30/09 (VieNeu, no scale loop): atempo on attempt 1 is normal (probe at natural
+        # pace then atempo, no scale iteration like Piper) so native != generated on a
+        # tempo record is honest, not a lie. The native==generated condition applies only
+        # to the natural (non-tempo) attempt.
         if (fit_method != ATEMPO_METHOD and record.get("timing_source") != "sentence-group"
                 and native_reference != generated):
             return False
@@ -453,8 +499,8 @@ def native_record_valid(record: dict, target_frames: int, natural_sample: bool,
     needs_review = (tempo_fallback or record.get("timing_source") == "sentence-group"
                     or needs_rate_review(scale, base) or trimmed > 0
                     or padding > padding_budget(target_frames)
-                    # 28/09 (M11): rút gọn chữ đọc luôn review dù vừa khít tự
-                    # nhiên — không là cache retry tự từ chối + C# lệch status.
+                    # 28/09 (M11): condensed text is always review even when it fits at natural
+                    # pace -- otherwise a cache retry self-rejects and C# disagrees on status.
                     or "spoken_text" in record)
     return record["status"] == ("review" if needs_review else "fit")
 
@@ -470,16 +516,94 @@ def _overflow_likely_severe(text: str, target_frames: int) -> bool:
     return estimate > max(1, target_frames) * 1.8
 
 
-def try_overflow_voice(index, cue_id, total, active_cue, text, target_frames, voice,
-                       base_scale, run_root, clip_root, worker_sha, ffmpeg, on_attempt):
-    """Doc NGUYEN CAU toc do toi tran window-cap, cho tran khung (user duyet).
+def try_spill_into_gap(ffmpeg: Path, fitted_source: Path, run_root: Path, key: str,
+                       cue_id: str, timing_source: str, target_frames: int,
+                       budget_frames: int, base: float, text: str,
+                       source_frames: int, trimmed_silence: int, natural: int,
+                       raw_frames: int, native_reference_frames: int,
+                       cap: float, attempt: int, minimum_generated: int):
+    """Read the WHOLE sentence into the real silence after the cue (F1 17/11).
 
-    Tra entry (active, key, path, record, cache_hit, calls) nhu escalate, hoac
-    None de caller rot ve truncate cu. Chi cue don (khong sentence-group /
-    sample). Budget tran cung OVERFLOW_MAX_FRAMES; qua budget -> None. Moi
-    synth dem attempt qua on_attempt de C# accounting khop; record atempo theo
-    dung hinh finish_tempo + overflow_frames + spoken_text day du."""
+    Reached from fit_cue when the sentence needs more room than its own window
+    allows at the permitted pace, but the next cue has not started yet. The
+    record mirrors the proven try_overflow_voice shape (atempo + overflow_frames
+    + spoken_text + review) so the C# validator accepts it unchanged. Unlike the
+    escalate path this reuses the native render already measured in Phase 0, so
+    it costs no extra GPU synthesis. Returns the record dict, or None when even
+    the permitted pace cannot fit inside target + gap.
+    """
+    budget = min(OVERFLOW_MAX_FRAMES, max(0, int(budget_frames)))
+    if budget < 500:
+        return None
+    # Keep the historical 500-frame safety margin so atempo rounding can never
+    # step past the gap boundary (mirrors try_overflow_voice).
+    usable = max(1, target_frames + budget - 500)
+    if natural <= 0 or natural / usable > cap:
+        return None
+    # Slowest pace the extended window still allows: a spilled read at 1.1x
+    # sounds far better than the same read pinned to the ceiling.
+    aim = natural / usable
+    if aim < 1.0:
+        aim = 1.0
+    if aim > cap - 0.02:
+        aim = max(1.0, cap - 0.02)
+    out_frames = max(1, math.ceil(natural / aim))
+    if out_frames > usable:
+        out_frames = usable
+    if out_frames <= target_frames:
+        return None
+    # fit_cue's own convention: the fitted clip always lands at key + "-fit.wav",
+    # and resolve_individual hashes/replaces exactly that path.
+    final_path = run_root / (key + "-fit.wav")
+    try:
+        generated = apply_atempo(ffmpeg, fitted_source, final_path, natural / max(1, out_frames))
+    except Exception:
+        return None
+    if generated <= target_frames or generated > usable:
+        return None
+    actual_speed = natural / generated
+    if not (MIN_ACTUAL_SPEED <= actual_speed <= cap):
+        return None
+    record = {"raw_duration": raw_frames / SAMPLE_RATE,
+              "fitted_duration": generated / SAMPLE_RATE,
+              "frames": generated, "target_frames": target_frames,
+              "timing_source": timing_source,
+              "fit_method": ATEMPO_METHOD, "base_length_scale": base,
+              "length_scale": base, "source_frames": source_frames,
+              "generated_frames": generated,
+              "trimmed_silence_frames": trimmed_silence, "padding_frames": 0,
+              "native_reference_frames": native_reference_frames,
+              "group_native_frames": 0, "actual_speed_factor": actual_speed,
+              "tempo_input_frames": natural, "tempo_factor": natural / generated,
+              "tempo_attempts": 1, "synthesis_attempts": max(1, attempt),
+              "status": "review", "spoken_text": text,
+              "overflow_frames": generated - target_frames}
+    if not native_record_valid(record, target_frames, timing_source == "sample",
+                               minimum_generated):
+        return None
+    emit({"event": "notice", "code": "spill-into-gap",
+          "message": (f"Cue {cue_id} khong vua khung o nhip cho phep: doc NGUYEN CAU "
+                      f"x{actual_speed:.2f} tran {(generated - target_frames) / SAMPLE_RATE:.2f}s "
+                      f"vao khoang lang that sau cau + co review.")})
+    return record
+
+
+def try_overflow_voice(index, cue_id, total, active_cue, text, target_frames, voice,
+                       base_scale, run_root, clip_root, worker_sha, ffmpeg,
+                       max_overflow_frames, on_attempt):
+    """Read the WHOLE sentence at the window speed cap and use real silence.
+
+    Returns an entry (active, key, path, record, cache_hit, calls) like
+    escalate, or None so the caller falls back to truncation. Only single cues
+    (not sentence-group/sample). ``max_overflow_frames`` is the measured free
+    gap to the next cue; records are never allowed to exceed it. Every synth
+    attempt is counted through on_attempt so C# accounting matches; the record
+    follows finish_tempo shape with overflow_frames + spoken_text."""
     if active_cue.get("timing_source") in ("sentence-group", "sample"):
+        return None
+    budget = min(OVERFLOW_MAX_FRAMES, max(0, int(max_overflow_frames)))
+    # Less than ~23ms of real silence is not worth a different read.
+    if budget < 500:
         return None
     cap = cap_speed_for(target_frames)
     try:
@@ -496,7 +620,7 @@ def try_overflow_voice(index, cue_id, total, active_cue, text, target_frames, vo
             if (hit_record.get("key") == overflow_key
                     and hit_record.get("sha256") == sha256(cached_path)
                     and type(hit_record.get("overflow_frames")) is int
-                    and hit_record["overflow_frames"] > 0
+                    and 0 < hit_record["overflow_frames"] <= budget
                     and native_record_valid(hit_record, target_frames, natural_sample,
                                             minimum_generated)):
                 return (active_cue, overflow_key, cached_path, hit_record, True,
@@ -516,13 +640,21 @@ def try_overflow_voice(index, cue_id, total, active_cue, text, target_frames, vo
     trimmed_probe = probe_trim_path if probe_trimmed else probe_path
     if not text_self_repeats(text) and speech_repeats(trimmed_probe, units if units <= 8 else None):
         return None
+    max_frames = target_frames + budget
+    # If even max-speed speech cannot fit inside the real gap, there is no
+    # overflow path; let the caller truncate the text instead of overlapping.
+    if natural / max(1, max_frames) > cap:
+        return None
     aim_factor = max(cap - 0.02, 1.0)
     out_frames = max(1, math.ceil(natural / aim_factor))
-    if out_frames <= target_frames or out_frames - target_frames > OVERFLOW_MAX_FRAMES - 500:
+    # Keep the historical 500-frame safety margin so atempo rounding can never
+    # step past the gap boundary.
+    out_frames = min(out_frames, max_frames - 500)
+    if out_frames <= target_frames:
         return None
     final_path = run_root / (overflow_key + "-fit.wav")
     generated = apply_atempo(ffmpeg, trimmed_probe, final_path, natural / max(1, out_frames))
-    if generated <= target_frames or generated - target_frames > OVERFLOW_MAX_FRAMES:
+    if generated <= target_frames or generated > max_frames:
         return None
     actual_speed = natural / generated
     if not (MIN_ACTUAL_SPEED <= actual_speed <= cap):
@@ -548,13 +680,13 @@ def try_overflow_voice(index, cue_id, total, active_cue, text, target_frames, vo
     emit({"event": "notice", "code": "overflow-voice",
           "message": (f"Cue {index + 1} ({cue_id}) qua dai vat ly: doc nguyen cau "
                       f"x{actual_speed:.2f} tran khung {(generated - target_frames) / SAMPLE_RATE:.2f}s "
-                      f"(de len cue sau) + co review.")})
+                      f"trong khe trong that + co review.")})
     return (active_cue, overflow_key, cached_path, record, False, 1)
 
 
 def escalate_truncated_voice(index, cue_id, total, active_cue, text, target_frames, voice,
                              base_scale, run_root, clip_root, worker_sha, ffmpeg,
-                             on_attempt):
+                             max_overflow_frames, on_attempt):
     """Cue Việt đọc đơn vẫn không vừa: cắt ngắn dần rồi fit chuẩn. Luôn voice
     + spoken_text là đoạn thực đọc + cờ review. Chỉ raise khi 1 từ cũng không
     vừa (vật lý).
@@ -572,11 +704,16 @@ def escalate_truncated_voice(index, cue_id, total, active_cue, text, target_fram
         esc_units = speakable_units(text)
     except ValueError:
         esc_units = 0
-    if (esc_units > 8 and active_cue.get("timing_source") not in ("sentence-group", "sample")
-            and _overflow_likely_severe(text, target_frames)):
+    # F1 (17/11): the whole sentence always gets first refusal of the real
+    # silence after the cue, before any word is cut. fit_cue already tried the
+    # cheap spill (reusing its native render); this is the last-resort read, so
+    # the >8-unit severity gate of the old order is gone - a short cue with a
+    # real gap deserves its full sentence just as much as a long one.
+    if active_cue.get("timing_source") not in ("sentence-group", "sample"):
         overflow_entry = try_overflow_voice(
             index, cue_id, total, active_cue, text, target_frames, voice,
-            base_scale, run_root, clip_root, worker_sha, ffmpeg, on_attempt)
+            base_scale, run_root, clip_root, worker_sha, ffmpeg,
+            max_overflow_frames, on_attempt)
         if overflow_entry is not None:
             return overflow_entry
     trunc_probe = run_root / (cache_identity(active_cue, text, worker_sha) + "-trunc-probe.wav")
@@ -594,17 +731,18 @@ def escalate_truncated_voice(index, cue_id, total, active_cue, text, target_fram
             index, cue_id, total, voice, words, active_cue, text, target_frames,
             run_root, worker_sha, base_scale)
         if hit is None:
-            overflow_entry = try_overflow_voice(
-                index, cue_id, total, active_cue, text, target_frames, voice,
-                base_scale, run_root, clip_root, worker_sha, ffmpeg, on_attempt)
-            if overflow_entry is not None:
-                return overflow_entry
+            # Overflow (whole sentence into the real gap) was already attempted at
+            # the top of this function, so a miss here means the cue has no usable
+            # silence at all: a physically impossible window the app must report
+            # for an SRT timecode fix instead of guessing.
+            raise RuntimeError(
+                "khong vua khung o nhip cho phep va khong con khoang lang that sau cau")
             raise RuntimeError("truncate cũng bó tay: không prefix/seed nào vừa khung ở pace cho phép")
         prefix, trunc_key = hit
         preloaded = {str(run_root / (trunc_key + "-native.wav")): True}
     else:
-        # Cue dài: phương sai nhỏ nên đo-1-lần + fit-lại như cũ vẫn đúng.
-        # Bound theo trần pace của window (micro-band nếu khung <1.1s).
+        # Long cues: variance is small, so measure-once + refit (as before) stays correct.
+        # Bounded by the pace ceiling of the window (micro-band when the window is <1.1s).
         search_bound = max(1, math.floor(target_frames * cap_speed_for(target_frames) / 1.15))
         found = longest_fitting_prefix(_measure, words, search_bound, minimum_speech_frames)
         if found is None:
@@ -683,10 +821,10 @@ def _seeded_prefix_search(index: int, cue_id: str, total: int, voice, words: lis
     trim_tmp = run_root / (cache_identity(active_cue, text, worker_sha) + "-esc-trim.wav")
     tries = 0
     for end in range(len(words), 0, -1):
-        # Ngân sách seed theo độ dài prefix: bản dài cần trúng draw ngắn
-        # (hiếm) nên cho nhiều; bản ngắn draw nào cũng vừa, cho ít. Tổng
-        # worst-case có chặn (~10+7×4) mà prefix ngắn luôn tới lượt (vụ #351:
-        # cap tổng cũ cắt mất prefix 'Không thể nào!' ở đuôi).
+        # Seed budget scales with prefix length: a long rendering needs to land a rare
+        # short draw, so give it many; a short rendering fits on any draw, so give it few.
+        # The worst-case total is capped (~10+7x4) yet short prefixes always get their turn
+        # (case #351: the old total cap cut off the prefix ‘Không thể nào!’ at the tail).
         budget = seeds_full if end == len(words) else seeds_short
         prefix = " ".join(words[:end])
         try:
@@ -715,17 +853,17 @@ def _seeded_prefix_search(index: int, cue_id: str, total: int, voice, words: lis
                 kept = source - trimmed
             except Exception:
                 continue
-            # Bóp chi phí (04/10): model đã vào chế độ phình (raw chạm trần)
-            # thì seed tiếp vô ích — bằng chứng "Đừng quan tâm" 16/16 draw
-            # đều chạm trần. Chỉ đếm ở đây; veto/cắt bên dưới vẫn chạy bình
-            # thường cho draw hiện tại, break ở cuối vòng.
+            # Cost squeeze (04/10): once the model enters inflation mode (raw hitting the
+            # ceiling) further seeds are useless -- evidence: “Đừng quan tâm” hit the ceiling
+            # 16/16 draws. Only count it here; the veto/cut below still runs normally for the
+            # current draw, breaking at the end of the loop.
             if source >= SEED_TRUNC_SUSPECT_FRAMES:
                 capped_streak += 1
             else:
                 capped_streak = 0
-            # Veto/cắt nội dung TẮT khi chữ tự lặp (audio giống nhau là đúng).
-            # Luật hạt nhân chỉ xét bản ≥0.6s nên prefix ngắn ('Không' 0.36s)
-            # không bao giờ bị giết oan.
+            # Content veto/cut is OFF when the text self-repeats (identical halves are correct)
+            # audio). The nuclear rule only inspects renders >=0.6s, so a short prefix
+            # (‘Không’ 0.36s) is never killed by mistake.
             prefix_repeats = (not text_self_repeats(prefix)
                               and speech_repeats(trim_tmp, speakable_units(prefix)))
             if (kept >= prefix_min and kept > 0
@@ -734,8 +872,8 @@ def _seeded_prefix_search(index: int, cue_id: str, total: int, voice, words: lis
                     and not prefix_repeats):
                 return prefix, trunc_key
             if (kept >= prefix_min and kept > 0 and prefix_repeats):
-                # Bản nhân đôi: cắt instance đầu đè lên candidate để fit_cue
-                # tái dùng đúng bản sạch (preloaded).
+                # Doubled render: cut the first instance and overwrite the candidate so fit_cue
+                # reuses exactly the clean render (preloaded).
                 try:
                     esc_cut = run_root / (trunc_key + f"-esc{seed_pos}-cut.wav")
                     cut_first_instance(trim_tmp, esc_cut, prefix_min)
@@ -749,8 +887,8 @@ def _seeded_prefix_search(index: int, cue_id: str, total: int, voice, words: lis
                     import shutil
                     shutil.copyfile(trim_tmp, candidate)
                     return prefix, trunc_key
-            # 4 draw phình liên tiếp -> prefix này vô vọng, xuống prefix ngắn
-            # hơn (đừng đốt thêm GPU; prefix ngắn draw nào cũng vừa).
+            # 4 consecutive inflated draws -> this prefix is hopeless, move to a shorter one
+            # (do not burn more GPU; short prefixes fit on any draw).
             if capped_streak >= 4:
                 break
     return None
@@ -780,9 +918,9 @@ def longest_fitting_prefix(measure_frames, words: list[str], target_frames: int,
 
 
 def load_clip(path: Path, key: str, cue: dict, minimum_generated_frames: int = 1):
-    # natural_sample dùng ở cả 2 nhánh (silence-fallback lẫn native thường):
-    # khởi tạo trước nhánh để nhánh native không dính UnboundLocalError khi
-    # revalidate cache hit (job editor-tts 08:56 27/09 chết đúng chỗ này).
+    # natural_sample is used in both branches (silence-fallback and ordinary native), so
+    # it is initialised before the branch split: without that the native branch hits
+    # UnboundLocalError when revalidating a cache hit (the editor-tts job died at exactly this spot 08:56 on 27/09).
     natural_sample = cue.get("timing_source") == "sample"
     try:
         record = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
@@ -824,9 +962,9 @@ ATEMPO_METHOD = "vieneu-atempo"
 
 
 def strip_emotion_tags(text: str) -> str:
-    # VieNeu đọc tag cảm xúc thành tiếng ([cười] là cười thật giữa câu!).
-    # Chỉ lột đúng tag điều khiển đã document của VieNeu; ngoặc khác
-    # ([nhạc nền], [Phần 1]...) giữ nguyên đọc như chữ thường.
+    # VieNeu speaks emotion tags aloud ([cười] is a real laugh mid-sentence!). Only
+    # VieNeu's documented control tags are stripped; other brackets ([nhạc nền],
+    # [Phần 1]...) are kept and read as ordinary text.
     return re.sub(r"\[(cười|thở dài|hắng giọng)\]", "", text)
 
 
@@ -859,8 +997,8 @@ def resolve_preset_label(available: list, requested: str) -> str:
 
 
 class VieneuVoice:
-    # Shim để fit machinery (viết cho Piper) chạy được mà không sửa call-site:
-    # config.length_scale luôn 1.0 (nhịp tự nhiên duy nhất của VieNeu).
+    # Shim so the fit machinery (written for Piper) runs without touching call-sites:
+    # config.length_scale is always 1.0 (VieNeu's only natural pace).
     def __init__(self, engine, label: str):
         import types
         self.engine = engine
@@ -871,8 +1009,8 @@ class VieneuVoice:
 def synthesize_cue(voice, text: str, temporary: Path, length_scale: float = 1.0) -> None:
     import numpy as np
     import soxr
-    # length_scale giữ nguyên chữ ký cho khỏi sửa call-site; VieNeu chỉ có
-    # nhịp tự nhiên nên tham số này bị bỏ qua có chủ ý.
+    # length_scale keeps its signature so call-sites stay untouched; VieNeu has only a
+    # natural pace, so this parameter is deliberately ignored.
     audio = voice.engine.infer(text, voice=voice.label, apply_watermark=False)
     samples = np.asarray(audio, dtype=np.float32).reshape(-1)
     if samples.size == 0:
@@ -951,9 +1089,9 @@ def preload_probes(voice, cues, texts, run_root: Path, clip_root: Path,
         jobs.append((position, text, run_root / (key + "-native.wav")))
     if not jobs:
         return {}
-    # Bucket ổn định theo độ dài (và vị trí gốc để thứ tự batch lặp lại
-    # nào cũng giống nhau): chunk đồng đều -> ít padding phí + đỉnh VRAM
-    # thấp hơn chunk trộn dài-ngắn.
+    # Stable bucketing by length (and original position so the batch order repeats
+    # identically every run): even chunks -> less wasted padding + lower VRAM peak than
+    # chunks mixing long and short.
     jobs.sort(key=lambda job: (len(job[1]), job[0]))
     preloaded: dict = {}
     size = max(1, int(batch_size))
@@ -962,8 +1100,8 @@ def preload_probes(voice, cues, texts, run_root: Path, clip_root: Path,
         try:
             synthesize_cue_batch(voice, [(text, path) for _, text, path in chunk], size)
         except Exception as error:
-            # Chỉ chunk này đọc đơn lại; wav dở của chunk lỗi không vào
-            # dict nên fit_cue ghi đè sạch, không bao giờ tái dùng nhầm.
+            # Only this chunk re-reads singly; the half-written wav of a failed chunk never
+            # enters the dict, so fit_cue overwrites it cleanly and it is never reused by mistake.
             emit({"event": "notice", "code": "batch-probe-chunk-fallback",
                   "message": (f"Pre-batch {start // size + 1} ({len(chunk)} cue) lỗi "
                               f"({str(error)[:120]}); các cue này đọc đơn, chunk khác không ảnh hưởng.")})
@@ -1024,31 +1162,31 @@ def trim_trailing_silence_to_fit(source_path: Path, output_path: Path, target_fr
 
 
 def trim_trailing_silence(source_path: Path, output_path: Path, guard_frames: int) -> int:
-    # P1 (02/10): cắt im tuyệt đối cả HAI đầu. Guard đuôi giữ nguyên tham số
-    # (bảo vệ decay/reverb); guard đầu cố định 5ms — chỉ sample dưới -60dBFS
-    # mới bị cắt nên giọng (kể cả attack mềm) không bao giờ chạm. Trả tổng số
-    # mẫu đã cắt; file ra = speech nguyên vẹn trừ im đầu/đuôi nên mọi đẳng
-    # thức frames của validator (source-trimmed==generated) giữ nguyên.
+    # P1 (02/10): strip absolute silence from BOTH ends. The tail guard keeps its
+    # parameter (protecting decay/reverb); the head guard is fixed at 5ms -- only samples
+    # below -60dBFS are cut so the voice (even a soft attack) never touches it. Returns
+    # the total number of removed samples; the output file is the speech intact minus
+    # head/tail silence, so every validator frames equation (source-trimmed==generated) still holds.
     import numpy as np
     with wave.open(str(source_path), "rb") as source:
         frames = source.getnframes()
         data = source.readframes(frames)
         params = source.getparams()
     if frames <= 0 or len(data) != frames * 2:
-        raise ValueError("NGHI group clip is empty or truncated")
+        raise ValueError("VieNeu group clip is empty or truncated")
     samples = np.frombuffer(data, dtype="<i2").astype(np.int32)
     active = np.flatnonzero(np.abs(samples) > SILENCE_AMPLITUDE)
     if len(active) == 0:
-        raise ValueError("NGHI group clip has no active speech")
+        raise ValueError("VieNeu group clip has no active speech")
     if type(guard_frames) is not int or guard_frames < 0:
         raise ValueError("Invalid sentence-group silence guard")
     lead_cut = max(0, int(active[0]) - LEADING_SILENCE_GUARD_FRAMES)
     retained_end = min(frames, int(active[-1]) + 1 + guard_frames)
-    # KHÔNG return sớm khi không có gì để cắt: caller (nhánh cắt lặp escalate)
-    # dùng file output VÔ ĐIỀU KIỆN — return sớm để lại bytes cũ từ lần trim
-    # trước, copyfile sẽ chép nhầm audio cũ vào candidate rồi fit đo sai
-    # (vụ #93b45d9a: chép 1.587s thay vì 0.65s). Luôn ghi để output ≡ input đã
-    # trim; tốn 1 lần ghi file không đáng kể.
+    # Do NOT return early when there is nothing to cut: the caller (the escalate
+    # repeat-cut branch) uses the output file UNCONDITIONALLY -- returning early leaves
+    # stale bytes from the previous trim and copyfile would copy the old audio into the
+    # candidate, so fit measures wrong (case #93b45d9a: copied 1.587s instead of
+    # 0.65s). Always write so the output equals the trimmed input; one extra file write is negligible.
     with wave.open(str(output_path), "wb") as output:
         output.setparams(params)
         output.writeframes(data[lead_cut * 2:retained_end * 2])
@@ -1056,12 +1194,12 @@ def trim_trailing_silence(source_path: Path, output_path: Path, guard_frames: in
 
 
 def atempo_filter(factor: float, floor: float = _MIN_TEMPO_FACTOR) -> str:
-    # Floor mặc định (2026-09-24): factor ở/dưới pace tự nhiên nghĩa là "không
-    # tăng tốc", không phải lỗi. Đường stretch truyền floor=0.5 (giới hạn
-    # 1 stage của ffmpeg, stage hợp lệ 0.5..100).
+    # Default floor (2026-09-24): a factor at/below natural pace means "no speedup",
+    # not an error. The stretch path passes floor=0.5 (the single-stage limit of ffmpeg;
+    # valid stages are 0.5..100).
     if not math.isfinite(factor) or factor <= floor:
-        # Đường nhanh giữ nguyên ngữ nghĩa cũ (passthrough ~1.0, không raise
-        # để vòng retry nhóm tiếp tục hội tụ); đường chậm floor ở 0.5.
+        # The fast path keeps its old meaning (passthrough ~1.0, no raise so the group retry
+        # loop keeps converging); the slow path floors at 0.5.
         factor = _MIN_TEMPO_FACTOR if floor >= 1 else max(floor, 0.5)
     stages = []
     remaining = factor
@@ -1078,11 +1216,11 @@ def atempo_filter(factor: float, floor: float = _MIN_TEMPO_FACTOR) -> str:
     return ",".join(f"atempo={stage:.12g}" for stage in stages)
 
 
-# Cắt lặp (03/10): khi mọi bản đọc đều nhân đôi, cắt lấy instance đầu ở khe
-# im giữa file (đã verify: cắt "Vâng! Vâng!" ở 0.36s ra "Vâng!" nguyên vẹn).
-# Chỉ cắt khi khe im thật (<-50dBFS rộng ≥60ms, nằm giữa 15%-85% file),
-# snap zero-crossing ±3ms + fade 64 mẫu chống click. Raise nếu không đủ điều
-# kiện để caller thử cách khác.
+# Repeat cut (03/10): when every render is doubled, cut the first instance at the
+# silence gap inside the file (verified: cutting “Vâng! Vâng!” at 0.36s yields an
+# intact “Vâng!"). Cut only on a real gap (<-50dBFS, at least 60ms wide, within
+# 15%-85% of the file), snapped to a zero crossing within 3ms plus a 64-sample fade
+# to prevent clicking. Raise when the conditions are not met so the caller tries something else.
 def cut_first_instance(source_path, output_path, minimum_frames: int) -> int:
     import numpy as np
     with wave.open(str(source_path), "rb") as source:
@@ -1134,13 +1272,13 @@ def cut_first_instance(source_path, output_path, minimum_frames: int) -> int:
     return cut_sample
 
 
-# Chống đọc lặp (03/10): model hay đọc nhân đôi câu ngắn ("Vâng! Vâng!",
-# "Vào đi! Vào đi!" — đã cho Whisper nghe lại xác nhận). Hai luật phát hiện:
-# (1) autocorrelation envelope peak ≥0.30 ở lag ~nửa độ dài (nhân đôi rõ);
-# (2) luật hạt nhân: đỉnh năng lượng vượt số chữ + có khe xa ≥0.35s (bắt cả
-# nhân đôi khác ngữ điệu mà ACF lọt, vụ "Vâng! Vâng!" peak ACF chỉ 0.10).
-# Hiệu chuẩn trên mẫu thật: câu đơn không bao giờ đủ cả hai. Audio <0.4s
-# không xét (ACF nhiễu). numpy-only, ~1ms.
+# Repeat-read guard (03/10): the model often doubles short sentences (“Vâng! Vâng!”,
+# "Vao di! Vao di!" -- confirmed by replaying the audio to Whisper). Two detection
+# rules: (1) autocorrelation envelope peak >=0.30 at a lag of about half the
+# duration (clear doubling); (2) the nuclear rule: an energy peak above the word
+# count plus a far gap >=0.35s (also catches differently-prosodied doubling that ACF
+# misses; the “Vâng! Vâng!” case had an ACF peak of only 0.10). Calibrated on real
+# samples: a single sentence never satisfies both. Audio <0.4s is not evaluated (noisy ACF). numpy-only, ~1ms.
 REP_PEAK_THRESHOLD = 0.30
 REP_MIN_DURATION_SECONDS = 0.6
 REP_FAR_GAP_SECONDS = 0.35
@@ -1216,11 +1354,11 @@ def speech_repeats(path, max_words: int | None = None) -> bool:
     return bool(float(np.max(full[low:high + 1])) >= REP_PEAK_THRESHOLD)
 
 
-# U1 (03/10, tốc độ): atempo in-process bằng phase vocoder của torchaudio
-# thay vì spawn ffmpeg.exe mỗi lần (Windows spawn ~0.1-0.3s x hàng chục nghìn
-# lượt cho 16k cue). Cùng ngữ nghĩa floor/stage với atempo_filter; độ dài ra
-# do caller đo lại như cũ nên vòng retry/validation không đổi gì. Lỗi bất kỳ
-# -> rớt về FFmpeg (đường cũ giữ nguyên để so AB).
+# U1 (03/10, speed): in-process atempo via torchaudio's phase vocoder instead of
+# spawning ffmpeg.exe every time (a Windows spawn costs ~0.1-0.3s, times tens of
+# thousands of calls for 16k cues). Same floor/stage semantics as atempo_filter;
+# the caller re-measures the output length as before, so the retry/validation loops
+# are unchanged. Any error falls back to FFmpeg (the old path is kept for A/B comparison).
 _TEMPO_N_FFT = 1024
 _TEMPO_HOP = 256
 
@@ -1293,9 +1431,9 @@ def tempo_fit_clip(ffmpeg: Path, source_path: Path, final_path: Path, target_fra
                    native_reference_frames: int, run_root: Path, key: str,
                    max_speed: float = HARD_MAX_SPEED):
     input_frames = len(read_wav(source_path))
-    # Trần pace (02/10): 1.5x chung, 2.0x micro-band khi khung <1.1s. Need
-    # vượt trần thì raise ngay, khỏi tốn synth/GPU (caller rớt sang rút gọn/
-    # truncate theo chuỗi cấm-im).
+    # Pace ceiling (02/10): 1.5x normally, 2.0x for the micro-band when the window is
+    # <1.1s. A need above the ceiling raises immediately, saving synth/GPU time (the caller
+    # falls through to condense/truncate along the no-silence chain).
     cap_speed = max_speed if max_speed != HARD_MAX_SPEED else cap_speed_for(target_frames)
     cap_factor = (MICRO_MAX_FACTOR if cap_speed == MICRO_MAX_SPEED
                   else HARD_MAX_FACTOR if cap_speed == HARD_MAX_SPEED else cap_speed + 0.01)
@@ -1349,8 +1487,8 @@ def tempo_stretch_clip(ffmpeg: Path, source_path: Path, final_path: Path, target
             else:
                 output_path = tempo_path
             return output_path, input_frames, generated, input_frames / generated, attempt, actual_speed
-        # Chưa đầy khung mà pace vẫn trên trần chậm -> kéo thêm (factor nhỏ
-        # dần); pace chạm trần thì raise ở vòng sau.
+        # Not yet filling the window while pace is still above the slow ceiling -> stretch
+        # further (the factor shrinks each time); once pace reaches the ceiling, raise on the next iteration.
         factor = max(factor / (TEMPO_RETRY_MARGIN * max(generated / max(target_frames, 1), 1e-9)
                                if generated < target_frames else 1.0), 0.0)
         if factor <= 0 or not math.isfinite(factor):
@@ -1508,12 +1646,12 @@ def synthesize_sentence_group(voice, cues: list[dict], texts: list[str], run_roo
     selected = None
     native_retained_frames = 0
     last_total_retained = 0
-    # VieNeu: 1 pass nhịp tự nhiên duy nhất (không vòng scale — đo lặp cùng
-    # nhịp chỉ tốn synth). Không vừa thì rơi xuống atempo bên dưới như cũ.
+    # VieNeu: a single pass at natural pace only (no scale loop -- re-measuring at the
+    # same pace only burns synth). If it does not fit, drop to atempo below as before.
     attempt = 1
     measurements = []
-    # Batch probe tự nhiên cả nhóm (30/09): N synth độc lập gộp thành ceil(N/8)
-    # infer_batch. Lỗi batch (kể cả OOM) -> đọc đơn từng cue như cũ.
+    # Natural batch probe for the whole group (30/09): N independent synths merged into
+    # ceil(N/8) infer_batch calls. A batch error (including OOM) falls back to reading each cue singly, as before.
     raw_paths = [run_root / f"group-{plan_key}-{local_index}-native.wav"
                  for local_index in range(len(cues))]
     try:
@@ -1532,16 +1670,16 @@ def synthesize_sentence_group(voice, cues: list[dict], texts: list[str], run_roo
         guard = SILENCE_GUARD_FRAMES if local_index == len(cues) - 1 else round(.01 * SAMPLE_RATE)
         trimmed = trim_trailing_silence(raw_path, trimmed_path, guard)
         retained = source_frames - trimmed
-        # Chống đọc lặp (03/10): thành viên ngắn bị nhân đôi thì cắt lấy
-        # instance đầu (rẻ, chắc); không cắt được mới đọc đơn lại 1 seed.
-        # Chữ tự lặp thì bỏ qua (audio giống nhau là đúng).
-        # FIX 05/10 (vụ C# line 495: 8 cue sentence-group file dài hơn số
-        # liệu khai): cắt xong mà re-trim trả 0 thì trimmed_path đang giữ
-        # BẢN CẮT (raw vẫn là audio cũ chưa cắt) — bắt buộc dùng
-        # trimmed_path, cấm rơi về raw_path. cut_ok=True nghĩa là candidate
-        # nằm ở trimmed_path bất kể trimmed có 0 hay không (chỉ khi cut_ok
-        # False — tức không cắt hoặc đã re-synth ghi đè raw — mới được
-        # rơi về raw theo trimmed).
+        # Repeat-read guard (03/10): a short member that gets doubled is cut down to its
+        # first instance (cheap, certain); only when cutting fails is it re-read singly with
+        # one seed. Self-repeating text is skipped (identical halves are correct audio).
+        # FIX 05/10 (the C# line 495 case: 8 sentence-group cues whose file was longer than
+        # the reported figures): if re-trim after the cut returns 0, trimmed_path holds the
+        # CUT render (raw is still the old uncut audio) -- trimmed_path must be used and
+        # falling back to raw_path is forbidden. cut_ok=True means the candidate lives in
+        # trimmed_path regardless of whether trimmed is 0 or not (only when cut_ok is
+        # False, i.e. nothing was cut or a re-synth overwrote raw, may the code fall back
+        # to raw according to trimmed).
         cut_ok = False
         if speakable_units(text) <= 8 and not text_self_repeats(text) \
                 and speech_repeats(trimmed_path if trimmed else raw_path,
@@ -1589,9 +1727,9 @@ def synthesize_sentence_group(voice, cues: list[dict], texts: list[str], run_roo
     tempo_used = False
     if selected is None:
         desired_frames = max(1, math.floor(group_frames * FIT_HEADROOM))
-        # Trần pace nhóm (02/10): cùng micro-band theo tổng khung nhóm
-        # (nhóm micro <0.8s cũng được 2.0x) — need vượt trần thì raise ngay
-        # (rớt về voice lẻ/truncate từng cue, cấm im).
+        # Group pace ceiling (02/10): the same micro-band applies to the group's total window
+        # (a micro group <0.8s also gets 2.0x) -- a need above the ceiling raises immediately
+        # (falling back to per-cue voice/truncate, never silence).
         group_cap_speed = cap_speed_for(group_frames)
         group_cap_factor = cap_factor_for(group_frames)
         if last_total_retained / max(1, group_frames) > group_cap_speed:
@@ -1633,9 +1771,9 @@ def synthesize_sentence_group(voice, cues: list[dict], texts: list[str], run_roo
             # sub-natural crawl must GROW the factor; ease back only when the
             # tiling already fits but the speech is merely too fast. The floor
             # keeps every attempt a valid speedup, never a slowdown.
-            # 07/10: tre placement (BAT BUOC bang 0) cung la ly do GROW nhu
-            # overflow — tang toc deu ca nhom (giu dong nhat) cho toi khi vua
-            # khung, cham tran thi raise de tach don (single dat dung gio).
+            # 07/10: placement lag (MANDATORY at 0) is also a reason to GROW the factor like
+            # overflow -- speed up the whole group uniformly (keeping it consistent) until it fits,
+            # and raise at the ceiling so the layer above splits into singles (a single can be placed at the right time).
             if transformed_total > group_frames or tiling is None or actual_speed < MIN_ACTUAL_SPEED or lag_frames > GROUP_MAX_LAG_FRAMES:
                 growth = max(transformed_total / max(group_frames, 1),
                              MIN_ACTUAL_SPEED / max(actual_speed, 1e-9),
@@ -1659,9 +1797,9 @@ def synthesize_sentence_group(voice, cues: list[dict], texts: list[str], run_roo
     if starts is None:
         raise RuntimeError(
             f"Nhóm cue {cues[0]['id']}..{cues[-1]['id']} không giữ được giờ sub khi xếp voice")
-    # Luoi phong thu 07/10: moi duong vao day deu phai qua chon loc
-    # (natural/atempo co tran tre) — lech la raise ngay de tang tren tach
-    # don dat dung gio, khong bao gio de record tre lot xuong validator.
+    # Safety net 07/10: every path reaching here must pass the lag filter
+    # (natural/atempo with the latency ceiling) -- any deviation raises immediately so the
+    # layer above splits into singles placed at the right time; a late record must never leak past the validator.
     lag_frames = max_tiling_lag(cue_starts, starts)
     if lag_frames > GROUP_MAX_LAG_FRAMES:
         raise RuntimeError(
@@ -1693,10 +1831,10 @@ def synthesize_sentence_group(voice, cues: list[dict], texts: list[str], run_roo
             padded = run_root / (key + "-group-fit.wav")
             pad_exact_clip(final_path, padded, target_frames)
             final_path = padded
-        # 28/09 vụ 2h xong lỗi 1 cue: cờ atempo là của CẢ NHÓM, nhưng
-        # thành viên không tăng tốc thật (factor ~1, output == input)
-        # mà khai atempo là record dối -> C# từ chối cả 17611
-        # cue. Chỉ thành viên tăng tốc thật mới khai atempo.
+        # 28/09, the 2-hour run that failed on 1 cue: the atempo flag belongs to the WHOLE
+        # group, but a member that was not really sped up (factor ~1, output == input) yet
+        # reports atempo is a lying record -> C# rejects all 17611 cues. Only a truly
+        # sped-up member may report atempo.
         member_tempo = (tempo_used and measurement.get("tempo_factor", 0) > 1
                         and measurement.get("tempo_input", 0) > measurement["retained"])
         record = {"raw_duration": raw_frames[len(entries)] / SAMPLE_RATE,
@@ -1714,11 +1852,11 @@ def synthesize_sentence_group(voice, cues: list[dict], texts: list[str], run_roo
                   "synthesis_attempts": attempt, "status": "review", "key": key,
                   "sha256": sha256(final_path)}
         final_path.replace(cached_path)
-        # FIX 05/10: lưới phòng thủ — file cache PHẢI dài đúng target_frames
-        # (vụ C# line 495: số liệu khai 8418 nhưng file 31752 do nhầm
-        # raw/trimmed sau cắt lặp). Lệch là raise ngay kèm id để tầng trên
-        # cách ly cue đó (P2), không bao giờ để record dối lọt xuống validator
-        # rồi đánh sập cả job 9k cue.
+        # FIX 05/10: a defence net -- the cache file MUST be exactly target_frames long (the
+        # C# line 495 case: reported 8418 but the file was 31752 because of a raw/trimmed
+        # mix-up after the repeat cut). Any mismatch raises immediately with the id so the
+        # layer above can isolate that cue (P2); a lying record must never reach the
+        # validator and bring down a 9k-cue job.
         cached_frames = len(read_wav(cached_path))
         if cached_frames != target_frames:
             raise RuntimeError(
@@ -1734,11 +1872,11 @@ def synthesize_sentence_group(voice, cues: list[dict], texts: list[str], run_roo
     return entries
 
 
-# Rút gọn chữ đọc cho cue chật (user 27/09: cấm đọc nhanh hơn gió).
-# Tầng tích lũy, thuần logic + deterministic (test được không cần model):
-# V1 dọn lặp/khoảng trắng -> V2 bỏ tiếng gọi đầu câu -> V3 bỏ lơi cuối câu
-# -> V4 bỏ từ nhấn mạnh. Mỗi tầng chỉ thêm khi ngắn đi thật và còn chữ đọc
-# được. Không đụng SRT hiển thị; bản đọc được ghi vào spoken_text + cờ review.
+# Condense the spoken text for tight cues (user 27/09: never read faster than the
+# wind). Accumulating layers, pure logic + deterministic (testable without the model):
+# V1 cleans repeats/whitespace -> V2 drops a sentence-opening vocative -> V3 drops a
+# sentence-ending particle -> V4 drops intensifiers. Each layer is added only when the
+# text truly gets shorter and still reads. The displayed SRT is never touched; the spoken render is recorded in spoken_text + a review flag.
 _FILLER_LEAD = ("này", "kia", "à", "ơi", "nào")
 _FILLER_TRAIL = ("nhé", "nha", "nhỉ", "đó", "chứ", "à", "ơi")
 _INTENSIFIERS = ("rất", "quá", "lắm", "hết sức", "quá đỗi")
@@ -1783,24 +1921,24 @@ def condense_variants(text: str) -> list[tuple[str, str]]:
     tokens = text.split()
     if not tokens:
         return out
-    # Thứ tự 07/10 (user: voice đọc khác sub vì mất chữ lặp diễn cảm):
-    # bỏ lơi/thừa trước (V2/V3/V4, ít đau nhất), gộp từ lặp (V1) CUỐI CÙNG
-    # — chỉ khi các bản nhẹ không vừa mới đụng tới chữ lặp. Caller nhận bản
-    # đầu vừa khít nên thứ tự này giữ "chậm thôi, chậm thôi" nguyên vẹn
-    # mỗi khi bỏ "Này"/"quá" là đủ vừa.
+    # Order 07/10 (user complaint: the voice differed from the subtitle because
+    # emotionally repeated words were lost): particles/filler go FIRST (V2/V3/V4, the
+    # least damaging), merging repeated words (V1) comes LAST -- only when the light
+    # variants do not fit do we touch repeated words. The caller takes the first variant
+    # that fits, so this order keeps “chậm thôi, chậm thôi” intact whenever dropping “Này”/“quá” is enough to fit.
     current = tokens
-    # V2: bỏ tiếng gọi đầu câu khi còn đủ chữ.
+    # V2: drop a sentence-opening vocative when enough words remain.
     if len(current) > 3 and _strip_punct(current[0]).lower() in _FILLER_LEAD:
         current = push(current[1:], "bỏ tiếng gọi đầu câu")
-    # V3: bỏ lơi cuối câu khi còn đủ chữ.
+    # V3: drop a sentence-ending particle when enough words remain.
     if len(current) > 3 and _strip_punct(current[-1]).lower() in _FILLER_TRAIL:
         current = push(current[:-1], "bỏ lơi cuối câu")
-    # V4: bỏ từ nhấn mạnh (giữ mệnh đề, nhẹ sắc thái).
+    # V4: drop intensifiers (keep the clause, soften the tone).
     lightened = _drop_intensifiers(current)
     if len(lightened) != len(current):
         push(lightened, "bỏ từ nhấn mạnh")
         current = lightened
-    # V1 CUỐI: dọn từ lặp liên tiếp (giữ 1) + khoảng trắng thừa.
+    # V1 LAST: collapse consecutive repeated words (keep one) + extra whitespace.
     deduped = [token for index, token in enumerate(current)
                if index == 0 or token.lower() != current[index - 1].lower()]
     if deduped != current:
@@ -1911,10 +2049,10 @@ def draw_repeats(path, text: str = "") -> bool:
         if text_self_repeats(text):
             return False
         units = speakable_units(text or "")
-        # Câu dài (>8 đơn vị): giữ nguyên hành vi V1 (ACF-only). Luật hạt
-        # nhân theo số chữ + tripwire + 2-cụm chỉ hiệu chuẩn cho cue ngắn;
-        # trên câu dài chúng báo oan hàng loạt (đo 12/10: 36/36 câu control
-        # sạch bị gắn cờ khi gọi nuclear với max_words).
+        # Long sentences (>8 units): keep the V1 behaviour unchanged (ACF only). The
+        # word-count nuclear rule + tripwire + 2-burst rule are calibrated only for short
+        # cues; on long sentences they flag whole batches falsely (measured 12/10: 36/36
+        # clean control sentences flagged when nuclear is called with max_words).
         if 0 < units <= 8:
             try:
                 if speech_repeats(path, units):
@@ -1950,7 +2088,7 @@ def draw_repeats(path, text: str = "") -> bool:
 
 def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str,
             timing_source: str, ffmpeg: Path, on_attempt, cue_id: str = "",
-            preloaded: dict | None = None):
+            preloaded: dict | None = None, spill_budget_frames: int | None = None):
     if target_frames <= 0:
         raise ValueError("Source speech duration must contain at least one sample")
     base = float(voice.config.length_scale)
@@ -1964,20 +2102,20 @@ def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str,
     minimum_generated = minimum_speech_frames(text)
     attempt = 0
     probe_reused = False
-    # Ca ship nghi lặp mà mọi cách đều lặp (không còn bản sạch để chọn):
-    # vẫn ship để không im lặng (luật L1) nhưng cắm cờ -> spoken_text +
-    # status review để user tìm nghe lại. Chỉ set ở điểm ship Phase-3
-    # (đường natural cần cờ; đường tempo review sẵn). Không set khi chỉ
-    # loại bản vẽ (tránh flood review oan).
+    # A ship-suspect case where every attempt repeats (no clean render left to pick):
+    # ship anyway to avoid silence (rule L1) but set a flag -> spoken_text +
+    # status review so the user can find it and relisten. Set only at the Phase-3 ship
+    # point (the natural path needs the flag; the tempo path is review already). Do not
+    # set it when merely discarding a draw (avoids a flood of false reviews).
     repeat_suspect = False
 
     def measure(active_text, active_scale):
         nonlocal attempt, probe_reused
         attempt += 1
         on_attempt(attempt, active_scale)
-        # Probe batch từ pre-pass (chỉ đúng 1 lần đầu, đúng text gốc, đúng
-        # file đã tổng hợp): variant rút gọn chữ khác text nên không bao giờ
-        # tái dùng nhầm. Sai lệch gì cũng rớt về đọc đơn như cũ.
+        # The batch probe from the pre-pass (only the very first time, the original text,
+        # and the already-batched file): a condensed variant differs from the text so it can
+        # never be reused by mistake. Any mismatch falls back to the single read, as before.
         if (not probe_reused and active_text == text and preloaded is not None
                 and str(candidate) in preloaded and candidate.is_file()):
             probe_reused = True
@@ -1988,12 +2126,12 @@ def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str,
     measure_seq = [0]
 
     def measure_file(path):
-        # Mỗi LẦN ĐO có file trim RIÊNG (số thứ tự đơn điệu): cùng input mà
-        # tổng hợp lại nội dung khác (variant dùng chung candidate, reseed)
-        # thì lần đo sau vẫn ghi đè tuple lần trước — record vênh
-        # (tempo_in != source-trimmed) và rớt validation oan, thậm chí voice
-        # nhầm bytes (vụ #93b45d9a: variant 1.587s đè bytes Phase-0 1.4s).
-        # Tên file tạm không vào record/key nên cache/sha an toàn tuyệt đối.
+        # EVERY measurement gets its OWN trim file (monotonic sequence number): if the same
+        # input is re-synthesised into different content (a variant reusing the shared
+        # candidate, a reseed), a later measurement would still overwrite the previous tuple
+        # -- a skewed record (tempo_in != source-trimmed) that fails validation for no
+        # reason, or even the wrong voice bytes (case #93b45d9a: a 1.587s variant overwrote
+        # the Phase-0 1.4s bytes). The temp file name never enters the record or key, so cache/sha are absolutely safe.
         measure_seq[0] += 1
         own_trim = Path(path).with_name(f"{Path(path).stem}-trim-{measure_seq[0]:03d}.wav")
         measured_source = len(read_wav(path))
@@ -2063,9 +2201,9 @@ def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str,
         if condensed:
             record["spoken_text"] = active_text
         if repeat_suspect and "spoken_text" not in record:
-            # Chữ đọc đúng như hiển thị nhưng audio nghi lặp: cắm chữ để C#
-            # (và native_record_valid) bắt review, user tìm nghe lại được.
-            # SRT hiển thị không dùng field này.
+            # The spoken text matches the display but the audio is repeat-suspect: insert the text
+            # so C# (and native_record_valid) catch the review and the user can find it to
+            # relisten. The displayed SRT never uses this field.
             record["spoken_text"] = active_text
             emit({"event": "notice", "code": "condense-fit",
                   "message": (f"Cue {cue_id} quá chật: rút gọn ({note}) đọc nhịp tự nhiên + cờ review. "
@@ -2074,11 +2212,11 @@ def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str,
 
     def finish_tempo_or_natural(tempo_out, tempo_in, gen, factor, tempo_tries, speed,
                                 raw, native, src, trim, m_text, m_note):
-        # Passthrough suy biến (floor-clamp factor đúng 1.0, in==gen — gặp khi
-        # cue vừa-y-hệ, vocoder ra byte-chuẩn nên validator `tempo_input >
-        # generated` rớt): audio LÀ bản tự nhiên -> ghi record natural cho
-        # trung thực. Review giữ nguyên (trim/pad đã đủ điều kiện review).
-        # Không đụng validator (worker + C# đều chấp nhận natural+pad+review).
+        # Degenerate passthrough (the floor-clamped factor is exactly 1.0, in==gen -- seen
+        # when the cue fits exactly and the vocoder emits canonical bytes, so the validator
+        # equation `tempo_input > generated` fails): the audio IS the natural render, so
+        # record it as natural to stay honest. Review stays as-is (trim/pad already qualify
+        # for review). The validator is untouched (both the worker and C# accept natural+pad+review).
         if factor == 1.0 and tempo_in == gen:
             return finish(m_text, m_note, (src, trim, gen, tempo_out),
                           scale, raw, native, speed)
@@ -2087,9 +2225,9 @@ def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str,
 
     def finish_tempo(tempo_out, tempo_in, gen, factor, tempo_tries, speed,
                      raw, native, src, trim):
-        # Record atempo y hệt nhánh cũ (validator C#/native_record_valid chỉ
-        # đọc hình dạng record, không đọc thứ tự phase): đọc nhanh nguyên câu
-        # luôn review, giữ cao độ, không cắt chữ.
+        # The atempo record mirrors the old branch exactly (the C#/native_record_valid
+        # validator only reads the record shape, not phase order): a whole-sentence fast read
+        # is always review, keeps pitch, and never cuts words.
         out_frames = len(read_wav(tempo_out))
         padding = out_frames - gen
         record = {"raw_duration": raw / SAMPLE_RATE, "fitted_duration": out_frames / SAMPLE_RATE,
@@ -2104,7 +2242,7 @@ def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str,
                   "synthesis_attempts": attempt, "status": "review"}
         return tempo_out, record
 
-    # Phase 0: probe bản gốc ở nhịp base (attempt 1, đo đạc y hệt vòng lặp cũ).
+    # Phase 0: probe the original text at the base pace (attempt 1, measured exactly like the old loop).
     source_frames, trimmed_silence, frames, fitted_source = measure(text, scale)
     base_measured = (source_frames, trimmed_silence, frames, fitted_source)
     raw_frames, native_reference_frames = source_frames, frames
@@ -2112,21 +2250,21 @@ def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str,
     if frames < minimum_generated:
         raise RuntimeError(
             f"VieNeu returned only {frames / SAMPLE_RATE:.3f}s of active speech for a non-empty cue")
-    # Chống đọc lặp (03/10): bản đọc-duy-nhất vừa khung nhưng bị nhân đôi
-    # ("Vâng! Vâng!") thì KHÔNG nhận — ép sang reseed tìm bản sạch. Hai dấu
-    # hiệu: veto nội dung (tự tương quan + hạt nhân), hoặc dài bất thường so
-    # với chữ (ngưỡng hiệu chuẩn: chữ đơn đọc đúng ~0.3-0.5s, bản ≥0.55s là
-    # nghi — hoặc đọc chậm thật, hoặc đã nhân đôi). Chỉ cue ngắn (bản dài lặp
-    # từng phần cần căn chữ, làm phase sau).
+    # Repeat-read guard (03/10): a single-read render that fits the window but is doubled
+    # (“Vâng! Vâng!”) is NOT accepted -- force a reseed to find a clean render. Two
+    # signals: a content veto (self-correlation + nuclear rule), or an abnormal length
+    # for the text (calibrated threshold: a correct single word reads ~0.3-0.5s; a render
+    # >=0.55s is suspect -- either genuinely slow reading, or already doubled). Short cues
+    # only (partial doubling of long renders needs word-splitting, done in a later phase).
     short_units = speakable_units(text)
     too_long_for_text = (short_units <= 8
                          and frames > (short_units * 0.35 + 0.2) * SAMPLE_RATE)
     primary_repeats = (short_units <= 8 and not text_self_repeats(text)
                          and speech_repeats(fitted_source, short_units))
     primary_suspect = primary_repeats or too_long_for_text
-    # Kiểm cuối góc ACF-leaning (11/10): primary lọt veto trên nhưng ACF vẫn
-    # thấy lặp (đã chứng minh trên bản ship lặp thật) thì cũng coi là nghi —
-    # dồn về seed loop tìm bản sạch thay vì ship thẳng. Rẻ (~ms), fail-open.
+    # Final ACF-leaning check (11/10): if the primary passes the vetoes above but ACF
+    # still sees a repeat (proven on a real repeat-shipped render), treat it as suspect
+    # too -- funnel it into the seed loop for a clean render instead of shipping directly. Cheap (~ms), fail-open.
     if not primary_suspect and not text_self_repeats(text) \
             and final_pick_repeats(fitted_source, text):
         primary_suspect = True
@@ -2136,9 +2274,9 @@ def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str,
                           f"thử lại seed khác tìm bản sạch + cờ review.")})
     if frames <= target_frames and MIN_ACTUAL_SPEED <= actual_speed <= MAX_ACTUAL_SPEED \
             and not primary_suspect:
-        # Phase 0b (01/10, stretch): cue rộng mà pad im quá budget review ->
-        # đọc chậm nguyên câu cho đầy khung (tối đa 1.4x thời lượng, giữ cao
-        # độ) thay vì 0.5s chữ + 1s im. Vượt trần thì pad như cũ. Luôn review.
+        # Phase 0b (01/10, stretch): a wide cue where silence padding exceeds the review
+        # budget -> read the whole sentence slower to fill the window (at most 1.4x the
+        # duration, keeping pitch) instead of 0.5s of speech + 1s of silence. Above the ceiling, pad as before. Always review.
         if frames < target_frames and (target_frames - frames) > padding_budget(target_frames):
             stretch_need = target_frames / max(1, frames)
             if stretch_need <= 1.4:
@@ -2155,11 +2293,11 @@ def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str,
                     pass
         return finish(text, None, (source_frames, trimmed_silence, frames, fitted_source),
                       scale, raw_frames, native_reference_frames, actual_speed)
-    # Phase 1 (30/09, atempo-first): cue chật vừa phải -> đọc nhanh NGUYÊN CÂU
-    # bằng atempo giữ cao độ trước; rút gọn chữ chỉ khi vượt trần pace. Trần
-    # dùng chung ngưỡng FAST_SINGLE_NEED_RATIO của watch-list (single cần
-    # >1.43x là ứng viên sửa SRT thủ công): trong trần thì pace nhanh vẫn
-    # tự nhiên (4.80 x 1.43 ~ 6.9 chữ/s, phủ tới p90 khung giờ).
+    # Phase 1 (30/09, atempo-first): a moderately tight cue -> read the WHOLE SENTENCE
+    # faster with pitch-preserving atempo first; condense the text only when the pace
+    # ceiling is exceeded. The ceiling reuses the FAST_SINGLE_NEED_RATIO threshold from
+    # the watch list (a single needing >1.43x is a manual-SRT-fix candidate): below the
+    # ceiling a fast pace still sounds natural (4.80 x 1.43 ~ 6.9 words/s, covering up to the p90 of the daily window).
     pace_need = frames / max(1, math.floor(target_frames * FIT_HEADROOM))
     if pace_need <= FAST_SINGLE_NEED_RATIO and not primary_suspect:
         try:
@@ -2174,16 +2312,16 @@ def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str,
                                     text, None)
         except RuntimeError:
             pass
-    # Phase 1.5 (02/10, seeded-retry): synth diffusion phương sai KHỔNG LỒ ở
-    # cue ngắn — cùng chữ "Vào đi." synth 5 lần ra raw 0.80s / 1.44s x4
-    # (trimmed 0.58s / 1.27-1.44s). torch.manual_seed khóa được output (cùng
-    # seed -> bit-identical, đã verify 02/10) nên khi nguyên câu vượt
-    # pace-first mà chữ ngắn thì thử lại ≤4 seed định trước (sha từ key nên
-    # chạy lại nào cũng cùng dãy seed -> byte-identical, cache/sha an toàn),
-    # giữ bản NGẮN NHẤT còn nguyên rồi atempo như Phase 1. Không trúng thì
-    # rơi xuống Phase 2 như cũ. Không đụng trần 1.5x (L2), không đụng chữ,
-    # không rút gọn oan. Chỉ cue ngắn (≤8 đơn vị): cue dài phương sai nhỏ,
-    # retry không cứu được mà tốn synth; primary vẫn unseded để giữ cache cũ.
+    # Phase 1.5 (02/10, seeded-retry): diffusion synth has ENORMOUS variance on short
+    # cues -- the same “Vào đi.” synthesised 5 times gave raw 0.80s / 1.44s x4
+    # (trimmed 0.58s / 1.27-1.44s). torch.manual_seed locks the output (same seed ->
+    # bit-identical, verified 02/10), so when the whole sentence exceeds the pace-first
+    # ceiling and the text is short, retry with at most 4 pre-derived seeds (a sha over
+    # the key, so every rerun yields the same seed sequence -> byte-identical,
+    # cache/sha safe), keeping the SHORTEST intact render and then atempo as in Phase 1.
+    # On a miss, drop to Phase 2 as before. The 1.5x ceiling is untouched (L2), the text
+    # is untouched, no wrong condensation. Short cues only (at most 8 units): long cues
+    # have small variance, a retry cannot save them and only burns synth; the primary stays unseeded to preserve the old cache.
     if ((pace_need > FAST_SINGLE_NEED_RATIO or primary_suspect)
             and speakable_units(text) <= 8 and frames >= minimum_generated):
         try:
@@ -2195,9 +2333,9 @@ def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str,
             seed_best = None
             cut_best = None
             capped_streak = 0
-            # Họ seed xa ĐI TRƯỚC (V2): primary đã nghi thì seed gần hay cùng
-            # attractor — 1 draw họ xa ngay đầu thường thoát sớm, đỡ tốn attempts.
-            # Salt khác hẳn họ near nên dãy seed vẫn định trước, cache/sha an toàn.
+            # The far seed family goes FIRST (V2): once the primary is suspect, near seeds tend to
+            # share the same attractor -- one far-family draw right at the start usually escapes
+            # early, saving attempts. The salt is entirely different from the near family, so the seed sequence stays deterministic (cache/sha safe).
             for seed_pos in [16] + list(range(16)):
                 if attempt >= MAX_SYNTHESIS_ATTEMPTS:
                     break
@@ -2214,9 +2352,9 @@ def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str,
                 except Exception:
                     continue
                 seed_source, seed_trim, seed_frames, seed_fitted = seed_measured
-                # Bóp chi phí (04/10): draw chạm trần liên tiếp = model kẹt chế
-                # độ phình với chữ này, thử tiếp vô ích (bằng chứng 16/16).
-                # Dừng sớm, để condense/truncate xử lý tiếp.
+                # Cost squeeze (04/10): consecutive draws hitting the ceiling means the model is
+                # stuck in inflation mode with this text, so further attempts are useless (evidence
+                # 16/16). Stop early and let condense/truncate handle the rest.
                 if seed_source >= SEED_TRUNC_SUSPECT_FRAMES:
                     capped_streak += 1
                     if capped_streak >= 4:
@@ -2226,9 +2364,9 @@ def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str,
                 if (seed_frames < minimum_generated or seed_frames <= 0):
                     continue
                 if not text_self_repeats(text) and speech_repeats(seed_fitted, speakable_units(text)):
-                    # Bản nhân đôi: thử cắt lấy instance đầu (khe im giữa).
-                    # Bản sạch luôn ưu tiên hơn bản cắt (tự nhiên hơn).
-                    # Chữ tự lặp thì bỏ qua (audio giống nhau là đúng).
+                    # A doubled render: try cutting the first instance (the silence gap in between). A
+                    # clean render always beats a cut one (more natural). Self-repeating text is skipped
+                    # (identical halves are correct audio).
                     try:
                         cut_path = run_root / f"{key}-seed{seed_pos}-cut.wav"
                         cut_first_instance(seed_fitted, cut_path, minimum_generated)
@@ -2243,9 +2381,9 @@ def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str,
                     continue
                 if seed_best is None or seed_frames < seed_best[0]:
                     seed_best = (seed_frames, seed_source, seed_trim, seed_fitted, seed_pos)
-                # Chốt sớm CHỈ khi vừa khung VÀ sạch lưới V2 (11/10 chỉ check
-                # vừa khung nên bản nhân đôi-vừa-khung lọt thẳng; 12/10 thêm
-                # cửa thống nhất: ACF/hạt nhân/dài-bất-thường/2-cụm).
+                # Lock in early ONLY when it fits the window AND passes the V2 gate (11/10 only
+                # checked the fit, so a doubled-but-fitting render slipped through; 12/10 adds the
+                # unified gate: ACF/nuclear/abnormal-length/2-burst).
                 if seed_frames <= target_frames and not draw_repeats(seed_fitted, text):
                     break
             best_cut = False
@@ -2256,9 +2394,9 @@ def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str,
                 best_frames, best_source, best_trim, best_fitted, best_pos = cut_best
                 best_cut = True
             if best_frames is not None:
-                # Kiểm cuối (11/10): bản thắng mà vẫn nghi lặp thì thử punct-swap
-                # có trần trước khi ship; vẫn lặp thì ship (tempo luôn review nên
-                # user tìm được, không cần cờ riêng ở nhánh này).
+                # Final check (11/10): if the winning render is still repeat-suspect, try a bounded
+                # punct-swap before shipping; if it still repeats, ship (tempo is always review so the
+                # user can find it, no extra flag needed on this branch).
                 if not text_self_repeats(text) and final_pick_repeats(best_fitted, text):
                     punct = punct_redraw(text)
                     if punct is not None:
@@ -2279,10 +2417,27 @@ def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str,
                                         text, None)
                 except RuntimeError:
                     pass
-    # Phase 2: cue quá chật (vượt trần pace) -> rút gọn chữ đọc theo tầng
-    # (user 27/09: cấm đọc nhanh hơn gió). Variant độc lập nhau nên batch 1
-    # lượt thay vì đọc đơn từng bản (30/09): nhận bản đầu vừa khít, bản thừa
-    # bỏ. Batch lỗi -> đọc đơn từng bản như cũ. Tổng synth toàn hàm không quá
+    # F1 (17/11, quality bug heard in an exported video: some cues dropped the last
+    # 2-3 words of the sentence): NEVER shorten the spoken text while the cue still
+    # has real silence after it. Read the WHOLE sentence and spill into that gap
+    # (bounded by the measured gap to the next cue, the mirror of C#'s overflow
+    # budget), at the SLOWEST pace the extended window still allows - not the pace
+    # ceiling - and always review. Only a cue with no gap at all falls through to
+    # condensing/truncation below, which the app reports by id + timecode.
+    if (spill_budget_frames is not None and spill_budget_frames > 0
+            and timing_source not in ("sentence-group", "sample")
+            and frames > target_frames):
+        spilled = try_spill_into_gap(
+            ffmpeg, fitted_source, run_root, key, cue_id, timing_source,
+            target_frames, int(spill_budget_frames), base, text,
+            source_frames, trimmed_silence, frames,
+            raw_frames, native_reference_frames, cap_speed_for(target_frames),
+            attempt, minimum_speech_frames(text))
+        if spilled is not None:
+            return run_root / (key + "-fit.wav"), spilled
+    # Phase 2: an excessively tight cue (over the pace ceiling) -> condense the spoken
+    # independent, so batch them once instead of reading each one singly (30/09): take
+    # the first variant that fits and discard the rest. A batch error falls back to reading each one singly as before. The total synth count for the function never exceeds
     # MAX_SYNTHESIS_ATTEMPTS.
     short_text, short_note = text, None
     short_measured = None
@@ -2320,9 +2475,9 @@ def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str,
         if speakable_units(variant) <= 8 and not text_self_repeats(variant) \
                 and speech_repeats(variant_fitted, speakable_units(variant)):
             continue
-        # Kiểm cuối (11/10): veto trên đã lọc lặp rõ; góc ACF-leaning bắt thêm
-        # ca lọt (đã chứng minh trên bản ship lặp thật) — bỏ qua variant này,
-        # còn variant khác thì thử tiếp, hết thì rớt xuống Phase 3 xử lý.
+        # Final check (11/10): the vetoes above filter obvious doubling; the ACF-leaning
+        # angle catches additional leaks (proven on a real repeat-shipped render) -- skip this
+        # variant, try the remaining ones, and if none are left fall to Phase 3.
         if not text_self_repeats(variant) and final_pick_repeats(variant_fitted, variant):
             continue
         short_text, short_note = variant, note
@@ -2330,12 +2485,12 @@ def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str,
         if variant_frames <= target_frames:
             return finish(variant, note, measured, base,
                           variant_source, variant_frames, 1.0)
-    # Phase 3 VieNeu: KHÔNG có núm tốc độ native — vòng lặp scale sẽ đo đi đo
-    # lại cùng 1 nhịp, đốt synth vô ích (mỗi vòng trả cùng số frames). Bỏ vòng,
-    # đi thẳng atempo trên bản NGẮN NHẤT giữa Phase 0 và Phase 2 (xấu nhất cũng
-    # là ngắn-nhanh + review). Lấy ngắn nhất thật theo số đo (vụ #93b45d9a:
-    # bản Phase 0 vừa trần bị bỏ để atempo bản variant dài hơn rồi chết oan).
-    # Giữ ngữ nghĩa raw/native như vòng đầu của bản cũ.
+    # Phase 3 VieNeu: there is NO native speed dial -- a scale loop would measure the
+    # same pace over and over, burning synth for nothing (each round returns the same
+    # frame count). Drop the loop and go straight to atempo on the SHORTEST render
+    # between Phase 0 and Phase 2 (worst case: short+fast with review). Take the truly
+    # shortest by measurement (case #93b45d9a: a Phase 0 render that just fit was
+    # discarded so a longer variant could be atempo'd, and it died for no reason). Keep the raw/native semantics of the old version's first round.
     if short_measured is not None and short_measured[2] < base_measured[2]:
         active_text, active_note, measured0 = short_text, short_note, short_measured
     else:
@@ -2348,9 +2503,9 @@ def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str,
         source_frames, trimmed_silence, frames, fitted_source = measure(active_text, scale)
     raw_frames, native_reference_frames = source_frames, frames
     actual_speed = native_reference_frames / frames
-    # Kiểm cuối Phase-3 (11/10): bản định ship mà nghi lặp (lọt mọi veto trên)
-    # thì thử punct-swap có trần; vẫn lặp thì ship + cờ review (finish() lo),
-    # không bao giờ im, không raise thêm (raise ở đây giết cả job oan).
+    # Phase-3 final check (11/10): if the render about to ship is repeat-suspect (it
+    # slipped every veto above), try a bounded punct-swap; if it still repeats, ship +
+    # review flag (finish() handles it). Never silence, never raise (raising here kills the whole job for no reason).
     if (not text_self_repeats(active_text) and fitted_source.is_file()
             and final_pick_repeats(fitted_source, active_text)):
         punct = punct_redraw(active_text)
@@ -2383,15 +2538,15 @@ def fit_cue(voice, text: str, target_frames: int, run_root: Path, key: str,
                                          tempo_attempts, actual_speed,
                                          raw_frames, native_reference_frames, source_frames, trimmed_silence,
                                          active_text, active_note)
-        # Trung thực nội dung (01/10): atempo trên bản rút gọn thì khai
-        # spoken_text như nhánh condense (review đã có sẵn do tempo).
+        # Content honesty (01/10): atempo on a condensed render reports spoken_text just like
+        # the condense branch (review is already there because of tempo).
         if active_text != text and not record.get("spoken_text"):
             record["spoken_text"] = active_text
         return tempo_out, record
     except RuntimeError as error:
-        # Luật 01/10 (L1): CẤM im lặng mọi cue — atempo chạm trần mà rút gọn
-        # vẫn không vừa thì raise để chuỗi trên (truncate/escalate) xử lý,
-        # tuyệt đối không trả clip câm. Caller bắt (ValueError, RuntimeError).
+        # Rule 01/10 (L1): silence is FORBIDDEN for every cue -- if atempo hits the ceiling
+        # and condensing still does not fit, raise so the chain above (truncate/escalate)
+        # handles it; never return a silent clip. The caller catches (ValueError, RuntimeError).
         raise RuntimeError(
             f"Cue {cue_id} không vừa khung ở pace cho phép "
             f"(tối đa {cap_speed_for(target_frames)}x): {error}") from error
@@ -2461,12 +2616,16 @@ def validate_manifest(manifest: dict, voice: str) -> list[dict]:
         if not math.isfinite(start) or not math.isfinite(end) or not 0 <= start < end <= duration:
             raise ValueError("TTS cue time is outside source duration")
         voice_start, voice_end = cue["voice_start"], cue["voice_end"]
+        # A whisper window may sit anywhere inside the subtitle; the ONLY new
+        # freedom is starting EARLY, bounded by the lead budget (F1 17/11).
+        lead_seconds = start - voice_start
         if (not math.isfinite(voice_start) or not math.isfinite(voice_end)
-                or not start <= voice_start < voice_end <= end
+                or not start - MAX_LEAD_SECONDS <= voice_start < voice_end <= end
+                or lead_seconds > MAX_LEAD_SECONDS + 1e-6
                 or cue["timing_source"] not in ("whisper", "srt-fallback", "sample")):
             raise ValueError("Missing or invalid source speech window")
-        if cue["timing_source"] == "srt-fallback" and (voice_start != start or voice_end != end):
-            raise ValueError("SRT fallback must use the complete external cue window")
+        if cue["timing_source"] == "srt-fallback" and (voice_end != end or lead_seconds > MAX_LEAD_SECONDS + 1e-6):
+            raise ValueError("SRT fallback must use the external cue window with at most the bounded lead")
         if cue["timing_source"] == "sample" and (len(cues) != 1 or cue["id"] != "voice-demo-cue"):
             raise ValueError("Natural sample mode is not valid for project subtitles")
         cue_window(cue)
@@ -2504,6 +2663,20 @@ def build_master(ffmpeg: Path, clips: list[dict], duration: float, run_root: Pat
     if any(clip["end_sample"] - clip["start_sample"] != clip["frames"]
            or not 0 <= clip["start_sample"] < clip["end_sample"] <= total_samples for clip in pending):
         raise ValueError("Master must include every fitted PCM sample within the source timeline")
+    overlaps = clip_overlap_pairs(pending)
+    unexpected = [item for item in overlaps if item["unexpected"]]
+    if unexpected:
+        first = unexpected[0]
+        raise RuntimeError(
+            "Voice placement overlaps after the gap cap: " + str(len(unexpected))
+            + " pair(s); first " + first["left"] + " -> " + first["right"]
+            + f" by {first['seconds']:.3f}s ({first['frames']} frames). "
+            + "Refusing to mix overlapping cues (repeat-reading bug).")
+    if overlaps:
+        emit({"event": "notice", "code": "source-window-overlap",
+              "message": (f"{len(overlaps)} source subtitle window(s) overlap; voice keeps the "
+                          f"original timeline (first {overlaps[0]['left']} -> {overlaps[0]['right']} "
+                          f"{overlaps[0]['seconds']:.3f}s).")})
     active = []
     cursor = 0
     temporary = run_root / "voice-master.flac"
@@ -2546,7 +2719,7 @@ def build_master(ffmpeg: Path, clips: list[dict], duration: float, run_root: Pat
                 process.kill()
                 process.wait(timeout=10)
     if not temporary.is_file() or temporary.stat().st_size <= 64:
-        raise RuntimeError("NGHI master FLAC is missing")
+        raise RuntimeError("VieNeu master FLAC is missing")
     temporary.replace(destination)
 
 
@@ -2586,6 +2759,7 @@ def main() -> int:
             raise ValueError("VieNeu runtime package mismatch: " + package)
     manifest = json.loads(Path(options.manifest).read_text(encoding="utf-8"))
     cues = validate_manifest(manifest, options.voice)
+    total_frames = math.ceil(manifest["duration"] * SAMPLE_RATE)
     output_root = Path(options.output_root).resolve()
     run_root = Path(options.run_root).resolve()
     result_path, master_path = Path(options.result).resolve(), Path(options.master).resolve()
@@ -2599,9 +2773,9 @@ def main() -> int:
     normalizer = VietnameseNormalizer()
     apply_tts_dictionary_overrides(normalizer)
     texts = [strip_emotion_tags(normalize_vietnamese_text(normalizer, cue["text"])) for cue in cues]
-    # Luật 01/10 (L3): cue không-Việt là lỗi dữ liệu — báo 1 lần liệt kê ĐỦ
-    # cue (số thứ tự/id/timecode/chữ) TRƯỚC khi tốn GPU, user sửa SRT rồi chạy
-    # lại. Cấm im lặng, cấm cố đọc bừa.
+    # Rule 01/10 (L3): a non-Vietnamese cue is a data error -- report once, listing ALL
+    # cues (index/id/timecode/text) BEFORE spending GPU time, so the user can fix the SRT
+    # and rerun. Silence is forbidden, reading nonsense anyway is forbidden.
     offenders = []
     for position, (cue, text) in enumerate(zip(cues, texts)):
         if vietnamese_word_ratio(text) < 0.5:
@@ -2614,7 +2788,7 @@ def main() -> int:
         raise ValueError(
             f"SRT có {len(offenders)} cue không phải tiếng Việt (model VieNeu không đọc được) — "
             f"sửa chữ rồi chạy lại:\n{shown}{hidden}")
-    # GPU bắt buộc (user chốt): không CUDA là fail ngay, không rớt CPU lặng lẽ.
+    # GPU is mandatory (user decision): no CUDA means immediate failure, no quiet fallback to CPU.
     import torch
     if not torch.cuda.is_available():
         raise ValueError("VieNeu pilot requires CUDA GPU; none is available")
@@ -2665,7 +2839,8 @@ def main() -> int:
                 final_path, candidate_record = fit_cue(
                     voice, text, candidate_target_frames, run_root, candidate_key,
                     candidate_cue["timing_source"], Path(options.ffmpeg), on_attempt,
-                    cue_id=candidate_cue.get("id", ""), preloaded=preload)
+                    cue_id=candidate_cue.get("id", ""), preloaded=preload,
+                    spill_budget_frames=overflow_budget_frames(cues, index, candidate_cue, total_frames))
             except (ValueError, RuntimeError) as error:
                 failures.append(f"{candidate_cue['timing_source']}: {error}")
                 continue
@@ -2675,9 +2850,9 @@ def main() -> int:
             final_path.replace(candidate_path)
             atomic_json(candidate_path.with_suffix(".json"), candidate_record)
             return candidate_cue, candidate_key, candidate_path, candidate_record, False, synthesis_calls
-        # Luật 01/10 (L1): CẤM im lặng — mọi candidate đều rớt thì truncate
-        # (prefix dài nhất vừa ở pace ≤1.5x, luôn voice + spoken_text + review);
-        # truncate cũng bó tay (cửa sổ bệnh) thì raise fail-loud kèm id cue.
+        # Rule 01/10 (L1): silence is FORBIDDEN -- if every candidate fails, truncate (the
+        # longest prefix that fits at pace <=1.5x, always voice + spoken_text + review); if
+        # truncation also fails (a pathological window), raise fail-loud with the cue id.
         primary = candidates[0][0]
         _, primary_target = cue_window(primary)
         escalate_calls = 0
@@ -2692,24 +2867,25 @@ def main() -> int:
             entry = escalate_truncated_voice(
                 index, cue["id"], len(cues), primary, text, primary_target,
                 voice, base_scale, run_root, clip_root, worker_sha,
-                Path(options.ffmpeg), on_escalate)
+                Path(options.ffmpeg),
+                overflow_budget_frames(cues, index, primary, total_frames), on_escalate)
             return (entry[0], entry[1], entry[2], entry[3], False, synthesis_calls)
         except (ValueError, RuntimeError) as error:
             raise RuntimeError(
                 f"Cue {index + 1} ({cue['id']}) bất khả thi: {' | '.join(failures)}; "
                 f"truncate cũng bó tay ({error})") from error
 
-    # Pre-pass toàn cục cho cue đơn (không đường group-plan nên preload luôn
-    # được tiêu thụ; cue cache-hit đã bị bỏ qua bên trong preload_probes).
-    # NOTE: all_groups phải gán TRƯỚC call này (UnboundLocalError 10/10 khi
-    # refactor đặt call lên trước dòng gán) — test wiring-pin bên dưới.
+    # Global pre-pass for single cues (no group-plan path, so the preload is always
+    # consumed; cache-hit cues were already skipped inside preload_probes).
+    # NOTE: all_groups must be assigned BEFORE this call (an UnboundLocalError on 10/10
+    # when a refactor placed the call above the assignment) -- see the wiring-pin test below.
     ordered_entries = []
-    # P2 (02/10, cách ly lỗi): cue vật lý bất khả thi không được giết cả job
-    # (vụ 169/1095/3407: chết con đầu -> rerun chết con tiếp, vô hạn). Ghi nhận
-    # {n, id, chữ, cửa sổ, lý do} rồi chạy TIẾP hết project; cuối job fail 1
-    # lần duy nhất với DANH SÁCH ĐẦY ĐỦ (không master dở, không im lặng L1,
-    # không vượt trần L2). Clip cache khiến cue đã voice không bao giờ lỗi
-    # lại -> mỗi vòng danh sách chỉ co lại, không lặp vô hạn.
+    # P2 (02/10, failure isolation): a physically impossible cue must not kill the whole
+    # job (cases 169/1095/3407: died on the first one -> rerun dies on the next,
+    # endlessly). Record {n, id, text, window, reason} and keep running through the whole
+    # project; at the end of the job, fail exactly once with the COMPLETE LIST (no partial
+    # master, no silence per L1, no ceiling violation per L2). The clip cache means an
+    # already-voiced cue never fails again, so each round the list only shrinks, never loops forever.
     failures: list = []
 
     def isolate_failure(index: int, reason: Exception | str) -> None:
@@ -2730,8 +2906,8 @@ def main() -> int:
 
     rate_tally: dict = {"pathological": [], "isolated_fast": [], "max_drift_s": 0.0, "groups": 0}
     all_groups = sentence_groups(cues, texts)
-    # Pre-pass toàn cục cho cue đơn (không đường group-plan nên preload luôn
-    # được tiêu thụ; cue cache-hit đã bị bỏ qua bên trong preload_probes).
+    # Global pre-pass for single cues (no group-plan path, so the preload is always
+    # consumed; cache-hit cues were already skipped inside preload_probes).
     singles_preload = preload_probes(
         voice, cues, texts, run_root, clip_root, worker_sha, emit,
         [(indices[0], cues[indices[0]], texts[indices[0]]) for indices in all_groups if len(indices) == 1])
@@ -2756,8 +2932,8 @@ def main() -> int:
         if not group_entries:
             individual_error: RuntimeError | None = None
             resolved: list | None = None
-            # Nhóm nhiều cue rớt plan-cache: batch probe thành viên rồi mới
-            # đọc đơn từng cue (preload chỉ tiêu khi load_clip rớt thật).
+            # A multi-cue group missing its plan cache: batch-probe the members first, then read
+            # each cue singly (the preload is only consumed when load_clip really fails).
             group_preload = (preload_probes(
                                  voice, cues, texts, run_root, clip_root, worker_sha, emit,
                                  [(group_indices[pos], group_cues[pos], group_texts[pos])
@@ -2768,8 +2944,8 @@ def main() -> int:
                             for index in group_indices]
             except RuntimeError as error:
                 if len(group_indices) == 1:
-                    # P2: cách ly thay vì giết job — ghi nhận rồi chạy tiếp,
-                    # cuối job báo đủ danh sách 1 lần.
+                    # P2: isolate instead of killing the job -- record it and keep running, reporting the
+                    # complete list once at the end of the job.
                     only = group_indices[0]
                     isolate_failure(only, error)
                     continue
@@ -2799,21 +2975,21 @@ def main() -> int:
                         plan_path, plan_key, Path(options.ffmpeg), on_group_attempt)
                 except (ValueError, RuntimeError) as group_error:
                     if resolved:
-                        # Nhóm không nén vừa nhưng từng câu lẻ đã có kết quả
-                        # riêng (đọc nhanh/truncate + cờ review): giữ lại thay
-                        # vì fail lây cả nhóm. Mỗi entry lẻ đã qua cùng
-                        # validation với chế độ đọc đơn nên timeline và review
-                        # flag giữ nguyên ý nghĩa. (L1: entry lẻ không bao giờ
-                        # im — resolve_individual đã cấm silence.)
+                        # The group does not compress to fit but each single sentence already has its own
+                        # result (fast read/truncate + review flag): keep them instead of failing the whole
+                        # group together. Each single entry has passed the same validation as single-read
+                        # mode, so the timeline and review flags keep their meaning. (L1: a single entry is
+                        # never silent -- resolve_individual already forbids silence.)
+                        #
                         emit({"event": "notice", "code": "silence-fallback",
                               "message": (f"Nhóm cue {group_indices[0] + 1}..{group_indices[-1] + 1} "
                                           f"không nén vừa timecode ({group_error}); giữ lại voice từng câu, "
                                           f"cần nghe lại.")})
                         group_entries = resolved
                     else:
-                        # L1: nhóm rớt mà không có kết quả lẻ nào -> truncate
-                        # từng cue (luôn voice + review); cue nào truncate cũng
-                        # bó tay thì fail-loud kèm id để sửa SRT.
+                        # L1: the group fails and no single results exist -> truncate each cue (always voice +
+                        # review); if a cue also defeats truncation, fail loud with the id so the SRT can be
+                        # fixed.
                         group_entries = []
                         group_ok = True
                         for pos in range(len(group_indices)):
@@ -2821,8 +2997,8 @@ def main() -> int:
                             try:
                                 _, gtarget = cue_window(group_cues[pos])
                             except ValueError as window_error:
-                                # P2: timecode vô lý cũng chỉ cách ly cue đó,
-                                # vẫn thử nốt đuôi nhóm để danh sách đủ ngay.
+                                # P2: an impossible timecode still only isolates that cue, and the rest of the group's
+                                # tail is still attempted so the list is complete right away.
                                 isolate_failure(gindex, window_error)
                                 group_ok = False
                                 continue
@@ -2835,12 +3011,12 @@ def main() -> int:
                                 gentry = escalate_truncated_voice(
                                     gindex, cues[gindex]["id"], len(cues), group_cues[pos], group_texts[pos],
                                     gtarget, voice, base_scale, run_root, clip_root, worker_sha,
-                                    Path(options.ffmpeg), on_group_truncate)
+                                    Path(options.ffmpeg), 0, on_group_truncate)
                             except (ValueError, RuntimeError) as trunc_error:
-                                # P2: cue truncate bó tay -> cách ly + thử nốt
-                                # đuôi nhóm để danh sách đủ ngay trong 1 run.
-                                # Entry lẻ thành công vẫn bị bỏ (giữ căn
-                                # timeline tuyệt đối); chạy lại sẽ tổng hợp lại.
+                                # P2: truncation cannot save a cue -> isolate it and still try the rest of the
+                                # group's tail so the list is complete in a single run. Successful single entries are
+                                # still discarded (the timeline basis must stay absolute); a rerun will
+                                # re-synthesise them.
                                 isolate_failure(gindex, trunc_error)
                                 group_ok = False
                                 continue
@@ -2857,20 +3033,20 @@ def main() -> int:
     if len(ordered_entries) != len(cues):
         raise RuntimeError("TTS sentence grouping lost or duplicated cues")
 
-    # Gắn lại nhóm (P2b, 04/10): record thành viên nhóm do hợp giọng chung —
-    # đọc đơn lại 1 thành viên ở vòng sau giữ nhãn nhóm nhưng số liệu đơn lẻ
-    # (native/speed riêng), C# đòi cả nhóm đồng nhất (native/speed/placement)
-    # nên chết cả job dù từng cue đều voice được (vụ df0b: hàng chục nhóm).
-    # Quét trước vòng ráp, mirror y hệt C# ValidateSentenceGroupWindows +
-    # per-cue validation: nhóm nào không đồng nhất thì tổng hợp lại CẢ NHÓM
-    # (đồng nhất theo cấu tạo); nhóm nào vẫn hỏng thì cách ly cả nhóm, chạy
-    # tiếp. Không bao giờ vá số liệu nhóm vào record đơn (dối metadata).
-    # (worker/C# gom nhóm cùng rule trên cùng manifest nên span trùng nhau.)
+    # Re-attaching to groups (P2b, 04/10): group-member records come from a joint read --
+    # re-reading a single member in a later round keeps the group label but carries
+    # single figures (its own native/speed), and C# requires the whole group to be
+    # uniform (native/speed/placement), so the job died entirely even though every cue
+    # was voiced (case df0b: dozens of groups). Scan before the assembly round, mirroring
+    # exactly C# ValidateSentenceGroupWindows + the per-cue validation: any group that is
+    # not uniform is re-synthesised WHOLE (uniform by construction); any group still
+    # broken is isolated entirely and the run continues. Never patch group figures into a
+    # single record (that is lying metadata). (The worker and C# group with the same rule over the same manifest, so the spans match.)
     dead: set[int] = set()
 
     def _group_entries_uniform(group_indices) -> bool:
-        # Mọi truy cập record/window đều có thể hỏng (dữ liệu cache cũ) —
-        # trả False để re-synth/cách ly, không bao giờ throw ra ngoài.
+        # Any record/window access may be broken (stale cache data) -- return False so the
+        # caller re-synthesises or isolates, and never throw outwards.
         try:
             first_native = first_actual = None
             first_start = None
@@ -2924,8 +3100,8 @@ def main() -> int:
                 return False
             span_frames = last_start + last_target - first_start
             cap = MICRO_MAX_SPEED if 0 < span_frames < MICRO_WINDOW_FRAMES else HARD_MAX_SPEED
-            # Mirror C# y hệt (low có -1e-9, high strict): nhóm nào C# sẽ đánh
-            # rớt thì phải gắn lại/cách ly ngay tại đây, không để lọt xuống
+            # Mirrors C# exactly (the low bound has -1e-9, the high bound strict): any group C#
+            # would reject must be re-attached or isolated right here, never allowed to slip down to
             # validator.
             return abs(measured - first_actual) <= 1e-9 \
                 and SLOW_MIN_SPEED - 1e-9 <= measured <= cap
@@ -2974,10 +3150,10 @@ def main() -> int:
                   "message": (f"Nhóm cue {group_indices[0] + 1}..{group_indices[-1] + 1} không đồng nhất, "
                               f"đã tổng hợp lại cả nhóm giữ voice + cờ review.")})
         else:
-            # Tầng 2: tách nhóm ra đọc đơn từng cue (timing đơn lẻ -> C# bỏ
-            # qua kiểm tra nhóm, chỉ còn per-cue validation). Vòng ráp sau
-            # (refit/escalate/cách ly từng cue) xử lý nốt như cue đơn thường.
-            # Chỉ cue nào bó tay thật mới vào danh sách cuối.
+            # Layer 2: split the group out and read each cue singly (single timing means C# skips
+            # the group check, leaving only per-cue validation). The later assembly round
+            # (per-cue refit/escalate/isolation) handles the rest like an ordinary single cue.
+            # Only a genuinely impossible cue makes it into the final list.
             if regroup_error_message:
                 emit({"event": "notice", "code": "ungroup-voice",
                       "message": (f"Nhóm cue {group_indices[0] + 1}..{group_indices[-1] + 1} "
@@ -2989,8 +3165,8 @@ def main() -> int:
                 try:
                     single = resolve_individual(pos, cues[pos], texts[pos], None)
                 except Exception as single_error:
-                    # Bắt rộng có chủ ý ở tầng tách nhóm: 1 cue lạ không được
-                    # giết cả job 16k cue; lý do ghi đủ vào danh sách cuối.
+                    # The broad catch at the group-splitting layer is deliberate: one odd cue must not
+                    # kill a 16k-cue job; the reason is recorded in full in the final list.
                     dead.add(pos)
                     isolate_failure(pos, f"nhóm {group_indices[0] + 1}..{group_indices[-1] + 1} "
                                          f"tách đơn vẫn bó tay ({single_error})".replace("\n", " ")[:300])
@@ -3003,30 +3179,33 @@ def main() -> int:
             continue
         active_cue, key, cached_path, record, cache_hit, synthesis_calls = entry
         start_sample, target_frames = cue_window(active_cue)
-        # Fail-fast từng cue (28/09, vụ 2h xong lỗi vì 1 record atempo rỗng).
-        # Luật user 01/10 (L1+L3): CẤM IM mọi cue — record hỏng thì đọc đơn
-        # lại, không xong thì truncate (voice + spoken_text + review). Cue
-        # không-Việt hoặc vật lý bất khả thi thì BÁO LỖI để sửa SRT (preflight
-        # đã quét trước GPU; đây là lưới phòng thủ). native_record_valid
-        # mirror y hệt C# nên chỉ chặn đúng thứ C# chặn.
+        gap_frames = target_frames + overflow_budget_frames(cues, index, active_cue, total_frames)
+        # Per-cue fail-fast (28/09, the 2-hour run that failed because of 1 empty atempo
+        # record). User rule 01/10 (L1+L3): SILENCE IS FORBIDDEN for every cue -- a broken
+        # record is re-read singly, and if that fails, truncated (voice + spoken_text +
+        # review). A non-Vietnamese or physically impossible cue is REPORTED so the SRT can be
+        # fixed (preflight already scanned before the GPU stage; this is the defence net).
+        # native_record_valid mirrors C# exactly, so it only blocks what C# blocks.
         try:
             min_frames = minimum_speech_frames(texts[index])
         except ValueError:
             min_frames = None
         speakable = min_frames is not None and vietnamese_word_ratio(texts[index]) >= 0.5
-        if min_frames is not None and not native_record_valid(
-                record, target_frames, active_cue["timing_source"] == "sample", min_frames):
+        invalid_record = min_frames is not None and not native_record_valid(
+            record, target_frames, active_cue["timing_source"] == "sample", min_frames)
+        if record["frames"] > gap_frames or invalid_record:
             if not speakable:
-                # L3: cue không-Việt là lỗi dữ liệu (preflight báo trước GPU;
-                # tới đây nghĩa là lọt lưới) — P2: cách ly + chạy tiếp, cuối
-                # job báo đủ danh sách, cấm im.
-                isolate_failure(index, "không phải tiếng Việt")
+                # L3: a non-Vietnamese cue is a data error (preflight reports it before the GPU
+                # stage; reaching here means it slipped the net) -- P2: isolate it + run on, report
+                # the complete list at the end of the job, no silence.
+                isolate_failure(index, "không phải tiếng Việt" if invalid_record
+                                else "voice vượt khe tới cue kế và không thể đọc lại")
                 continue
             else:
                 if active_cue["timing_source"] == "sentence-group":
-                    # Tripwire P2b: pre-pass đã gắn lại/cách ly mọi nhóm hỏng
-                    # nên không bao giờ tới đây. Đọc đơn lẻ sẽ phá đồng nhất
-                    # nhóm (native/speed riêng) -> cách ly thay vì voice bậy.
+                    # Tripwire P2b: the pre-pass already re-attached or isolated every broken group, so
+                    # execution should never reach here. Reading it singly would break group uniformity
+                    # (its own native/speed) -> isolate instead of voicing arbitrarily.
                     if index not in dead:
                         dead.add(index)
                         isolate_failure(index, "bản nhóm lọt lưới validation, cách ly giữ đồng nhất")
@@ -3063,27 +3242,34 @@ def main() -> int:
                         entry = escalate_truncated_voice(
                             index, cue["id"], len(cues), active_cue, texts[index], target_frames,
                             voice, base_scale, run_root, clip_root, worker_sha,
-                            Path(options.ffmpeg), on_refit)
+                            Path(options.ffmpeg),
+                            overflow_budget_frames(cues, index, active_cue, total_frames), on_refit)
                     except (ValueError, RuntimeError) as trunc_error:
-                        # P2: truncate bó tay -> cách ly + chạy tiếp (cuối job
-                        # báo đủ danh sách), tuyệt đối không im.
+                        # P2: truncation cannot save it -> isolate + run on (report the complete list at the
+                        # end of the job), absolutely no silence.
                         isolate_failure(index, trunc_error)
                         continue
             active_cue, key, cached_path, record, cache_hit, synthesis_calls = entry
             start_sample, target_frames = cue_window(active_cue)
+            gap_frames = target_frames + overflow_budget_frames(cues, index, active_cue, total_frames)
+            if record["frames"] > gap_frames:
+                isolate_failure(index, "đọc lại vẫn vượt khe tới cue kế")
+                continue
         # The clip already has the required length. Place ALL its samples;
         # never hide a timing failure by truncating the clip at the SRT boundary.
         end_sample = start_sample + record["frames"]
         overflow = record.get("overflow_frames", 0)
         overflow_ok = (type(overflow) is int and 0 < overflow <= OVERFLOW_MAX_FRAMES
                        and record["frames"] == target_frames + overflow
-                       and end_sample <= math.ceil(manifest["duration"] * SAMPLE_RATE))
+                       and end_sample <= start_sample + gap_frames
+                       and end_sample <= total_frames)
         if end_sample > start_sample + target_frames and not overflow_ok:
-            # P2: cách ly + chạy tiếp như mọi lỗi từng cue khác.
-            isolate_failure(index, "voice vượt cửa sổ speech")
+            # P2: isolate + run on, like every other per-cue error.
+            isolate_failure(index, "voice vượt cửa sổ speech hoặc khe tới cue kế")
             continue
-        clips.append({"path": cached_path, "start": active_cue["voice_start"], "frames": record["frames"],
-                      "start_sample": start_sample, "end_sample": end_sample})
+        clips.append({"id": cue["id"], "path": cached_path, "start": active_cue["voice_start"],
+                      "frames": record["frames"], "start_sample": start_sample, "end_sample": end_sample,
+                      "window_end_sample": round(cue["cue_end"] * SAMPLE_RATE)})
         output_status = ("review" if record["status"] != "fit"
                          or active_cue["timing_source"] in ("srt-fallback", "sentence-group") else "fit")
         results.append({"id": cue["id"], "voice": options.voice, "voice_review": output_status == "review",

@@ -3,13 +3,13 @@ using System.Text.Json.Serialization;
 
 namespace BiliSubStudio.Core.Ocr;
 
-// Sidecar cạnh video (kiểu Adobe .pek): dữ liệu SUY RA TỪ FILE (không gắn config),
-// tính 1 lần xài nhiều scan. Xóa file này scan vẫn chạy (tính lại như cũ).
-// Quy tắc thép:
-// - Chỉ chứa thứ suy ra từ nội dung file + version section. Checkpoint (gắn ROI/mode)
-//   ở yên trong Data, không bao giờ vào đây.
-// - Mọi mismatch (vân file, version, hỏng JSON) => bỏ qua lặng lẽ, tính lại đường cũ.
-// - Path chỉ để hiển thị: matching bằng Size+ModUnixNano nên đổi tên/chuyển ổ vẫn trúng.
+// Sidecar beside the video (Adobe .pek style): data DERIVED FROM THE FILE (not tied to config),
+// computed once, used by many scans. Deleting this file still lets the scan run (recomputed as before).
+// Iron rules:
+// - Only contains things derived from file contents + version section. Checkpoint (tied to ROI/mode)
+//   stays put in Data, never enters here.
+// - Any mismatch (file stamp, version, corrupt JSON) => silently ignored, recompute via the old path.
+// - Path is only for display: matching uses Size+ModUnixNano so renaming/moving drives still hits.
 public static class OcrSidecar
 {
     public const int ProbeVersion = 1;
@@ -97,8 +97,8 @@ public static class OcrSidecar
             section.AvgFps, section.StartTimeSeconds, section.TimeBaseNum, section.TimeBaseDen, section.StreamDurationSeconds);
     }
 
-    // VadFlag 3 giá trị (0/1/2) -> 2 bit/cờ, 4 cờ/byte. Trailing bits phải 0 (encoder viết 0):
-    // rác bit là hỏng file, ném để caller bỏ qua toàn section.
+    // VadFlag 3 values (0/1/2) -> 2 bits per flag, 4 flags per byte. Trailing bits must be 0 (the encoder writes 0):
+    // garbage bits mean a corrupt file, throw so the caller skips the whole section.
     public static byte[] PackVadFlags(IReadOnlyList<VadFlag> flags)
     {
         var bytes = new byte[(flags.Count + 3) / 4];
@@ -142,8 +142,8 @@ public static class OcrSidecar
         catch (InvalidDataException) { return null; }
     }
 
-    // Chỉ verdict RÕ RÀNG (Same/Different) mới đáng persist: Unavailable là "không kết luận",
-    // tính lại lần sau (có thể do FFmpeg thoáng lỗi) thay vì đóng đinh tách + review.
+    // Only CLEAR verdicts (Same/Different) are worth persisting: Unavailable is "no conclusion",
+    // recompute next time (it may be a transient FFmpeg error) rather than pinning "separate" + review.
     public static PixelEntry? ToEntry(long first, long second, System.Drawing.Rectangle crop, PixelCheckResult verdict)
     {
         if (verdict != PixelCheckResult.Same && verdict != PixelCheckResult.Different) return null;
@@ -164,7 +164,7 @@ public static class OcrSidecar
     public static string Serialize(SidecarDocument document)
         => JsonSerializer.Serialize(document, JsonOptions);
 
-    // Hỏng bất kỳ đâu => null (caller bỏ qua, tính lại đường cũ). Không bao giờ throw.
+    // Corrupt anywhere => null (caller skips it, recomputes via the old path). Never throws.
     public static SidecarDocument? Parse(string json)
     {
         try

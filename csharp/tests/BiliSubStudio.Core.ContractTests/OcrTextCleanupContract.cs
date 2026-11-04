@@ -2,8 +2,8 @@ using BiliSubStudio.Core.Ocr;
 
 namespace BiliSubStudio.Core.ContractTests;
 
-// Dọn chữ sau reconcile (17/09): gộp cue kề trùng lặp (flicker) + xóa mảnh vụn.
-// Thuần logic chữ, KHÔNG sửa chữ đọc sai. Test bằng chữ thật từ video user.
+// Text cleanup after reconcile (17/09): merge adjacent duplicates (flicker) + delete fragments.
+// Pure text logic, does NOT fix misread characters. Tested with real text from user video.
 internal static class OcrTextCleanupContract
 {
     public static Task RunAsync()
@@ -25,9 +25,9 @@ internal static class OcrTextCleanupContract
         return Task.CompletedTask;
     }
 
-    // Rác flicker ngoài đời tin THẤP (đọc bừa) — helper để 0.5 cho đúng thực
-    // tế (18/09: IsPhantom miễn cue tin >= 0.9, helper cũ 0.9 đúng ngưỡng gây
-    // nhiễu). Test miễn-tin-cao dùng CueConf riêng bên dưới.
+    // Real-world flicker garbage is LOW confidence (read at random) — the helper pins 0.5 to match
+    // reality (18/09: IsPhantom exempts cues with confidence >= 0.9; the old helper's 0.9 at the exact threshold caused
+    // noise). The high-confidence-exemption test uses its own CueConf below.
     private static OcrCue Cue(double start, double end, string text) =>
         new(start, end, text, 0.5);
 
@@ -36,8 +36,8 @@ internal static class OcrTextCleanupContract
 
     private static void MergeAdjacentNearDuplicates()
     {
-        // Cue 34/35 video user: cùng câu 休书, OCR đọc khác nhau (sim 0.69),
-        // dính nhau (gap 0) -> gộp 1 cue, giữ chữ dài hơn.
+        // User video cues 34/35: the same line 休书, OCR read differently (sim 0.69),
+        // touching (gap 0) -> merge into 1 cue, keep the longer text.
         var result = OcrTextCleanup.Cleanup([
             Cue(58.133, 58.367, "我们早已不是一个世界的人，我己经确定新的眼惘叶象。同洗四堂了人"),
             Cue(58.367, 58.633, "我们早已不是一个世界我己经确定新的眼细叶象，、资源升"),
@@ -50,8 +50,8 @@ internal static class OcrTextCleanupContract
 
     private static void NoMergeWhenDifferent()
     {
-        // Hai cue dài, hở nhau (không phantom), đuôi rác khác hẳn nhau
-        // (sim 0.1) -> KHÔNG gộp bừa.
+        // Two long cues, gapped (not a phantom), with entirely different garbage tails
+        // (sim 0.1) -> must NOT merge indiscriminately.
         var result = OcrTextCleanup.Cleanup([
             Cue(58.367, 59.367, "我们早已不是一个世界我己经确定新的眼细叶象，、资源升"),
             Cue(60.0, 61.0, "我己经确定新的限细叶案。对力定码回级回置子人应事止加特，资进跌升"),
@@ -62,7 +62,7 @@ internal static class OcrTextCleanupContract
 
     private static void NoMergeWhenGapBig()
     {
-        // Cùng chữ nhưng cách xa 5s (2 câu thoại lặp lại thật) -> không gộp.
+        // The same text but 5s apart (2 genuinely repeated lines of dialogue) -> no merge.
         var result = OcrTextCleanup.Cleanup([
             Cue(10.0, 11.0, "我们走吧"),
             Cue(16.0, 17.0, "我们走吧"),
@@ -72,8 +72,8 @@ internal static class OcrTextCleanupContract
 
     private static void DropFragmentSplinter()
     {
-        // Cue 30/31 video user: "人。" (2 rune) kề "人第一" chứa hết chữ nó,
-        // gap 0.133s -> mảnh flicker -> xóa.
+        // User video cues 30/31: "人。" (2 runes) adjacent to "人第一" which contains all of its
+        // characters, gap 0.133s -> a flicker fragment -> delete.
         var result = OcrTextCleanup.Cleanup([
             Cue(52.800, 53.100, "人第一"),
             Cue(53.233, 53.567, "人。"),
@@ -85,7 +85,7 @@ internal static class OcrTextCleanupContract
 
     private static void KeepRealShortDialogue()
     {
-        // Thoại ngắn thật ("好") không bị câu dài kề chứa -> giữ.
+        // Genuine short dialogue ("好") not contained by an adjacent long line -> keep.
         var result = OcrTextCleanup.Cleanup([
             Cue(20.0, 21.0, "今天天气不错"),
             Cue(21.5, 22.0, "好"),
@@ -102,8 +102,8 @@ internal static class OcrTextCleanupContract
 
     private static void DropPhantomFlashCue()
     {
-        // Cue 54/55/56 video user: 55 (433ms) kẹp giữa 2 cue thật, chữ không
-        // liên quan bên nào -> flash artifact -> xóa. 54/56 (dài) giữ.
+        // User video cues 54/55/56: 55 (433ms) pinched between 2 real cues, its text related to
+        // neither side -> a flash artifact -> delete. 54/56 (long) are kept.
         var result = OcrTextCleanup.Cleanup([
             Cue(91.0, 92.366, "患有严重胃疾"),
             Cue(92.500, 92.933, "这三年事业，资与眼养已经我们早已不是一个世界的人。确定新的联对象。"),
@@ -118,10 +118,10 @@ internal static class OcrTextCleanupContract
 
     private static void KeepTightSingleCharDialogue()
     {
-        // 27/09 (vụ lọc mất 1 chữ): thoại 1 chữ chen nhanh ("嗯", kẹp 2 bên
-        // gap 0.05s, khác chữ, tin 0.5) KHÔNG phải flash — flash thật (cue 55)
-        // nhồi ~30 chữ vào 0.43s (bất khả thi vật lý), còn đây 1 chữ/0.3s là
-        // mật độ thoại bình thường -> giữ.
+        // 27/09 (the case where filtering lost 1 character): fast single-character dialogue ("嗯", pinched on
+        // both sides by a 0.05s gap, different text, confidence 0.5) is NOT a flash — a real flash (cue 55)
+        // stuffs ~30 characters into 0.43s (physically impossible), whereas 1 character/0.3s here is
+        // a normal dialogue density -> keep.
         var result = OcrTextCleanup.Cleanup([
             Cue(10.0, 11.0, "今天天气不错"),
             Cue(11.05, 11.35, "嗯"),
@@ -133,9 +133,9 @@ internal static class OcrTextCleanupContract
 
     private static void KeepFlickerPiecesForMerge()
     {
-        // Cue 34/35: ngắn + kẹp NHƯNG chữ GIỐNG nhau (sim 0.69) -> KHÔNG phải
-        // phantom (để merge gộp), chứ không xóa oan câu thoại thật. Rule gốc
-        // không có điều kiện chữ sẽ xóa nhầm 34+35, chỉ còn cue 36 rác.
+        // Cues 34/35: short + pinched BUT with IDENTICAL text (sim 0.69) -> NOT a
+        // phantom (left for the merge), rather than wrongly deleted as real dialogue. The original rule
+        // without the text condition would wrongly delete 34+35, leaving only the garbage cue 36.
         var result = OcrTextCleanup.Cleanup([
             Cue(58.133, 58.367, "我们早已不是一个世界的人，我己经确定新的眼惘叶象。同洗四堂了人"),
             Cue(58.367, 58.633, "我们早已不是一个世界我己经确定新的眼细叶象，、资源升"),
@@ -147,9 +147,9 @@ internal static class OcrTextCleanupContract
 
     private static void KeepOneSidedShortDialogue()
     {
-        // 18/09: thoại ngắn thật chỉ hẹp 1 BÊN (gap trước 0.1s, sau thoáng)
-        // -> giữ. Chỉ cue KẸP CẢ 2 BÊN + khác chữ 2 bên mới là phantom
-        // (đúng chữ "kẹp" trong comment đặc tả).
+        // 18/09: genuine short dialogue pinched on ONE SIDE ONLY (0.1s gap before, open after)
+        // -> keep. Only a cue PINCHED ON BOTH SIDES + different from both sides is a phantom
+        // (matching the word "pinched" in the spec comment).
         var result = OcrTextCleanup.Cleanup([
             Cue(10.0, 11.0, "今天天气不错"),
             Cue(11.1, 11.4, "嗯"),
@@ -161,8 +161,8 @@ internal static class OcrTextCleanupContract
 
     private static void KeepHighConfidenceShortCue()
     {
-        // 18/09 (miễn phantom hẹp): thoại ngắn thật đọc RẤT chắc ("嗯", tin
-        // 0.95) kẹp sát 2 câu khác chữ vẫn giữ — không phải chớp-nháy.
+        // 18/09 (pinched-phantom exemption): genuine short dialogue read VERY confidently ("嗯",
+        // confidence 0.95) pinched against 2 different-text lines is still kept — it is not a blink.
         var result = OcrTextCleanup.Cleanup([
             CueConf(10.0, 11.0, "今天天气不错", 0.5),
             CueConf(11.05, 11.45, "嗯", 0.95),
@@ -174,9 +174,9 @@ internal static class OcrTextCleanupContract
 
     private static void NoMergeTraditionalSimplified()
     {
-        // 18/09 (Việc 4, đặc tả): video lẫn phồn/giản — "国语" vs "國語"
-        // khác rune nên sim ~0, KHÔNG gộp (không mất chữ; trùng lặp để user
-        // thấy khi duyệt, không tự ý xóa 1 bản).
+        // 18/09 (Task 4, spec): a video mixing traditional/simplified — "国语" vs "國語"
+        // have different runes so sim ~0, do NOT merge (no text is lost; the duplicate is left for the user
+        // to see when reviewing, never unilaterally delete one version).
         var result = OcrTextCleanup.Cleanup([
             Cue(10.0, 11.0, "国语"),
             Cue(11.05, 12.0, "國語"),
@@ -187,10 +187,10 @@ internal static class OcrTextCleanupContract
 
     private static void KeepSimultaneousVerticalChars()
     {
-        // 18/09 (Việc 4, đặc tả): chữ dọc hiện CÙNG lúc (5 cue 1 chữ, cùng
-        // span 10-15s) — gap âm nên fragment/merge bỏ qua, duration dài nên
-        // phantom bỏ qua -> giữ hết. (Worker có gộp cột dọc được không thì
-        // phải check tay trên video có chữ dọc.)
+        // 18/09 (Task 4, spec): vertical text appearing AT THE SAME TIME (5 single-character cues, the same
+        // 10-15s span) — a negative gap makes fragment/merge skip them, the long duration makes
+        // phantom skip them -> keep everything. (Whether the worker can merge vertical columns must
+        // be checked by hand on a video with vertical text.)
         var result = OcrTextCleanup.Cleanup([
             Cue(10.0, 15.0, "深"),
             Cue(10.0, 15.0, "海"),
@@ -205,7 +205,7 @@ internal static class OcrTextCleanupContract
 
     private static void KeepIsolatedShortDialogue()
     {
-        // Thoại ngắn thật đứng riêng (gap 2 bên lớn) -> giữ.
+        // Genuine short dialogue standing alone (large gaps on both sides) -> keep.
         var result = OcrTextCleanup.Cleanup([
             Cue(10.0, 11.0, "今天天气不错"),
             Cue(15.0, 15.4, "好"),

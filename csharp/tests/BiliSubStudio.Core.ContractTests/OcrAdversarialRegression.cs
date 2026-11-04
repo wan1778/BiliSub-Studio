@@ -51,7 +51,7 @@ internal static class OcrAdversarialRegression
         Check(clusterMerged.Count == 1 && clusterMerged[0].Start == 286.633 && clusterMerged[0].End == 289.166,
             "adversarial cluster 112-118 not merged to 1");
 
-        // 一 lẫn với —— ở cuối câu (case thật 130↔131): candidate qua pixel, merge khi Same.
+        // 一 confusable with —— at the end of a sentence (real case 130↔131): the candidate goes to pixel, merges on Same.
         var confusable = new[] {
             Prov(215.77, 216.67, "任何阴谋诡计——", 0.99),
             Prov(216.67, 216.87, "任何阴谋诡计一", 0.98),
@@ -60,7 +60,7 @@ internal static class OcrAdversarialRegression
         Check(confusableMerged.Count == 1 && confusableMerged[0].Text == "任何阴谋诡计——",
             "dash-confusable tail 一/—— must merge with pixel Same, keeping full caption");
 
-        // Long-A A/B/A: cue A dài 1.967s không được veto candidate (bounded tổng-span đã bỏ).
+        // Long-A A/B/A: a 1.967s long A cue must not veto the candidate (the bounded total-span rule was removed).
         var longTriple = new[] {
             Prov(55.133, 57.100, "那他搞血屠殿.是图什么？", 0.99),
             Prov(57.100, 57.167, "那他搞血屠殿，是图什么？", 0.98),
@@ -70,10 +70,10 @@ internal static class OcrAdversarialRegression
         Check(longMerged.Count == 1 && longMerged[0].Start == 55.133 && longMerged[0].End == 57.400,
             "long-A A/B/A must collapse with pixel Same on both boundaries");
 
-        // p06 field: 1-rune variant (镇/涼) khe 0.1s (> flicker window cu 0.067):
-        // candidate qua pixel (window moi 0.25), merge khi Same. Pixel Different
-        // van tach + review nhu cu (test khac khoa). Window 0.1 = liveWindow cua
-        // video 30fps production (3/nativeFps), khong phai Epsilon mac dinh.
+        // p06 field: a 1-rune variant (镇/涼) across a 0.1s gap (> the old 0.067 flicker window):
+        // the candidate goes to pixel (new window 0.25), merges on Same. Pixel Different
+        // still splits + reviews as before (a separate test covers that). The 0.1 window is the liveWindow of
+        // the production 30fps video (3/nativeFps), not the default Epsilon.
         var variantFlicker = new[] {
             Prov(961.700, 962.400, "入镇休整", 0.973),
             Prov(962.500, 962.833, "入鎮休整", 0.921),

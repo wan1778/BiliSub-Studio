@@ -204,14 +204,14 @@ public sealed record PathologyReport(bool Passed, IReadOnlyList<string> Failures
 }
 
 // =====================================================================
-// PIPELINE XUẤT/HIỂN THỊ DUY NHẤT (18/09): live lúc quét xong và file SRT
-// phải giống y đúc — cùng 1 hàm Build cho cả 2 đường (export + live).
-// Thứ tự bước GIỮ Y HỆT export cũ: loại trừ -> đắp fix -> normalize ->
-// pathology. Khác duy nhất: cue rớt normalize CÓ ĐẾM + mẫu (trước đây export
-// vứt câm còn live vẫn hiện). Cờ NeedsReview được mang qua trim/sort để live
-// hiện đúng badge như SRT.
-// (Nằm chung file vì là chặng cuối đường xuất SRT; tách file riêng khi được
-// phép tạo file mới.)
+// SINGLE EXPORT/DISPLAY PIPELINE (18/09): live after a scan and the SRT file
+// must be identical — the same Build function serves both paths (export + live).
+// Step order KEEPS the old export exactly: exclusion -> apply fixes -> normalize ->
+// pathology. The only difference: cues dropped by normalize are COUNTED + sampled (previously export
+// discarded silently while live still showed them). The NeedsReview flag is carried through trim/sort so live
+// shows the correct badge like the SRT.
+// (Kept in this file because it is the final stage of the SRT export path; split into its own file when
+// creating new files is allowed.)
 public sealed record OcrExportRow(double Start, double End, string Text, bool NeedsReview);
 
 public sealed record OcrExportCueList(
@@ -245,18 +245,18 @@ public static class OcrExportPipeline
                     normSamples.Add($"{cue.Start:0.000}s “{Truncate(cue.Text, 24)}”");
             }
         }
-        // Hậu-fix gộp trùng (21/09, báo cáo lặp của user): fix của judge được áp
-        // SAU reconcile — một nhát fix có thể làm 2 câu kề đồng nhất, hoặc
-        // chuỗi đắp về cùng một chữ. Gộp cặp kề chữ y hệt khe ≤0.5s ngay đây để
-        // dạng lặp này không bao giờ rớt vào SRT. Chạy TRƯỚC Repair (trim
-        // overlap vẫn chuẩn với phần còn lại).
+        // Post-fix duplicate merge (21/09, user duplicate report): judge fixes are applied
+        // AFTER reconcile — a single fix can make 2 adjacent cues identical, or
+        // a chain of applied fixes can converge on the same text. Merge adjacent identical-text pairs with gap ≤0.5s
+        // right here so this duplicate form never reaches the SRT. Runs BEFORE Repair (trim
+        // overlap stays correct for the rest).
         var collapsedProbe = CollapseIdenticalAdjacent(normalized);
         var repaired = OcrSrtPathology.Repair(
             collapsedProbe.Select(item => (item.Start, item.End, item.Text)).ToList());
-        // Mang cờ review qua trim/sort: Start+Text không đổi qua repair (trim
-        // chỉ sửa End, sort ổn định, OrderBy ổn định) nên hàng đợi theo key là
-        // khớp chính xác từng dòng. Ngoại lệ duy nhất: cue dính surrogate bị
-        // thay U+FFFD đổi Text -> lookup hụt -> mất badge (cosmetic, hiếm).
+        // Carry the review flag through trim/sort: Start+Text do not change under repair (trim
+        // only modifies End, sort is stable, OrderBy is stable) so the key-based queue is
+        // an exact per-row match. The only exception: a cue containing a surrogate replaced by
+        // U+FFFD changes Text -> lookup misses -> badge lost (cosmetic, rare).
         var reviewByKey = new Dictionary<(double Start, string Text), Queue<bool>>();
         foreach (var item in collapsedProbe)
         {
@@ -283,10 +283,10 @@ public static class OcrExportPipeline
             repaired.Passed, repaired.Failures, repaired.Warnings);
     }
 
-    // Gộp cặp KỀ chữ y hệt (post-normalize, ordinal) khe ≤0,5s. Chỉ đụng khi
-    // hai hàng cạnh nhau sau loại-trừ/fix/normalize có cùng Text — bất biến với
-    // mọi câu khác chữ. NeedsReview gộp theo AND (cả hai cùng nghi vấn mới giữ
-    // cờ cho câu đã gộp).
+    // Merge ADJACENT identical-text pairs (post-normalize, ordinal) with gap ≤0.5s. Only touched when
+    // two rows adjacent after exclusion/fix/normalize share the same Text — invariant for
+    // every other text. NeedsReview merges by AND (both must be suspected to keep
+    // the flag on the merged cue).
     internal static IReadOnlyList<(double Start, double End, string Text, bool NeedsReview)>
         CollapseIdenticalAdjacent(IReadOnlyList<(double Start, double End, string Text, bool NeedsReview)> normalized)
     {
@@ -311,8 +311,8 @@ public static class OcrExportPipeline
         return output;
     }
 
-    // Format giờ SRT duy nhất cho cả export lẫn live (làm tròn ms — TimeSpan
-    // .ToString("fff") cắt ngọn nên live cũ lệch 1ms ở biên).
+    // The single SRT time format for both export and live (millisecond rounding — TimeSpan
+    // .ToString("fff") truncates so old live was off by 1ms at boundaries).
     public static string FormatSrtTime(double seconds)
     {
         var value = TimeSpan.FromMilliseconds(Math.Round(Math.Max(0, seconds) * 1000));

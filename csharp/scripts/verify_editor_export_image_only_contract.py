@@ -42,7 +42,7 @@ require(
 
 # One final-render orchestrator accepts images even when no base edit exists.
 for token in (
-    'var hasBaseEdit = _document.Regions.Count > 0 || subtitle is not null || _audioSettings.SourceMode != "keep" || _voiceTrack is not null || trimChanged;',
+    'var hasBaseEdit = _document.Regions.Count > 0 || subtitle is not null || _audioSettings.SourceMode != "keep" || _voiceTrack is not null || trimChanged || hasComposedClips;',
     "var hasImages = _imageOverlays.Count > 0;",
     "if (!hasBaseEdit && !hasImages)",
 ):
@@ -65,7 +65,7 @@ require(
 )
 for token in (
     "image.Path, image.X, image.Y, image.Width, image.Height, image.Opacity",
-    "_media.Width, _media.Height, trimChanged ? trim.Duration : _media.Duration, specs,",
+    "_media.Width, _media.Height, ComposedExportDuration(trim), specs,",
     "copyAudio: hasBaseEdit, exportSettings: outputTarget.Settings",
 ):
     require(token in images, f"EXPORT-10 final image state lost: {token}")

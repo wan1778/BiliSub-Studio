@@ -6,9 +6,10 @@ public interface IStorageUsageReader
 {
     Task<StorageUsage> ReadAsync(AppPaths paths, CancellationToken cancellationToken = default);
 
-    // Vụ kẹt nút Tải media 05/10: quét đệ quy ~900k file (Tools + Cache
-    // voice) tốn hàng chục phút, mọi Set* settings đều đứng đợi. Đường
-    // settings chỉ cần số hiển thị: lấy số cũ trả ngay + quét nền.
+    // Download media button stuck issue 05/10: a recursive scan of ~900k files (Tools + voice
+    // Cache) takes tens of minutes, and every Set* setting waits on it. The
+    // settings path only needs display numbers: return the previous number immediately + scan in
+    // the background.
     bool TryGetLast(out StorageUsage usage);
     void RefreshInBackground(AppPaths paths);
 }

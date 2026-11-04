@@ -5,10 +5,11 @@ using BiliSubStudio.Core.Video;
 
 namespace BiliSubStudio.Core.ContractTests;
 
-// Field 2026-09-24: Bilibili reset/timeout thoáng qua giết cả job tải dù thử
-// lại là xong; ngược lại 412/403/video xóa retry cũng vô ích. File này ghim
-// ma trận phân loại + các cơ chế phục hồi (stall, cooldown) để lần sau tải
-// không chết oan cũng không bò vô hạn.
+// Field 2026-09-24: a transient Bilibili reset/timeout killed an entire download
+// job even though retrying would have worked; conversely, retrying 412/403/
+// deleted videos never helps. This file pins the classification matrix and the
+// recovery mechanisms (stall, cooldown) so a future download neither dies
+// unfairly nor crawls forever.
 internal static class DownloadResilienceContract
 {
     public static Task ResolveRetryClassificationAsync()
@@ -53,9 +54,9 @@ internal static class DownloadResilienceContract
         var root = TempRoot();
         try
         {
-            // Headers 206 đầy đủ nhưng body không bao giờ ra byte: tuyến chết
-            // hẳn mà không lỗi dứt khoát. Hết StallTimeout phải nổ
-            // DownloadStalledException (fail nhanh, câu rõ ràng), không treo.
+            // Full 206 headers but the body never yields a byte: the link is
+            // totally dead yet no definite error. Once StallTimeout elapses it must
+            // throw DownloadStalledException (fail fast, clear message), not hang.
             var payload = new byte[2 * 1024 * 1024];
             using var client = new HttpClient(new StalledBodyHandler(payload));
             var downloader = new RangeDownloader(client);
@@ -74,8 +75,8 @@ internal static class DownloadResilienceContract
         var root = TempRoot();
         try
         {
-            // Cùng tuyến chết, nhưng user hủy trước khi hết StallTimeout:
-            // phải báo cancel (ý user), không được báo stall.
+            // Same dead link, but the user cancels before StallTimeout elapses:
+            // it must report cancel (the user's intent), not stall.
             var payload = new byte[2 * 1024 * 1024];
             using var client = new HttpClient(new StalledBodyHandler(payload));
             var downloader = new RangeDownloader(client);
@@ -91,9 +92,9 @@ internal static class DownloadResilienceContract
         var root = TempRoot();
         try
         {
-            // Mọi endpoint đều 500: không cooldown, mỗi failure là 1 refetch
-            // (hàng chục cuộc gọi trong vài giây). Có cooldown 45s: đúng 1
-            // cuộc gọi đầu, còn lại backoff lặng lẽ rồi hủy theo timeout test.
+            // Every endpoint returns 500: without a cooldown each failure is a
+            // refetch (dozens of calls within seconds). With a 45s cooldown: exactly
+            // the first call, then quiet backoff until the test timeout cancels.
             var payload = new byte[4 * 1024 * 1024];
             var handler = new AlwaysFailHandler();
             using var client = new HttpClient(handler);
@@ -163,9 +164,9 @@ internal static class DownloadResilienceContract
         if (!condition) throw new InvalidOperationException(message);
     }
 
-    // Probe 0-0 trả 206/1 byte bình thường (qua được ProbeAsync); mọi segment
-    // trả headers 206 hợp lệ nhưng body không bao giờ ra byte — tuyến chết hẳn
-    // mà không lỗi dứt khoát.
+    // The 0-0 probe returns a normal 206/1 byte (passes ProbeAsync); every segment
+    // returns valid 206 headers but the body never yields a byte - the link is
+    // totally dead yet no definite error.
     private sealed class StalledBodyHandler(byte[] payload) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
@@ -209,8 +210,9 @@ internal static class DownloadResilienceContract
         public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
-    // Probe 0-0 trả 206 bình thường (vào được vòng worker); mọi segment đều
-    // 500: tuyến chết toàn diện, failure nào cũng đủ điều kiện refresh ngay.
+    // The 0-0 probe returns a normal 206 (so the worker loop is entered); every
+    // segment returns 500: a totally dead link, each failure qualifies for an
+    // immediate refresh.
     private sealed class AlwaysFailHandler : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)

@@ -3,18 +3,18 @@ using BiliSubStudio.Core.Ocr;
 
 namespace BiliSubStudio.Core.ContractTests;
 
-// Vét batch (fill-8) logic thuần túy với dispatch fake — không worker, không GPU.
-// Bất biến bắt buộc (lane sống còn phụ thuộc):
-// - zero-wait: có pending là chạy, không đợi mate;
-// - cùng cờ mới gộp (recover/activeText), khác cờ không bao giờ chung batch;
-// - thứ tự submit giữ nguyên trong batch, kết quả map đúng member;
-// - hủy từng phần không giết member còn lại; dispose không treo, không mất member.
+// Pure batch coalescing (fill-8) logic with a fake dispatch — no worker, no GPU.
+// Required invariants (the survival of the lane depends on them):
+// - zero-wait: any pending runs immediately, without waiting for a mate;
+// - only the same flag coalesces (recover/activeText), different flags never share a batch;
+// - submit order is preserved inside a batch, results map to the right member;
+// - partial cancel does not kill the remaining members; dispose never hangs, never loses a member.
 internal static class OcrBatchCoalesceContract
 {
     public static async Task RunAsync()
     {
-        // Fail-safe tốc độ: cap theo worker đang chạy (parity 15/9: text/box giống hệt
-        // 8/8, nhanh 1.53x; worker từ chối batch >4).
+        // Speed fail-safe: cap by what the live worker accepts (parity 15/9: text/box identical
+        // 8/8, 1.53x faster; the worker rejects batches > 4).
         Check(OcrManager.BatchCoalesceCap == 4, "vét batch vượt giới hạn worker đang chạy");
         await OrderPreservedAsync();
         await FlagGroupingAsync();
@@ -115,7 +115,7 @@ internal static class OcrBatchCoalesceContract
         var fake = new FakeDispatch();
         fake.Gate.TrySetResult();
         await using var batcher = NewBatcher(fake);
-        // Một mình vẫn chạy ngay, không đợi mate nào.
+        // Alone it still runs immediately, without waiting for any mate.
         var result = await batcher.SubmitAsync("solo", CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
         Check(result.Text == "t-solo", "single không mate phải vẫn chạy");
         await WaitForAsync(() =>
@@ -146,7 +146,7 @@ internal static class OcrBatchCoalesceContract
         using var dead = new CancellationTokenSource();
         dead.Cancel();
         var task = batcher.SubmitAsync("ghost", dead.Token);
-        // Token chết đăng ký callback đồng bộ -> task xong ngay, không vào channel.
+        // A dead token registers the callback synchronously -> the task finishes at once, never enters the channel.
         Check(task.IsCompleted, "submit với token chết phải xong ngay đồng bộ");
         await WaitForCanceledAsync(task, "submit với token chết phải cancel");
         await Task.Delay(200);
@@ -155,8 +155,8 @@ internal static class OcrBatchCoalesceContract
 
     private static async Task ExceptionMappingAsync()
     {
-        // Dispatch lỗi (ném đồng bộ hay faulted-task) phải gán đúng lỗi cho member,
-        // không treo — và loop phải sống tiếp cho request sau.
+        // A dispatch error (thrown synchronously or a faulted task) must map the exact error to the
+        // member, not hang — and the loop must survive for the next request.
         await ThrowsThenSurvivesAsync(syncThrow: true);
         await ThrowsThenSurvivesAsync(syncThrow: false);
     }
@@ -178,7 +178,7 @@ internal static class OcrBatchCoalesceContract
             return Task.CompletedTask;
         }
         await using var batcher = new OcrRequestBatcher(Dispatch);
-        // Batch đầu lỗi -> member nhận đúng lỗi.
+        // The first batch errors -> the member receives the exact error.
         try
         {
             await batcher.SubmitAsync("ea", CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
@@ -186,9 +186,9 @@ internal static class OcrBatchCoalesceContract
         }
         catch (InvalidOperationException error) when (error.Message.Contains("boom", StringComparison.Ordinal))
         {
-            // Đúng: lỗi gốc tới tay member.
+            // Correct: the original error reaches the member.
         }
-        // Cùng loop sống tiếp: request sau (batch sau, heal rồi) chạy bình thường.
+        // The same loop survives: the next request (next batch, after healing) runs normally.
         var again = await batcher.SubmitAsync("ec", CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
         Check(again.Text == "t-ec", "loop chết sau dispatch lỗi");
     }
@@ -222,14 +222,14 @@ internal static class OcrBatchCoalesceContract
         }
         catch (InvalidOperationException error) when (error.Message.Contains("đã dừng", StringComparison.Ordinal))
         {
-            // Đúng: từ chối rõ ràng thay vì treo lane.
+            // Correct: an explicit refusal instead of hanging the lane.
         }
     }
 
     private static async Task OnPerfPassthroughAsync()
     {
-        // Batcher không được đụng OnPerf (fan-out chia sample là việc của production
-        // dispatch; ở đây chỉ giữ nguyên callback tới tay dispatch).
+        // The batcher must not touch OnPerf (fan-out sample splitting is the job of the production
+        // dispatch; here the callback is simply passed through to the dispatch).
         var fake = new FakeDispatch();
         fake.Gate.TrySetResult();
         await using var batcher = NewBatcher(fake);
@@ -266,9 +266,9 @@ internal static class OcrBatchCoalesceContract
 
     private static async Task BusyHoldsForMatesAsync()
     {
-        // Worker duy nhất đang bận (dispatch đầu block trên Gate): 3 mate nộp
-        // dồn phải gộp thành đúng 1 batch sau hold — không wall-clock assert,
-        // chỉ assert cấu trúc batch (deterministic).
+        // The single worker is busy (the first dispatch blocks on the Gate): the 3 later-submitted
+        // mates must coalesce into exactly 1 batch after the hold — no wall-clock assertion,
+        // only a batch structure assertion (deterministic).
         var fake = new FakeDispatch();
         await using var batcher = new OcrRequestBatcher(
             fake.DispatchAsync, 4, () => 1, TimeSpan.FromMilliseconds(100));
@@ -294,8 +294,8 @@ internal static class OcrBatchCoalesceContract
 
     private static async Task IdleIgnoresHoldAsync()
     {
-        // Worker rảnh (dispatch xong ngay): submit phải xong tức thì, không được
-        // chờ hết hold window. Hold 1000ms, margin 800ms: đúng thì ~ms, sai thì >=1000ms.
+        // Worker idle (dispatch finishes instantly): a submit must finish immediately and must not
+        // wait out the hold window. Hold 1000ms, margin 800ms: correct is ~ms, wrong is >=1000ms.
         var fake = new FakeDispatch();
         fake.Gate.TrySetResult();
         await using var batcher = new OcrRequestBatcher(

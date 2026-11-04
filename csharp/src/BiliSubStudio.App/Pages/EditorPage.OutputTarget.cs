@@ -8,7 +8,7 @@ public sealed partial class EditorPage
 {
     private EditorOutputTarget CaptureEditorOutputTarget(EditorExportSettings? settings = null)
     {
-        var configuredDirectory = _application.Config.OutputDirectory?.Trim() ?? string.Empty;
+        var configuredDirectory = _application.Config.EditorOutputDirectory?.Trim() ?? string.Empty;
         if (configuredDirectory.Length == 0)
             throw new InvalidOperationException("Chưa cấu hình thư mục xuất video.");
         var directory = Path.GetFullPath(configuredDirectory);

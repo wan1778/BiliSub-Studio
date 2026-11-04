@@ -121,8 +121,8 @@ public sealed class YtDlpResolver
             catch (OperationCanceledException) { throw; }
             catch (Exception error)
             {
-                // 412 là Bilibili chặn (chưa đăng nhập/hết phiên/khóa IP): nói
-                // rõ để user đăng nhập lại thay vì mò.
+                // 412 means Bilibili is blocking (not logged in / session expired / IP banned): say so
+                // explicitly so the user logs in again instead of guessing.
                 subtitleWarning = error.GetBaseException() is HttpRequestException httpError
                     && httpError.StatusCode == (HttpStatusCode)412
                     ? "Bilibili chặn lấy phụ đề (mã 412): thường do chưa đăng nhập hoặc hết phiên — hãy đăng nhập lại tài khoản Bilibili trong app rồi dán link lại."
@@ -136,9 +136,9 @@ public sealed class YtDlpResolver
             AddTracks(info.Subtitles, official: true, ai: false, tracks, seen);
             AddTracks(info.AutomaticCaptions, official: false, ai: true, tracks, seen);
 
-            // Hiển thị TẤT CẢ các bản sub để user tự chọn (chính thức trước,
-            // AI sau). Bản mặc định vẫn là chính thức vì Preferred() xếp
-            // official lên đầu; AI chỉ là lựa chọn thêm, không thay mặc định.
+            // Show ALL subtitle versions so the user can choose (official first,
+            // AI after). The default remains the official one because Preferred() ranks
+            // official at the top; AI is only an extra choice and does not replace the default.
             var selectedTracks = tracks
                 .OrderBy(SubtitleTrackPolicy.Priority)
                 .ThenBy(track => track.DisplayName, StringComparer.OrdinalIgnoreCase)
@@ -147,7 +147,13 @@ public sealed class YtDlpResolver
             var notes = new List<string>();
             if (loaded.Warning.Length > 0) notes.Add(loaded.Warning);
             if (!string.IsNullOrWhiteSpace(subtitleWarning)) notes.Add(subtitleWarning);
-            return new VideoMetadata(info.Title, info.Id, qualities, selectedTracks, info.Thumbnail, string.Join(" ", notes));
+
+            // The collection's parts (视频选集) so the media tab can offer
+            // "download this whole set" instead of one video at a time. A
+            // failure here is cosmetic: the single-part download still works.
+            var parts = await _playurl.GetPartsAsync(url, info.Id, cookieFile, cancellationToken);
+
+            return new VideoMetadata(info.Title, info.Id, qualities, selectedTracks, info.Thumbnail, string.Join(" ", notes), parts);
         }
         finally
         {
@@ -166,11 +172,11 @@ public sealed class YtDlpResolver
         {
             args.AddRange(["--cookies", cookieFile]);
         }
-        args.AddRange(["--ignore-config", "--no-playlist", "--skip-download", "--no-warnings", "-J", url.Trim()]);
-        // Field 2026-09-24: Bilibili reset/timeout thoáng qua (10054, read
-        // timeout) giết cả job dù thử lại là xong. Chỉ retry lỗi mạng nhất
-        // thời, tối đa 3 lượt với backoff 2s/5s; lỗi dứt khoát (412/403/404,
-        // video xóa/riêng tư) fail ngay để báo đúng bệnh.
+        args.AddRange(["--ignore-config", "--no-playlist", "--skip-download", "--no-warnings", "--socket-timeout", "20", "-J", url.Trim()]);
+        // Field 2026-09-24: transient Bilibili resets/timeouts (10054, read
+        // timeout) were killing whole jobs even though a retry would succeed. Only retry transient
+        // network errors, at most 3 attempts with 2s/5s backoff; definitive errors (412/403/404,
+        // deleted/private videos) fail immediately to report the real problem.
         Exception? last = null;
         for (var attempt = 1; attempt <= MaxResolveAttempts; attempt++)
         {
@@ -189,15 +195,37 @@ public sealed class YtDlpResolver
         throw last!;
     }
 
-    // yt-dlp là nguồn chính; khi extractor BiliBili hỏng trên một số video
-    // (Unable to extract initial state — issue yt-dlp #15924/#14793 chưa fix
-    // stable), rơi về API Bilibili trực tiếp bằng cookie phiên. Cùng một
-    // fallback dùng cho cả tải media lẫn trang metadata.
+    // yt-dlp is the primary source; when the BiliBili extractor breaks on some videos
+    // (Unable to extract initial state — yt-dlp issues #15924/#14793 not yet fixed in
+    // stable), fall back to the Bilibili API directly using the session cookie. The same
+    // fallback is used for both media downloads and the metadata page.
     private async Task<(YtDlpInfo Info, bool Native, string Warning)> LoadInfoWithFallbackAsync(
         string url,
         string? cookieFile,
         CancellationToken cancellationToken)
     {
+        if (BilibiliPlayurlClient.ExtractBvid(url) is not null)
+        {
+            Exception? nativeError = null;
+            try
+            {
+                var native = await LoadNativeInfoAsync(url, cookieFile, cancellationToken);
+                return (native, true, string.Empty);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception error) { nativeError = error; }
+            try
+            {
+                var info = await LoadInfoAsync(url, cookieFile, cancellationToken);
+                return (info, false,
+                    "API Bilibili trực tiếp không đọc được video này (" + Compact(nativeError!.GetBaseException().Message) + "); đã dùng yt-dlp.");
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ytError)
+            {
+                throw new InvalidOperationException(DescribeResolveFailure(ytError, nativeError!), ytError);
+            }
+        }
         try
         {
             return (await LoadInfoAsync(url, cookieFile, cancellationToken), false, string.Empty);
@@ -205,18 +233,8 @@ public sealed class YtDlpResolver
         catch (OperationCanceledException) { throw; }
         catch (Exception error)
         {
-            if (!IsNativeFallbackEligible(url, error)) throw;
-            try
-            {
-                var native = await LoadNativeInfoAsync(url, cookieFile, cancellationToken);
-                return (native, true,
-                    "yt-dlp chưa đọc được trang video này (lỗi extractor BiliBili); đã lấy metadata trực tiếp từ API Bilibili.");
-            }
-            catch (OperationCanceledException) { throw; }
-            catch (Exception nativeError)
-            {
-                throw new InvalidOperationException(DescribeResolveFailure(error, nativeError));
-            }
+            throw new InvalidOperationException(
+                "Không đọc được video từ yt-dlp: " + Compact(error.GetBaseException().Message), error);
         }
     }
 
@@ -228,7 +246,13 @@ public sealed class YtDlpResolver
         if (native is HttpRequestException { StatusCode: HttpStatusCode.PreconditionFailed }
             || nativeMessage.Contains("HTTP 412", StringComparison.OrdinalIgnoreCase))
         {
-            return "Bilibili đang chặn API (412). Phiên đăng nhập thiếu cookie thiết bị hoặc đã hết hạn; hãy vào Cài đặt → Đăng nhập → Đồng bộ lại từ Chrome rồi thử lại.";
+            return "Bilibili đang chặn API (412): phiên đăng nhập thiếu cookie thiết bị hoặc đã hết hạn. Hãy vào Cài đặt → Đăng nhập → đăng nhập lại bằng QR rồi thử lại.";
+        }
+        if (nativeMessage.Contains("code -101", StringComparison.OrdinalIgnoreCase)
+            || nativeMessage.Contains("không hợp lệ hoặc đã hết hạn", StringComparison.OrdinalIgnoreCase)
+            || nativeMessage.Contains("isLogin", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Phiên đăng nhập Bilibili đã hết hạn hoặc không hợp lệ. Hãy vào Cài đặt → Đăng nhập → đăng nhập lại bằng QR rồi thử lại.";
         }
         if (nativeMessage.Contains("code -404", StringComparison.OrdinalIgnoreCase)
             || nativeMessage.Contains("code -10403", StringComparison.OrdinalIgnoreCase)
@@ -237,23 +261,19 @@ public sealed class YtDlpResolver
         {
             return "Video không tồn tại, đã bị xóa hoặc đang ở chế độ riêng tư. Hãy kiểm tra lại liên kết.";
         }
-        if (ytMessage.Contains("deleted or geo-restricted", StringComparison.OrdinalIgnoreCase)
-            || ytMessage.Contains("Unable to extract initial state", StringComparison.OrdinalIgnoreCase))
+        if (nativeMessage.Contains("code -352", StringComparison.OrdinalIgnoreCase))
         {
-            return "Không đọc được video: video có thể đã bị xóa hoặc giới hạn khu vực. Nếu video vẫn mở được trong Chrome, hãy cập nhật yt-dlp rồi thử lại.";
+            return "Bilibili đang chặn truy cập tự động (mã -352). Hãy đăng nhập lại ở Cài đặt → Đăng nhập, hoặc đổi mạng rồi thử lại.";
+        }
+        if (ytMessage.Contains("deleted or geo-restricted", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Video không tồn tại, đã bị xóa hoặc bị giới hạn khu vực. Nếu vẫn mở được trong Chrome, hãy đăng nhập lại ở Cài đặt → Đăng nhập rồi tải lại.";
+        }
+        if (ytMessage.Contains("Unable to extract initial state", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Không đọc được video: Bilibili chặn truy cập tự động và trang video không còn dữ liệu cho yt-dlp. Hãy đăng nhập lại ở Cài đặt → Đăng nhập bằng QR rồi thử lại. Chi tiết API: " + nativeMessage;
         }
         return $"{ytMessage} · API Bilibili: {nativeMessage}";
-    }
-
-    private static bool IsNativeFallbackEligible(string url, Exception error)
-    {
-        if (BilibiliPlayurlClient.ExtractBvid(url) is null) return false;
-        var message = error.GetBaseException().Message;
-        return message.Contains("Unable to extract", StringComparison.OrdinalIgnoreCase)
-            || message.Contains("No video formats found", StringComparison.OrdinalIgnoreCase)
-            || message.Contains("Unable to download webpage", StringComparison.OrdinalIgnoreCase)
-            || message.Contains("Unable to download JSON metadata", StringComparison.OrdinalIgnoreCase)
-            || message.Contains("Unable to process JSON", StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task<YtDlpInfo> LoadNativeInfoAsync(

@@ -48,15 +48,26 @@ public sealed partial class SubtitlePage : Page
     private async void Start_Click(object sender, RoutedEventArgs e)
     {
         if (_metadataUrl is null || TrackBox.SelectedItem is not SubtitleTrack track) return;
-        _jobId = _application.StartSubtitle(new SubtitleRequest(_metadataUrl, FormatBox.SelectedItem?.ToString() ?? "srt", track.Language, _application.Config.OutputDirectory));
-        _logOffset = 0; LogBox.Text = string.Empty; StartButton.IsEnabled = false; CancelButton.IsEnabled = true;
-        while (_jobId is not null)
+        try
         {
-            var snapshot = _application.Jobs.GetSnapshot(_jobId, _logOffset); _logOffset = snapshot.LogNext;
-            if (snapshot.Logs.Count > 0) LogBox.Text += string.Join("\n", snapshot.Logs) + "\n";
-            Progress.Value = snapshot.Progress; StatusText.Text = snapshot.Message;
-            if (snapshot.Done) { _jobId = null; CancelButton.IsEnabled = false; StartButton.IsEnabled = _metadataUrl is not null; break; }
-            await Task.Delay(350);
+            _jobId = _application.StartSubtitle(new SubtitleRequest(_metadataUrl, FormatBox.SelectedItem?.ToString() ?? "srt", track.Language, _application.Config.OutputDirectory));
+            _logOffset = 0; LogBox.Text = string.Empty; StartButton.IsEnabled = false; CancelButton.IsEnabled = true;
+            while (_jobId is not null)
+            {
+                var snapshot = _application.Jobs.GetSnapshot(_jobId, _logOffset); _logOffset = snapshot.LogNext;
+                if (snapshot.Logs.Count > 0) LogBox.Text += string.Join("\n", snapshot.Logs) + "\n";
+                Progress.Value = snapshot.Progress; StatusText.Text = snapshot.Message;
+                if (snapshot.Done) { _jobId = null; CancelButton.IsEnabled = false; StartButton.IsEnabled = _metadataUrl is not null; break; }
+                await Task.Delay(350);
+            }
+        }
+        catch (Exception error)
+        {
+            BiliSubStudio.App.Services.StartupDiagnostics.WriteException("subtitle-start", error);
+            StatusText.Text = error.Message;
+            _jobId = null;
+            CancelButton.IsEnabled = false;
+            StartButton.IsEnabled = _metadataUrl is not null;
         }
     }
 

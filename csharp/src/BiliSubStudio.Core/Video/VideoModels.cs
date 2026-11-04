@@ -25,13 +25,20 @@ public sealed record StreamSelection(
 
 public sealed record SubtitleTrack(string Language, string DisplayName, bool Official, bool Ai, string Url, string Extension);
 
+/// <summary>
+/// One entry of a multi-part collection (视频选集): the page number, the part
+/// title Bilibili shows in its list, and its real duration in seconds.
+/// </summary>
+public sealed record VideoPart(int Page, string Title, double DurationSeconds);
+
 public sealed record VideoMetadata(
     string Title,
     string Id,
     IReadOnlyList<string> Qualities,
     IReadOnlyList<SubtitleTrack> Subtitles,
     string ThumbnailUrl = "",
-    string SubtitleDiscoveryWarning = "");
+    string SubtitleDiscoveryWarning = "",
+    IReadOnlyList<VideoPart>? Parts = null);
 
 public sealed record VideoResolveRequest(
     string Url,
@@ -54,7 +61,10 @@ public sealed record VideoDownloadRequest(
     bool BundleSubtitleIfAvailable = false,
     bool BundleThumbnail = false,
     bool MediaBundle = false,
-    bool BundleVideo = true);
+    bool BundleVideo = true,
+    // Batch download of a collection: each part keeps its own file name so the
+    // parts never collide on the same title.
+    string? OutputName = null);
 
 public sealed record VideoDownloadResult(string OutputPath, long Size, bool UsedRange, int PeakConnections);
 

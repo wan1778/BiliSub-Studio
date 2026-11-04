@@ -4,9 +4,11 @@ public sealed partial class EditorPage
 {
     internal bool HasOpenEditorProject => _project is not null;
 
-    // EDIT-CLOSE: user chủ động bỏ project đang mở (thường vì video nguồn đã
-    // bị xóa/đổi tên/di chuyển sau khi làm xong) để thoát app. Chỉ xóa state
-    // trong bộ nhớ và dừng autosave; file project cũ trên đĩa được giữ nguyên.
+    // EDIT-CLOSE: the user deliberately drops the currently open project
+    // (usually because the source video was deleted/renamed/moved after the
+    // work was finished) in order to exit the app. Only in-memory state is
+    // cleared and autosave is stopped; the old project file on disk is left
+    // untouched.
     internal void DiscardOpenProjectForForcedClose()
     {
         CleanupProjectAutosave();

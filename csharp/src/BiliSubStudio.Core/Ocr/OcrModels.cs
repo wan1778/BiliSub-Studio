@@ -10,34 +10,34 @@ public sealed record OcrRegion(
 public sealed record OcrLine(string Text, double Confidence, int[] Box);
 public sealed record OcrBox([property: JsonPropertyName("l")] int Left, [property: JsonPropertyName("t")] int Top, [property: JsonPropertyName("r")] int Right, [property: JsonPropertyName("b")] int Bottom);
 public sealed record OcrResult(bool Ok, bool Detected, string Text, double Confidence, IReadOnlyList<OcrLine> Lines, string? Error = null);
-// D.1 det/rec split: timing that worker do that (khong co cls stage rieng trong
-// pipeline PP-OCRv6 nay). C# tich luy de quyet Phase 2 (det-1-lan + rec-only).
+// D.1 det/rec split: timing is genuinely what the worker does (no separate cls stage in
+// the PP-OCRv6 pipeline). C# accumulates it to decide Phase 2 (det-once + rec-only).
 public sealed record OcrPerfSample(double DetMs, double RecMs, int DetBoxes, int RecCrops, int CacheHits, int Images);
-// E.3 shadow: ket qua probe mo rong. BandChangeScores/EdgeDensity co the null
-// khi worker cu chua co 2 field (tuong thich nguoc: shadow vang mat, khong fail).
+// E.3 shadow: extended probe result. BandChangeScores/EdgeDensity may be null
+// when an old worker lacks the two fields (backward compatible: shadow goes missing, does not fail).
 public sealed record VisualProbeResult(
     IReadOnlyList<double> ChangeScores,
     IReadOnlyList<double>? BandChangeScores,
     IReadOnlyList<double>? EdgeDensity);
-// Provenance giữ exact integer SourcePts + time base. Thiếu/invalid => Unavailable, không đoán.
+// Provenance keeps the exact integer SourcePts + time base. Missing/invalid => Unavailable, no guessing.
 public sealed record RationalTimeBase([property: JsonPropertyName("num")] int Num, [property: JsonPropertyName("den")] int Den);
 public sealed record PixelObservation([property: JsonPropertyName("pts")] double Pts, [property: JsonPropertyName("box")] OcrBox BoxInOcrCrop, [property: JsonPropertyName("roi")] OcrRegion SourceRoi, OcrFrameGeometry? Geometry = null, [property: JsonPropertyName("spts")] long? SourcePts = null, RationalTimeBase? SourceTimeBase = null);
 public sealed record OcrCue(double Start, double End, string Text, [property: JsonPropertyName("conf")] double Confidence, [property: JsonPropertyName("support")] int RawSupportCount = 0, [property: JsonPropertyName("csupport")] int ConfidentSupportCount = 0, [property: JsonPropertyName("review")] bool NeedsReview = false, PixelObservation? FirstObservation = null, PixelObservation? LastObservation = null);
-// Danh sách loại trừ lúc xuất SRT (file <checkpointkey>.exclude.json cạnh checkpoint):
-// câu nào khớp Start (±1ms) + Text từng chữ thì bỏ khỏi file SRT. Không thuộc
-// checkpoint (không ảnh hưởng key/resume); xóa file là hoàn tác.
+// Exclusion list at SRT export (the file <checkpointkey>.exclude.json beside the checkpoint):
+// any cue matching Start (±1ms) + Text exactly is dropped from the SRT file. Not part of the
+// checkpoint (does not affect key/resume); deleting the file is the undo.
 public sealed record OcrCueExclusion(
     [property: JsonPropertyName("start")] double Start,
     [property: JsonPropertyName("text")] string Text);
-// Danh sách sửa chữ (file <checkpointkey>.fix.json cạnh checkpoint): câu nào
-// khớp Start (±1ms) + chữ cũ từng chữ thì thay bằng chữ đúng lúc xuất SRT.
-// Không thuộc checkpoint (không ảnh hưởng key/resume); xóa file là hoàn tác.
+// Text-correction list (the file <checkpointkey>.fix.json beside the checkpoint): any cue
+// matching Start (±1ms) + old text exactly is replaced with the corrected text at SRT export.
+// Not part of the checkpoint (does not affect key/resume); deleting the file is the undo.
 public sealed record OcrCueFix(
     [property: JsonPropertyName("start")] double Start,
     [property: JsonPropertyName("old")] string OldText,
     [property: JsonPropertyName("new")] string NewText,
-    // Fix do tai-nghe sửa chữ (correction) thì gắn cờ review lúc xuất để
-    // người duyệt kiểm tra — trim/sửa tay cũ giữ false như trước.
+    // Fixes from the ear correcting text (correction) get a review flag at export so
+    // the reviewer can check it — old trims/manual edits keep false as before.
     [property: JsonPropertyName("review")] bool FlagReview = false);
 
 public sealed record OcrScanRequest(
@@ -50,9 +50,9 @@ public sealed record OcrScanRequest(
     double Duration,
     double ScanStartOffset = 0);
 
-// Hồ sơ nhận diện checkpoint OCR theo video (06/10): <key>.info.json cạnh
-// checkpoint, ghi video + đúng settings đã sinh key để pick-video miss vẫn
-// khôi phục ROI/mode rồi resume chuẩn. Public để App dùng.
+// Per-video OCR checkpoint recognition profile (06/10): <key>.info.json beside the
+// checkpoint, recording the video + exactly the settings that produced the key so a pick-video miss
+// still restores ROI/mode and resumes canonically. Public so App can use it.
 public sealed record OcrCheckpointVideoInfo(
     string Key,
     string VideoPath,
@@ -67,16 +67,16 @@ public sealed record OcrCheckpointVideoInfo(
     double ScanStartOffset,
     DateTimeOffset SavedUtc);
 
-// Ném khi checkpoint thiếu provenance pixel (cũ/hỏng) nên không đủ điều kiện replay.
-// Không bao giờ reconstruct/fabricate bbox/PTS từ Start/End.
+// Thrown when a checkpoint lacks pixel provenance (old/corrupt), so it is not eligible for replay.
+// Never reconstructs/fabricates bbox/PTS from Start/End.
 public sealed class CheckpointNotEligibleForReplayException : InvalidOperationException
 {
     public CheckpointNotEligibleForReplayException(string message) : base(message) { }
     public CheckpointNotEligibleForReplayException(string message, Exception? inner) : base(message, inner) { }
 }
 
-// Trace chẩn đoán cho một boundary kề nhau trong targeted range replay.
-// IsCandidate=false => ProductionPixelComparer không được gọi (xem ReconcileRangeAsync).
+// Diagnostic trace for one adjacent boundary in a targeted range replay.
+// IsCandidate=false => ProductionPixelComparer is not called (see ReconcileRangeAsync).
 public sealed record BoundaryTrace(
     double LeftStart,
     double LeftEnd,

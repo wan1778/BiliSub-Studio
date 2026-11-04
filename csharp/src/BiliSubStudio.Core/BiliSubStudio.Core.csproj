@@ -12,6 +12,9 @@
     <!-- Giải mã JPEG trong-process cho đo luminance/hash (Windows-only, app win-x64).
          Không dùng Bitmap với vùng — chỉ LockBits đọc pixel, using nghiêm + test rõ handle. -->
     <PackageReference Include="System.Drawing.Common" />
+    <!-- Browser session import reads the local Chrome/Edge/Firefox cookie
+         store (the same source yt-dlp's cookies-from-browser option uses). -->
+    <PackageReference Include="Microsoft.Data.Sqlite" />
   </ItemGroup>
   <ItemGroup>
     <!-- ContractTests kiểm trực tiếp API nội bộ (planner/validator nội bộ):

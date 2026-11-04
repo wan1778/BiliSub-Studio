@@ -21,7 +21,10 @@ public sealed partial class EditorPage
                 && app.MainWindow is BiliSubStudio.App.MainWindow window)
                 window.SetPresenceContext(video, project);
         }
-        catch { }
+        catch (Exception error)
+        {
+            BiliSubStudio.App.Services.StartupDiagnostics.WriteException("editor-presence-context", error);
+        }
     }
 
     private async void EditorChooseOutput_Click(object sender, RoutedEventArgs e)
@@ -32,11 +35,11 @@ public sealed partial class EditorPage
                 ?? throw new InvalidOperationException("Không lấy được cửa sổ chính.");
             var window = app.MainWindow ?? throw new InvalidOperationException("Cửa sổ chính chưa sẵn sàng.");
             var picker = new FolderPickerService(() => window);
-            var path = await picker.PickFolderAsync(_application.Config.OutputDirectory);
+            var path = await picker.PickFolderAsync(_application.Config.EditorOutputDirectory);
             if (string.IsNullOrWhiteSpace(path)) return;
-            await _application.Settings.SetOutputDirectoryAsync(path, CancellationToken.None);
-            if (_editorOutputPathText is not null) _editorOutputPathText.Text = _application.Config.OutputDirectory;
-            StatusText.Text = "Đã đổi nơi lưu Editor: " + _application.Config.OutputDirectory;
+            await _application.Settings.SetEditorOutputDirectoryAsync(path, CancellationToken.None);
+            if (_editorOutputPathText is not null) _editorOutputPathText.Text = _application.Config.EditorOutputDirectory;
+            StatusText.Text = "Đã đổi nơi lưu Editor: " + _application.Config.EditorOutputDirectory;
             RefreshEditorActions();
         }
         catch (Exception error)
@@ -53,10 +56,11 @@ public sealed partial class EditorPage
                 ?? throw new InvalidOperationException("Không lấy được cửa sổ chính.");
             var window = app.MainWindow ?? throw new InvalidOperationException("Cửa sổ chính chưa sẵn sàng.");
             var picker = new FolderPickerService(() => window);
-            // Mở đúng thư mục đang hiện trong dialog xuất (chưa bấm Bắt đầu
-            // thì đó là bản nháp); trống thì về nơi lưu đã lưu trong Config.
+            // Open exactly the folder currently shown in the export dialog
+            // (before Start is pressed it is just a draft); if empty, fall back to
+            // the output location saved in Config.
             var shown = ExportDialogDirectoryBox.Text?.Trim() ?? string.Empty;
-            await picker.OpenFolderAsync(shown.Length > 0 ? shown : _application.Config.OutputDirectory);
+            await picker.OpenFolderAsync(shown.Length > 0 ? shown : _application.Config.EditorOutputDirectory);
         }
         catch (Exception error)
         {
@@ -68,6 +72,24 @@ public sealed partial class EditorPage
     {
         RefreshEditorParityControls();
         QueueEditorCompositeRefresh();
+    }
+
+    private void SetAutoCompositeBusyText(string status)
+    {
+        if (AutoCompositeBusyText is null) return;
+        AutoCompositeBusyText.Text = status;
+        AutoCompositeBusyText.Visibility = string.IsNullOrWhiteSpace(status) ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    private bool _voiceAdvancedExpanded;
+
+    private void VoiceAdvancedToggle_Click(object sender, RoutedEventArgs e)
+    {
+        _voiceAdvancedExpanded = !_voiceAdvancedExpanded;
+        if (VoiceAdvancedPanel is not null)
+            VoiceAdvancedPanel.Visibility = _voiceAdvancedExpanded ? Visibility.Visible : Visibility.Collapsed;
+        if (VoiceAdvancedToggleButton is not null)
+            VoiceAdvancedToggleButton.Content = _voiceAdvancedExpanded ? "Ẩn nâng cao · nhận dạng nhịp" : "Nâng cao · nhận dạng nhịp";
     }
 
     private void EditorAutoComposite_Toggled(object sender, RoutedEventArgs e)
@@ -101,6 +123,7 @@ public sealed partial class EditorPage
             var sourcePosition = Math.Clamp(Timeline.Value, Timeline.Minimum, Timeline.Maximum);
             _editorAutoCompositeRebuilding = true;
             StatusText.Text = "Đang cập nhật bản xem trước theo thay đổi mới...";
+            SetAutoCompositeBusyText("Đang cập nhật bản xem trước theo thay đổi mới...");
             await _playback.SetModeAsync(enabled: false, play: false);
             cancellation.Token.ThrowIfCancellationRequested();
             _syncingTimeline = true;
@@ -109,11 +132,13 @@ public sealed partial class EditorPage
             await _playback.SetModeAsync(enabled: true, play: resumePlayback);
             cancellation.Token.ThrowIfCancellationRequested();
             StatusText.Text = "Bản xem trước đã cập nhật.";
+            SetAutoCompositeBusyText("Bản xem trước đã cập nhật.");
         }
         catch (OperationCanceledException) { }
         catch (Exception error)
         {
             StatusText.Text = "Không tự cập nhật được preview: " + error.Message;
+            SetAutoCompositeBusyText("Không tự cập nhật được preview: " + error.Message);
         }
         finally
         {
@@ -127,9 +152,9 @@ public sealed partial class EditorPage
     private void RefreshEditorParityControls()
     {
         if (_editorCoreInitialized is false) return;
-        if (_editorOutputPathText is not null) _editorOutputPathText.Text = _application.Config.OutputDirectory;
+        if (_editorOutputPathText is not null) _editorOutputPathText.Text = _application.Config.EditorOutputDirectory;
         if (_editorChooseOutputButton is not null) _editorChooseOutputButton.IsEnabled = !EditorBusy && !_playback.IsPreviewMode;
-        if (_editorOpenOutputButton is not null) _editorOpenOutputButton.IsEnabled = Directory.Exists(_application.Config.OutputDirectory);
+        if (_editorOpenOutputButton is not null) _editorOpenOutputButton.IsEnabled = Directory.Exists(_application.Config.EditorOutputDirectory);
         if (_editorAutoCompositeToggle is not null) _editorAutoCompositeToggle.IsEnabled = !EditorBusy;
 
     }

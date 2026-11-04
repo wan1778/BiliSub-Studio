@@ -31,34 +31,26 @@ def main() -> int:
     toolmanager = TOOLMANAGER.read_text(encoding="utf-8")
     verify = VERIFY.read_text(encoding="utf-8")
 
-    # yt-dlp phải giữ vai trò nguồn chính: fallback chỉ chạy trong catch sau khi
-    # LoadInfoAsync thất bại, và chỉ cho URL có BVID (không đụng site khác).
+    # The direct Bilibili API is the primary source for every link with a BVID;
+    # yt-dlp is only the last resort for pages the API cannot read.
     fallback = slice_between(
         resolver,
         "private async Task<(YtDlpInfo Info, bool Native, string Warning)> LoadInfoWithFallbackAsync",
-        "private static bool IsNativeFallbackEligible",
+        "internal static string DescribeResolveFailure",
         "LoadInfoWithFallbackAsync",
     )
-    require("return (await LoadInfoAsync(url, cookieFile, cancellationToken), false, string.Empty);" in fallback,
-            "yt-dlp is no longer the primary metadata source")
-    require("if (!IsNativeFallbackEligible(url, error)) throw;" in fallback,
-            "fallback is not gated by the extractor-error classifier")
+    require("BilibiliPlayurlClient.ExtractBvid(url) is not null" in fallback,
+            "native metadata must stay Bilibili/BVID-only")
     require("await LoadNativeInfoAsync(url, cookieFile, cancellationToken)" in fallback,
-            "fallback does not call the native Bilibili resolver")
+            "native Bilibili resolver is not tried first")
+    require("await LoadInfoAsync(url, cookieFile, cancellationToken)" in fallback,
+            "yt-dlp fallback is missing")
+    require("DescribeResolveFailure(ytError, nativeError!)" in fallback,
+            "resolver does not report the native cause when both paths fail")
     require("API Bilibili" in fallback,
             "fallback warning does not tell the user metadata came from the Bilibili API")
-
-    classifier = slice_between(
-        resolver,
-        "private static bool IsNativeFallbackEligible",
-        "private async Task<YtDlpInfo> LoadNativeInfoAsync",
-        "IsNativeFallbackEligible",
-    )
-    require("BilibiliPlayurlClient.ExtractBvid(url) is null" in classifier,
-            "native fallback must stay Bilibili/BVID-only")
-    for keyword in ("Unable to extract", "No video formats found", "Unable to download webpage",
-                    "Unable to download JSON metadata", "Unable to process JSON"):
-        require(keyword in classifier, f"extractor-failure keyword missing: {keyword}")
+    require("IsNativeFallbackEligible" not in resolver,
+            "the extractor-error keyword gate is dead code after the native-first switch")
 
     native = slice_between(
         resolver,
@@ -81,7 +73,8 @@ def main() -> int:
     require("if (formats.Count == 0)" in native,
             "native fallback can silently resolve zero streams")
 
-    # Cả đường tải media lẫn trang metadata đều phải đi qua fallback.
+    # Both the media download path and the metadata page must go through the
+    # fallback.
     resolve_method = slice_between(
         resolver,
         "public async Task<StreamSelection> ResolveAsync",
@@ -105,8 +98,9 @@ def main() -> int:
     require("public IReadOnlyList<string> BackupUrls { get; init; } = [];" in resolver,
             "YtDlpFormat lost the native backup-url carrier")
 
-    # Playurl client: cả view/detail lẫn playurl phải ký qua cùng một signer WBI;
-    # view thường (không ký) bị 412 nên không quay lại endpoint đó.
+    # Playurl client: both view/detail and playurl must be signed with the same
+    # WBI signer; the plain (unsigned) view gets 412, so that endpoint is never
+    # returned to.
     require("public async Task<BilibiliNativeInfo> GetNativeInfoAsync" in playurl,
             "BilibiliPlayurlClient has no native view/detail + stream method")
     require("internal const string BrowserUserAgent" in playurl,
@@ -136,17 +130,19 @@ def main() -> int:
     require("\"backupUrl\", \"backup_url\"" in playurl,
             "native streams do not capture Bilibili backup CDN urls")
 
-    # Subtitle client: không được quay lại tự lấy summary (native summary giờ
-    # thuộc playurl client để đi chung một signer WBI đã kiểm chứng).
+    # Subtitle client: it must not go back to fetching the summary itself (the
+    # native summary now belongs to the playurl client so both share one
+    # verified WBI signer).
     require("BilibiliVideoSummary" not in subtitles and "GetSummaryAsync" not in subtitles,
             "subtitle client must not own native summary anymore")
     require("BilibiliPlayurlClient.BrowserUserAgent)" in subtitles,
             "subtitle requests drifted away from the shared browser User-Agent")
 
-    # 22/10 field: web-interface/view không ký bị Bilibili chặn 412 nên app báo
-    # nhầm "hết phiên đăng nhập" và mất track phụ đề AI (zh). Identity phải đi
-    # qua view/detail có ký WBI của playurl client và không được chết khi
-    # không lấy được AID (player/v2 chỉ cần cid).
+    # 22/10 field: the unsigned web-interface/view is blocked by Bilibili with
+    # 412, so the app wrongly reported "login session expired" and lost the AI
+    # (zh) subtitle track. Identity must go through the WBI-signed view/detail
+    # of the playurl client and must not die when the AID cannot be fetched
+    # (player/v2 only needs the cid).
     require("public async Task<(long Aid, long Cid)?> ResolveSignedIdentityAsync" in playurl,
             "playurl client has no signed view/detail identity resolver")
     require('SignedWbiUri("/x/web-interface/wbi/view/detail"' in playurl,
@@ -160,8 +156,8 @@ def main() -> int:
     # profile, otherwise Bilibili answers 412 without a useful explanation.
     require("Chrome/155.0.0.0" in playurl and "(KHTML, like Gecko)" in playurl,
             "native browser User-Agent is not a complete Chrome 155 identity")
-    require("DescribeResolveFailure" in resolver and "Đồng bộ lại từ Chrome" in resolver,
-            "HTTP 412 does not point the user back to the Chrome session sync")
+    require("DescribeResolveFailure" in resolver and "đăng nhập lại bằng QR" in resolver,
+            "HTTP 412 does not point the user back to a fresh Bilibili login")
     require("bị xóa" in resolver and "giới hạn khu vực" in resolver,
             "permanent video failures are not mapped to actionable Vietnamese messages")
 
@@ -177,7 +173,7 @@ def main() -> int:
     require("verify_media_native_metadata_contract.py" in verify,
             "verify.ps1 does not run this contract")
 
-    print("PASS media native metadata: yt-dlp stays primary and refreshes when stale; extractor failures on BVID-only URLs fall back to signed view/detail + playurl DASH streams; Chrome-155 UA, 412/deleted error copy, and native preview warnings stay aligned")
+    print("PASS media native metadata: the signed Bilibili API is the primary metadata source for BVID links, yt-dlp stays the last-resort fallback, device cookies are merged into every API call, and 412/deleted error copy stays actionable")
     return 0
 
 

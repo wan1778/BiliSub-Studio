@@ -71,13 +71,14 @@ require(
     "EXPORT-11 final render no longer snapshots completed subtitle",
 )
 require(
-    'var hasBaseEdit = _document.Regions.Count > 0 || subtitle is not null || _audioSettings.SourceMode != "keep" || _voiceTrack is not null || trimChanged;'
+    'var hasBaseEdit = _document.Regions.Count > 0 || subtitle is not null || _audioSettings.SourceMode != "keep" || _voiceTrack is not null || trimChanged || hasComposedClips;'
     in images,
     "EXPORT-11 combined Subtitle + Blur no longer qualifies as base edit",
 )
 require(
     "if (!hasImages)" in images
-    and "var request = CurrentEditRequest(subtitle) with" in images,
+    and ("var request = CurrentEditRequest(subtitle) with" in images
+         or "await CurrentComposedEditRequestAsync(subtitle)" in images),
     "EXPORT-11 no-image combined render must use the single normal render service",
 )
 
@@ -162,7 +163,7 @@ require(
 # Safe finalization remains one temp artifact -> validation -> promotion.
 for token in (
     'var temporary = output + ".rendering" + Path.GetExtension(output);',
-    'await ValidateRenderedOutputAsync(\n                temporary, trim.Duration, voice is not null || audio.SourceMode != "mute",',
+    'await ValidateRenderedOutputAsync(\n                job, temporary, trim.Duration, voice is not null || audio.SourceMode != "mute",',
     "File.Move(temporary, output);",
 ):
     require(token in run_body, f"EXPORT-11 final output lifecycle lost: {token}")

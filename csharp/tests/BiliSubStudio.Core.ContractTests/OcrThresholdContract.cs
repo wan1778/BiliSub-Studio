@@ -18,10 +18,10 @@ internal static class OcrThresholdContract
         Check(ProductionPixelComparer.Classify(.90, null) == PixelCheckResult.Unavailable, "null Edge => Unavailable");
         Check(ProductionPixelComparer.Classify(null, null) == PixelCheckResult.Unavailable, "null/null => Unavailable");
         Check(ProductionPixelComparer.Classify(.45, .65) == PixelCheckResult.Unavailable, "abstention band => Unavailable");
-        // FG không ảnh hưởng classification v1 (chỉ SSIM+Edge).
+        // FG does not affect v1 classification (SSIM+Edge only).
         Check(ProductionPixelComparer.Classify(.99, .99) == PixelCheckResult.Same, "FG ignored in v1");
 
-        // Repeat-instance gate: metric giả lập rất cao nhưng không candidate => comparer KHÔNG được gọi.
+        // Repeat-instance gate: a very high simulated metric but no candidate => the comparer is NOT called.
         var roi = new OcrRegion(0, 0, 1, 1);
         var tb = new RationalTimeBase(1, 90000);
         var geo = new OcrFrameGeometry(0, 0, 1920, 1080, 1280, 320, 0, 0, 1280, 320);
@@ -29,12 +29,12 @@ internal static class OcrThresholdContract
             new PixelObservation(s, new OcrBox(10, 10, 200, 40), roi, geo, (long)(s * 90000), tb),
             new PixelObservation(e, new OcrBox(10, 10, 200, 40), roi, geo, (long)(e * 90000), tb));
         var counting = new CountingComparer();
-        // Hai instance cùng text, cách nhau bởi cue khác/blank (gap lớn) => không candidate => 0 calls.
+        // Two instances of the same text separated by a different cue/blank (large gap) => no candidate => 0 calls.
         var far = new[] { Cue(10, 10.5, "了解不多"), Cue(20, 20.5, "了解不多") };
         var mergedFar = await OcrCueReconciler.MergeTouchingIdenticalAsync(far, "v.mp4", counting, CancellationToken.None);
         Check(mergedFar.Count == 2, "far repeat must stay separate");
         Check(counting.Calls == 0, "pixel comparer must not be called without temporal candidate");
-        // Gap thật giữa hai instance giống hệt nhau => không merge dù pixel có thể Same.
+        // A real gap between two identical instances => no merge even if pixel could be Same.
         var counting2 = new CountingComparer(PixelCheckResult.Same);
         var gapPair = new[] { Cue(30, 30.5, "龙无期"), Cue(31.0, 31.5, "龙无期") };
         var mergedGap = await OcrCueReconciler.MergeTouchingIdenticalAsync(gapPair, "v.mp4", counting2, CancellationToken.None);

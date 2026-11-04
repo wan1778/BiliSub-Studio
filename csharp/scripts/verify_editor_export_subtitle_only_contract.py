@@ -60,13 +60,14 @@ for token in (
 # Orchestration: subtitle contributes to hasBaseEdit. With no images, the one
 # Render entry point sends the subtitle request directly to VideoEditorService.
 require(
-    "var hasBaseEdit = _document.Regions.Count > 0 || subtitle is not null || _audioSettings.SourceMode != \"keep\" || _voiceTrack is not null || trimChanged;"
+    "var hasBaseEdit = _document.Regions.Count > 0 || subtitle is not null || _audioSettings.SourceMode != \"keep\" || _voiceTrack is not null || trimChanged || hasComposedClips;"
     in images,
     "EXPORT-06 subtitle no longer qualifies as base edit",
 )
 require(
     "if (!hasImages)" in images
-    and "var request = CurrentEditRequest(subtitle) with" in images,
+    and ("var request = CurrentEditRequest(subtitle) with" in images
+         or "await CurrentComposedEditRequestAsync(subtitle)" in images),
     "EXPORT-06 subtitle-only must use the normal Editor render path",
 )
 
@@ -122,7 +123,7 @@ require(
 # Final output still follows the standard verified temp->validate->move lifecycle.
 for token in (
     'var temporary = output + ".rendering" + Path.GetExtension(output);',
-    'await ValidateRenderedOutputAsync(\n                temporary, trim.Duration, voice is not null || audio.SourceMode != "mute",',
+    'await ValidateRenderedOutputAsync(\n                job, temporary, trim.Duration, voice is not null || audio.SourceMode != "mute",',
     "File.Move(temporary, output);",
     "finally { TryDelete(temporary); if (subtitleAss is not null) TryDelete(subtitleAss); }",
 ):

@@ -55,8 +55,8 @@ internal static class OcrFragmentContract
             "field punctuation and one-frame duplicated glyph still fragmented one rendered caption");
         var substituted = await OcrCueReconciler.MergeTouchingIdenticalAsync(
         [
-            // Evidence thực: flicker B (设) support thấp hẳn so với 2 instance 没 ổn định.
-            // Canonical ưu tiên ConfidentSupport/RawSupport nên flicker đơn lẻ không thắng.
+            // Real evidence: the flicker B (设) has much lower support than the 2 stable 没 instances.
+            // Canonical prefers ConfidentSupport/RawSupport, so a lone flicker never wins.
             Prov(142.967, 143.133, "万年没出门", .99, 60, 58),
             Prov(143.133, 143.967, "万年设出门", .999, 3, 1),
             Prov(143.967, 144.167, "万年没出门", .99, 55, 53),
@@ -141,9 +141,9 @@ internal static class OcrFragmentContract
         var store = assembly.GetType("BiliSubStudio.Core.Ocr.OcrCheckpointStore")!;
         Check((int)store.GetField("Schema", BindingFlags.Static | BindingFlags.NonPublic)!.GetRawConstantValue()! == 19,
             "standalone-branding checkpoint is still resume-compatible");
-        // Pause-preview drain vòng tail rồi lấy đúng view live đã gộp pixel
-        // (28/09, vụ ấn Dừng là cue rã ra): 2 cue chạm y hệt được gộp 1 sau
-        // drain, khớp thứ live hiển thị. FakePixelComparer Same nên không FFmpeg.
+        // Pause-preview drains the tail loop then takes exactly the live view that pixel merging produced
+        // (28/09, pressing Pause made cues fall apart): 2 identical touching cues merge into 1 after
+        // the drain, matching what live displays. FakePixelComparer returns Same so no FFmpeg is needed.
         var tail = new OcrLiveTailReconciler();
         try
         {

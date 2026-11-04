@@ -75,8 +75,9 @@ internal static class StartupDiagnostics
         _ = MessageBoxW(IntPtr.Zero, message, "BiliSub Studio - Lỗi khởi động", 0x00000010u | 0x00000000u);
     }
 
-    // Lỗi phát sinh khi app đang chạy (không phải lúc khởi động): đừng báo nhầm
-    // là "không thể khởi động" — người dùng sẽ tưởng app hỏng từ đầu.
+    // An error that occurs while the app is running (not at startup): do not
+    // report it as "could not start" — the user would think the app was broken
+    // from the beginning.
     public static void ShowUnhandledError(string stage, Exception error)
     {
         WriteException(stage, error);
@@ -147,20 +148,21 @@ internal static class StartupDiagnostics
 
     public static (int Count, string Path)? ListStressRequest { get; } = ResolveListStress(Environment.GetCommandLineArgs());
 
-    // Test-only soak: dựng đúng trạng thái "OCR xong" (player + checkpoint cues +
-    // journal + timer) rồi đảo tab để bắt crash chuyển tab. Chỉ chạy khi có cả 2 flag.
+    // Test-only soak: builds the exact "OCR finished" state (player +
+    // checkpoint cues + journal + timer) and then switches tabs to catch tab-switch
+    // crashes. Runs only when both flags are present.
     public static string? SoakVideoPath { get; } = ResolveFlagValue(Environment.GetCommandLineArgs(), SoakVideoPrefix);
 
     public static string? SoakOutPath { get; } = ResolveFlagValue(Environment.GetCommandLineArgs(), SoakOutPrefix);
 
-    // Soak file-mất: player giữ file này, harness xóa trước khi đảo tab.
+    // Soak file-missing: the player holds this file, and the harness deletes it before switching tabs.
     public static string? SoakPlayerPath { get; } = ResolveFlagValue(Environment.GetCommandLineArgs(), "--ocr-soak-player=");
 
     public static bool SoakDeletePlayer { get; } =
         string.Equals(ResolveFlagValue(Environment.GetCommandLineArgs(), "--ocr-soak-delete="), "1", StringComparison.OrdinalIgnoreCase);
 
-    // Soak quét-thật: chạy scan Fresh trên video soak (nhanh/cpu/4 lane) để bắt
-    // crash lúc đang quét + lúc Done/teardown.
+    // Soak real-scan: runs a Fresh scan on the soak video (fast/cpu/4 lanes) to catch
+    // crashes during scanning and during Done/teardown.
     public static bool SoakScan { get; } =
         string.Equals(ResolveFlagValue(Environment.GetCommandLineArgs(), "--ocr-soak-scan="), "1", StringComparison.OrdinalIgnoreCase);
 

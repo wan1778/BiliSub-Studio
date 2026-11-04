@@ -61,11 +61,10 @@ for token in (
 # Full combo orchestration: base edit first, then image stage.
 for token in (
     "var subtitle = CompletedSubtitleBurn();",
-    'var hasBaseEdit = _document.Regions.Count > 0 || subtitle is not null || _audioSettings.SourceMode != "keep" || _voiceTrack is not null || trimChanged;',
+    'var hasBaseEdit = _document.Regions.Count > 0 || subtitle is not null || _audioSettings.SourceMode != "keep" || _voiceTrack is not null || trimChanged || hasComposedClips;',
     "var hasImages = _imageOverlays.Count > 0;",
     'var temporaryDirectory = Path.Combine(_application.Paths.Temp, "Editor", "ImageBase");',
     'var temporaryName = "editor-image-base-" + Guid.NewGuid().ToString("N") + ".mp4";',
-    'var request = CurrentEditRequest(subtitle) with',
     "{",
     "OutputDirectory = temporaryDirectory,",
     "FileName = temporaryName,",
@@ -76,10 +75,14 @@ for token in (
     "composerInput = result.OutputPath;",
     "var specs = _imageOverlays.Select(image => new EditorImageOverlaySpec(",
     "image.Path, image.X, image.Y, image.Width, image.Height, image.Opacity",
-    "_media.Width, _media.Height, trimChanged ? trim.Duration : _media.Duration, specs,",
+    "_media.Width, _media.Height, ComposedExportDuration(trim), specs,",
     "copyAudio: hasBaseEdit, exportSettings: outputTarget.Settings",
 ):
     require(token in images, f"EXPORT-13 two-stage orchestration lost: {token}")
+
+require("var request = CurrentEditRequest(subtitle) with" in images
+        or "await CurrentComposedEditRequestAsync(subtitle)" in images,
+        "EXPORT-13 two-stage orchestration lost: the base stage must start from the shared request owner")
 
 # Temporary base is application-owned and cleaned after the image stage.
 require(

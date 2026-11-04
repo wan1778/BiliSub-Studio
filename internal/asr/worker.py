@@ -58,15 +58,15 @@ def parse_args() -> argparse.Namespace:
 
 
 def recognition(model, audio, beam):
-    # 27/09 fix rớt câu: temperature fallback (mặc định faster-whisper thử
-    # 0.0->1.0 khi đoạn khó; trước đây khóa 1 nhiệt nên đoạn rớt ngưỡng là
-    # drop lặng) + VAD hiền hơn (giữ đầu/đuôi câu, không nuốt câu ngắn).
-    # Bổ sung cho đoạn nhiều nhân vật/giọng cao (loli): hạ ngưỡng
-    # no_speech (giọng lạ hay bị chấm "không phải speech"), nới ngưỡng
-    # logprob/nén để giữ đoạn confidence thấp, VAD nhạy hơn với giọng nhỏ.
-    # Thì thầm/bàn tán (27/09): tín hiệu nhỏ hay chìm dưới ngưỡng -> hạ tiếp
-    # no_speech + VAD threshold. Giá phải trả: nhạc nền dễ bị nghe nhầm
-    # thành câu hơn; nếu rác nhiều thì siết lại thay vì hạ nữa.
+    # 27/09 fix for dropped sentences: temperature fallback (faster-whisper lets the
+    # temperature ladder test 0.0->1.0 on hard spans; locking it to 1 used to drop any
+    # span that missed the threshold) + a gentler VAD (keeps a sentence's head/tail, does
+    # not swallow short sentences). Added for multi-speaker/high-voice (loli) spans: lower
+    # the no_speech threshold (unfamiliar voices are often scored "not speech"), loosen the
+    # logprob/compression threshold to keep low-confidence spans, and make the VAD more
+    # sensitive to quiet voices. Whispering/aside dialogue (27/09): weak signals tend to
+    # sink below the threshold -> lower no_speech and the VAD threshold further. The
+    # trade-off: background music is more easily misheard as speech; if the noise gets bad, tighten it back instead of lowering further.
     return model.transcribe(
         audio, language="zh", task="transcribe", beam_size=max(1, min(beam, 8)),
         temperature=(0.0, 0.2, 0.4, 0.6, 0.8, 1.0),
@@ -375,10 +375,10 @@ def main() -> int:
     model.transcribe(warmup, language="zh", beam_size=1, word_timestamps=False)
     emit({"event": "ready", "device": args.device, "compute": args.compute})
     started = time.perf_counter()
-    # 27/09 vụ OOM 23:54: faster-whisper STFT cả file một lúc (28 phút audio
-    # = 8.23 GiB numpy) khi single-device chạy từ checkpoint tới hết file.
-    # Chia chunk nối tiếp 60s + nối seam y hệt hybrid (1 thiết bị, không
-    # threadpool): RAM phẳng mọi độ dài, chữ ở biên chunk không mất.
+    # 27/09, the 23:54 OOM case: faster-whisper STFTs the whole file in one shot (28
+    # minutes of audio = 8.23 GiB numpy) when single-device runs from the checkpoint to
+    # the end of the file. Split into consecutive 60s chunks and join the seams exactly
+    # like hybrid (1 device, no threadpool): flat RAM at any length, and the words at chunk boundaries are not lost.
     chunks, rate, total = hybrid_plan(audio, args.offset, args.offset, args.probe)
     if not chunks:
         raise RuntimeError("ASR audio has no samples")

@@ -103,12 +103,12 @@ internal static class OcrTopologyRefineContract
         Check(script.Probed.Count == 2, $"degenerate ladder must not refine (got {script.Probed.Count} probes)");
     }
 
-    // Small-tier worker target + VRAM/RAM grow gate (pure, không cần GPU):
-    // cap 4 mọi lane>=4, floor 1; chỉ grow khi telemetry có + free>=3GB +
-    // card đủ lớn + RAM còn dư + chưa đủ worker. (28/09: bar 1GB->3GB vì 16
-    // lane NVDEC + 4 worker OOM trên card 4GB. 22/10 field: card 4GB + 8
-    // lane NVDEC + 4 worker OOM tiếp (OpenCV alloc storm 14:24) và pool
-    // churn chạy 0.23x — nên grow cần card >= 6GB + RAM trống >= 4GB.)
+    // Small-tier worker target + VRAM/RAM grow gate (pure, no GPU needed):
+    // cap of 4 for every lane>=4, floor of 1; grow only when telemetry is present + free>=3GB +
+    // a big enough card + spare RAM + not already enough workers. (28/09: bar raised 1GB->3GB because 16
+    // NVDEC lanes + 4 workers OOM'd on a 4GB card. 22/10 field: 4GB card + 8
+    // NVDEC lanes + 4 workers OOM'd again (OpenCV alloc storm 14:24) and pool
+    // churn ran at 0.23x — so growing needs card >= 6GB + free RAM >= 4GB.)
     private static void SmallTierTargetAndGate()
     {
         var target = Benchmark.GetMethod("SmallTierWorkerTarget", BindingFlags.Static | BindingFlags.NonPublic)
@@ -131,14 +131,14 @@ internal static class OcrTopologyRefineContract
         Check(!Grow(true, 8 * gb, 8 * gb, 8 * gb, 2, 16), "16 lane không grow (NVDEC VRAM)");
         Check(!Grow(true, 2 * gb, 8 * gb, 8 * gb, 4, 8), "đủ worker rồi không grow thừa");
         Check(!Grow(true, 2 * gb, 8 * gb, 8 * gb, 2, 2), "2 lane đủ 2 worker rồi");
-        // 22/10 field regression: 4 GiB card (RTX 3050 Laptop) + 8 lane NVDEC
-        // + 4 small-tier worker làm probe chết vì thiếu VRAM và pool churn.
+        // 22/10 field regression: a 4 GiB card (RTX 3050 Laptop) + 8 NVDEC lanes
+        // + 4 small-tier workers made probes die from lack of VRAM and caused pool churn.
         Check(!Grow(true, 3 * gb, 4 * gb, 8 * gb, 2, 8), "card 4GB không được grow small tier");
         Check(!Grow(true, 3 * gb, 8 * gb, 2 * gb, 2, 8), "RAM trống 2GB không được grow small tier");
         SmallTierBlockReason(4 * gb, 3 * gb, 8 * gb);
     }
 
-    // Người dùng phải đọc được lý do giữ 2 worker (log scan) thay vì tưởng app bị treo.
+    // The user must be able to read the reason 2 workers are kept (scan log) instead of thinking the app froze.
     private static void SmallTierBlockReason(long totalVram, long freeVram, long freeRam)
     {
         var describe = typeof(OcrManager).GetMethod("DescribeSmallTierGrowBlock", BindingFlags.Static | BindingFlags.NonPublic)

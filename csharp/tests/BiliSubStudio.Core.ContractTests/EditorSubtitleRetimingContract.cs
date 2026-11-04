@@ -2,8 +2,8 @@ using BiliSubStudio.Core.Editor;
 
 namespace BiliSubStudio.Core.ContractTests;
 
-// Kéo mép cue trên dải thời gian: timecode phải định dạng đúng chuẩn SRT và
-// mép không được vượt qua cue liền kề (không chồng lấn, không rỗng).
+// Dragging a cue edge on the timeline: timecodes must be formatted to the SRT standard and an edge
+// must not cross into the adjacent cue (no overlap, no empty gaps).
 internal static class EditorSubtitleRetimingContract
 {
     public static Task RunAsync()

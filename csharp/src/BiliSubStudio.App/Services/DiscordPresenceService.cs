@@ -5,11 +5,12 @@ using BiliSubStudio.Core.Presence;
 
 namespace BiliSubStudio.App.Services;
 
-// Presence Discord theo job thật: details = việc đang làm, state = % tiến
-// triển, elapsed theo job, ảnh lớn key "logo" (upload trong portal). Poll
-// 15s (giới hạn Discord), chỉ gửi khi nội dung đổi. Discord tắt thì lặng lẽ
-// thử lại sau; không bao giờ ảnh hưởng scan/Edit. Chỉ đọc snapshot job,
-// không đụng điều khiển.
+// Discord presence driven by real jobs: details = the work in progress,
+// state = progress percent, elapsed tied to the app start, large image key
+// "logo" (uploaded in the portal). Polling every 15s (Discord's limit), and
+// sending only when the content changes. If Discord is off, quietly retry
+// later; it must never affect scanning/Editing. It only reads job snapshots
+// and never touches controls.
 internal sealed class DiscordPresenceService : IDisposable
 {
     private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(15);
@@ -39,14 +40,15 @@ internal sealed class DiscordPresenceService : IDisposable
         _loop = Task.Run(LoopAsync);
     }
 
-    // Pure (có contract test): kind job -> chữ hiện dòng details.
+    // Pure (covered by a contract test): job kind -> the text shown in the details field.
     internal static string ActivityName(string kind) => DiscordPresenceContent.ActivityName(kind);
 
     internal static string BuildActivityJson(string details, string state, long? startUnix, string largeImageKey = "logo") =>
         DiscordPresenceContent.BuildActivityJson(details, state, startUnix, largeImageKey);
 
-    // Tab hiện tại (MainWindow gọi khi đổi tab): có job chạy thì job thắng,
-    // không job thì hiện tab đang xem. Thread-safe, never throws.
+    // The current tab (MainWindow calls this when the tab changes): a running
+    // job wins over it, and with no job the tab being viewed is shown.
+    // Thread-safe, never throws.
     public void SetLocation(string location)
     {
         try
@@ -62,9 +64,11 @@ internal sealed class DiscordPresenceService : IDisposable
         catch { return string.Empty; }
     }
 
-    // Context media (page đẩy khi chọn video/project, quét, nghe): tên video
-    // hiện khi có job, tên project Edit hiện khi rảnh ở tab Edit. Sticky cho
-    // tới khi context mới đè (không tự xóa để presence không chớp tắt).
+    // Media context (pages push this when a video/project is selected, when
+    // scanning, when listening): the video name shows while a job runs, and
+    // the Edit project name shows when idle on the Edit tab. Sticky until new
+    // context overrides it (never cleared on its own, so presence does not
+    // flicker off).
     public void SetContext(string? video, string? project)
     {
         try
@@ -112,8 +116,9 @@ internal sealed class DiscordPresenceService : IDisposable
         JobSnapshot? active = null;
         try { active = _application.Jobs.ActiveSnapshots().FirstOrDefault(); }
         catch { }
-        // Mốc elapsed DUY NHẤT từ lúc mở app (user chốt): chuyển tab, bấm gì,
-        // job bắt đầu/kết thúc cũng không reset; chỉ tắt/mở app mới đếm lại.
+        // The ONLY elapsed mark since app launch (as the user decided):
+        // switching tabs, pressing anything, or a job starting/finishing never
+        // resets it; only closing/reopening the app starts the count again.
         string payload;
         var (video, project) = CurrentContext();
         if (active is null)

@@ -16,10 +16,7 @@ internal static class EditorLicensedVoiceProfileContract
         var tests = field.GetValue(null) as List<(string Name, Func<Task> Test)>
             ?? throw new InvalidOperationException("Core contract list type drifted");
 
-        Replace(tests,
-            "local NghiTTS manifest and rhythm grouping stay pinned",
-            "local Ngọc Huyền hashes and whole-cue synthesis stay pinned",
-            VerifyVoiceProfileAsync);
+        tests.Add(("local VieNeu hashes and whole-cue synthesis stay pinned", VerifyVoiceProfileAsync));
         Replace(tests,
             "editor project persists, isolates source drift and quarantines corrupt state",
             "editor project persists, invalidates stale TTS, isolates source drift and quarantines corrupt state",
@@ -44,15 +41,18 @@ internal static class EditorLicensedVoiceProfileContract
         var assembly = typeof(VideoEditorService).Assembly;
         var installer = assembly.GetType("BiliSubStudio.Core.Editor.LocalTtsInstaller")!;
         static string Constant(Type type, string name) => type.GetField(name, BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public)!.GetRawConstantValue()!.ToString()!;
-        Equal("nghi-tts-1.0.0", Constant(installer, "EngineVersion"));
-        Equal("nghimestudio/nghitts", Constant(installer, "ModelRepository"));
-        Equal("2140977786d76d834736c059dacfa553d4931dac2b2c7aaaea438bb2aa9da697", Constant(installer, "ModelRevision"));
-        Equal("ngoc_huyen", Constant(installer, "Voice"));
-        var worker = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "tts-worker.py"));
-        True(worker.Contains(Constant(installer, "ModelRevision"), StringComparison.Ordinal), "worker model SHA drifted");
-        True(worker.Contains(Constant(installer, "ConfigSha256"), StringComparison.Ordinal), "worker config SHA drifted");
+        Equal("vieneu-tts", Constant(installer, "Engine"));
+        Equal("vieneu-v3-turbo-1", Constant(installer, "EngineVersion"));
+        Equal("61b85e3d937fbbacb387714180e8182823512523", Constant(installer, "ModelRevision"));
+        Equal("whole-cue-vieneu-natural-first-v1", Constant(installer, "TimingAlgorithm"));
+        Equal("vieneu_ngoc_huyen", Constant(installer, "Voice"));
+        var worker = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "vieneu-worker.py"));
+        True(worker.Contains(Constant(installer, "ModelRevision"), StringComparison.Ordinal), "worker model revision drifted");
         True(worker.Contains(Constant(installer, "TimingAlgorithm"), StringComparison.Ordinal), "worker voice timing revision drifted");
-        True(!worker.Contains("Kokoro", StringComparison.Ordinal) && !worker.Contains("synth_sine", StringComparison.Ordinal),
+        True(worker.Contains("ENGINE_VERSION = \"" + Constant(installer, "EngineVersion") + "\"", StringComparison.Ordinal),
+            "worker engine version drifted");
+        True(!worker.Contains("Kokoro", StringComparison.Ordinal) && !worker.Contains("synth_sine", StringComparison.Ordinal)
+            && !worker.Contains("nghi-tts", StringComparison.Ordinal) && !worker.Contains("nghimestudio/nghitts", StringComparison.Ordinal),
             "retired or synthetic runtime entered production");
         var service = assembly.GetType("BiliSubStudio.Core.Editor.LocalTtsService")!;
         var method = service.GetMethod("BuildWholeCue", BindingFlags.Static | BindingFlags.NonPublic)!;
@@ -61,7 +61,7 @@ internal static class EditorLicensedVoiceProfileContract
         var timing = new EditorCueSpeechTiming(cue.Id, 1, 5, 1.5, 3.5, .5, 1.5,
             [new EditorWordTiming("你好", 1.5, 2, .9), new EditorWordTiming("朋友", 2.5, 3.5, .9)],
             [new EditorPauseTiming(2, 2.5)], "uncertain", 0, 0);
-        var whole = method.Invoke(null, [cue, "ngoc_huyen", timing])!;
+        var whole = method.Invoke(null, [cue, "vieneu_ngoc_huyen", timing])!;
         var type = whole.GetType();
         Equal(cue.Id, type.GetProperty("Id")!.GetValue(whole));
         Equal(1d, type.GetProperty("CueStart")!.GetValue(whole));
@@ -71,11 +71,11 @@ internal static class EditorLicensedVoiceProfileContract
         Equal("srt-fallback", type.GetProperty("TimingSource")!.GetValue(whole));
         Equal(cue.VietnameseText, type.GetProperty("Text")!.GetValue(whole));
         True(type.GetProperty("Groups") is null, "whole cue must not encode Whisper pause groups");
-        var fallback = method.Invoke(null, [cue, "ngoc_huyen", timing with { Words = [] }])!;
+        var fallback = method.Invoke(null, [cue, "vieneu_ngoc_huyen", timing with { Words = [] }])!;
         Equal(1d, type.GetProperty("VoiceStart")!.GetValue(fallback));
         Equal(5d, type.GetProperty("VoiceEnd")!.GetValue(fallback));
         Equal("srt-fallback", type.GetProperty("TimingSource")!.GetValue(fallback));
-        var boundaryHalo = method.Invoke(null, [cue, "ngoc_huyen", timing with
+        var boundaryHalo = method.Invoke(null, [cue, "vieneu_ngoc_huyen", timing with
         {
             Words = [new EditorWordTiming("neighbor", .92, .987, .9)],
             Pauses = [], SpeechStart = .92, SpeechEnd = .987,
@@ -83,7 +83,7 @@ internal static class EditorLicensedVoiceProfileContract
         Equal(1d, type.GetProperty("VoiceStart")!.GetValue(boundaryHalo));
         Equal(5d, type.GetProperty("VoiceEnd")!.GetValue(boundaryHalo));
         Equal("srt-fallback", type.GetProperty("TimingSource")!.GetValue(boundaryHalo));
-        var partialOverlap = method.Invoke(null, [cue, "ngoc_huyen", timing with
+        var partialOverlap = method.Invoke(null, [cue, "vieneu_ngoc_huyen", timing with
         {
             Words = [new EditorWordTiming("crossing", .95, 1.2, .9)],
             Pauses = [], SpeechStart = .95, SpeechEnd = 1.2,
@@ -94,7 +94,7 @@ internal static class EditorLicensedVoiceProfileContract
         VerifyVoiceWavFrames(service);
         VerifyNativeRateMetadata(service);
         VerifySentenceGroupMetadata(service);
-        var outside = method.Invoke(null, [cue, "ngoc_huyen", timing with
+        var outside = method.Invoke(null, [cue, "vieneu_ngoc_huyen", timing with
         {
             Words = [new EditorWordTiming("outside", 6, 7, .9)],
             Pauses = []
@@ -104,7 +104,7 @@ internal static class EditorLicensedVoiceProfileContract
         {
             try
             {
-                method.Invoke(null, [cue, "ngoc_huyen", invalid]);
+                method.Invoke(null, [cue, "vieneu_ngoc_huyen", invalid]);
                 throw new InvalidOperationException("Mismatched cue timing was silently accepted");
             }
             catch (TargetInvocationException error) when (error.InnerException is InvalidDataException) { }
@@ -213,65 +213,15 @@ internal static class EditorLicensedVoiceProfileContract
 
     private static void VerifyNativeRateMetadata(Type service)
     {
-        // Metadata-only fixture. Does not synthesize or claim audible speech.
+        // Metadata-only fixtures. No speech is synthesized or claimed here.
         var cueType = service.GetNestedType("TtsWorkerCue", BindingFlags.NonPublic)!;
         var validate = service.GetMethod("ValidateNativeSynthesis", BindingFlags.Static | BindingFlags.NonPublic)!;
         var json = new System.Text.Json.JsonSerializerOptions { PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.SnakeCaseLower };
-        var fixture = new Dictionary<string, object>
-        {
-            ["fit_method"] = "piper-length-scale", ["raw_duration"] = 2.4, ["frames"] = 44100L,
-            ["source_frames"] = 43800L, ["generated_frames"] = 43800L,
-            ["trimmed_silence_frames"] = 0L, ["padding_frames"] = 300L, ["base_length_scale"] = 1d,
-            ["length_scale"] = .65d, ["synthesis_attempts"] = 2, ["synthesis_calls"] = 2, ["cache_hit"] = false,
-            ["native_reference_frames"] = 59130L, ["group_native_frames"] = 0L,
-            ["actual_speed_factor"] = 1.35d,
-        };
         object Cue(Dictionary<string, object> values) => System.Text.Json.JsonSerializer.Deserialize(
             System.Text.Json.JsonSerializer.Serialize(values), cueType, json)!;
-        Equal(true, validate.Invoke(null, [Cue(fixture), 44100L, false, 22050, false, 0]));
-        Equal(true, validate.Invoke(null, [Cue(new(fixture) { ["source_frames"] = 43100L,
-            ["generated_frames"] = 43100L, ["padding_frames"] = 1000L,
-            ["native_reference_frames"] = 58185L }), 44100L, false, 22050, false, 0]));
-        Equal(true, validate.Invoke(null, [Cue(new(fixture) { ["source_frames"] = 45000L,
-            ["generated_frames"] = 44100L, ["trimmed_silence_frames"] = 900L, ["padding_frames"] = 0L,
-            ["native_reference_frames"] = 59535L }), 44100L, false, 22050, false, 0]));
-        Equal(true, validate.Invoke(null, [Cue(new(fixture) { ["timing_source"] = "sentence-group",
-             ["length_scale"] = .50d, ["group_native_frames"] = 59130L,
-             ["actual_speed_factor"] = 1.35d }), 44100L, false, 22050, false, 0]));
-        Equal(true, validate.Invoke(null, [Cue(new(fixture) { ["timing_source"] = "sentence-group",
-             ["length_scale"] = .60d, ["group_native_frames"] = 59130L,
-             ["actual_speed_factor"] = 1.35d, ["synthesis_attempts"] = 12,
-             ["synthesis_calls"] = 12 }), 44100L, false, 22050, false, 0]));
-        var tempo = new Dictionary<string, object>
+        var natural = new Dictionary<string, object>
         {
-            ["fit_method"] = "piper-atempo", ["raw_duration"] = 90000d / 22050,
-            ["frames"] = 44100L, ["source_frames"] = 90000L, ["tempo_input_frames"] = 88000L,
-            ["generated_frames"] = 40000L, ["trimmed_silence_frames"] = 2000L, ["padding_frames"] = 4100L,
-            ["base_length_scale"] = 1d, ["length_scale"] = .30d, ["tempo_factor"] = 2.2,
-            ["tempo_attempts"] = 1, ["synthesis_attempts"] = 12, ["synthesis_calls"] = 12,
-            ["native_reference_frames"] = 80000L, ["group_native_frames"] = 0L,
-            ["actual_speed_factor"] = 2d,
-            ["cache_hit"] = false, ["status"] = "review", ["timing_source"] = "srt-fallback",
-        };
-        Equal(true, validate.Invoke(null, [Cue(tempo), 44100L, false, 22050, false, 0]));
-        Equal(true, validate.Invoke(null, [Cue(new(fixture) { ["synthesis_calls"] = 12 }), 44100L, false, 22050, false, 0]));
-        // 10/10 vụ cue thật calls 17/attempts 5 rớt master oan: calls là tổng
-        // mọi phase, attempts chỉ phase cuối — bound mới chấp nhận.
-        Equal(true, validate.Invoke(null, [Cue(new(fixture) { ["synthesis_attempts"] = 5, ["synthesis_calls"] = 17 }), 44100L, false, 22050, false, 3996]));
-        // Cue thật thứ hai calls 11/attempts 1: lọt khít dạng dư tuyệt đối.
-        // attempts=1 nên phải giữ metadata lượt tự nhiên nguyên vẹn
-        // (length_scale==base, raw==source/sr, native==generated, speed 1.0).
-        // Trả false = metadata hợp lệ và không cần review (đúng bản chất cue).
-        Equal(false, validate.Invoke(null, [Cue(new(fixture) { ["length_scale"] = 1d, ["raw_duration"] = 43800d / 22050,
-            ["native_reference_frames"] = 43800L, ["actual_speed_factor"] = 1d,
-            ["synthesis_attempts"] = 1, ["synthesis_calls"] = 11 }), 44100L, false, 22050, false, 1274]));
-        Equal(true, validate.Invoke(null, [Cue(new(fixture) { ["cache_hit"] = true, ["synthesis_calls"] = 0 }), 44100L, false, 22050, false, 0]));
-        // VieNeu engine methods (30/09): natural + atempo accepted; atempo ngay
-        // lượt 1 được miễn điều kiện native==generated (không vòng scale nên
-        // native != generated là trung thực — vụ cue5 im oan). Piper giữ nghiêm.
-        var vnatural = new Dictionary<string, object>
-        {
-            ["fit_method"] = "vieneu-natural", ["raw_duration"] = 2.5d, ["frames"] = 55875L,
+            ["fit_method"] = "vieneu-natural", ["raw_duration"] = 55125d / 22050, ["frames"] = 55875L,
             ["source_frames"] = 55125L, ["generated_frames"] = 55125L,
             ["trimmed_silence_frames"] = 0L, ["padding_frames"] = 750L,
             ["base_length_scale"] = 1d, ["length_scale"] = 1d, ["synthesis_attempts"] = 3,
@@ -280,173 +230,103 @@ internal static class EditorLicensedVoiceProfileContract
             ["actual_speed_factor"] = 1d, ["tempo_factor"] = 0d, ["tempo_input_frames"] = 0L,
             ["tempo_attempts"] = 0, ["status"] = "fit", ["timing_source"] = "srt-fallback",
         };
-        Equal(false, validate.Invoke(null, [Cue(vnatural), 55875L, false, 22050, true, 0]));
-        var vtempo1 = new Dictionary<string, object>
+        Equal(false, validate.Invoke(null, [Cue(natural), 55875L, false, 22050, 0]));
+        var tempo = new Dictionary<string, object>(natural)
         {
-            ["fit_method"] = "vieneu-atempo", ["raw_duration"] = 3.5d, ["frames"] = 55875L,
+            ["fit_method"] = "vieneu-atempo", ["raw_duration"] = 3.5d,
             ["source_frames"] = 77175L, ["generated_frames"] = 55125L,
-            ["trimmed_silence_frames"] = 0L, ["padding_frames"] = 750L,
-            ["base_length_scale"] = 1d, ["length_scale"] = 1d, ["synthesis_attempts"] = 1,
-            ["synthesis_calls"] = 1, ["cache_hit"] = false,
-            ["native_reference_frames"] = 77175L, ["group_native_frames"] = 0L,
-            ["actual_speed_factor"] = 1.4d,
+            ["native_reference_frames"] = 77175L, ["actual_speed_factor"] = 1.4d,
             ["tempo_factor"] = 1.4d, ["tempo_input_frames"] = 77175L, ["tempo_attempts"] = 1,
-            ["status"] = "review", ["timing_source"] = "srt-fallback",
+            ["synthesis_attempts"] = 1, ["synthesis_calls"] = 1, ["status"] = "review",
         };
-        Equal(true, validate.Invoke(null, [Cue(vtempo1), 55875L, false, 22050, true, 0]));
-        // Luật 01/10 (chỉ VieNeu): atempo quá 1.5x bị từ chối (trước đây tới
-        // 100x vẫn lọt — vụ 312 cue >2x, max 7.63x). Piper giữ nguyên.
-        var vtempoTooFast = new Dictionary<string, object>(vtempo1)
+        Equal(true, validate.Invoke(null, [Cue(tempo), 55875L, false, 22050, 0]));
+        var tooFast = new Dictionary<string, object>(tempo)
         {
-            ["source_frames"] = 88200L, ["generated_frames"] = 55125L,
-            ["native_reference_frames"] = 88200L, ["actual_speed_factor"] = 1.6d,
-            ["tempo_factor"] = 1.6d, ["tempo_input_frames"] = 88200L, ["raw_duration"] = 4d,
+            ["source_frames"] = 88200L, ["native_reference_frames"] = 88200L,
+            ["actual_speed_factor"] = 1.6d, ["tempo_factor"] = 1.6d,
+            ["tempo_input_frames"] = 88200L, ["raw_duration"] = 4d,
         };
-        try
+        ThrowsInvalid(validate, [Cue(tooFast), 55875L, false, 22050, 0], "VieNeu tempo over 1.5x was accepted");
+        var micro = new Dictionary<string, object>(tempo)
         {
-            validate.Invoke(null, [Cue(vtempoTooFast), 55875L, false, 22050, true, 0]);
-            throw new InvalidOperationException("VieNeu tempo over 1.5x was accepted");
-        }
-        catch (TargetInvocationException error) when (error.InnerException is InvalidDataException) { }
-        // Micro-band 02/10 2.0x, user 07/10 nghe thử mở 2.5x: khung <1.1s
-        // (24255 frames) chấp nhận tới 2.51x + review; quá 2.51x hoặc khung
-        // dài vẫn từ chối.
-        var vtempoMicro = new Dictionary<string, object>
-        {
-            ["fit_method"] = "vieneu-atempo", ["raw_duration"] = 23800d / 22050, ["frames"] = 14332L,
+            ["raw_duration"] = 23800d / 22050, ["frames"] = 14332L, ["target_frames"] = 14332L,
             ["source_frames"] = 23800L, ["generated_frames"] = 14000L,
             ["trimmed_silence_frames"] = 0L, ["padding_frames"] = 332L,
-            ["base_length_scale"] = 1d, ["length_scale"] = 1d, ["synthesis_attempts"] = 2,
-            ["synthesis_calls"] = 2, ["cache_hit"] = false,
-            ["native_reference_frames"] = 23800L, ["group_native_frames"] = 0L,
-            ["actual_speed_factor"] = 1.7d,
-            ["tempo_factor"] = 1.7d, ["tempo_input_frames"] = 23800L, ["tempo_attempts"] = 1,
-            ["status"] = "review", ["timing_source"] = "srt-fallback",
+            ["native_reference_frames"] = 23800L, ["actual_speed_factor"] = 1.7d,
+            ["tempo_factor"] = 1.7d, ["tempo_input_frames"] = 23800L, ["synthesis_attempts"] = 2,
+            ["synthesis_calls"] = 2,
         };
-        Equal(true, validate.Invoke(null, [Cue(vtempoMicro), 14332L, false, 22050, true, 0]));
-        // Khung 1.0s pace 1.7x (lớp cue 0.7-1.1s còn rớt) cũng trong micro-band.
-        var vtempoMicroWide = new Dictionary<string, object>(vtempoMicro)
-        {
-            ["frames"] = 22050L, ["generated_frames"] = 21600L, ["padding_frames"] = 450L,
-            ["source_frames"] = 36720L, ["native_reference_frames"] = 36720L,
-            ["actual_speed_factor"] = 1.7d, ["tempo_factor"] = 1.7d,
-            ["tempo_input_frames"] = 36720L, ["raw_duration"] = 36720d / 22050,
-        };
-        Equal(true, validate.Invoke(null, [Cue(vtempoMicroWide), 22050L, false, 22050, true, 0]));
-        // Micro 2.4x trong trần 2.5x mới thì nhận + review.
-        var vtempoMicroFast = new Dictionary<string, object>(vtempoMicro)
-        {
-            ["frames"] = 14332L, ["generated_frames"] = 14000L, ["padding_frames"] = 332L,
-            ["source_frames"] = 33600L, ["native_reference_frames"] = 33600L,
-            ["actual_speed_factor"] = 2.4d, ["tempo_factor"] = 2.4d,
-            ["tempo_input_frames"] = 33600L, ["raw_duration"] = 33600d / 22050,
-        };
-        Equal(true, validate.Invoke(null, [Cue(vtempoMicroFast), 14332L, false, 22050, true, 0]));
-        var vtempoMicroTooFast = new Dictionary<string, object>(vtempoMicro)
+        Equal(true, validate.Invoke(null, [Cue(micro), 14332L, false, 22050, 0]));
+        var microTooFast = new Dictionary<string, object>(micro)
         {
             ["source_frames"] = 29250L, ["native_reference_frames"] = 29250L,
             ["generated_frames"] = 11250L, ["padding_frames"] = 3082L,
             ["actual_speed_factor"] = 3.1d, ["tempo_factor"] = 3.1d,
             ["tempo_input_frames"] = 29250L, ["raw_duration"] = 29250d / 22050,
         };
-        try
+        ThrowsInvalid(validate, [Cue(microTooFast), 14332L, false, 22050, 0], "VieNeu micro tempo over 3.0x was accepted");
+        var slow = new Dictionary<string, object>(tempo)
         {
-            validate.Invoke(null, [Cue(vtempoMicroTooFast), 14332L, false, 22050, true, 0]);
-            throw new InvalidOperationException("VieNeu micro tempo over 3.0x was accepted");
-        }
-        catch (TargetInvocationException error) when (error.InnerException is InvalidDataException) { }
-        var vtempoLongTooFast = new Dictionary<string, object>(vtempoMicro)
-        {
-            ["frames"] = 55875L, ["generated_frames"] = 55120L, ["padding_frames"] = 755L,
-            ["source_frames"] = 93704L, ["native_reference_frames"] = 93704L,
-            ["actual_speed_factor"] = 1.7d, ["tempo_factor"] = 1.7d,
-            ["tempo_input_frames"] = 93704L, ["raw_duration"] = 93704d / 22050,
+            ["source_frames"] = 44100L, ["native_reference_frames"] = 44100L,
+            ["actual_speed_factor"] = .8d, ["tempo_factor"] = .8d,
+            ["tempo_input_frames"] = 44100L, ["raw_duration"] = 2d,
         };
-        try
+        Equal(true, validate.Invoke(null, [Cue(slow), 55875L, false, 22050, 0]));
+        var tooSlow = new Dictionary<string, object>(slow)
         {
-            validate.Invoke(null, [Cue(vtempoLongTooFast), 55875L, false, 22050, true, 0]);
-            throw new InvalidOperationException("VieNeu long-window tempo over 1.5x was accepted");
-        }
-        catch (TargetInvocationException error) when (error.InnerException is InvalidDataException) { }
-        // Stretch cue rộng (L4): pace chậm tới 1/1.4 vẫn hợp lệ + review;
-        // chậm hơn thì từ chối.
-        var vtempoSlow = new Dictionary<string, object>(vtempo1)
-        {
-            ["source_frames"] = 44100L, ["generated_frames"] = 55125L,
-            ["native_reference_frames"] = 44100L, ["actual_speed_factor"] = 0.8d,
-            ["tempo_factor"] = 0.8d, ["tempo_input_frames"] = 44100L, ["raw_duration"] = 2d,
+            ["source_frames"] = 33075L, ["native_reference_frames"] = 33075L,
+            ["actual_speed_factor"] = .6d, ["tempo_factor"] = .6d,
+            ["tempo_input_frames"] = 33075L, ["raw_duration"] = 1.5d,
         };
-        Equal(true, validate.Invoke(null, [Cue(vtempoSlow), 55875L, false, 22050, true, 0]));
-        var vtempoTooSlow = new Dictionary<string, object>(vtempoSlow)
-        {
-            ["source_frames"] = 33075L,
-            ["native_reference_frames"] = 33075L, ["actual_speed_factor"] = 0.6d,
-            ["tempo_factor"] = 0.6d, ["tempo_input_frames"] = 33075L, ["raw_duration"] = 1.5d,
-        };
-        try
-        {
-            validate.Invoke(null, [Cue(vtempoTooSlow), 55875L, false, 22050, true, 0]);
-            throw new InvalidOperationException("VieNeu stretch below 1/1.4x was accepted");
-        }
-        catch (TargetInvocationException error) when (error.InnerException is InvalidDataException) { }
-        var vtempoDegenerate = new Dictionary<string, object>(vtempo1)
+        ThrowsInvalid(validate, [Cue(tooSlow), 55875L, false, 22050, 0], "VieNeu stretch below 1/1.4x was accepted");
+        var degenerate = new Dictionary<string, object>(tempo)
         {
             ["generated_frames"] = 88200L, ["padding_frames"] = 0L, ["frames"] = 88200L,
             ["tempo_factor"] = 1d,
         };
-        try
+        ThrowsInvalid(validate, [Cue(degenerate), 88200L, false, 22050, 0], "Degenerate VieNeu tempo was accepted");
+        var naturalMismatch = new Dictionary<string, object>(natural)
         {
-            validate.Invoke(null, [Cue(vtempoDegenerate), 88200L, false, 22050, true, 0]);
-            throw new InvalidOperationException("Degenerate vieneu tempo was accepted");
-        }
-        catch (TargetInvocationException error) when (error.InnerException is InvalidDataException) { }
-        var piperTempo1 = new Dictionary<string, object>(vtempo1) { ["fit_method"] = "piper-atempo" };
-        try
-        {
-            validate.Invoke(null, [Cue(piperTempo1), 55875L, false, 22050, false, 0]);
-            throw new InvalidOperationException("Piper attempt-1 native mismatch was accepted");
-        }
-        catch (TargetInvocationException error) when (error.InnerException is InvalidDataException) { }
-        var invalid = new Dictionary<string, object>[]
-        {
-            new(fixture) { ["fit_method"] = "atempo" },
-            new(fixture) { ["generated_frames"] = 0L, ["padding_frames"] = 44100L },
-            new(fixture) { ["generated_frames"] = 43700L },
-            new(fixture) { ["source_frames"] = 45000L, ["trimmed_silence_frames"] = 899L },
-            new(fixture) { ["base_length_scale"] = 0d },
-            new(fixture) { ["length_scale"] = .299 },
-            new(fixture) { ["timing_source"] = "sentence-group", ["length_scale"] = .299,
-                ["group_native_frames"] = 59130L },
-            new(fixture) { ["timing_source"] = "sentence-group", ["length_scale"] = .60,
-                ["group_native_frames"] = 59130L, ["actual_speed_factor"] = 1.35d,
-                ["synthesis_attempts"] = 13, ["synthesis_calls"] = 13 },
-            new(fixture) { ["synthesis_calls"] = 1 },
-            new(fixture) { ["synthesis_attempts"] = 1, ["synthesis_calls"] = 1 },
-            new(fixture) { ["cache_hit"] = true },
+            ["synthesis_attempts"] = 1, ["synthesis_calls"] = 1,
+            ["native_reference_frames"] = 55126L,
         };
-        foreach (var values in invalid)
+        ThrowsInvalid(validate, [Cue(naturalMismatch), 55875L, false, 22050, 0],
+            "Natural attempt-1 native mismatch was accepted");
+        var overflow = new Dictionary<string, object>(natural)
         {
-            try
-            {
-                validate.Invoke(null, [Cue(values), 44100L, false, 22050, false, 0]);
-                throw new InvalidOperationException("Invalid native synthesis metadata was accepted");
-            }
-            catch (TargetInvocationException error) when (error.InnerException is InvalidDataException) { }
-        }
-        foreach (var values in new[]
+            ["frames"] = 66900L, ["generated_frames"] = 66150L, ["source_frames"] = 66150L,
+            ["native_reference_frames"] = 66150L, ["overflow_frames"] = 11025L,
+        };
+        Equal(false, validate.Invoke(null, [Cue(overflow), 55875L, false, 22050, 0]));
+        var silence = new Dictionary<string, object>
         {
-            new Dictionary<string, object>(tempo) { ["tempo_factor"] = 2.1d },
-            new Dictionary<string, object>(tempo) { ["tempo_input_frames"] = 87999L },
+            ["fit_method"] = "silence-fallback", ["frames"] = 55875L, ["target_frames"] = 55875L,
+            ["source_frames"] = 0L, ["generated_frames"] = 0L, ["trimmed_silence_frames"] = 0L,
+            ["padding_frames"] = 55875L, ["synthesis_attempts"] = 1, ["synthesis_calls"] = 1,
+            ["cache_hit"] = false, ["native_reference_frames"] = 0L, ["group_native_frames"] = 0L,
+            ["actual_speed_factor"] = 0d, ["tempo_factor"] = 0d, ["tempo_input_frames"] = 0L,
+            ["tempo_attempts"] = 0, ["status"] = "review", ["voice_review"] = true,
+            ["timing_source"] = "srt-fallback",
+        };
+        Equal(true, validate.Invoke(null, [Cue(silence), 55875L, false, 22050, 0]));
+        foreach (var invalid in new[]
+        {
+            new Dictionary<string, object>(natural) { ["fit_method"] = "piper-length-scale" },
+            new Dictionary<string, object>(natural) { ["fit_method"] = "piper-atempo" },
+            new Dictionary<string, object>(natural) { ["generated_frames"] = 0L, ["padding_frames"] = 55875L },
+            new Dictionary<string, object>(natural) { ["base_length_scale"] = 0d },
+            new Dictionary<string, object>(natural) { ["length_scale"] = .299 },
+            new Dictionary<string, object>(natural) { ["synthesis_attempts"] = 0 },
+            new Dictionary<string, object>(natural) { ["synthesis_attempts"] = 13, ["synthesis_calls"] = 13 },
+            new Dictionary<string, object>(natural) { ["cache_hit"] = true, ["synthesis_calls"] = 1 },
+            new Dictionary<string, object>(tempo) { ["tempo_input_frames"] = 77174L },
+            new Dictionary<string, object>(tempo) { ["tempo_factor"] = 1.5d },
             new Dictionary<string, object>(tempo) { ["tempo_attempts"] = 0 },
             new Dictionary<string, object>(tempo) { ["tempo_attempts"] = 7 },
         })
         {
-            try
-            {
-                validate.Invoke(null, [Cue(values), 44100L, false, 22050, false, 0]);
-                throw new InvalidOperationException("Invalid tempo fallback metadata was accepted");
-            }
-            catch (TargetInvocationException error) when (error.InnerException is InvalidDataException) { }
+            ThrowsInvalid(validate, [Cue(invalid), 55875L, false, 22050, 0],
+                "Invalid VieNeu native synthesis metadata was accepted");
         }
     }
 
@@ -476,61 +356,52 @@ internal static class EditorLicensedVoiceProfileContract
             actual.SetValue(System.Text.Json.JsonSerializer.Deserialize(
                 System.Text.Json.JsonSerializer.Serialize(values), workerType, json), index);
             expected.SetValue(Activator.CreateInstance(manifestType,
-                [$"cue-{index + 9}", starts[index], ends[index], "ngoc_huyen", texts[index],
+                [$"cue-{index + 9}", starts[index], ends[index], "vieneu_ngoc_huyen", texts[index],
                     starts[index] + .05, ends[index] - .05, "whisper"]), index);
             cursor += frames[index];
         }
-        validate.Invoke(null, [actual, expected, 22050, false]);
-        // Luật 01/10: cùng tốc độ 1.35x thì VieNeu cũng nhận; nhóm VieNeu
-        // 2.0x / 0.5x (đo thật khớp khai báo) thì VieNeu từ chối (Piper giữ
-        // trần 100x cũ — không đụng).
-        validate.Invoke(null, [actual, expected, 22050, true]);
+        validate.Invoke(null, [actual, expected, 22050]);
         foreach (var badSpeed in new[] { 2.0d, 0.5d })
         {
-            // measuredSpeed = groupNative/sum(generated) phải khớp speed khai
-            // báo thì mới tới được check bound (không là rớt check khác).
             var badNative = (long)Math.Round(badSpeed * (17640L + 20812L + 24866L + 24882L));
             var fast = Array.CreateInstance(workerType, 4);
-            var c2 = 317520L;
+            var position = 317520L;
             for (var index = 0; index < 4; index++)
             {
                 fast.SetValue(System.Text.Json.JsonSerializer.Deserialize(
                     System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object>
                     {
                         ["id"] = $"cue-{index + 9}", ["timing_source"] = "sentence-group",
-                        ["clip_start_sample"] = c2, ["target_frames"] = frames[index],
+                        ["clip_start_sample"] = position, ["target_frames"] = frames[index],
                         ["generated_frames"] = frames[index], ["native_reference_frames"] = badNative,
                         ["group_native_frames"] = badNative, ["actual_speed_factor"] = badSpeed,
                     }), workerType, json), index);
-                c2 += frames[index];
+                position += frames[index];
             }
-            try
-            {
-                validate.Invoke(null, [fast, expected, 22050, true]);
-                throw new InvalidOperationException($"VieNeu group speed {badSpeed}x was accepted");
-            }
-            catch (TargetInvocationException error) when (error.InnerException is InvalidDataException) { }
+            ThrowsInvalid(validate, [fast, expected, 22050], $"Invalid VieNeu group speed {badSpeed}x was accepted");
         }
-
         var broken = Array.CreateInstance(workerType, 4);
         Array.Copy(actual, broken, 4);
-        var invalid = new Dictionary<string, object>
-        {
-            ["id"] = "cue-11", ["timing_source"] = "sentence-group",
-            ["clip_start_sample"] = 355973L, ["target_frames"] = frames[2],
-            ["generated_frames"] = frames[2], ["native_reference_frames"] = 119070L,
-            ["group_native_frames"] = 119070L, ["actual_speed_factor"] = 1.35d,
-        };
         broken.SetValue(System.Text.Json.JsonSerializer.Deserialize(
-            System.Text.Json.JsonSerializer.Serialize(invalid), workerType, json), 2);
+            System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object>
+            {
+                ["id"] = "cue-11", ["timing_source"] = "sentence-group",
+                ["clip_start_sample"] = 355973L, ["target_frames"] = frames[2],
+                ["generated_frames"] = frames[2], ["native_reference_frames"] = 119070L,
+                ["group_native_frames"] = 119070L, ["actual_speed_factor"] = 1.35d,
+            }), workerType, json), 2);
+        ThrowsInvalid(validate, [broken, expected, 22050], "Discontinuous sentence-group timing was accepted");
+    }
+
+    private static void ThrowsInvalid(MethodInfo method, object?[] arguments, string message)
+    {
         try
         {
-            validate.Invoke(null, [broken, expected, 22050, false]);
-            throw new InvalidOperationException("Discontinuous sentence-group timing was accepted");
+            method.Invoke(null, arguments);
+            throw new InvalidOperationException(message);
         }
         catch (TargetInvocationException error) when (error.InnerException is InvalidDataException) { }
     }
-
     private static async Task VerifyEditorProjectAsync()
     {
         var root = Path.Combine(Path.GetTempPath(), $"bilisub-csharp-vais-project-{Guid.NewGuid():N}");
@@ -583,8 +454,8 @@ internal static class EditorLicensedVoiceProfileContract
             var ttsManifestSha = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(await File.ReadAllBytesAsync(ttsManifest)));
 
             var validTts = new EditorTtsProject(
-                "complete", "nghi-tts", "nghi-tts-1.0.0",
-                "ngoc_huyen", "ngoc_huyen",
+                "complete", "vieneu-tts", "vieneu-v3-turbo-1",
+                "vieneu_ngoc_huyen", "vieneu_ngoc_huyen",
                 ttsManifest, ttsManifestSha, new EditorVoiceTrack(voicePath, 0, 120), 1, 1,
                 [new EditorTtsCueWindow(subtitle.Cues[0].Id, 1, 2, "srt-fallback", "review")]);
             await store.SaveAsync(created with
@@ -616,7 +487,7 @@ internal static class EditorLicensedVoiceProfileContract
             Equal("complete", reopened.Speech!.Status);
             Equal(speechSha, reopened.Speech.AnalysisSha256);
             Equal("complete", reopened.Tts!.Status);
-            Equal("nghi-tts", reopened.Tts.Engine);
+            Equal("vieneu-tts", reopened.Tts.Engine);
             Equal("srt-fallback", reopened.Tts.CueWindows![0].TimingSource);
             Equal("female", reopened.VoiceOverrides![subtitle.Cues[0].Id]);
 
@@ -699,10 +570,10 @@ internal static class EditorLicensedVoiceProfileContract
         var voices = installer.GetField("AvailableVoices", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public)?.GetValue(null) as System.Collections.IEnumerable
             ?? throw new InvalidOperationException("AvailableVoices not found");
         var list = voices.Cast<object>().Select(x => x?.ToString() ?? string.Empty).ToArray();
-        Equal(26, list.Length);
-        True(list.Contains("ngoc_huyen", StringComparer.Ordinal), "canonical ngoc_huyen missing from registry");
+        Equal(25, list.Length);
+        True(list.Contains("vieneu_ngoc_huyen", StringComparer.Ordinal), "canonical default voice missing from registry");
         True(list.Contains("vieneu_hai_dang", StringComparer.Ordinal), "vieneu slug missing from registry");
-        True(list.Distinct(StringComparer.Ordinal).Count() == 26, "voice registry contains duplicate IDs");
+        True(list.Distinct(StringComparer.Ordinal).Count() == 25, "voice registry contains duplicate IDs");
         var catalog = assembly.GetType("BiliSubStudio.Core.Editor.TtsVoiceCatalog")
             ?? throw new InvalidOperationException("missing TtsVoiceCatalog type");
         string Fold(string label) => (string)catalog.GetMethod("FoldSlug",
@@ -730,10 +601,10 @@ internal static class EditorLicensedVoiceProfileContract
             ?? throw new InvalidOperationException("missing ValidateRequest");
         var canonical = installer.GetMethod("CanonicalVoiceId", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public)
             ?? throw new InvalidOperationException("missing CanonicalVoiceId");
-        // UI sends hyphen form ngoc-huyen, backend must accept via canonicalization
-        var hyphen = "ngoc-huyen";
+        // UI sends hyphen form, backend must accept via canonicalization
+        var hyphen = "vieneu-ngoc-huyen";
         var expectedCanonical = canonical.Invoke(null, new object[] { hyphen })?.ToString() ?? string.Empty;
-        Equal("ngoc_huyen", expectedCanonical);
+        Equal("vieneu_ngoc_huyen", expectedCanonical);
         var tmpSource = Path.Combine(Path.GetTempPath(), $"bilisub-voice-reg-{Guid.NewGuid():N}.mp4");
         await File.WriteAllBytesAsync(tmpSource, new byte[] { 1, 2, 3 });
         try
@@ -741,16 +612,16 @@ internal static class EditorLicensedVoiceProfileContract
             // Every registry voice must pass validation (simulates dropdown selection -> request -> ValidateRequest)
             foreach (var vid in list)
             {
-                var req = Activator.CreateInstance(typeof(EditorTtsRequest), new object[] { "voice-reg-test", tmpSource, 4.2, new EditorSubtitleSource("C:\\tmp\\a.srt", 10, 1, new string('0', 64), new[] { new EditorSubtitleCue("c1", "1", "00:00:00,000 --> 00:00:01,000", 0, 1, "你好", "Xin chào") }), "C:\\tmp\\analysis.json", new string('a', 64), vid });
+                var req = Activator.CreateInstance(typeof(EditorTtsRequest), new object[] { "voice-reg-test", tmpSource, 4.2, new EditorSubtitleSource("C:\\tmp\\a.srt", 10, 1, new string('0', 64), new[] { new EditorSubtitleCue("c1", "1", "00:00:00,000 --> 00:00:01,000", 0, 1, "你好", "Xin chào") }), "C:\\tmp\\analysis.json", new string('a', 64), vid, false });
                 try { validate.Invoke(null, new[] { req }); }
                 catch (TargetInvocationException ex) when (ex.InnerException is not null) { throw new InvalidOperationException($"ValidateRequest rejected canonical voice {vid}: {ex.InnerException.Message}", ex.InnerException); }
             }
             // Hyphen form from old UI must also pass via canonicalization
-            var hyphenReq = Activator.CreateInstance(typeof(EditorTtsRequest), new object[] { "voice-reg-test", tmpSource, 4.2, new EditorSubtitleSource("C:\\tmp\\a.srt", 10, 1, new string('0', 64), new[] { new EditorSubtitleCue("c1", "1", "00:00:00,000 --> 00:00:01,000", 0, 1, "你好", "Xin chào") }), "C:\\tmp\\analysis.json", new string('a', 64), hyphen });
+            var hyphenReq = Activator.CreateInstance(typeof(EditorTtsRequest), new object[] { "voice-reg-test", tmpSource, 4.2, new EditorSubtitleSource("C:\\tmp\\a.srt", 10, 1, new string('0', 64), new[] { new EditorSubtitleCue("c1", "1", "00:00:00,000 --> 00:00:01,000", 0, 1, "你好", "Xin chào") }), "C:\\tmp\\analysis.json", new string('a', 64), hyphen, false });
             try { validate.Invoke(null, new[] { hyphenReq }); }
-            catch (TargetInvocationException ex) when (ex.InnerException is InvalidDataException) { throw new InvalidOperationException("hyphen voice ngoc-huyen must pass via canonicalization", ex.InnerException); }
+            catch (TargetInvocationException ex) when (ex.InnerException is InvalidDataException) { throw new InvalidOperationException("hyphen voice vieneu-ngoc-huyen must pass via canonicalization", ex.InnerException); }
             // Unsupported voice must be rejected (do not remove validation)
-            var badReq = Activator.CreateInstance(typeof(EditorTtsRequest), new object[] { "voice-reg-test", tmpSource, 4.2, new EditorSubtitleSource("C:\\tmp\\a.srt", 10, 1, new string('0', 64), new[] { new EditorSubtitleCue("c1", "1", "00:00:00,000 --> 00:00:01,000", 0, 1, "你好", "Xin chào") }), "C:\\tmp\\analysis.json", new string('a', 64), "invalid_voice_xyz" });
+            var badReq = Activator.CreateInstance(typeof(EditorTtsRequest), new object[] { "voice-reg-test", tmpSource, 4.2, new EditorSubtitleSource("C:\\tmp\\a.srt", 10, 1, new string('0', 64), new[] { new EditorSubtitleCue("c1", "1", "00:00:00,000 --> 00:00:01,000", 0, 1, "你好", "Xin chào") }), "C:\\tmp\\analysis.json", new string('a', 64), "invalid_voice_xyz", false });
             var threw = false;
             try { validate.Invoke(null, new[] { badReq }); } catch (TargetInvocationException ex) when (ex.InnerException is InvalidDataException) { threw = true; }
             True(threw, "unsupported voice must be rejected by ValidateRequest");

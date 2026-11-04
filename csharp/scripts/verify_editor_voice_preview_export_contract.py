@@ -78,7 +78,13 @@ current_request = editor.split("private VideoEditRequest CurrentEditRequest(", 1
     "private async void Render_Click", 1
 )[0]
 for token in (
-    "_document.Regions.ToArray(),",
+    # Region times are anchored to the primary source file; the shared request
+    # maps them onto the primary clip so a region extended into segment 2 still
+    # stays valid when Export renders only that source file.
+    "var regions = _timelineClips.Count > 0 && IsPrimaryTimelineClip(_timelineClips[0])",
+    "? RegionsForTimelineClip(_timelineClips[0], 0)",
+    ": _document.Regions.ToArray();",
+    "regions,",
     "subtitle,",
     "_audioSettings,",
     "_voiceTrack,",
@@ -95,10 +101,16 @@ render_project = images.split("private async Task RenderProjectAsync()", 1)[1].s
 )[0]
 require("var subtitle = CompletedSubtitleBurn();" in render_project,
         "VOICE-14 Export must retain the completed-Vietnamese subtitle owner")
-require(render_project.count("var request = CurrentEditRequest(subtitle) with") == 2,
-        "VOICE-14 both Export paths must originate from CurrentEditRequest before locking the output target")
+require(render_project.count("var request = CurrentEditRequest(subtitle) with")
+        + render_project.count("await CurrentComposedEditRequestAsync(subtitle)") == 2,
+        "VOICE-14 both Export paths must originate from the shared request owner before locking the output target")
 require(render_project.count("_jobId = _application.StartEditor(request);") == 2,
         "VOICE-14 both Export paths must render the locked CurrentEditRequest snapshot")
+composed_owner = editor.split("private async Task<VideoEditRequest> CurrentComposedEditRequestAsync(", 1)[1].split(
+    "private async void Render_Click", 1
+)[0]
+require("var request = CurrentEditRequest(subtitle);" in composed_owner,
+        "VOICE-14 the composed Export request must still originate from CurrentEditRequest")
 
 # Full Export and sliced Preview share the same visual filter owner and ASS builder.
 export_run = video_editor.split("public async Task<VideoEditResult> RunAsync(", 1)[1].split(

@@ -45,7 +45,7 @@ project_store = read(PROJECT_STORE)
 local_tts = read(LOCAL_TTS)
 event_map = read(EVENT_MAP)
 
-# VOICE-10 — cue override Auto/Nam/Nữ.
+# VOICE-10 — cue override Auto/Male/Female.
 # One ComboBox owns the per-cue routing override. Auto means "no override".
 # Male/female are persisted project values and must win over Whisper heuristics
 # on the next local TTS generation. Any override change invalidates the old TTS

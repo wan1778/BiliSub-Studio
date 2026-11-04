@@ -110,6 +110,11 @@
                 <Setter Property="CornerRadius" Value="13" />
                 <Setter Property="Padding" Value="16" />
             </Style>
+            <Style x:Key="SectionGroupStyle" TargetType="Border">
+                <Setter Property="Background" Value="{ThemeResource SurfaceBrush}" />
+                <Setter Property="CornerRadius" Value="12" />
+                <Setter Property="Padding" Value="12" />
+            </Style>
             <Style x:Key="SecondaryButtonStyle" TargetType="Button">
                 <Setter Property="MinHeight" Value="38" />
                 <Setter Property="Padding" Value="16,8" />

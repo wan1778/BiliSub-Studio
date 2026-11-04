@@ -1,14 +1,14 @@
 namespace BiliSubStudio.Core.Ocr;
 
-// Cảnh báo đoạn có tiếng mà thiếu sub (18/09): CHỈ BÁO, KHÔNG TỰ SINH sub
-// (tai không bao giờ được đẻ chữ mới — nguyên tắc user chốt). Chạy ở finish
-// sau Reconcile, mỗi đoạn thoại không có cue nào chồng lấn là 1 cảnh báo để
-// người duyệt kiểm tra tay. Thuần logic, fail-open: thiếu dữ liệu là im.
+// Warning for segments with speech but missing subtitles (18/09): ONLY WARNS, NEVER GENERATES subs
+// (the ear must never produce new text — a user-locked principle). Runs at finish
+// after Reconcile; every speech segment with no overlapping cue becomes one warning for
+// the reviewer to check manually. Pure logic, fail-open: missing data means silent.
 public static class OcrMissingSubWarning
 {
-    // Đoạn thoại ngắn hơn ngưỡng này thì bỏ qua (tiếng ừm/hắng giọng).
+    // Speech segments shorter than this threshold are ignored (throat-clearing sounds).
     public const double MinSpeechSeconds = 0.5;
-    // Số cảnh báo tối đa mỗi video (tránh spam log khi tai điếc hàng loạt).
+    // Maximum warnings per video (avoids log spam when the ear is mass-deaf).
     public const int MaxWarnings = 20;
 
     public static IReadOnlyList<string> Find(

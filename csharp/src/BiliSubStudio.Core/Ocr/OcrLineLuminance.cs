@@ -4,17 +4,17 @@ using System.Runtime.InteropServices;
 
 namespace BiliSubStudio.Core.Ocr;
 
-// Đo chữ ký sáng từng dòng OCR (ứng viên 2, spec khóa 16/09; luật nhới 21/09).
-// Thoại đo thật trên video: ~15% điểm trắng (luma>=224). Giấy sách / chữ mờ /
-// nền / chữ mực-đen trong cảnh (thư, biển hiệu): 0% điểm trắng → loại ở đây,
-// trước tracker (vụ bức thư "休书" bị đọc lẫn vào thoại, 21/09).
-// Luật giữ dòng (nhới, user chốt 21/09 "thà giữ rác hơn xén thoại"): CHỈ đòi
-// phe SÁNG. Không đòi phe tối vì sub trắng trên nền sáng chói (tuyết) viền
-// mỏng thiếu phe tối mà vẫn là thoại thật; blob trắng ma nếu lọt thì tầng
-// judge/reconcile phía sau lo tiếp. Phe tối vẫn đo để so telemetry/đối chứng.
-// Enforce TRỰC TIẾP (21/09, sau proof khung tổng hợp ghim contract + user
-// duyệt). Mọi lỗi (không Windows, decode hỏng, box lạ, stride âm) → passthrough
-// nguyên (fail-open): đo là diagnostic, không bao giờ được giết chữ oan.
+// Measures the per-line light signature of OCR (candidate 2, locked spec 16/09; relaxed rule 21/09).
+// Dialogue actually measured on video: ~15% white pixels (luma>=224). Books/paper, faint text /
+// backgrounds / pitch-black scene text (letters, signs): 0% white pixels -> discarded here,
+// before the tracker (the case of the letter "休书" being misread into dialogue, 21/09).
+// Line-keeping rule (relaxed, user locked 21/09 "better keep junk than cut dialogue"): ONLY demands
+// the LIGHT side. Does not demand the dark side because white subs on a blazing bright background (snow) with a thin
+// outline lack a dark side yet are still real dialogue; if a ghost white blob slips through, the
+// judge/reconcile layer behind handles it. The dark side is still measured for telemetry/cross-checking.
+// Enforce DIRECTLY (21/09, after the composite proof frame pinned the contract + the user
+// reviewed it). Every error (not Windows, corrupt decode, odd box, negative stride) -> full passthrough
+// (fail-open): measuring is diagnostic, never allowed to kill text unjustly.
 public static class OcrLineLuminance
 {
     // 22/10 field: the 桃花剑神 white caption measures only 4-6% at luma 224
@@ -25,14 +25,14 @@ public static class OcrLineLuminance
     public const int BrightLumaMin = 200;
     public const int DarkLumaMax = 64;
 
-    // Ngưỡng phe sáng (đo 16/09: thoại sáng 12-19%; giấy/mực/nền 0%). Biên an
-    // toàn ~2× dưới min quan sát. Đổi ngưỡng = code + test + duyệt.
+    // Light-side threshold (measured 16/09: light dialogue 12-19%; paper/ink/background 0%). A safety
+    // margin ~2x below the observed minimum. Changing a threshold = code + test + review.
     public const double KeepBrightMin = 0.06;
-    // Phe tối vẫn đo (telemetry/đối chứng) nhưng KHÔNG còn trong luật giữ
-    // (nhới 21/09: đòi phe tối sẽ xén oan sub trắng nền sáng viền mỏng).
+    // The dark side is still measured (telemetry/cross-checking) but is NO LONGER part of the keep rule
+    // (relaxed 21/09: demanding a dark side would wrongly cut white subs on bright thin-outline backgrounds).
     public const double KeepDarkMin = 0.10;
 
-    // Enforce trực tiếp (user chốt 21/09 sau proof khung tổng hợp ghim contract).
+    // Enforce directly (user decision 21/09, after the composite-frame proof pinned the contract).
     public const bool EnforceDefault = true;
 
     public sealed record LineLuminance(double BrightFraction, double DarkFraction);
@@ -117,7 +117,7 @@ public static class OcrLineLuminance
             }
             finally
             {
-                // bitmap do using ngoài dispose đúng 1 lần; clone (nếu có) dispose ở đây.
+                // the outer using disposes the bitmap exactly once; the clone (if any) is disposed here.
                 owned?.Dispose();
             }
         }
@@ -189,31 +189,31 @@ public static class OcrLineLuminance
 }
 
 // =====================================================================
-// CỔNG MÀU CHỮ (user chốt 18/09): sub luôn TRẮNG, chữ màu (danmaku xanh như
-// vụ tường 陪一支) loại luôn ở tầng frame — chữ màu không bao giờ vào tracker.
-// Quy tắc giữ dòng: CÓ điểm trắng (sáng-không-màu) HOẶC thiếu điểm màu.
-// Cổng trắng đứng trước nên chữ trắng trên nền màu (trời xanh!) vẫn giữ —
-// nền bão hòa không giết được sub trắng. Chữ vàng cũng BỎ (đổi chính sách so
-// với cổng luminance 16/09 "không kén màu" — theo yêu cầu user sub luôn trắng).
-// Enforce TRỰC TIẾP (không shadow): fail-open mọi lỗi (không Windows, decode
-// hỏng, box lạ) -> giữ dòng. Đổi ngưỡng = code + test + duyệt.
-// (Nằm chung file vì cùng đường đo pixel/box với luminance; tách file riêng
-// khi được phép tạo file mới.)
+// TEXT COLOR GATE (user locked 18/09): subs are ALWAYS WHITE, colored text (blue danmaku like
+// the 陪一支 wall case) is discarded at the frame level — colored text never reaches the tracker.
+// Line-keeping rule: HAS white pixels (bright-without-color) OR lacks colored pixels.
+// The white gate comes first, so white text on a colored background (a blue sky!) is still kept —
+// a saturated background cannot kill a white sub. Yellow text is also DISCARDED (a policy change from
+// the 16/09 luminance gate "color-agnostic" — per the user requirement that subs are always white).
+// Enforce DIRECTLY (not shadow): fail-open on every error (not Windows, corrupt
+// decode, odd box) -> keep the line. Changing a threshold = code + test + review.
+// (Shares this file because it uses the same pixel/box measurement path as the luminance gate; split into a
+// separate file once creating new files is allowed.)
 public static class OcrLineChroma
 {
-    // Trắng: sáng + gần như không màu (JPEG ringing quanh glyph trắng ~20-40).
+    // White: bright + almost colorless (JPEG ringing around white glyphs ~20-40).
     public const int WhiteLumaMin = 200;
     public const int WhiteSatMax = 48;
-    // Màu rõ: bão hòa cao hẳn (trên hẳn noise nén) — xanh/vàng/đỏ glyph.
+    // Clearly colored: high saturation (well above compression noise) — blue/yellow/red glyphs.
     public const int ColoredSatMin = 64;
 
-    // Ngưỡng drop: thiếu trắng (<4%) + thừa màu (≥15%). Thoại trắng đo thật
-    // 12-19% điểm sáng (spec 16/09) nên biên an toàn ~3× dưới min quan sát;
-    // dòng danmaku ôm sát glyph màu 40-70%. Đổi ngưỡng = code + test + duyệt.
+    // Drop threshold: lacking white (<4%) + excess color (≥15%). White dialogue actually measured
+    // at 12-19% bright pixels (spec 16/09), so the safety margin is ~3x below the observed minimum;
+    // danmaku lines hug colored glyphs at 40-70%. Changing a threshold = code + test + review.
     public const double DropWhiteMax = 0.04;
     public const double DropColoredMin = 0.15;
 
-    // User chốt 18/09: sub luôn trắng — enforce ngay, không shadow.
+    // User decision 18/09: subs are always white — enforce now, no shadow.
     public const bool EnforceDefault = true;
 
     public sealed record LineChroma(double WhiteFraction, double ColoredFraction);
