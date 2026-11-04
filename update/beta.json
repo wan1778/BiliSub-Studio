@@ -1,13 +1,19 @@
 {
-  "version": "4.0.0-beta.70-csharp-p5",
+  "version": "4.0.0-beta.75-csharp-p5",
   "channel_ready": true,
-  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.56/BiliSubStudio_4.0.56_Windows-x64-portable.zip",
-  "sha256": "0f8a6bf98d8e73e069d909d3ca7dc44c7647b9c1586b0e90eeaaab8a028d750a",
-  "size": 94811350,
+  "download_url": "https://github.com/wan1778/BiliSub-Studio/releases/download/v4.0.61/BiliSubStudio_4.0.61_Windows-x64-portable.zip",
+  "sha256": "190c891a0c5d9e97750579180718c1fbcfd57ac7cb56bbb38392792c5278dc33",
+  "size": 97108338,
   "payload_kind": "winui3-portable-zip",
   "notes": [
-    "OCR preview giữ vùng ROI đúng vị trí khi khung video thay đổi kích thước, đồng thời hiển thị cue đang được xác nhận và giữ lại bằng chứng câu đầy đủ hơn giữa các frame.",
-    "OCR worker từ chối rõ ràng kết quả PaddleOCR báo lỗi, thiếu schema hoặc lệch số lượng text/score/box; không còn hoàn thành thành công với phụ đề rỗng khi backend gặp lỗi.",
-    "Editor bổ sung nghe thử mẫu giọng Việt local trước khi tạo voice track, không thay đổi chính sách trộn âm thanh khi Preview hoặc Export."
+    "Bổ sung Timeline Editor nhiều clip với trim, split, reorder, undo/redo, subtitle, effect, logo, voice, music và relink nguồn bị mất; Editor cũ vẫn được giữ làm fallback.",
+    "Processed Preview và Export dùng chung render plan, hỗ trợ pipeline FFmpeg đầy đủ và dọn process/proxy an toàn khi hủy hoặc đóng ứng dụng.",
+    "Timeline thêm autosave chống crash, zoom có viewport virtualization và contract hiệu năng cho 100 clip, video 6 giờ, 10.000 subtitle cue và 2.000 effect.",
+    "Voice Việt giữ lại khi thoát/mở lại project; đang tạo có nút Tạm dừng/Hủy, xong có nút tạo voice lại từ đầu.",
+    "Xuất video tự kiểm tra voice khớp sub và packet audio sau khi render, hỏng là báo fail kèm mốc giờ thay vì lọt file lỗi.",
+    "Làm sạch timestamp nhạc nguồn khi trộn voice để file rip lỗi thời gian không gây vấp khi xem.",
+    "SRT riêng của từng clip hiện đúng trên dải phụ đề dưới clip đó, bấm cue sẽ chọn clip và tua tới đúng mốc.",
+    "Vùng hiệu ứng có thể kéo dài qua ranh giới đoạn, áp dụng cho cả Preview và Export khi hiệu ứng phủ qua nhiều clip.",
+    "Ctrl hoặc Alt + lăn chuột trên timeline zoom đúng điểm con chuột, không giật về mép trái hay nhảy khỏi vị trí đang xem."
   ]
 }
