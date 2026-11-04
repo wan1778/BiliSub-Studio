@@ -280,6 +280,21 @@ try {
     Copy-Item $startupLog (Join-Path $outputFull $installerSmokeLogName) -Force
     $rootLauncherSmoke = $true
 
+    # The nested WinUI smoke process writes PASS and then can keep a handle to
+    # Runtime\BiliSubStudio.Core.dll for a moment. Kill ONLY processes whose
+    # executable lives inside this smoke install root, never the user's live app.
+    foreach ($smokeRuntimeProcess in @(Get-Process -Name "BiliSubStudio" -ErrorAction SilentlyContinue)) {
+        $runtimePath = $null
+        try { $runtimePath = $smokeRuntimeProcess.Path } catch { }
+        if ($runtimePath -and $runtimePath.StartsWith($installRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+            Stop-Process -Id $smokeRuntimeProcess.Id -Force -ErrorAction SilentlyContinue
+            if (-not $smokeRuntimeProcess.WaitForExit(10000)) {
+                throw "installer smoke runtime process did not exit before uninstall: $runtimePath"
+            }
+        }
+    }
+    Start-Sleep -Milliseconds 500
+
     $smokeUninstaller = Get-ChildItem (Join-Path $installRoot "Uninstall") -Recurse -File -Filter "unins*.exe" | Select-Object -First 1
     if ($null -eq $smokeUninstaller) { throw "installer smoke could not find the isolated uninstaller" }
     $uninstallLog = Join-Path $outputFull "INNO_UNINSTALL_SMOKE_LOG.txt"
