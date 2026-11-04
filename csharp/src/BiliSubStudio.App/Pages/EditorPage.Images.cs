@@ -34,6 +34,7 @@ public sealed partial class EditorPage
     private bool _imageMissingReconcileInProgress;
     private string? _imageProjectId;
     private int _selectedImageIndex = -1;
+    private int _imageDragIndex = -1;
     private Point? _imageDragStart;
     private EditorImageOverlayState? _imageDragOriginal;
     private DragKind _imageDragKind = DragKind.None;
@@ -54,6 +55,14 @@ public sealed partial class EditorPage
     private NumberBox? _imageHeightBox;
     private Slider? _imageOpacitySlider;
 
+    private void ResetImageDragState()
+    {
+        _imageDragIndex = -1;
+        _imageDragStart = null;
+        _imageDragOriginal = null;
+        _imageDragKind = DragKind.None;
+    }
+
     private async Task EnsureImageProjectLoadedAsync()
     {
         if (_project is null)
@@ -62,6 +71,7 @@ public sealed partial class EditorPage
             _imageOverlays.Clear();
             _imageBitmaps.Clear();
             _selectedImageIndex = -1;
+            ResetImageDragState();
             return;
         }
         if (string.Equals(_imageProjectId, _project.Id, StringComparison.Ordinal)) return;
@@ -70,6 +80,7 @@ public sealed partial class EditorPage
         _imageOverlays.Clear();
         _imageBitmaps.Clear();
         _selectedImageIndex = -1;
+        ResetImageDragState();
         var missingImageCount = 0;
         var path = ImageSidecarPath(_project.Id);
         EditorImageSidecarStore.CleanupOrphanTemps(path);
@@ -198,6 +209,7 @@ public sealed partial class EditorPage
         var hit = HitTestImage(point);
         if (hit.Index < 0) return;
         _selectedImageIndex = hit.Index;
+        _imageDragIndex = hit.Index;
         _imageDragKind = hit.Kind;
         _imageDragOriginal = _imageOverlays[hit.Index];
         if (!TryNormalize(point, out var normalized)) return;
@@ -212,10 +224,14 @@ public sealed partial class EditorPage
     private void ImageOverlay_PointerMoved(object sender, PointerRoutedEventArgs e)
     {
         if (_imageDragStart is null || _imageDragOriginal is null || _imageOverlayCanvas is null || !e.GetCurrentPoint(_imageOverlayCanvas).Properties.IsLeftButtonPressed) return;
+        // Project load/clear can invalidate _selectedImageIndex while a pointer
+        // capture is still open: the drag index must be revalidated against the
+        // live overlay list instead of trusting the selection.
+        if (_imageDragIndex < 0 || _imageDragIndex >= _imageOverlays.Count) return;
         if (!TryNormalize(e.GetCurrentPoint(_imageOverlayCanvas).Position, out var current)) return;
         var original = _imageDragOriginal;
         var placement = ResizeImagePlacement(original, _imageDragStart.Value, current, _imageDragKind);
-        _imageOverlays[_selectedImageIndex] = original with
+        _imageOverlays[_imageDragIndex] = original with
         {
             X = placement.X,
             Y = placement.Y,
@@ -239,12 +255,13 @@ public sealed partial class EditorPage
         try
         {
             if (_imageDragStart is null || _imageOverlayCanvas is null) return;
-            if (!commit && _imageDragOriginal is not null && _selectedImageIndex >= 0 && _selectedImageIndex < _imageOverlays.Count)
-                _imageOverlays[_selectedImageIndex] = _imageDragOriginal;
+            if (!commit && _imageDragOriginal is not null && _imageDragIndex >= 0 && _imageDragIndex < _imageOverlays.Count)
+                _imageOverlays[_imageDragIndex] = _imageDragOriginal;
             _imageOverlayCanvas.ReleasePointerCapture(e.Pointer);
             _imageDragStart = null;
             _imageDragOriginal = null;
             _imageDragKind = DragKind.None;
+            _imageDragIndex = -1;
             var saveError = commit ? await SaveImageSidecarSafeAsync() : null;
             LoadSelectedImageIntoInputs();
             RenderImageOverlays();
@@ -628,6 +645,7 @@ public sealed partial class EditorPage
         _imageOverlays.Clear();
         _imageBitmaps.Clear();
         _selectedImageIndex = -1;
+        ResetImageDragState();
         RenderImageList();
         LoadSelectedImageIntoInputs();
         RenderImageOverlays();
