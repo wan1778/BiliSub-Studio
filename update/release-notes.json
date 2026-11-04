@@ -1,11 +1,14 @@
 {
-  "version": "4.0.0-beta.71-csharp-p5",
+  "version": "4.0.0-beta.75-csharp-p5",
   "notes": [
     "Bổ sung Timeline Editor nhiều clip với trim, split, reorder, undo/redo, subtitle, effect, logo, voice, music và relink nguồn bị mất; Editor cũ vẫn được giữ làm fallback.",
     "Processed Preview và Export dùng chung render plan, hỗ trợ pipeline FFmpeg đầy đủ và dọn process/proxy an toàn khi hủy hoặc đóng ứng dụng.",
     "Timeline thêm autosave chống crash, zoom có viewport virtualization và contract hiệu năng cho 100 clip, video 6 giờ, 10.000 subtitle cue và 2.000 effect.",
     "Voice Việt giữ lại khi thoát/mở lại project; đang tạo có nút Tạm dừng/Hủy, xong có nút tạo voice lại từ đầu.",
     "Xuất video tự kiểm tra voice khớp sub và packet audio sau khi render, hỏng là báo fail kèm mốc giờ thay vì lọt file lỗi.",
-    "Làm sạch timestamp nhạc nguồn khi trộn voice để file rip lỗi thời gian không gây vấp khi xem."
+    "Làm sạch timestamp nhạc nguồn khi trộn voice để file rip lỗi thời gian không gây vấp khi xem.",
+    "SRT riêng của từng clip hiện đúng trên dải phụ đề dưới clip đó, bấm cue sẽ chọn clip và tua tới đúng mốc.",
+    "Vùng hiệu ứng có thể kéo dài qua ranh giới đoạn, áp dụng cho cả Preview và Export khi hiệu ứng phủ qua nhiều clip.",
+    "Ctrl hoặc Alt + lăn chuột trên timeline zoom đúng điểm con chuột, không giật về mép trái hay nhảy khỏi vị trí đang xem."
   ]
 }
