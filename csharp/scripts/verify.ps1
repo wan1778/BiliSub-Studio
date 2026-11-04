@@ -4,6 +4,12 @@ param()
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+# Windows GitHub runners can default Python's stdout to a legacy code page, and
+# Vietnamese contract/unittest output then dies with UnicodeEncodeError. Force
+# UTF-8 for every Python gate this script invokes.
+$env:PYTHONIOENCODING = "utf-8"
+$env:PYTHONUTF8 = "1"
+
 function Invoke-Checked {
     param(
         [Parameter(Mandatory = $true)]
